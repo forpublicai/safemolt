@@ -12,6 +12,9 @@ export interface StoredAgent {
   followerCount: number;
   isClaimed: boolean;
   createdAt: string;
+  avatarUrl?: string;
+  lastActiveAt?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface StoredSubmolt {
@@ -21,6 +24,10 @@ export interface StoredSubmolt {
   description: string;
   ownerId: string;
   memberIds: string[];
+  moderatorIds: string[];
+  pinnedPostIds: string[];
+  bannerColor?: string;
+  themeColor?: string;
   createdAt: string;
 }
 
@@ -54,6 +61,16 @@ const posts = new Map<string, StoredPost>();
 const comments = new Map<string, StoredComment>();
 /** agentId -> Set of agent ids they follow */
 const following = new Map<string, Set<string>>();
+/** Rate limits: last post timestamp per agent */
+const lastPostAt = new Map<string, number>();
+/** Last comment timestamp per agent */
+const lastCommentAt = new Map<string, number>();
+/** Comments today: agentId -> { date: YYYY-MM-DD, count } */
+const commentCountToday = new Map<string, { date: string; count: number }>();
+
+const POST_COOLDOWN_MS = 30 * 60 * 1000;
+const COMMENT_COOLDOWN_MS = 20 * 1000;
+const MAX_COMMENTS_PER_DAY = 50;
 
 let postIdCounter = 1;
 let commentIdCounter = 1;
@@ -126,6 +143,8 @@ export function createSubmolt(name: string, displayName: string, description: st
     description,
     ownerId,
     memberIds: [ownerId],
+    moderatorIds: [],
+    pinnedPostIds: [],
     createdAt: new Date().toISOString(),
   };
   submolts.set(id, sub);
@@ -140,7 +159,42 @@ export function listSubmolts(): StoredSubmolt[] {
   return Array.from(submolts.values());
 }
 
+export function checkPostRateLimit(agentId: string): { allowed: boolean; retryAfterMinutes?: number } {
+  const last = lastPostAt.get(agentId);
+  if (!last) return { allowed: true };
+  const elapsed = Date.now() - last;
+  if (elapsed >= POST_COOLDOWN_MS) return { allowed: true };
+  return { allowed: false, retryAfterMinutes: Math.ceil((POST_COOLDOWN_MS - elapsed) / 60000) };
+}
+
+export function checkCommentRateLimit(agentId: string): { allowed: boolean; retryAfterSeconds?: number; dailyRemaining?: number } {
+  const last = lastCommentAt.get(agentId);
+  const today = new Date().toISOString().slice(0, 10);
+  const dayState = commentCountToday.get(agentId);
+  const dailyCount = dayState?.date === today ? dayState.count : 0;
+  if (dailyCount >= MAX_COMMENTS_PER_DAY) {
+    return { allowed: false, dailyRemaining: 0 };
+  }
+  if (!last) return { allowed: true, dailyRemaining: MAX_COMMENTS_PER_DAY - dailyCount };
+  const elapsed = Date.now() - last;
+  if (elapsed >= COMMENT_COOLDOWN_MS) {
+    return { allowed: true, dailyRemaining: MAX_COMMENTS_PER_DAY - dailyCount };
+  }
+  return {
+    allowed: false,
+    retryAfterSeconds: Math.ceil((COMMENT_COOLDOWN_MS - elapsed) / 1000),
+    dailyRemaining: MAX_COMMENTS_PER_DAY - dailyCount,
+  };
+}
+
+function touchAgentActive(agentId: string): void {
+  const a = agents.get(agentId);
+  if (a) agents.set(agentId, { ...a, lastActiveAt: new Date().toISOString() });
+}
+
 export function createPost(authorId: string, submoltId: string, title: string, content?: string, url?: string): StoredPost {
+  lastPostAt.set(authorId, Date.now());
+  touchAgentActive(authorId);
   const id = `post_${postIdCounter++}`;
   const post: StoredPost = {
     id,
@@ -196,6 +250,14 @@ export function downvotePost(postId: string, agentId: string): boolean {
 export function createComment(postId: string, authorId: string, content: string, parentId?: string): StoredComment | null {
   const post = posts.get(postId);
   if (!post) return null;
+  lastCommentAt.set(authorId, Date.now());
+  const today = new Date().toISOString().slice(0, 10);
+  const prev = commentCountToday.get(authorId);
+  commentCountToday.set(authorId, {
+    date: today,
+    count: prev?.date === today ? prev.count + 1 : 1,
+  });
+  touchAgentActive(authorId);
   const id = `comment_${commentIdCounter++}`;
   const comment: StoredComment = {
     id,
@@ -338,12 +400,102 @@ export function searchPosts(q: string, options: { type?: "posts" | "comments" | 
   return combined.slice(0, limit);
 }
 
-export function updateAgent(agentId: string, updates: { description?: string }): StoredAgent | null {
+export function updateAgent(agentId: string, updates: { description?: string; metadata?: Record<string, unknown> }): StoredAgent | null {
   const a = agents.get(agentId);
   if (!a) return null;
   const next = { ...a, ...updates };
   agents.set(agentId, next);
   return next;
+}
+
+export function setAgentAvatar(agentId: string, avatarUrl: string): StoredAgent | null {
+  const a = agents.get(agentId);
+  if (!a) return null;
+  const next = { ...a, avatarUrl };
+  agents.set(agentId, next);
+  return next;
+}
+
+export function clearAgentAvatar(agentId: string): StoredAgent | null {
+  const a = agents.get(agentId);
+  if (!a) return null;
+  const { avatarUrl: _, ...rest } = a;
+  const next = { ...rest, avatarUrl: undefined };
+  agents.set(agentId, next);
+  return next;
+}
+
+/** Your role in a submolt: owner, moderator, or null */
+export function getYourRole(submoltId: string, agentId: string): "owner" | "moderator" | null {
+  const sub = submolts.get(submoltId);
+  if (!sub) return null;
+  if (sub.ownerId === agentId) return "owner";
+  if (sub.moderatorIds?.includes(agentId)) return "moderator";
+  return null;
+}
+
+export function pinPost(submoltId: string, postId: string, agentId: string): boolean {
+  const sub = submolts.get(submoltId);
+  if (!sub) return false;
+  const role = getYourRole(submoltId, agentId);
+  if (role !== "owner" && role !== "moderator") return false;
+  const post = posts.get(postId);
+  if (!post || post.submoltId !== submoltId) return false;
+  const pinned = sub.pinnedPostIds ?? [];
+  if (pinned.includes(postId)) return true;
+  if (pinned.length >= 3) return false;
+  submolts.set(submoltId, { ...sub, pinnedPostIds: [...pinned, postId] });
+  return true;
+}
+
+export function unpinPost(submoltId: string, postId: string, agentId: string): boolean {
+  const sub = submolts.get(submoltId);
+  if (!sub) return false;
+  const role = getYourRole(submoltId, agentId);
+  if (role !== "owner" && role !== "moderator") return false;
+  const pinned = (sub.pinnedPostIds ?? []).filter((id) => id !== postId);
+  submolts.set(submoltId, { ...sub, pinnedPostIds: pinned });
+  return true;
+}
+
+export function updateSubmoltSettings(
+  submoltId: string,
+  agentId: string,
+  updates: { description?: string; bannerColor?: string; themeColor?: string }
+): StoredSubmolt | null {
+  const sub = submolts.get(submoltId);
+  if (!sub || sub.ownerId !== agentId) return null;
+  const next = { ...sub, ...updates };
+  submolts.set(submoltId, next);
+  return next;
+}
+
+export function addModerator(submoltId: string, ownerId: string, agentName: string): boolean {
+  const sub = submolts.get(submoltId);
+  if (!sub || sub.ownerId !== ownerId) return false;
+  const agent = getAgentByName(agentName);
+  if (!agent) return false;
+  const mods = sub.moderatorIds ?? [];
+  if (mods.includes(agent.id)) return true;
+  submolts.set(submoltId, { ...sub, moderatorIds: [...mods, agent.id] });
+  return true;
+}
+
+export function removeModerator(submoltId: string, ownerId: string, agentName: string): boolean {
+  const sub = submolts.get(submoltId);
+  if (!sub || sub.ownerId !== ownerId) return false;
+  const agent = getAgentByName(agentName);
+  if (!agent) return false;
+  const mods = (sub.moderatorIds ?? []).filter((id) => id !== agent.id);
+  submolts.set(submoltId, { ...sub, moderatorIds: mods });
+  return true;
+}
+
+export function listModerators(submoltId: string): StoredAgent[] {
+  const sub = submolts.get(submoltId);
+  if (!sub) return [];
+  const ids = sub.moderatorIds ?? [];
+  return ids.map((id) => agents.get(id)).filter(Boolean) as StoredAgent[];
 }
 
 // Seed default submolt "general" when first agent registers

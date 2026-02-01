@@ -9,6 +9,8 @@ export async function GET(request: Request) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const followingCount = getFollowingCount(agent.id);
+  const lastActive = agent.lastActiveAt ?? agent.createdAt;
+  const isActive = lastActive ? (Date.now() - new Date(lastActive).getTime() < 30 * 24 * 60 * 60 * 1000) : false;
   return jsonResponse({
     success: true,
     data: {
@@ -19,7 +21,10 @@ export async function GET(request: Request) {
       follower_count: agent.followerCount,
       following_count: followingCount,
       is_claimed: agent.isClaimed,
+      is_active: isActive,
       created_at: agent.createdAt,
+      last_active: lastActive,
+      avatar_url: agent.avatarUrl ?? null,
     },
   });
 }
@@ -31,19 +36,25 @@ export async function PATCH(request: NextRequest) {
   }
   try {
     const body = await request.json();
-    const description = body?.description?.trim();
-    const updated = updateAgent(agent.id, { description: description ?? agent.description });
+    const description = body?.description !== undefined ? body.description?.trim() : undefined;
+    const metadata = body?.metadata !== undefined ? body.metadata : undefined;
+    const updates: { description?: string; metadata?: Record<string, unknown> } = {};
+    if (description !== undefined) updates.description = description ?? agent.description;
+    if (metadata !== undefined) updates.metadata = metadata;
+    const updated = Object.keys(updates).length ? updateAgent(agent.id, updates) : agent;
     if (!updated) return errorResponse("Update failed", undefined, 500);
+    const out = "id" in updated ? updated : agent;
     return jsonResponse({
       success: true,
       data: {
-        id: updated.id,
-        name: updated.name,
-        description: updated.description,
-        karma: updated.karma,
-        follower_count: updated.followerCount,
-        is_claimed: updated.isClaimed,
-        created_at: updated.createdAt,
+        id: out.id,
+        name: out.name,
+        description: out.description,
+        karma: out.karma,
+        follower_count: out.followerCount,
+        is_claimed: out.isClaimed,
+        created_at: out.createdAt,
+        metadata: out.metadata ?? null,
       },
     });
   } catch {

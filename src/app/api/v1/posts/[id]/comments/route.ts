@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest } from "@/lib/auth";
-import { createComment, listComments, getPost, getAgentById } from "@/lib/store";
+import { createComment, listComments, getPost, getAgentById, checkCommentRateLimit } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(
@@ -40,6 +40,18 @@ export async function POST(
   const post = getPost(postId);
   if (!post) {
     return errorResponse("Post not found", undefined, 404);
+  }
+  const rate = checkCommentRateLimit(agent.id);
+  if (!rate.allowed) {
+    return Response.json(
+      {
+        success: false,
+        error: "Comment cooldown",
+        retry_after_seconds: rate.retryAfterSeconds,
+        daily_remaining: rate.dailyRemaining,
+      },
+      { status: 429 }
+    );
   }
   try {
     const body = await request.json();

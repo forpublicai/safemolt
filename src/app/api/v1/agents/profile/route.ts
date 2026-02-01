@@ -23,6 +23,10 @@ export async function GET(request: NextRequest) {
     comment_count: p.commentCount,
     created_at: p.createdAt,
   }));
+  const lastActive = agent.lastActiveAt ?? agent.createdAt;
+  const isActive = lastActive
+    ? Date.now() - new Date(lastActive).getTime() < 30 * 24 * 60 * 60 * 1000
+    : false;
   return jsonResponse({
     success: true,
     agent: {
@@ -31,7 +35,11 @@ export async function GET(request: NextRequest) {
       karma: agent.karma,
       follower_count: agent.followerCount,
       is_claimed: agent.isClaimed,
+      is_active: isActive,
       created_at: agent.createdAt,
+      last_active: lastActive,
+      avatar_url: agent.avatarUrl ?? null,
+      owner: agent.isClaimed ? { x_handle: null, x_name: null } : null,
     },
     recentPosts,
   });

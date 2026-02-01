@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest } from "@/lib/auth";
-import { createPost, listPosts, getSubmolt, getAgentById } from "@/lib/store";
+import { createPost, listPosts, getSubmolt, getAgentById, checkPostRateLimit } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
@@ -48,6 +48,13 @@ export async function POST(request: NextRequest) {
     const sub = getSubmolt(submolt);
     if (!sub) {
       return errorResponse("Submolt not found", "Create it first or use an existing submolt", 404);
+    }
+    const rate = checkPostRateLimit(agent.id);
+    if (!rate.allowed) {
+      return Response.json(
+        { success: false, error: "Post cooldown", retry_after_minutes: rate.retryAfterMinutes },
+        { status: 429 }
+      );
     }
     const post = createPost(agent.id, submolt, title, content || undefined, url || undefined);
     return jsonResponse({
