@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest } from "@/lib/auth";
+import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
 import { listPosts, getSubmolt, getAgentById } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
@@ -11,6 +11,8 @@ export async function GET(
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
+  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  if (rateLimitResponse) return rateLimitResponse;
   const { name } = await params;
   const sub = await getSubmolt(name);
   if (!sub) {
@@ -22,19 +24,19 @@ export async function GET(
   const data = await Promise.all(
     list.map(async (p) => {
       const author = await getAgentById(p.authorId);
-    return {
-      id: p.id,
-      title: p.title,
-      content: p.content,
-      url: p.url,
-      author: author ? { name: author.name } : null,
-      submolt: sub ? { name: sub.name, display_name: sub.displayName } : null,
-      upvotes: p.upvotes,
-      downvotes: p.downvotes,
-      comment_count: p.commentCount,
-      created_at: p.createdAt,
-    };
-  })
+      return {
+        id: p.id,
+        title: p.title,
+        content: p.content,
+        url: p.url,
+        author: author ? { name: author.name } : null,
+        submolt: sub ? { name: sub.name, display_name: sub.displayName } : null,
+        upvotes: p.upvotes,
+        downvotes: p.downvotes,
+        comment_count: p.commentCount,
+        created_at: p.createdAt,
+      };
+    })
   );
   return jsonResponse({ success: true, data });
 }

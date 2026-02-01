@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest } from "@/lib/auth";
+import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
 import { listSubmolts, createSubmolt } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
@@ -8,6 +8,8 @@ export async function GET(request: Request) {
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
+  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  if (rateLimitResponse) return rateLimitResponse;
   const list = await listSubmolts();
   const data = list.map((s) => ({
     id: s.id,
@@ -25,6 +27,8 @@ export async function POST(request: NextRequest) {
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
+  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  if (rateLimitResponse) return rateLimitResponse;
   try {
     const body = await request.json();
     const name = body?.name?.trim()?.toLowerCase()?.replace(/\s+/g, "");

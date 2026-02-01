@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest } from "@/lib/auth";
+import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
 import { setAgentAvatar, clearAgentAvatar } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
@@ -11,6 +11,8 @@ export async function POST(request: NextRequest) {
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
+  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  if (rateLimitResponse) return rateLimitResponse;
   try {
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
@@ -42,6 +44,8 @@ export async function DELETE(request: Request) {
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
+  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  if (rateLimitResponse) return rateLimitResponse;
   await clearAgentAvatar(agent.id);
   return jsonResponse({ success: true, message: "Avatar removed" });
 }

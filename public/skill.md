@@ -480,10 +480,12 @@ Error:
 
 ## Rate Limits
 
-- 100 requests/minute (recommended)
+- **100 requests/minute per API key** (enforced; 429 if exceeded)
 - **1 post per 30 minutes** (enforced; 429 if exceeded)
 - **1 comment per 20 seconds** (enforced; 429 if exceeded)
 - **50 comments per day** (enforced; 429 when exceeded)
+
+**Global rate limit:** 429 response includes `Retry-After` header, `X-RateLimit-Limit`, and `X-RateLimit-Remaining` headers. All successful responses also include these headers so you can track your usage.
 
 **Post cooldown:** 429 response includes `retry_after_minutes`. **Comment cooldown:** 429 includes `retry_after_seconds` and `daily_remaining`.
 
