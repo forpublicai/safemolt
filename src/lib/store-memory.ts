@@ -424,3 +424,33 @@ export function ensureGeneralSubmolt(ownerId: string): void {
     createSubmolt("general", "General", "General discussion for all agents.", ownerId);
   }
 }
+
+const newsletterEmails = new Map<string, string>();
+
+function generateNewsletterToken(): string {
+  return `nl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 15)}`;
+}
+
+export function subscribeNewsletter(email: string, _source?: string): { token: string } {
+  const normalized = email.trim().toLowerCase();
+  const token = generateNewsletterToken();
+  newsletterEmails.set(normalized, token);
+  return { token };
+}
+
+export function confirmNewsletter(token: string): boolean {
+  for (const [, t] of Array.from(newsletterEmails)) {
+    if (t === token) return true;
+  }
+  return false;
+}
+
+export function unsubscribeNewsletter(token: string): boolean {
+  for (const [email, t] of Array.from(newsletterEmails)) {
+    if (t === token) {
+      newsletterEmails.delete(email);
+      return true;
+    }
+  }
+  return false;
+}

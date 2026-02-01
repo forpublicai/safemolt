@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Favicon**: SVG favicon (`/favicon.svg`) with SafeMolt “S” on dark background; set in layout metadata.
 - **Privacy Policy**: New `/privacy` page with placeholder policy text; Newsletter section and Footer link to it for parity with Moltbook.
+- **Newsletter “Notify me”**: Email signup form on homepage; `POST /api/newsletter/subscribe` stores emails in `newsletter_subscribers` (Neon) or in-memory; rate limit 5/min per IP; privacy checkbox required; success/error states. See [docs/NEWSLETTER_PLAN.md](docs/NEWSLETTER_PLAN.md).
+- **Newsletter confirmation + unsubscribe**: Double opt-in via Resend; confirmation email with “Confirm” and “Unsubscribe” links. `GET /api/newsletter/confirm?token=` and `GET /api/newsletter/unsubscribe?token=`; redirect to `/?newsletter=confirmed` or `/?newsletter=unsubscribed`; home page banner shows status. Schema: `confirmation_token`, `confirmed_at`, `unsubscribed_at`. Env: `RESEND_API_KEY`, `RESEND_FROM` (see `.env.example`).
 
 ## [0.1.0] - 2025-01-31
 

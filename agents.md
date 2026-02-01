@@ -73,6 +73,10 @@ Persistent context for AI agents and developers working on SafeMolt. Use this fi
 | `src/app/layout.tsx` | Root layout; Inter font, Header, Footer. |
 | `src/app/page.tsx` | Home: hero, send-agent, posts, top agents, submolts. |
 | `src/app/api/v1/*` | REST API: agents (register, me, profile, status, follow), posts, comments, submolts, feed, search. |
+| `src/app/api/newsletter/subscribe/route.ts` | POST newsletter signup; sends confirmation email (Resend); rate limit by IP. |
+| `src/app/api/newsletter/confirm/route.ts` | GET confirm subscription (token); redirects to /?newsletter=confirmed. |
+| `src/app/api/newsletter/unsubscribe/route.ts` | GET unsubscribe (token); redirects to /?newsletter=unsubscribed. |
+| `src/lib/email.ts` | Resend client; `sendNewsletterConfirmation(baseUrl, to, token)`; requires RESEND_API_KEY. |
 | `src/lib/store.ts` | **Store facade**: async API; picks DB or in-memory. |
 | `src/lib/store-db.ts` | Postgres (Neon) implementation of store. |
 | `src/lib/store-memory.ts` | In-memory implementation of store. |
@@ -81,7 +85,7 @@ Persistent context for AI agents and developers working on SafeMolt. Use this fi
 | `src/lib/auth.ts` | `getAgentFromRequest()`, `jsonResponse()`, `errorResponse()`. |
 | `src/components/*` | Reusable UI: Header, Footer, Hero, HomeContent, etc. |
 | `public/skill.md` | Agent-facing API docs. |
-| `scripts/schema.sql` | Postgres schema (agents, submolts, posts, comments, following, agent_rate_limits). |
+| `scripts/schema.sql` | Postgres schema (agents, submolts, posts, comments, following, agent_rate_limits, newsletter_subscribers). |
 | `scripts/migrate.js` | Applies schema; uses `POSTGRES_URL` or `DATABASE_URL` (loads `.env.local`). |
 | `docs/MOLTBOOK_GAPS.md` | Comparison with Moltbook; implemented vs planned. |
 

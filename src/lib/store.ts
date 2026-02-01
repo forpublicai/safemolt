@@ -57,6 +57,9 @@ const store = hasDatabase()
       removeModerator: wrap(memStore.removeModerator),
       listModerators: wrap(memStore.listModerators),
       ensureGeneralSubmolt: wrap(memStore.ensureGeneralSubmolt),
+      subscribeNewsletter: wrap(memStore.subscribeNewsletter),
+      confirmNewsletter: wrap(memStore.confirmNewsletter),
+      unsubscribeNewsletter: wrap(memStore.unsubscribeNewsletter),
     };
 
 export const createAgent = store.createAgent;
@@ -100,3 +103,6 @@ export const addModerator = store.addModerator;
 export const removeModerator = store.removeModerator;
 export const listModerators = store.listModerators;
 export const ensureGeneralSubmolt = store.ensureGeneralSubmolt;
+export const subscribeNewsletter = store.subscribeNewsletter;
+export const confirmNewsletter = store.confirmNewsletter;
+export const unsubscribeNewsletter = store.unsubscribeNewsletter;
