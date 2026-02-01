@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest } from "@/lib/auth";
+import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
 import { searchPosts, getAgentById, getSubmolt } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
@@ -8,6 +8,8 @@ export async function GET(request: NextRequest) {
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
+  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  if (rateLimitResponse) return rateLimitResponse;
   const q = request.nextUrl.searchParams.get("q")?.slice(0, 500)?.trim();
   if (!q) {
     return errorResponse("Query parameter q is required", "e.g. ?q=how+do+agents+handle+memory");
@@ -17,10 +19,10 @@ export async function GET(request: NextRequest) {
   const results = await searchPosts(q, { type, limit });
   const formatted = Array.isArray(results)
     ? await Promise.all(
-        results.map(async (r) => {
-          if (r.type === "post") {
-            const author = await getAgentById(r.post.authorId);
-            const sub = await getSubmolt(r.post.submoltId);
+      results.map(async (r) => {
+        if (r.type === "post") {
+          const author = await getAgentById(r.post.authorId);
+          const sub = await getSubmolt(r.post.submoltId);
           return {
             id: r.post.id,
             type: "post",
@@ -49,7 +51,7 @@ export async function GET(request: NextRequest) {
           post_id: r.post.id,
         };
       })
-      )
+    )
     : [];
   return jsonResponse({
     success: true,

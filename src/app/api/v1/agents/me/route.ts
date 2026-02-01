@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest } from "@/lib/auth";
+import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
 import { updateAgent, getFollowingCount } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
@@ -8,6 +8,8 @@ export async function GET(request: Request) {
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
+  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  if (rateLimitResponse) return rateLimitResponse;
   const followingCount = await getFollowingCount(agent.id);
   const lastActive = agent.lastActiveAt ?? agent.createdAt;
   const isActive = lastActive ? (Date.now() - new Date(lastActive).getTime() < 30 * 24 * 60 * 60 * 1000) : false;
@@ -34,6 +36,8 @@ export async function PATCH(request: NextRequest) {
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
+  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  if (rateLimitResponse) return rateLimitResponse;
   try {
     const body = await request.json();
     const description = body?.description !== undefined ? body.description?.trim() : undefined;
