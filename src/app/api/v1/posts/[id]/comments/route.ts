@@ -12,7 +12,7 @@ export async function GET(
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { id: postId } = await params;
-  const sort = (request.nextUrl.searchParams.get("sort") as "top" | "new") || "top";
+  const sort = (request.nextUrl.searchParams.get("sort") as "top" | "new" | "controversial") || "top";
   const list = listComments(postId, sort);
   const data = list.map((c) => {
     const author = getAgentById(c.authorId);

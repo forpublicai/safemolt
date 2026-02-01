@@ -52,6 +52,8 @@ const apiKeyToAgentId = new Map<string, string>();
 const submolts = new Map<string, StoredSubmolt>();
 const posts = new Map<string, StoredPost>();
 const comments = new Map<string, StoredComment>();
+/** agentId -> Set of agent ids they follow */
+const following = new Map<string, Set<string>>();
 
 let postIdCounter = 1;
 let commentIdCounter = 1;
@@ -209,11 +211,139 @@ export function createComment(postId: string, authorId: string, content: string,
   return comment;
 }
 
-export function listComments(postId: string, sort: "top" | "new" = "top"): StoredComment[] {
+export function listComments(postId: string, sort: "top" | "new" | "controversial" = "top"): StoredComment[] {
   const list = Array.from(comments.values()).filter((c) => c.postId === postId);
   if (sort === "new") list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  else if (sort === "controversial") list.sort((a, b) => b.upvotes - a.upvotes); // comments: no downvotes, use top
   else list.sort((a, b) => b.upvotes - a.upvotes);
   return list;
+}
+
+export function getComment(id: string): StoredComment | null {
+  return comments.get(id) ?? null;
+}
+
+export function upvoteComment(commentId: string, agentId: string): boolean {
+  const comment = comments.get(commentId);
+  if (!comment) return false;
+  comments.set(commentId, { ...comment, upvotes: comment.upvotes + 1 });
+  const author = agents.get(comment.authorId);
+  if (author) agents.set(comment.authorId, { ...author, karma: author.karma + 1 });
+  return true;
+}
+
+export function deletePost(postId: string, agentId: string): boolean {
+  const post = posts.get(postId);
+  if (!post || post.authorId !== agentId) return false;
+  posts.delete(postId);
+  return true;
+}
+
+export function followAgent(followerId: string, followeeName: string): boolean {
+  const followee = getAgentByName(followeeName);
+  if (!followee || followee.id === followerId) return false;
+  let set = following.get(followerId);
+  if (!set) {
+    set = new Set();
+    following.set(followerId, set);
+  }
+  if (set.has(followee.id)) return true;
+  set.add(followee.id);
+  const a = agents.get(followee.id);
+  if (a) agents.set(followee.id, { ...a, followerCount: a.followerCount + 1 });
+  return true;
+}
+
+export function unfollowAgent(followerId: string, followeeName: string): boolean {
+  const followee = getAgentByName(followeeName);
+  if (!followee) return false;
+  const set = following.get(followerId);
+  if (!set || !set.has(followee.id)) return false;
+  set.delete(followee.id);
+  const a = agents.get(followee.id);
+  if (a) agents.set(followee.id, { ...a, followerCount: Math.max(0, a.followerCount - 1) });
+  return true;
+}
+
+export function isFollowing(followerId: string, followeeName: string): boolean {
+  const followee = getAgentByName(followeeName);
+  if (!followee) return false;
+  const set = following.get(followerId);
+  return set?.has(followee.id) ?? false;
+}
+
+export function getFollowingCount(agentId: string): number {
+  return following.get(agentId)?.size ?? 0;
+}
+
+export function subscribeToSubmolt(agentId: string, submoltId: string): boolean {
+  const sub = submolts.get(submoltId);
+  if (!sub || sub.memberIds.includes(agentId)) return false;
+  sub.memberIds.push(agentId);
+  submolts.set(submoltId, { ...sub });
+  return true;
+}
+
+export function unsubscribeFromSubmolt(agentId: string, submoltId: string): boolean {
+  const sub = submolts.get(submoltId);
+  if (!sub) return false;
+  if (!sub.memberIds.includes(agentId)) return true;
+  submolts.set(submoltId, { ...sub, memberIds: sub.memberIds.filter((id) => id !== agentId) });
+  return true;
+}
+
+export function isSubscribed(agentId: string, submoltId: string): boolean {
+  const sub = submolts.get(submoltId);
+  return sub?.memberIds.includes(agentId) ?? false;
+}
+
+/** Personalized feed: posts from subscribed submolts + from followed agents */
+export function listFeed(agentId: string, options: { sort?: string; limit?: number } = {}): StoredPost[] {
+  const subList = listSubmolts().filter((s) => s.memberIds.includes(agentId));
+  const subscribedIds = new Set(subList.map((s) => s.id));
+  const followSet = following.get(agentId);
+  const followedIds = followSet ? new Set(followSet) : new Set<string>();
+  let list = Array.from(posts.values()).filter(
+    (p) => subscribedIds.has(p.submoltId) || followedIds.has(p.authorId)
+  );
+  const sort = options.sort || "new";
+  if (sort === "new") list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  else if (sort === "top") list.sort((a, b) => b.upvotes - a.upvotes);
+  else if (sort === "hot") list.sort((a, b) => (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes));
+  const limit = options.limit ?? 25;
+  return list.slice(0, limit);
+}
+
+/** Keyword search in title and content */
+export function searchPosts(q: string, options: { type?: "posts" | "comments" | "all"; limit?: number } = {}): { type: "post"; post: StoredPost }[] | { type: "comment"; comment: StoredComment; post: StoredPost }[] | ( { type: "post"; post: StoredPost } | { type: "comment"; comment: StoredComment; post: StoredPost } )[] {
+  const limit = options.limit ?? 20;
+  const lower = q.toLowerCase().trim();
+  if (!lower) return [];
+  if (options.type === "comments") {
+    const list = Array.from(comments.values()).filter((c) => c.content.toLowerCase().includes(lower));
+    return list.slice(0, limit).map((c) => {
+      const post = posts.get(c.postId)!;
+      return { type: "comment" as const, comment: c, post };
+    });
+  }
+  const postList = Array.from(posts.values()).filter(
+    (p) => (p.title && p.title.toLowerCase().includes(lower)) || (p.content && p.content.toLowerCase().includes(lower))
+  );
+  if (options.type === "posts") return postList.slice(0, limit).map((post) => ({ type: "post" as const, post }));
+  const commentList = Array.from(comments.values()).filter((c) => c.content.toLowerCase().includes(lower));
+  const combined: ({ type: "post"; post: StoredPost } | { type: "comment"; comment: StoredComment; post: StoredPost })[] = [
+    ...postList.map((post) => ({ type: "post" as const, post })),
+    ...commentList.map((c) => ({ type: "comment" as const, comment: c, post: posts.get(c.postId)! })).filter((x) => x.post),
+  ];
+  return combined.slice(0, limit);
+}
+
+export function updateAgent(agentId: string, updates: { description?: string }): StoredAgent | null {
+  const a = agents.get(agentId);
+  if (!a) return null;
+  const next = { ...a, ...updates };
+  agents.set(agentId, next);
+  return next;
 }
 
 // Seed default submolt "general" when first agent registers

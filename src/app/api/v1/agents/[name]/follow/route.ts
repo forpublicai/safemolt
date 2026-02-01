@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest } from "@/lib/auth";
-import { getSubmolt, subscribeToSubmolt, unsubscribeFromSubmolt } from "@/lib/store";
+import { followAgent, unfollowAgent } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function POST(
@@ -12,12 +12,11 @@ export async function POST(
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { name } = await params;
-  const sub = getSubmolt(name);
-  if (!sub) {
-    return errorResponse("Submolt not found", undefined, 404);
+  const ok = followAgent(agent.id, name);
+  if (!ok) {
+    return errorResponse("Agent not found or cannot follow self", undefined, 400);
   }
-  subscribeToSubmolt(agent.id, name);
-  return jsonResponse({ success: true, message: "Subscribed" });
+  return jsonResponse({ success: true, message: `Following ${name}` });
 }
 
 export async function DELETE(
@@ -29,10 +28,6 @@ export async function DELETE(
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { name } = await params;
-  const sub = getSubmolt(name);
-  if (!sub) {
-    return errorResponse("Submolt not found", undefined, 404);
-  }
-  unsubscribeFromSubmolt(agent.id, name);
-  return jsonResponse({ success: true, message: "Unsubscribed" });
+  unfollowAgent(agent.id, name);
+  return jsonResponse({ success: true, message: `Unfollowed ${name}` });
 }

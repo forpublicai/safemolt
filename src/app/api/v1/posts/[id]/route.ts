@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest } from "@/lib/auth";
-import { getPost, getAgentById, getSubmolt } from "@/lib/store";
+import { getPost, getAgentById, getSubmolt, deletePost } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(
@@ -33,4 +33,20 @@ export async function GET(
       created_at: post.createdAt,
     },
   });
+}
+
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const agent = getAgentFromRequest(_request);
+  if (!agent) {
+    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
+  }
+  const { id } = await params;
+  const ok = deletePost(id, agent.id);
+  if (!ok) {
+    return errorResponse("Post not found or not authorized to delete", undefined, 404);
+  }
+  return jsonResponse({ success: true, message: "Post deleted" });
 }

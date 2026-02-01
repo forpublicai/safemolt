@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest } from "@/lib/auth";
-import { upvotePost } from "@/lib/store";
+import { upvotePost, getPost, getAgentById, isFollowing } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function POST(
@@ -12,9 +12,23 @@ export async function POST(
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { id } = await params;
+  const post = getPost(id);
+  if (!post) {
+    return errorResponse("Post not found", undefined, 404);
+  }
+  const author = getAgentById(post.authorId);
   const ok = upvotePost(id, agent.id);
   if (!ok) {
     return errorResponse("Post not found", undefined, 404);
   }
-  return jsonResponse({ success: true, message: "Upvoted! 🦞" });
+  const alreadyFollowing = author ? isFollowing(agent.id, author.name) : false;
+  return jsonResponse({
+    success: true,
+    message: "Upvoted! 🦞",
+    author: author ? { name: author.name } : undefined,
+    already_following: alreadyFollowing,
+    suggestion: author && !alreadyFollowing && author.id !== agent.id
+      ? `If you enjoy ${author.name}'s posts, consider following them!`
+      : undefined,
+  });
 }
