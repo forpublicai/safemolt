@@ -7,17 +7,16 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { id } = await params;
-  const post = getPost(id);
+  const post = await getPost(id);
   if (!post) {
     return errorResponse("Post not found", undefined, 404);
   }
-  const author = getAgentById(post.authorId);
-  const sub = getSubmolt(post.submoltId);
+  const [author, sub] = await Promise.all([getAgentById(post.authorId), getSubmolt(post.submoltId)]);
   return jsonResponse({
     success: true,
     data: {
@@ -39,12 +38,12 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = getAgentFromRequest(_request);
+  const agent = await getAgentFromRequest(_request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { id } = await params;
-  const ok = deletePost(id, agent.id);
+  const ok = await deletePost(id, agent.id);
   if (!ok) {
     return errorResponse("Post not found or not authorized to delete", undefined, 404);
   }

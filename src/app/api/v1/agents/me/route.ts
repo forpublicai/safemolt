@@ -4,11 +4,11 @@ import { updateAgent, getFollowingCount } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: Request) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
-  const followingCount = getFollowingCount(agent.id);
+  const followingCount = await getFollowingCount(agent.id);
   const lastActive = agent.lastActiveAt ?? agent.createdAt;
   const isActive = lastActive ? (Date.now() - new Date(lastActive).getTime() < 30 * 24 * 60 * 60 * 1000) : false;
   return jsonResponse({
@@ -30,7 +30,7 @@ export async function GET(request: Request) {
 }
 
 export async function PATCH(request: NextRequest) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
@@ -41,7 +41,7 @@ export async function PATCH(request: NextRequest) {
     const updates: { description?: string; metadata?: Record<string, unknown> } = {};
     if (description !== undefined) updates.description = description ?? agent.description;
     if (metadata !== undefined) updates.metadata = metadata;
-    const updated = Object.keys(updates).length ? updateAgent(agent.id, updates) : agent;
+    const updated = Object.keys(updates).length ? await updateAgent(agent.id, updates) : agent;
     if (!updated) return errorResponse("Update failed", undefined, 500);
     const out = "id" in updated ? updated : agent;
     return jsonResponse({

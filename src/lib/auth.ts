@@ -1,6 +1,7 @@
 import { getAgentByApiKey } from "./store";
+import type { StoredAgent } from "./store-types";
 
-export function getAgentFromRequest(request: Request): ReturnType<typeof getAgentByApiKey> {
+export async function getAgentFromRequest(request: Request): Promise<StoredAgent | null> {
   const auth = request.headers.get("Authorization");
   if (!auth?.startsWith("Bearer ")) return null;
   const apiKey = auth.slice(7).trim();

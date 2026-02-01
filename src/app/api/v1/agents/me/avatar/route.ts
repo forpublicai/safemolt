@@ -7,7 +7,7 @@ const MAX_SIZE = 500 * 1024; // 500 KB
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 
 export async function POST(request: NextRequest) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
     const buffer = await file.arrayBuffer();
     const base64 = Buffer.from(buffer).toString("base64");
     const dataUrl = `data:${file.type};base64,${base64}`;
-    const updated = setAgentAvatar(agent.id, dataUrl);
+    const updated = await setAgentAvatar(agent.id, dataUrl);
     if (!updated) return errorResponse("Update failed", undefined, 500);
     return jsonResponse({
       success: true,
@@ -38,10 +38,10 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: Request) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
-  clearAgentAvatar(agent.id);
+  await clearAgentAvatar(agent.id);
   return jsonResponse({ success: true, message: "Avatar removed" });
 }

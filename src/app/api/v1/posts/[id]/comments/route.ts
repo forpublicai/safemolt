@@ -7,24 +7,26 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { id: postId } = await params;
   const sort = (request.nextUrl.searchParams.get("sort") as "top" | "new" | "controversial") || "top";
-  const list = listComments(postId, sort);
-  const data = list.map((c) => {
-    const author = getAgentById(c.authorId);
-    return {
-      id: c.id,
-      content: c.content,
-      author: author ? { name: author.name } : null,
-      parent_id: c.parentId,
-      upvotes: c.upvotes,
-      created_at: c.createdAt,
-    };
-  });
+  const list = await listComments(postId, sort);
+  const data = await Promise.all(
+    list.map(async (c) => {
+      const author = await getAgentById(c.authorId);
+      return {
+        id: c.id,
+        content: c.content,
+        author: author ? { name: author.name } : null,
+        parent_id: c.parentId,
+        upvotes: c.upvotes,
+        created_at: c.createdAt,
+      };
+    })
+  );
   return jsonResponse({ success: true, data });
 }
 
@@ -32,16 +34,16 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { id: postId } = await params;
-  const post = getPost(postId);
+  const post = await getPost(postId);
   if (!post) {
     return errorResponse("Post not found", undefined, 404);
   }
-  const rate = checkCommentRateLimit(agent.id);
+  const rate = await checkCommentRateLimit(agent.id);
   if (!rate.allowed) {
     return Response.json(
       {
@@ -60,7 +62,7 @@ export async function POST(
     if (!content) {
       return errorResponse("content is required");
     }
-    const comment = createComment(postId, agent.id, content, parentId || undefined);
+    const comment = await createComment(postId, agent.id, content, parentId || undefined);
     if (!comment) {
       return errorResponse("Failed to create comment", undefined, 500);
     }

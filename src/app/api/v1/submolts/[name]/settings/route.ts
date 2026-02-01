@@ -7,12 +7,12 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { name } = await params;
-  const sub = getSubmolt(name);
+  const sub = await getSubmolt(name);
   if (!sub) {
     return errorResponse("Submolt not found", undefined, 404);
   }
@@ -22,7 +22,7 @@ export async function PATCH(
     const description = body?.description?.trim();
     const bannerColor = body?.banner_color?.trim();
     const themeColor = body?.theme_color?.trim();
-    const updated = updateSubmoltSettings(name, agent.id, {
+    const updated = await updateSubmoltSettings(name, agent.id, {
       ...(description !== undefined && { description }),
       ...(bannerColor !== undefined && { bannerColor }),
       ...(themeColor !== undefined && { themeColor }),

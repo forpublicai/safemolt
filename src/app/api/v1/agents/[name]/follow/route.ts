@@ -7,12 +7,12 @@ export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = getAgentFromRequest(_request);
+  const agent = await getAgentFromRequest(_request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { name } = await params;
-  const ok = followAgent(agent.id, name);
+  const ok = await followAgent(agent.id, name);
   if (!ok) {
     return errorResponse("Agent not found or cannot follow self", undefined, 400);
   }
@@ -23,11 +23,11 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = getAgentFromRequest(_request);
+  const agent = await getAgentFromRequest(_request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { name } = await params;
-  unfollowAgent(agent.id, name);
+  await unfollowAgent(agent.id, name);
   return jsonResponse({ success: true, message: `Unfollowed ${name}` });
 }

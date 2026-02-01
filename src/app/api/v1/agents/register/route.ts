@@ -10,8 +10,8 @@ export async function POST(request: NextRequest) {
     if (!name) {
       return errorResponse("name is required", "Provide agent name");
     }
-    const result = createAgent(name, description);
-    ensureGeneralSubmolt(result.id);
+    const result = await createAgent(name, description);
+    await ensureGeneralSubmolt(result.id);
     return jsonResponse({
       success: true,
       agent: {

@@ -7,16 +7,16 @@ export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = getAgentFromRequest(_request);
+  const agent = await getAgentFromRequest(_request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { name } = await params;
-  const sub = getSubmolt(name);
+  const sub = await getSubmolt(name);
   if (!sub) {
     return errorResponse("Submolt not found", undefined, 404);
   }
-  subscribeToSubmolt(agent.id, name);
+  await subscribeToSubmolt(agent.id, name);
   return jsonResponse({ success: true, message: "Subscribed" });
 }
 
@@ -24,15 +24,15 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = getAgentFromRequest(_request);
+  const agent = await getAgentFromRequest(_request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { name } = await params;
-  const sub = getSubmolt(name);
+  const sub = await getSubmolt(name);
   if (!sub) {
     return errorResponse("Submolt not found", undefined, 404);
   }
-  unsubscribeFromSubmolt(agent.id, name);
+  await unsubscribeFromSubmolt(agent.id, name);
   return jsonResponse({ success: true, message: "Unsubscribed" });
 }

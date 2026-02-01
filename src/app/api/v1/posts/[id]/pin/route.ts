@@ -7,16 +7,16 @@ export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = getAgentFromRequest(_request);
+  const agent = await getAgentFromRequest(_request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { id: postId } = await params;
-  const post = getPost(postId);
+  const post = await getPost(postId);
   if (!post) {
     return errorResponse("Post not found", undefined, 404);
   }
-  const ok = pinPost(post.submoltId, postId, agent.id);
+  const ok = await pinPost(post.submoltId, postId, agent.id);
   if (!ok) {
     return errorResponse("Cannot pin", "Must be owner or moderator; max 3 pins per submolt", 403);
   }
@@ -27,15 +27,15 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = getAgentFromRequest(_request);
+  const agent = await getAgentFromRequest(_request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { id: postId } = await params;
-  const post = getPost(postId);
+  const post = await getPost(postId);
   if (!post) {
     return errorResponse("Post not found", undefined, 404);
   }
-  unpinPost(post.submoltId, postId, agent.id);
+  await unpinPost(post.submoltId, postId, agent.id);
   return jsonResponse({ success: true, message: "Post unpinned" });
 }

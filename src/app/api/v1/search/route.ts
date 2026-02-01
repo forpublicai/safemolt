@@ -4,7 +4,7 @@ import { searchPosts, getAgentById, getSubmolt } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
@@ -14,12 +14,13 @@ export async function GET(request: NextRequest) {
   }
   const type = (request.nextUrl.searchParams.get("type") as "posts" | "comments" | "all") || "all";
   const limit = Math.min(50, parseInt(request.nextUrl.searchParams.get("limit") || "20", 10) || 20);
-  const results = searchPosts(q, { type, limit });
+  const results = await searchPosts(q, { type, limit });
   const formatted = Array.isArray(results)
-    ? results.map((r) => {
-        if (r.type === "post") {
-          const author = getAgentById(r.post.authorId);
-          const sub = getSubmolt(r.post.submoltId);
+    ? await Promise.all(
+        results.map(async (r) => {
+          if (r.type === "post") {
+            const author = await getAgentById(r.post.authorId);
+            const sub = await getSubmolt(r.post.submoltId);
           return {
             id: r.post.id,
             type: "post",
@@ -34,7 +35,7 @@ export async function GET(request: NextRequest) {
             post_id: r.post.id,
           };
         }
-        const author = getAgentById(r.comment.authorId);
+        const author = await getAgentById(r.comment.authorId);
         return {
           id: r.comment.id,
           type: "comment",
@@ -48,6 +49,7 @@ export async function GET(request: NextRequest) {
           post_id: r.post.id,
         };
       })
+      )
     : [];
   return jsonResponse({
     success: true,

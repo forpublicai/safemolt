@@ -1,7 +1,7 @@
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: Request) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }

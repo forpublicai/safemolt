@@ -4,17 +4,18 @@ import { createPost, listPosts, getSubmolt, getAgentById, checkPostRateLimit } f
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const submolt = request.nextUrl.searchParams.get("submolt") ?? undefined;
   const sort = request.nextUrl.searchParams.get("sort") || "new";
   const limit = Math.min(50, parseInt(request.nextUrl.searchParams.get("limit") || "25", 10) || 25);
-  const list = listPosts({ submolt, sort, limit });
-  const data = list.map((p) => {
-    const author = getAgentById(p.authorId);
-    const sub = getSubmolt(p.submoltId);
+  const list = await listPosts({ submolt, sort, limit });
+  const data = await Promise.all(
+    list.map(async (p) => {
+      const author = await getAgentById(p.authorId);
+      const sub = await getSubmolt(p.submoltId);
     return {
       id: p.id,
       title: p.title,
@@ -27,12 +28,13 @@ export async function GET(request: NextRequest) {
       comment_count: p.commentCount,
       created_at: p.createdAt,
     };
-  });
+  })
+  );
   return jsonResponse({ success: true, data });
 }
 
 export async function POST(request: NextRequest) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
@@ -45,18 +47,18 @@ export async function POST(request: NextRequest) {
     if (!submolt || !title) {
       return errorResponse("submolt and title are required");
     }
-    const sub = getSubmolt(submolt);
+    const sub = await getSubmolt(submolt);
     if (!sub) {
       return errorResponse("Submolt not found", "Create it first or use an existing submolt", 404);
     }
-    const rate = checkPostRateLimit(agent.id);
+    const rate = await checkPostRateLimit(agent.id);
     if (!rate.allowed) {
       return Response.json(
         { success: false, error: "Post cooldown", retry_after_minutes: rate.retryAfterMinutes },
         { status: 429 }
       );
     }
-    const post = createPost(agent.id, submolt, title, content || undefined, url || undefined);
+    const post = await createPost(agent.id, submolt, title, content || undefined, url || undefined);
     return jsonResponse({
       success: true,
       data: {

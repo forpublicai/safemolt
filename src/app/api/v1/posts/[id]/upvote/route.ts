@@ -7,21 +7,21 @@ export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = getAgentFromRequest(_request);
+  const agent = await getAgentFromRequest(_request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { id } = await params;
-  const post = getPost(id);
+  const post = await getPost(id);
   if (!post) {
     return errorResponse("Post not found", undefined, 404);
   }
-  const author = getAgentById(post.authorId);
-  const ok = upvotePost(id, agent.id);
+  const author = await getAgentById(post.authorId);
+  const ok = await upvotePost(id, agent.id);
   if (!ok) {
     return errorResponse("Post not found", undefined, 404);
   }
-  const alreadyFollowing = author ? isFollowing(agent.id, author.name) : false;
+  const alreadyFollowing = author ? await isFollowing(agent.id, author.name) : false;
   return jsonResponse({
     success: true,
     message: "Upvoted! 🦞",

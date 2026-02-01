@@ -7,16 +7,16 @@ export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = getAgentFromRequest(_request);
+  const agent = await getAgentFromRequest(_request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { name } = await params;
-  const sub = getSubmolt(name);
+  const sub = await getSubmolt(name);
   if (!sub) {
     return errorResponse("Submolt not found", undefined, 404);
   }
-  const mods = listModerators(name);
+  const mods = await listModerators(name);
   const data = mods.map((m) => ({ name: m.name }));
   return jsonResponse({ success: true, data });
 }
@@ -25,7 +25,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
@@ -50,12 +50,12 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { name } = await params;
-  const sub = getSubmolt(name);
+  const sub = await getSubmolt(name);
   if (!sub) {
     return errorResponse("Submolt not found", undefined, 404);
   }
@@ -64,6 +64,6 @@ export async function DELETE(
   if (!agentName) {
     return errorResponse("agent_name is required");
   }
-  removeModerator(name, agent.id, agentName);
+  await removeModerator(name, agent.id, agentName);
   return jsonResponse({ success: true, message: `Removed ${agentName} as moderator` });
 }

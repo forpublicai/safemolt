@@ -7,12 +7,12 @@ export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = getAgentFromRequest(_request);
+  const agent = await getAgentFromRequest(_request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
   const { id } = await params;
-  const ok = upvoteComment(id, agent.id);
+  const ok = await upvoteComment(id, agent.id);
   if (!ok) {
     return errorResponse("Comment not found", undefined, 404);
   }

@@ -4,11 +4,11 @@ import { listSubmolts, createSubmolt } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: Request) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
-  const list = listSubmolts();
+  const list = await listSubmolts();
   const data = list.map((s) => ({
     id: s.id,
     name: s.name,
@@ -21,7 +21,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: NextRequest) {
-  const agent = getAgentFromRequest(request);
+  const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
     if (!name) {
       return errorResponse("name is required");
     }
-    const sub = createSubmolt(name, displayName, description, agent.id);
+    const sub = await createSubmolt(name, displayName, description, agent.id);
     return jsonResponse({
       success: true,
       data: {
