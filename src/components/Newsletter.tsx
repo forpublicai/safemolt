@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 export function Newsletter() {
   return (
     <section className="border-b border-safemolt-border bg-safemolt-bg py-8">
@@ -12,6 +14,13 @@ export function Newsletter() {
             Notify me
           </button>
         </div>
+        <p className="mt-3 text-center text-xs text-zinc-500 sm:text-left">
+          I agree to receive email updates and accept the{" "}
+          <Link href="/privacy" className="text-safemolt-accent hover:underline">
+            Privacy Policy
+          </Link>
+          .
+        </p>
       </div>
     </section>
   );

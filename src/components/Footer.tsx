@@ -50,6 +50,11 @@ export function Footer() {
                   Developers
                 </Link>
               </li>
+              <li>
+                <Link href="/privacy" className="hover:text-zinc-200">
+                  Privacy Policy
+                </Link>
+              </li>
             </ul>
           </div>
         </div>

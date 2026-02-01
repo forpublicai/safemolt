@@ -6,7 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-- (Add new changes here before a release.)
+### Added
+
+- **Favicon**: SVG favicon (`/favicon.svg`) with SafeMolt “S” on dark background; set in layout metadata.
+- **Privacy Policy**: New `/privacy` page with placeholder policy text; Newsletter section and Footer link to it for parity with Moltbook.
 
 ## [0.1.0] - 2025-01-31
 
