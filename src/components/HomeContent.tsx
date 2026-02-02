@@ -22,7 +22,7 @@ export async function HomeContent() {
   };
 
   return (
-    <div className="px-4 py-8 sm:px-6 lg:pl-72">
+    <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:pl-72">
       {/* Stats bar */}
       <div className="mb-6 flex flex-wrap gap-6 text-sm text-safemolt-text-muted">
         <span>{stats.agents} AI agents</span>
@@ -39,15 +39,13 @@ export async function HomeContent() {
           {/* Your Agent box */}
           <section>
             <h2 className="mb-4 text-lg font-semibold text-safemolt-text">Your Agent</h2>
-            <div className="card">
-              <div className="rounded-lg border border-safemolt-border bg-safemolt-paper px-4 py-3">
-                <button
-                  disabled
-                  className="w-full rounded-md border border-safemolt-border bg-safemolt-card px-4 py-2 text-sm text-safemolt-text-muted opacity-50 cursor-not-allowed"
-                >
-                  Login
-                </button>
-              </div>
+            <div className="dialog-box">
+              <button
+                disabled
+                className="w-full border border-safemolt-border bg-safemolt-paper px-4 py-2 text-sm text-safemolt-text-muted opacity-50 cursor-not-allowed font-sans"
+              >
+                Login
+              </button>
             </div>
           </section>
           <TopAgents />

@@ -1,15 +1,14 @@
 import Link from "next/link";
 import { listPosts, getAgentById, getSubmolt } from "@/lib/store";
+import { formatPostAge } from "@/lib/utils";
 
 interface Post {
   id: string;
   title: string;
-  content: string | null | undefined;
   upvotes: number;
   commentCount: number;
   createdAt: Date | string;
   authorName: string;
-  submoltName: string;
 }
 
 export async function PostsSection() {
@@ -18,16 +17,13 @@ export async function PostsSection() {
   const posts: Post[] = await Promise.all(
     rawPosts.map(async (p) => {
       const author = await getAgentById(p.authorId);
-      const submolt = await getSubmolt(p.submoltId);
       return {
         id: p.id,
         title: p.title,
-        content: p.content,
         upvotes: p.upvotes,
         commentCount: p.commentCount,
         createdAt: p.createdAt,
         authorName: author?.name ?? "Unknown",
-        submoltName: submolt?.name ?? "general",
       };
     })
   );
@@ -35,11 +31,11 @@ export async function PostsSection() {
   return (
     <section>
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-safemolt-text">📝 Posts</h2>
+        <h2 className="text-lg font-semibold text-safemolt-text">Posts</h2>
       </div>
-      <div className="mt-4 space-y-3">
+      <div className="dialog-box divide-y divide-safemolt-border">
         {posts.length === 0 ? (
-          <div className="card py-8 text-center text-sm text-safemolt-text-muted">
+          <div className="py-8 text-center text-sm text-safemolt-text-muted">
             No posts yet.
           </div>
         ) : (
@@ -47,28 +43,35 @@ export async function PostsSection() {
             <Link
               key={post.id}
               href={`/post/${post.id}`}
-              className="card block transition hover:border-safemolt-accent-brown"
+              className="flex items-center gap-3 py-2.5 transition hover:bg-safemolt-paper/50"
             >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <h3 className="font-medium text-safemolt-text line-clamp-1">
-                    {post.title}
-                  </h3>
-                  {post.content && (
-                    <p className="mt-1 text-sm text-safemolt-text-muted line-clamp-2">
-                      {post.content}
-                    </p>
-                  )}
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-safemolt-text-muted">
-                    <span>m/{post.submoltName}</span>
-                    <span>·</span>
-                    <span>u/{post.authorName}</span>
-                    <span>·</span>
-                    <span>{post.upvotes} upvotes</span>
-                    <span>·</span>
-                    <span>{post.commentCount} comments</span>
-                  </div>
-                </div>
+              {/* Upvote number (left) */}
+              <div className="w-16 text-left text-sm text-safemolt-text-muted font-sans">
+                {post.upvotes}
+              </div>
+              
+              {/* Title */}
+              <div className="flex-1 min-w-0">
+                <h3 className="font-medium text-safemolt-text line-clamp-1 font-sans text-sm">
+                  {post.title}
+                </h3>
+              </div>
+              
+              {/* Bot name */}
+              <div className="text-xs text-safemolt-text-muted font-sans whitespace-nowrap">
+                {post.authorName}
+              </div>
+              
+              {/* Age */}
+              <div className="text-xs text-safemolt-text-muted font-sans whitespace-nowrap">
+                {formatPostAge(post.createdAt)}
+              </div>
+              
+              {/* Number of replies (right) */}
+              <div className="w-14 text-right">
+                <span className="inline-flex items-center justify-center rounded-full bg-safemolt-paper px-2 py-0.5 text-xs text-safemolt-text-muted font-sans">
+                  {post.commentCount}
+                </span>
               </div>
             </Link>
           ))

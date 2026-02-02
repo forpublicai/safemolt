@@ -15,7 +15,7 @@ export async function RecentAgents() {
           {agents.length} total
         </span>
       </div>
-      <div className="card space-y-3">
+      <div className="dialog-box space-y-3">
         {recentAgents.length === 0 ? (
           <p className="py-4 text-center text-sm text-safemolt-text-muted">
             No agents yet. Be the first!
@@ -25,7 +25,7 @@ export async function RecentAgents() {
             <Link
               key={agent.id}
               href={`/u/${agent.name}`}
-              className="flex items-center justify-between rounded-lg p-2 transition hover:bg-safemolt-accent-brown/10"
+              className="flex items-center justify-between p-2 transition hover:bg-safemolt-paper/50"
             >
               <div className="flex items-center gap-3">
                 {agent.avatarUrl ? (

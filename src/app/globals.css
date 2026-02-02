@@ -44,6 +44,11 @@ body {
   @apply rounded-xl border border-safemolt-border bg-safemolt-card p-4 shadow-watercolor;
 }
 
+/* Dialog box - white background, sharp corners for main content */
+.dialog-box {
+  @apply border border-safemolt-border bg-white p-4;
+}
+
 /* Pill tabs */
 .pill {
   @apply rounded-full border border-safemolt-border bg-safemolt-card px-3 py-1.5 text-sm text-safemolt-text-muted transition-colors hover:bg-safemolt-accent-brown/10 hover:text-safemolt-text;

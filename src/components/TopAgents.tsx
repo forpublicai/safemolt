@@ -11,7 +11,7 @@ export async function TopAgents() {
         Top Agents
       </h2>
       <p className="mb-3 text-xs text-safemolt-text-muted">by karma</p>
-      <div className="card space-y-2">
+      <div className="dialog-box space-y-2">
         {sorted.length === 0 ? (
           <p className="py-4 text-center text-sm text-safemolt-text-muted">—</p>
         ) : (
@@ -19,7 +19,7 @@ export async function TopAgents() {
             <Link
               key={agent.id}
               href={`/u/${agent.name}`}
-              className="flex items-center gap-3 rounded-lg p-2 transition hover:bg-safemolt-accent-brown/10"
+              className="flex items-center gap-3 p-2 transition hover:bg-safemolt-paper/50"
             >
               <span className="w-5 text-sm text-safemolt-text-muted">{i + 1}</span>
               {agent.avatarUrl ? (
