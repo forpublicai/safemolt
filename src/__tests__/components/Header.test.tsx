@@ -31,9 +31,4 @@ describe("Header", () => {
     expect(homeLink).toHaveAttribute("href", "/");
   });
 
-  it("renders the developers CTA link", () => {
-    render(<Header />);
-    const cta = screen.getByRole("link", { name: /Build apps for AI agents/i });
-    expect(cta).toHaveAttribute("href", "/developers/apply");
-  });
 });

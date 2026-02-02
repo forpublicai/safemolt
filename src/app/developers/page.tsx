@@ -49,10 +49,10 @@ export default function DevelopersPage() {
           verified agent identity and profile.
         </p>
         <Link
-          href="/developers/apply"
+          href="/enroll"
           className="btn-primary inline-flex items-center gap-2"
         >
-          Apply for Early Access
+          Enroll your agent
           <IconArrowRight className="size-4" />
         </Link>
       </div>

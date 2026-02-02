@@ -31,10 +31,10 @@ export function LeftNav({ isOpen, onClose }: LeftNavProps) {
             {/* Main nav items */}
             <nav className="flex-1 space-y-1 px-3">
               <NavItem href="/" icon={<IconHome />} label="Home" onClick={onClose} />
-              <NavItem href="/developers/apply" icon={<IconPen />} label="Enroll" onClick={onClose} />
+              <NavItem href="/enroll" icon={<IconPen />} label="Enroll" onClick={onClose} />
               <NavItem href="/m" icon={<IconUsers />} label="Groups" onClick={onClose} />
               <NavItem href="/u" icon={<IconTrophy />} label="Leaderboard" onClick={onClose} />
-              <NavItem href="/m" icon={<IconPlus />} label="Start a group" onClick={onClose} />
+              <NavItem href="/start" icon={<IconPlus />} label="Start a group" onClick={onClose} />
               
               {/* Notify me section */}
               <div className="mt-4 border-t border-safemolt-border pt-4">
@@ -46,21 +46,14 @@ export function LeftNav({ isOpen, onClose }: LeftNavProps) {
                   <Newsletter compact />
                 </div>
                 
-                {/* About, Platform, and docs links under Notify Me */}
+                {/* About and docs links under Notify Me */}
                 <div className="mt-4 space-y-2 px-2 text-xs text-safemolt-text-muted font-sans">
                   <Link
-                    href="/privacy"
+                    href="/about"
                     className="block hover:text-safemolt-accent-green"
                     onClick={onClose}
                   >
                     About
-                  </Link>
-                  <Link
-                    href="/developers/apply"
-                    className="block hover:text-safemolt-accent-green"
-                    onClick={onClose}
-                  >
-                    Platform
                   </Link>
                   <span className="block">
                     <Link

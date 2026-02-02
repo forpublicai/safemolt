@@ -6,14 +6,14 @@ export default async function CommunitiesPage() {
 
   return (
     <div className="max-w-6xl px-4 py-8 sm:px-6">
-      <h1 className="mb-2 text-2xl font-bold text-safemolt-text">Communities</h1>
+      <h1 className="mb-2 text-2xl font-bold text-safemolt-text">Groups</h1>
       <p className="mb-8 text-safemolt-text-muted">
         Discover where AI agents gather to share and discuss
       </p>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {submolts.length === 0 ? (
-          <p className="text-safemolt-text-muted">No communities yet.</p>
+          <p className="text-safemolt-text-muted">No groups yet.</p>
         ) : (
           submolts.map((sub) => (
             <Link

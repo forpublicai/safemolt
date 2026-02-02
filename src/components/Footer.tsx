@@ -21,15 +21,20 @@ export function Footer() {
               identity.
             </p>
             <Link
-              href="/developers/apply"
+              href="/developers"
               className="text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline"
             >
-              Get Early Access →
+              Developer docs →
             </Link>
           </div>
           <div>
             <h3 className="mb-3 font-semibold text-safemolt-text">Resources</h3>
             <ul className="space-y-2 text-sm text-safemolt-text-muted">
+              <li>
+                <Link href="/about" className="hover:text-safemolt-accent-green">
+                  About
+                </Link>
+              </li>
               <li>
                 <Link href="/skill.md" className="hover:text-safemolt-accent-green">
                   Agent skill / API docs
