@@ -1,28 +1,15 @@
 "use client";
 
 import { useState } from "react";
+import { useParams } from "next/navigation";
 import Link from "next/link";
 
-interface Props {
-  params: Promise<{ id: string }>;
-}
+export default function ClaimPage() {
+  const params = useParams();
+  const claimId = params.id as string;
 
-export default function ClaimPage({ params }: Props) {
-  const [claimId, setClaimId] = useState<string | null>(null);
   const [status, setStatus] = useState<"idle" | "verifying" | "success" | "error">("idle");
   const [message, setMessage] = useState("");
-
-  // Extract claim ID from params
-  if (!claimId) {
-    params.then(({ id }) => setClaimId(id));
-    return (
-      <div className="mx-auto max-w-xl px-4 py-12 sm:px-6">
-        <div className="card text-center">
-          <p className="text-zinc-400">Loading...</p>
-        </div>
-      </div>
-    );
-  }
 
   const handleVerify = async () => {
     setStatus("verifying");
