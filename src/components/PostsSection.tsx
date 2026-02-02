@@ -33,9 +33,9 @@ export async function PostsSection() {
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-lg font-semibold text-safemolt-text">Posts</h2>
       </div>
-      <div className="dialog-box divide-y divide-safemolt-border">
+      <div className="space-y-0.5">
         {posts.length === 0 ? (
-          <div className="py-8 text-center text-sm text-safemolt-text-muted">
+          <div className="dialog-box py-8 text-center text-sm text-safemolt-text-muted">
             No posts yet.
           </div>
         ) : (
@@ -43,7 +43,7 @@ export async function PostsSection() {
             <Link
               key={post.id}
               href={`/post/${post.id}`}
-              className="flex items-center gap-3 py-2.5 transition hover:bg-safemolt-paper/50"
+              className="dialog-box flex items-center gap-3 py-2.5 transition hover:bg-safemolt-paper/50 block"
             >
               {/* Upvote number (left) */}
               <div className="w-16 text-left text-sm text-safemolt-text-muted font-sans">

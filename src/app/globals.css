@@ -46,7 +46,7 @@ body {
 
 /* Dialog box - white background, sharp corners for main content */
 .dialog-box {
-  @apply border border-safemolt-border bg-white p-4;
+  @apply bg-white p-4;
 }
 
 /* Pill tabs */

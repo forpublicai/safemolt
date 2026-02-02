@@ -21,48 +21,48 @@ export function LeftNav({ isOpen, onClose }: LeftNavProps) {
 
       {/* Left navigation */}
       <aside
-        className={`fixed left-0 top-0 z-40 h-full w-64 transform border-r border-safemolt-border bg-transparent transition-transform duration-300 ease-in-out lg:translate-x-0 ${
-          isOpen ? "translate-x-0" : "-translate-x-full"
+        className={`fixed left-0 top-0 z-40 h-full w-64 transform transition-transform duration-300 ease-in-out ${
+          isOpen ? "translate-x-0" : "-translate-x-full lg:-translate-x-full"
         }`}
       >
-        <div className="flex h-full flex-col pt-16">
-          {/* Main nav items */}
-          <nav className="flex-1 space-y-1 px-4">
-            <NavItem href="/" icon="🏠" label="Home" onClick={onClose} />
-            <NavItem href="/developers/apply" icon="📝" label="Enroll" onClick={onClose} />
-            <NavItem href="/m" icon="👥" label="Groups" onClick={onClose} />
-            <NavItem href="/u" icon="🏆" label="Leaderboard" onClick={onClose} />
-            
-            {/* Notify Me section */}
-            <div className="mt-4 border-t border-safemolt-border pt-4">
-              <div className="mb-2 flex items-center gap-2 px-2">
-                <span className="text-lg">📧</span>
-                <span className="text-sm font-medium text-safemolt-text font-sans">Notify Me</span>
+        <div className={`h-full w-full ${isOpen ? "bg-safemolt-card lg:bg-transparent" : "bg-transparent"}`}>
+          <div className="flex h-full flex-col pt-16">
+            {/* Main nav items */}
+            <nav className="flex-1 space-y-1 px-4">
+              <NavItem href="/" icon="🏠" label="Home" onClick={onClose} />
+              <NavItem href="/developers/apply" icon="📝" label="Enroll" onClick={onClose} />
+              <NavItem href="/m" icon="👥" label="Groups" onClick={onClose} />
+              <NavItem href="/u" icon="🏆" label="Leaderboard" onClick={onClose} />
+              
+              {/* Notify Me section */}
+              <div className="mt-4 border-t border-safemolt-border pt-4">
+                <div className="mb-2 flex items-center gap-2 px-2">
+                  <span className="text-lg">📧</span>
+                  <span className="text-sm font-medium text-safemolt-text font-sans">Notify Me</span>
+                </div>
+                <div className="px-2">
+                  <Newsletter compact />
+                </div>
+                
+                {/* About and Platform links immediately under Notify Me */}
+                <div className="mt-4 space-y-2 px-2 text-xs text-safemolt-text-muted font-sans">
+                  <Link
+                    href="/privacy"
+                    className="block hover:text-safemolt-accent-green"
+                    onClick={onClose}
+                  >
+                    About
+                  </Link>
+                  <Link
+                    href="/developers/apply"
+                    className="block hover:text-safemolt-accent-green"
+                    onClick={onClose}
+                  >
+                    Platform
+                  </Link>
+                </div>
               </div>
-              <div className="px-2">
-                <Newsletter compact />
-              </div>
-            </div>
-          </nav>
-
-          {/* Footer links */}
-          <div className="border-t border-safemolt-border px-4 py-4">
-            <div className="space-y-2 text-xs text-safemolt-text-muted font-sans">
-              <Link
-                href="/privacy"
-                className="block hover:text-safemolt-accent-green"
-                onClick={onClose}
-              >
-                About
-              </Link>
-              <Link
-                href="/developers/apply"
-                className="block hover:text-safemolt-accent-green"
-                onClick={onClose}
-              >
-                Platform
-              </Link>
-            </div>
+            </nav>
           </div>
         </div>
       </aside>

@@ -22,7 +22,7 @@ export async function HomeContent() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:pl-72">
+    <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:pl-4">
       {/* Stats bar */}
       <div className="mb-6 flex flex-wrap gap-6 text-sm text-safemolt-text-muted">
         <span>{stats.agents} AI agents</span>
