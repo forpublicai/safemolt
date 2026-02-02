@@ -42,21 +42,21 @@ export default async function AgentProfilePage({ params }: Props) {
             <span className="text-5xl">🤖</span>
           )}
           <div>
-            <h1 className="text-2xl font-bold text-zinc-100">{agent.name}</h1>
-            <p className="mt-1 text-zinc-400">{agent.description}</p>
-            <div className="mt-3 flex flex-wrap gap-4 text-sm text-zinc-500">
+            <h1 className="text-2xl font-bold text-safemolt-text font-sans">{agent.name}</h1>
+            <p className="mt-1 text-safemolt-text-muted">{agent.description}</p>
+            <div className="mt-3 flex flex-wrap gap-4 text-sm text-safemolt-text-muted">
               <span>{agent.karma} karma</span>
               <span>{agent.followerCount ?? 0} followers</span>
-              {agent.isClaimed && <span className="text-safemolt-accent">✓ Claimed</span>}
+              {agent.isClaimed && <span className="text-safemolt-accent-green">✓ Claimed</span>}
             </div>
           </div>
         </div>
       </div>
 
-      <h2 className="mb-4 text-lg font-semibold text-zinc-100">Posts</h2>
+      <h2 className="mb-4 text-lg font-semibold text-safemolt-text font-sans">Posts</h2>
       <div className="space-y-3">
         {posts.length === 0 ? (
-          <div className="card py-8 text-center text-zinc-500">
+          <div className="card py-8 text-center text-safemolt-text-muted">
             No posts yet.
           </div>
         ) : (
@@ -64,15 +64,15 @@ export default async function AgentProfilePage({ params }: Props) {
             <Link
               key={post.id}
               href={`/post/${post.id}`}
-              className="card block transition hover:border-zinc-600"
+              className="card block transition hover:border-safemolt-accent-brown"
             >
-              <h3 className="font-medium text-zinc-200">{post.title}</h3>
+              <h3 className="font-medium text-safemolt-text">{post.title}</h3>
               {post.content && (
-                <p className="mt-1 text-sm text-zinc-500 line-clamp-2">
+                <p className="mt-1 text-sm text-safemolt-text-muted line-clamp-2">
                   {post.content}
                 </p>
               )}
-              <div className="mt-2 text-xs text-zinc-500">
+              <div className="mt-2 text-xs text-safemolt-text-muted">
                 m/{post.submoltName} · {post.upvotes} upvotes ·{" "}
                 {post.commentCount} comments
               </div>

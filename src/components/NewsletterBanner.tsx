@@ -20,9 +20,9 @@ export function NewsletterBanner() {
   if (!status) return null;
 
   const messages = {
-    confirmed: { text: "You're confirmed! Thanks for subscribing.", className: "bg-emerald-900/80 text-emerald-100 border-emerald-700" },
-    unsubscribed: { text: "You're unsubscribed.", className: "bg-zinc-800 text-zinc-300 border-safemolt-border" },
-    error: { text: "Something went wrong. The link may have expired.", className: "bg-red-900/50 text-red-200 border-red-800" },
+    confirmed: { text: "You're confirmed! Thanks for subscribing.", className: "bg-safemolt-success/20 text-safemolt-success border-safemolt-success/30" },
+    unsubscribed: { text: "You're unsubscribed.", className: "bg-safemolt-card text-safemolt-text-muted border-safemolt-border" },
+    error: { text: "Something went wrong. The link may have expired.", className: "bg-safemolt-error/20 text-safemolt-error border-safemolt-error/30" },
   };
   const { text, className } = messages[status];
 

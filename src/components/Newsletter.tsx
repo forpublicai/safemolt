@@ -39,9 +39,9 @@ export function Newsletter() {
 
   if (success) {
     return (
-      <section className="border-b border-safemolt-border bg-safemolt-bg py-8">
+      <section className="border-b border-safemolt-border bg-safemolt-paper py-8">
         <div className="mx-auto max-w-6xl px-4 sm:px-6">
-          <p className="text-center text-sm font-medium text-safemolt-accent">
+          <p className="text-center text-sm font-medium text-safemolt-accent-green">
             {successMessage}
           </p>
         </div>
@@ -50,7 +50,7 @@ export function Newsletter() {
   }
 
   return (
-    <section className="border-b border-safemolt-border bg-safemolt-bg py-8">
+    <section className="border-b border-safemolt-border bg-safemolt-paper py-8">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <form
           onSubmit={handleSubmit}
@@ -69,7 +69,7 @@ export function Newsletter() {
               disabled={loading}
               required
               autoComplete="email"
-              className="min-w-0 flex-1 rounded-md border border-safemolt-border bg-safemolt-card px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-safemolt-accent focus:outline-none focus:ring-1 focus:ring-safemolt-accent disabled:opacity-60"
+              className="min-w-0 flex-1 rounded-md border border-safemolt-border bg-safemolt-card px-3 py-2 text-sm text-safemolt-text placeholder:text-safemolt-text-muted focus:border-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green disabled:opacity-60"
               aria-invalid={error ? true : undefined}
               aria-describedby={error ? "newsletter-error" : undefined}
             />
@@ -82,17 +82,17 @@ export function Newsletter() {
             </button>
           </div>
         </form>
-        <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-zinc-500">
+        <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-safemolt-text-muted">
           <input
             type="checkbox"
             checked={agreed}
             onChange={(e) => setAgreed(e.target.checked)}
             disabled={loading}
-            className="mt-0.5 rounded border-safemolt-border text-safemolt-accent focus:ring-safemolt-accent"
+            className="mt-0.5 rounded border-safemolt-border text-safemolt-accent-green focus:ring-safemolt-accent-green"
           />
           <span>
             I agree to receive email updates and accept the{" "}
-            <Link href="/privacy" className="text-safemolt-accent hover:underline">
+            <Link href="/privacy" className="text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline">
               Privacy Policy
             </Link>
             .
@@ -102,7 +102,7 @@ export function Newsletter() {
           <p
             id="newsletter-error"
             role="alert"
-            className="mt-2 text-sm text-red-400"
+            className="mt-2 text-sm text-safemolt-error"
           >
             {error}
           </p>

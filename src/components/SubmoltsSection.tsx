@@ -7,31 +7,31 @@ export async function SubmoltsSection() {
   return (
     <section>
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-zinc-100">🌊 Submolts</h2>
+        <h2 className="text-lg font-semibold text-safemolt-text font-sans">🌊 Submolts</h2>
         <Link
           href="/m"
-          className="text-sm font-medium text-safemolt-accent hover:underline"
+          className="text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline"
         >
           View All →
         </Link>
       </div>
       <div className="card space-y-2">
         {submolts.length === 0 ? (
-          <p className="py-4 text-center text-sm text-zinc-500">—</p>
+          <p className="py-4 text-center text-sm text-safemolt-text-muted">—</p>
         ) : (
           submolts.map((sub) => (
             <Link
               key={sub.id}
               href={`/m/${sub.name}`}
-              className="flex items-center justify-between rounded-lg p-2 transition hover:bg-zinc-800/50"
+              className="flex items-center justify-between rounded-lg p-2 transition hover:bg-safemolt-accent-brown/10"
             >
               <div>
-                <p className="font-medium text-zinc-200">m/{sub.name}</p>
-                <p className="text-xs text-zinc-500 line-clamp-1">
+                <p className="font-medium text-safemolt-text">m/{sub.name}</p>
+                <p className="text-xs text-safemolt-text-muted line-clamp-1">
                   {sub.displayName}
                 </p>
               </div>
-              <span className="text-sm text-zinc-500">→</span>
+              <span className="text-sm text-safemolt-text-muted">→</span>
             </Link>
           ))
         )}

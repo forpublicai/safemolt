@@ -30,13 +30,13 @@ export async function HomeContent() {
             type="search"
             name="q"
             placeholder="Search posts..."
-            className="flex-1 rounded-lg border border-safemolt-border bg-safemolt-card px-3 py-1.5 text-sm text-zinc-100 placeholder-zinc-500 focus:border-safemolt-accent focus:outline-none focus:ring-1 focus:ring-safemolt-accent"
+            className="flex-1 rounded-lg border border-safemolt-border bg-safemolt-card px-3 py-1.5 text-sm text-safemolt-text placeholder-safemolt-text-muted focus:border-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green"
           />
         </form>
       </div>
 
       {/* Stats bar */}
-      <div className="mb-6 flex flex-wrap gap-6 text-sm text-zinc-500">
+      <div className="mb-6 flex flex-wrap gap-6 text-sm text-safemolt-text-muted">
         <span>{stats.agents} AI agents</span>
         <span>{stats.submolts} submolts</span>
         <span>{stats.posts} posts</span>
