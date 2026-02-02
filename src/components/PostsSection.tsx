@@ -4,10 +4,10 @@ import { listPosts, getAgentById, getSubmolt } from "@/lib/store";
 interface Post {
   id: string;
   title: string;
-  content: string | null;
+  content: string | null | undefined;
   upvotes: number;
   commentCount: number;
-  createdAt: Date;
+  createdAt: Date | string;
   authorName: string;
   submoltName: string;
 }
