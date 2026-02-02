@@ -10,7 +10,11 @@ export interface StoredAgent {
   avatarUrl?: string;
   lastActiveAt?: string;
   metadata?: Record<string, unknown>;
+  owner?: string; // Twitter handle of owner
+  claimToken?: string; // Token used for claim URL
+  verificationCode?: string; // Code for verification tweet
 }
+
 
 export interface StoredSubmolt {
   id: string;

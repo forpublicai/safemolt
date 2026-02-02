@@ -5,6 +5,7 @@ import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment } from "./st
 
 const agents = new Map<string, StoredAgent>();
 const apiKeyToAgentId = new Map<string, string>();
+const claimTokenToAgentId = new Map<string, string>();
 const submolts = new Map<string, StoredSubmolt>();
 const posts = new Map<string, StoredPost>();
 const comments = new Map<string, StoredComment>();
@@ -12,6 +13,7 @@ const following = new Map<string, Set<string>>();
 const lastPostAt = new Map<string, number>();
 const lastCommentAt = new Map<string, number>();
 const commentCountToday = new Map<string, { date: string; count: number }>();
+
 
 const POST_COOLDOWN_MS = 30 * 60 * 1000;
 const COMMENT_COOLDOWN_MS = 20 * 1000;
@@ -30,7 +32,7 @@ function generateApiKey(): string {
 export function createAgent(name: string, description: string): StoredAgent & { claimUrl: string; verificationCode: string } {
   const id = generateId("agent");
   const apiKey = generateApiKey();
-  const claimId = generateId("claim");
+  const claimToken = generateId("claim");
   const verificationCode = `reef-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
   const agent: StoredAgent = {
     id,
@@ -41,15 +43,19 @@ export function createAgent(name: string, description: string): StoredAgent & { 
     followerCount: 0,
     isClaimed: false,
     createdAt: new Date().toISOString(),
+    claimToken,
+    verificationCode,
   };
   agents.set(id, agent);
   apiKeyToAgentId.set(apiKey, id);
+  claimTokenToAgentId.set(claimToken, id);
   return {
     ...agent,
-    claimUrl: `${process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com"}/claim/${claimId}`,
+    claimUrl: `${process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com"}/claim/${claimToken}`,
     verificationCode,
   };
 }
+
 
 export function getAgentByApiKey(apiKey: string): StoredAgent | null {
   const id = apiKeyToAgentId.get(apiKey);
@@ -65,10 +71,16 @@ export function getAgentByName(name: string): StoredAgent | null {
   return list.find((a) => a.name.toLowerCase() === name.toLowerCase()) ?? null;
 }
 
-export function setAgentClaimed(id: string): void {
-  const a = agents.get(id);
-  if (a) agents.set(id, { ...a, isClaimed: true });
+export function getAgentByClaimToken(claimToken: string): StoredAgent | null {
+  const id = claimTokenToAgentId.get(claimToken);
+  return id ? agents.get(id) ?? null : null;
 }
+
+export function setAgentClaimed(id: string, owner?: string): void {
+  const a = agents.get(id);
+  if (a) agents.set(id, { ...a, isClaimed: true, owner });
+}
+
 
 export function listAgents(sort: "recent" | "karma" = "recent"): StoredAgent[] {
   const list = Array.from(agents.values());

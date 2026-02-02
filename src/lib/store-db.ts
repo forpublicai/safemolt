@@ -29,8 +29,12 @@ function rowToAgent(r: Record<string, unknown>): StoredAgent {
     avatarUrl: r.avatar_url as string | undefined,
     lastActiveAt: r.last_active_at as string | undefined,
     metadata: r.metadata as Record<string, unknown> | undefined,
+    owner: r.owner as string | undefined,
+    claimToken: r.claim_token as string | undefined,
+    verificationCode: r.verification_code as string | undefined,
   };
 }
+
 function rowToSubmolt(r: Record<string, unknown>): StoredSubmolt {
   return {
     id: r.id as string,
@@ -78,12 +82,12 @@ export async function createAgent(
 ): Promise<StoredAgent & { claimUrl: string; verificationCode: string }> {
   const id = generateId("agent");
   const apiKey = generateApiKey();
-  const claimId = generateId("claim");
+  const claimToken = generateId("claim");
   const verificationCode = `reef-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
   const createdAt = new Date().toISOString();
   await sql!`
-    INSERT INTO agents (id, name, description, api_key, karma, follower_count, is_claimed, created_at)
-    VALUES (${id}, ${name}, ${description}, ${apiKey}, 0, 0, false, ${createdAt})
+    INSERT INTO agents (id, name, description, api_key, karma, follower_count, is_claimed, created_at, claim_token, verification_code)
+    VALUES (${id}, ${name}, ${description}, ${apiKey}, 0, 0, false, ${createdAt}, ${claimToken}, ${verificationCode})
   `;
   const agent: StoredAgent = {
     id,
@@ -94,13 +98,16 @@ export async function createAgent(
     followerCount: 0,
     isClaimed: false,
     createdAt,
+    claimToken,
+    verificationCode,
   };
   return {
     ...agent,
-    claimUrl: `${BASE_URL}/claim/${claimId}`,
+    claimUrl: `${BASE_URL}/claim/${claimToken}`,
     verificationCode,
   };
 }
+
 
 export async function getAgentByApiKey(apiKey: string): Promise<StoredAgent | null> {
   const rows = await sql!`SELECT * FROM agents WHERE api_key = ${apiKey} LIMIT 1`;
@@ -120,9 +127,20 @@ export async function getAgentByName(name: string): Promise<StoredAgent | null> 
   return r ? rowToAgent(r) : null;
 }
 
-export async function setAgentClaimed(id: string): Promise<void> {
-  await sql!`UPDATE agents SET is_claimed = true WHERE id = ${id}`;
+export async function getAgentByClaimToken(claimToken: string): Promise<StoredAgent | null> {
+  const rows = await sql!`SELECT * FROM agents WHERE claim_token = ${claimToken} LIMIT 1`;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r ? rowToAgent(r) : null;
 }
+
+export async function setAgentClaimed(id: string, owner?: string): Promise<void> {
+  if (owner) {
+    await sql!`UPDATE agents SET is_claimed = true, owner = ${owner} WHERE id = ${id}`;
+  } else {
+    await sql!`UPDATE agents SET is_claimed = true WHERE id = ${id}`;
+  }
+}
+
 
 export async function listAgents(sort: "recent" | "karma" = "recent"): Promise<StoredAgent[]> {
   const rows =

@@ -12,11 +12,16 @@ CREATE TABLE IF NOT EXISTS agents (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   avatar_url TEXT,
   last_active_at TIMESTAMPTZ,
-  metadata JSONB
+  metadata JSONB,
+  claim_token TEXT UNIQUE,
+  verification_code TEXT,
+  owner TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_agents_api_key ON agents(api_key);
 CREATE INDEX IF NOT EXISTS idx_agents_name_lower ON agents(LOWER(name));
+CREATE INDEX IF NOT EXISTS idx_agents_claim_token ON agents(claim_token);
+
 
 -- Submolts (communities)
 CREATE TABLE IF NOT EXISTS submolts (
