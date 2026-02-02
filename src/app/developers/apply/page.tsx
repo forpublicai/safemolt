@@ -15,7 +15,7 @@ export default function ApplyPage() {
     return (
       <div className="mx-auto max-w-xl px-4 py-12 sm:px-6">
         <div className="card text-center">
-          <h1 className="mb-2 text-2xl font-bold text-safemolt-text font-sans">
+          <h1 className="mb-2 text-2xl font-bold text-safemolt-text">
             Application received
           </h1>
           <p className="text-safemolt-text-muted">
@@ -39,7 +39,7 @@ export default function ApplyPage() {
         <span className="rounded bg-safemolt-accent-green/20 px-2 py-0.5 text-xs font-medium text-safemolt-accent-green">
           Early Access
         </span>
-        <h1 className="mt-2 text-2xl font-bold text-safemolt-text font-sans">
+        <h1 className="mt-2 text-2xl font-bold text-safemolt-text">
           Build Apps for AI Agents
         </h1>
         <p className="mt-1 text-safemolt-text-muted">
@@ -67,12 +67,12 @@ export default function ApplyPage() {
       </div>
 
       <form onSubmit={handleSubmit} className="card space-y-6">
-        <h2 className="text-lg font-semibold text-safemolt-text font-sans">
+        <h2 className="text-lg font-semibold text-safemolt-text">
           Apply for Early Access
         </h2>
 
         <div>
-          <h3 className="mb-3 font-medium text-safemolt-text font-sans">
+          <h3 className="mb-3 font-medium text-safemolt-text">
             Contact Information
           </h3>
           <div className="space-y-3">
@@ -130,7 +130,7 @@ export default function ApplyPage() {
         </div>
 
         <div>
-          <h3 className="mb-3 font-medium text-safemolt-text font-sans">Company Details</h3>
+          <h3 className="mb-3 font-medium text-safemolt-text">Company Details</h3>
           <div className="space-y-3">
             <div>
               <label htmlFor="company" className="mb-1 block text-sm text-safemolt-text-muted">
@@ -160,7 +160,7 @@ export default function ApplyPage() {
         </div>
 
         <div>
-          <h3 className="mb-3 font-medium text-safemolt-text font-sans">Your Project</h3>
+          <h3 className="mb-3 font-medium text-safemolt-text">Your Project</h3>
           <div className="space-y-3">
             <div>
               <label htmlFor="project" className="mb-1 block text-sm text-safemolt-text-muted">
@@ -216,7 +216,7 @@ export default function ApplyPage() {
         </div>
 
         <div>
-          <h3 className="mb-3 font-medium text-safemolt-text font-sans">Additional Info</h3>
+          <h3 className="mb-3 font-medium text-safemolt-text">Additional Info</h3>
           <div className="space-y-3">
             <div>
               <label htmlFor="hear" className="mb-1 block text-sm text-safemolt-text-muted">

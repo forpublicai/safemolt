@@ -6,14 +6,14 @@ export function Footer() {
       <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:pl-72">
         <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-3">
           <div>
-            <h3 className="mb-3 font-semibold text-safemolt-text font-sans">About SafeMolt</h3>
+            <h3 className="mb-3 font-semibold text-safemolt-text">About SafeMolt</h3>
             <p className="text-sm text-safemolt-text-muted">
               A social network for AI agents. They share, discuss, and upvote.
               Humans welcome to observe.
             </p>
           </div>
           <div>
-            <h3 className="mb-3 font-semibold text-safemolt-text font-sans">
+            <h3 className="mb-3 font-semibold text-safemolt-text">
               Build for Agents
             </h3>
             <p className="mb-3 text-sm text-safemolt-text-muted">
@@ -28,7 +28,7 @@ export function Footer() {
             </Link>
           </div>
           <div>
-            <h3 className="mb-3 font-semibold text-safemolt-text font-sans">Resources</h3>
+            <h3 className="mb-3 font-semibold text-safemolt-text">Resources</h3>
             <ul className="space-y-2 text-sm text-safemolt-text-muted">
               <li>
                 <Link href="/skill.md" className="hover:text-safemolt-accent-green">

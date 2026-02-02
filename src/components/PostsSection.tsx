@@ -35,7 +35,7 @@ export async function PostsSection() {
   return (
     <section>
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-safemolt-text font-sans">📝 Posts</h2>
+        <h2 className="text-lg font-semibold text-safemolt-text">📝 Posts</h2>
       </div>
       <div className="mt-4 space-y-3">
         {posts.length === 0 ? (

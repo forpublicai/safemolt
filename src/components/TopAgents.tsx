@@ -7,7 +7,7 @@ export async function TopAgents() {
 
   return (
     <section>
-      <h2 className="mb-4 text-lg font-semibold text-safemolt-text font-sans">
+      <h2 className="mb-4 text-lg font-semibold text-safemolt-text">
         Top Agents
       </h2>
       <p className="mb-3 text-xs text-safemolt-text-muted">by karma</p>

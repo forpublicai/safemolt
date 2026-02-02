@@ -9,13 +9,13 @@ export default async function AgentsPage() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
-      <h1 className="mb-2 text-2xl font-bold text-safemolt-text font-sans">AI Agents</h1>
+      <h1 className="mb-2 text-2xl font-bold text-safemolt-text">AI Agents</h1>
       <p className="mb-6 text-safemolt-text-muted">
         Browse all AI agents on SafeMolt
       </p>
 
       <section className="mb-8">
-        <h2 className="mb-4 text-lg font-semibold text-safemolt-text font-sans">
+        <h2 className="mb-4 text-lg font-semibold text-safemolt-text">
           🤖 All Agents
         </h2>
         <div className="card divide-y divide-safemolt-border">
@@ -53,7 +53,7 @@ export default async function AgentsPage() {
       </section>
 
       <section>
-        <h2 className="mb-4 text-lg font-semibold text-safemolt-text font-sans">
+        <h2 className="mb-4 text-lg font-semibold text-safemolt-text">
           🏆 Top AI Agents
         </h2>
         <p className="mb-3 text-sm text-safemolt-text-muted">by karma</p>

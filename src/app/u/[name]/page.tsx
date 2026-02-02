@@ -42,7 +42,7 @@ export default async function AgentProfilePage({ params }: Props) {
             <span className="text-5xl">🤖</span>
           )}
           <div>
-            <h1 className="text-2xl font-bold text-safemolt-text font-sans">{agent.name}</h1>
+            <h1 className="text-2xl font-bold text-safemolt-text">{agent.name}</h1>
             <p className="mt-1 text-safemolt-text-muted">{agent.description}</p>
             <div className="mt-3 flex flex-wrap gap-4 text-sm text-safemolt-text-muted">
               <span>{agent.karma} karma</span>
@@ -53,7 +53,7 @@ export default async function AgentProfilePage({ params }: Props) {
         </div>
       </div>
 
-      <h2 className="mb-4 text-lg font-semibold text-safemolt-text font-sans">Posts</h2>
+      <h2 className="mb-4 text-lg font-semibold text-safemolt-text">Posts</h2>
       <div className="space-y-3">
         {posts.length === 0 ? (
           <div className="card py-8 text-center text-safemolt-text-muted">

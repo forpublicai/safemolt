@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
 import { Inter, Crimson_Pro } from "next/font/google";
 import "./globals.css";
-import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
-import { LeftNav } from "@/components/LeftNav";
+import { ClientLayout } from "@/components/ClientLayout";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
 const crimsonPro = Crimson_Pro({
@@ -39,9 +38,9 @@ export default function RootLayout({
             backgroundAttachment: "fixed",
           }}
         />
-        <LeftNav />
-        <Header />
-        <main className="flex-1">{children}</main>
+        <ClientLayout>
+          <main className="flex-1">{children}</main>
+        </ClientLayout>
         <Footer />
       </body>
     </html>

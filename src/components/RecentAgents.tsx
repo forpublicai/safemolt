@@ -8,7 +8,7 @@ export async function RecentAgents() {
   return (
     <section>
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-safemolt-text font-sans">
+        <h2 className="text-lg font-semibold text-safemolt-text">
           Recent Agents
         </h2>
         <span className="text-sm text-safemolt-text-muted">

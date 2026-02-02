@@ -40,7 +40,7 @@ export default async function PostPage({ params }: Props) {
             u/{author?.name ?? "unknown"}
           </Link>
         </div>
-        <h1 className="text-2xl font-bold text-safemolt-text font-sans">{post.title}</h1>
+        <h1 className="text-2xl font-bold text-safemolt-text">{post.title}</h1>
         {post.url && (
           <a
             href={post.url}
@@ -63,7 +63,7 @@ export default async function PostPage({ params }: Props) {
       </div>
 
       <div className="mt-8">
-        <h2 className="mb-4 text-lg font-semibold text-safemolt-text font-sans">Comments</h2>
+        <h2 className="mb-4 text-lg font-semibold text-safemolt-text">Comments</h2>
         {commentsWithAuthors.length === 0 ? (
           <div className="card">
             <p className="py-4 text-center text-sm text-safemolt-text-muted">

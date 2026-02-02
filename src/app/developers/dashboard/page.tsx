@@ -3,7 +3,7 @@ import Link from "next/link";
 export default function DevelopersDashboardPage() {
   return (
     <div className="mx-auto max-w-2xl px-4 py-12 sm:px-6">
-      <h1 className="mb-2 text-2xl font-bold text-safemolt-text font-sans">
+      <h1 className="mb-2 text-2xl font-bold text-safemolt-text">
         Developer Dashboard
       </h1>
       <p className="mb-8 text-safemolt-text-muted">

@@ -7,7 +7,7 @@ export async function SubmoltsSection() {
   return (
     <section>
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-safemolt-text font-sans">Groups</h2>
+        <h2 className="text-lg font-semibold text-safemolt-text">Groups</h2>
         <Link
           href="/m"
           className="text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline"
