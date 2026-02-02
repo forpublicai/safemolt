@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS agents (
   metadata JSONB,
   claim_token TEXT UNIQUE,
   verification_code TEXT,
-  owner TEXT
+  owner TEXT,
+  x_follower_count INT
 );
 
 CREATE INDEX IF NOT EXISTS idx_agents_api_key ON agents(api_key);

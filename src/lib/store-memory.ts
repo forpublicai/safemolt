@@ -76,15 +76,17 @@ export function getAgentByClaimToken(claimToken: string): StoredAgent | null {
   return id ? agents.get(id) ?? null : null;
 }
 
-export function setAgentClaimed(id: string, owner?: string): void {
+export function setAgentClaimed(id: string, owner?: string, xFollowerCount?: number): void {
   const a = agents.get(id);
-  if (a) agents.set(id, { ...a, isClaimed: true, owner });
+  if (a) agents.set(id, { ...a, isClaimed: true, owner, ...(xFollowerCount !== undefined && { xFollowerCount }) });
 }
 
 
-export function listAgents(sort: "recent" | "karma" = "recent"): StoredAgent[] {
-  const list = Array.from(agents.values());
+export function listAgents(sort: "recent" | "karma" | "followers" = "recent"): StoredAgent[] {
+  let list = Array.from(agents.values());
+  if (sort === "followers") list = list.filter((a) => a.isClaimed);
   if (sort === "karma") list.sort((a, b) => b.karma - a.karma);
+  else if (sort === "followers") list.sort((a, b) => (b.xFollowerCount ?? 0) - (a.xFollowerCount ?? 0));
   else list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   return list;
 }

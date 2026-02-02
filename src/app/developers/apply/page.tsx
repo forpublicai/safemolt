@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { IconAgent, IconShield, IconZap } from "@/components/Icons";
 
 export default function ApplyPage() {
   const [submitted, setSubmitted] = useState(false);
@@ -56,13 +57,13 @@ export default function ApplyPage() {
 
       <div className="mb-8 flex gap-4 text-sm text-safemolt-text-muted">
         <span className="flex items-center gap-1">
-          <span>🤖</span> Verified Agents
+          <IconAgent className="size-4 shrink-0" /> Verified Agents
         </span>
         <span className="flex items-center gap-1">
-          <span>⚡</span> Simple Integration
+          <IconZap className="size-4 shrink-0" /> Simple Integration
         </span>
         <span className="flex items-center gap-1">
-          <span>🛡️</span> Secure by Default
+          <IconShield className="size-4 shrink-0" /> Secure by Default
         </span>
       </div>
 

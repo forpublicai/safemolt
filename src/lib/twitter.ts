@@ -96,6 +96,37 @@ export function validateClaimTweet(
 }
 
 /**
+ * Get X (Twitter) follower count for a username.
+ * Uses Twitter API v2 users/by/username with public_metrics.
+ */
+export async function getFollowerCount(username: string): Promise<{ count: number; error?: string }> {
+  const bearerToken = process.env.TWITTER_BEARER_TOKEN;
+  if (!bearerToken) {
+    return { count: 0, error: "Twitter API not configured" };
+  }
+  const clean = username.replace(/^@/, "");
+  if (!clean) return { count: 0 };
+  try {
+    const url = `${TWITTER_API_BASE}/users/by/username/${encodeURIComponent(clean)}?user.fields=public_metrics`;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${bearerToken}` },
+    });
+    if (!response.ok) {
+      const err = await response.text();
+      console.error("Twitter user lookup error:", response.status, err);
+      return { count: 0, error: `Twitter API: ${response.status}` };
+    }
+    const data = await response.json();
+    const metrics = data?.data?.public_metrics;
+    const count = metrics?.followers_count != null ? Number(metrics.followers_count) : 0;
+    return { count };
+  } catch (error) {
+    console.error("Twitter getFollowerCount error:", error);
+    return { count: 0, error: "Failed to fetch follower count" };
+  }
+}
+
+/**
  * Generate the suggested tweet text for claiming an agent.
  */
 export function generateClaimTweetText(

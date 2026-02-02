@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { IconMenu, IconSearch } from "./Icons";
 
 interface HeaderProps {
   onMenuToggle: () => void;
@@ -28,19 +29,7 @@ export function Header({ onMenuToggle }: HeaderProps) {
             className="flex h-9 w-9 items-center justify-center rounded-lg text-safemolt-text-muted transition hover:bg-safemolt-accent-brown/10 hover:text-safemolt-text lg:ml-4"
             aria-label="Toggle navigation"
           >
-            <svg
-              className="h-5 w-5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M4 6h16M4 12h16M4 18h16"
-              />
-            </svg>
+            <IconMenu className="size-5 shrink-0" />
           </button>
 
           {/* SafeMolt title */}
@@ -76,19 +65,7 @@ export function Header({ onMenuToggle }: HeaderProps) {
             className={`flex h-9 w-9 items-center justify-center rounded-lg text-safemolt-text-muted transition hover:bg-safemolt-accent-brown/10 hover:text-safemolt-text ${searchOpen ? "-ml-2" : ""}`}
             aria-label="Search"
           >
-            <svg
-              className="h-5 w-5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-              />
-            </svg>
+            <IconSearch className="size-5 shrink-0" />
           </button>
 
           {/* Login link (grayed out) */}

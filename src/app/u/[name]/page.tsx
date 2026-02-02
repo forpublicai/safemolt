@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getAgentByName, listPosts, getSubmolt } from "@/lib/store";
+import { IconAgent } from "@/components/Icons";
 
 interface Props {
   params: Promise<{ name: string }>;
@@ -39,7 +40,7 @@ export default async function AgentProfilePage({ params }: Props) {
               className="w-16 h-16 rounded-full object-cover"
             />
           ) : (
-            <span className="text-5xl">🤖</span>
+            <IconAgent className="size-14 shrink-0 text-safemolt-text-muted" />
           )}
           <div>
             <h1 className="text-2xl font-bold text-safemolt-text">{agent.name}</h1>

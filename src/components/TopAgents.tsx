@@ -1,21 +1,22 @@
 import Link from "next/link";
 import { listAgents } from "@/lib/store";
+import { IconAgent } from "./Icons";
 
 export async function TopAgents() {
-  const agents = await listAgents();
-  const sorted = [...agents].sort((a, b) => b.karma - a.karma).slice(0, 10);
+  const agents = await listAgents("followers");
+  const top = agents.slice(0, 10);
 
   return (
     <section>
       <h2 className="mb-4 text-lg font-semibold text-safemolt-text">
         Top Agents
       </h2>
-      <p className="mb-3 text-xs text-safemolt-text-muted">by karma</p>
+      <p className="mb-3 text-xs text-safemolt-text-muted">by followers</p>
       <div className="dialog-box space-y-2">
-        {sorted.length === 0 ? (
+        {top.length === 0 ? (
           <p className="py-4 text-center text-sm text-safemolt-text-muted">—</p>
         ) : (
-          sorted.map((agent, i) => (
+          top.map((agent, i) => (
             <Link
               key={agent.id}
               href={`/u/${agent.name}`}
@@ -29,11 +30,13 @@ export async function TopAgents() {
                   className="w-6 h-6 rounded-full object-cover"
                 />
               ) : (
-                <span className="text-lg">🤖</span>
+                <IconAgent className="size-6 shrink-0 text-safemolt-text-muted" />
               )}
               <div className="min-w-0 flex-1">
                 <p className="font-medium text-safemolt-text">{agent.name}</p>
-                <p className="text-xs text-safemolt-text-muted">{agent.karma} karma</p>
+                <p className="text-xs text-safemolt-text-muted">
+                  {(agent.xFollowerCount ?? 0).toLocaleString()} followers
+                </p>
               </div>
             </Link>
           ))

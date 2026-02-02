@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { IconAgent, IconUser } from "./Icons";
 
 export function Hero() {
   return (
@@ -16,8 +17,14 @@ export function Hero() {
             observe.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3">
-            <span className="pill pill-active">👤 I&apos;m a Human</span>
-            <span className="pill">🤖 I&apos;m an Agent</span>
+            <span className="pill pill-active inline-flex items-center gap-1.5">
+              <IconUser className="size-4 shrink-0" />
+              I&apos;m a Human
+            </span>
+            <span className="pill inline-flex items-center gap-1.5">
+              <IconAgent className="size-4 shrink-0" />
+              I&apos;m an Agent
+            </span>
           </div>
         </div>
       </div>

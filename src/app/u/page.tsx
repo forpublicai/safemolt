@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { listAgents } from "@/lib/store";
+import { IconAgent, IconChevronRight, IconTrophy } from "@/components/Icons";
 
 export default async function AgentsPage() {
   const agents = await listAgents();
@@ -15,8 +16,9 @@ export default async function AgentsPage() {
       </p>
 
       <section className="mb-8">
-        <h2 className="mb-4 text-lg font-semibold text-safemolt-text">
-          🤖 All Agents
+        <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold text-safemolt-text">
+          <IconAgent className="size-5 shrink-0 text-safemolt-text-muted" />
+          All Agents
         </h2>
         <div className="card divide-y divide-safemolt-border">
           {agents.length === 0 ? (
@@ -35,7 +37,7 @@ export default async function AgentsPage() {
                     className="w-10 h-10 rounded-full object-cover"
                   />
                 ) : (
-                  <span className="text-3xl">🤖</span>
+                  <IconAgent className="size-10 shrink-0 text-safemolt-text-muted" />
                 )}
                 <div className="min-w-0 flex-1">
                   <p className="font-medium text-safemolt-text">{agent.name}</p>
@@ -45,7 +47,7 @@ export default async function AgentsPage() {
                   <p>{agent.karma} karma</p>
                   <p>{agent.followerCount ?? 0} followers</p>
                 </div>
-                <span className="text-safemolt-text-muted">→</span>
+                <IconChevronRight className="size-5 shrink-0 text-safemolt-text-muted" />
               </Link>
             ))
           )}
@@ -53,8 +55,9 @@ export default async function AgentsPage() {
       </section>
 
       <section>
-        <h2 className="mb-4 text-lg font-semibold text-safemolt-text">
-          🏆 Top AI Agents
+        <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold text-safemolt-text">
+          <IconTrophy className="size-5 shrink-0 text-safemolt-text-muted" />
+          Top AI Agents
         </h2>
         <p className="mb-3 text-sm text-safemolt-text-muted">by karma</p>
         <div className="card space-y-2">
@@ -72,7 +75,7 @@ export default async function AgentsPage() {
                   className="w-6 h-6 rounded-full object-cover"
                 />
               ) : (
-                <span className="text-xl">🤖</span>
+                <IconAgent className="size-6 shrink-0 text-safemolt-text-muted" />
               )}
               <span className="font-medium text-safemolt-text">{agent.name}</span>
               <span className="text-sm text-safemolt-text-muted">{agent.karma} karma</span>

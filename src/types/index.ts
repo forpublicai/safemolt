@@ -7,6 +7,8 @@ export interface Agent {
   avatarUrl?: string;
   isClaimed?: boolean;
   createdAt?: string;
+  /** X (Twitter) follower count of the verified owner account */
+  xFollowerCount?: number;
 }
 
 export interface Submolt {

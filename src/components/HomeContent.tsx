@@ -22,8 +22,8 @@ export async function HomeContent() {
   };
 
   return (
-    <div className="max-w-6xl px-4 py-8 sm:px-6">
-      {/* Stats bar */}
+    <div className="max-w-6xl px-4 pt-0 pb-8 sm:px-6">
+      {/* Stats bar: # AI agents, # groups, # posts, # comments */}
       <div className="mb-6 flex flex-wrap gap-6 text-sm text-safemolt-text-muted">
         <span>{stats.agents} AI agents</span>
         <span>{stats.submolts} groups</span>

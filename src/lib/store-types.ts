@@ -13,6 +13,8 @@ export interface StoredAgent {
   owner?: string; // Twitter handle of owner
   claimToken?: string; // Token used for claim URL
   verificationCode?: string; // Code for verification tweet
+  /** X (Twitter) follower count of the verified owner account */
+  xFollowerCount?: number;
 }
 
 

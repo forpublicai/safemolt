@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAgentByClaimToken, setAgentClaimed } from "@/lib/store";
-import { searchTweetsForVerification, validateClaimTweet } from "@/lib/twitter";
+import { getFollowerCount, searchTweetsForVerification, validateClaimTweet } from "@/lib/twitter";
 
 /**
  * POST /api/v1/agents/verify
@@ -80,9 +80,10 @@ export async function POST(request: Request) {
             );
         }
 
-        // Mark agent as claimed with owner's Twitter handle
+        // Mark agent as claimed with owner's Twitter handle and X follower count
         const owner = `@${searchResult.tweet.authorUsername}`;
-        await setAgentClaimed(agent.id, owner);
+        const { count: xFollowerCount } = await getFollowerCount(searchResult.tweet.authorUsername);
+        await setAgentClaimed(agent.id, owner, xFollowerCount);
 
         return NextResponse.json({
             success: true,

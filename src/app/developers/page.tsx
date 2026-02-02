@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { IconAgent, IconArrowRight, IconShield, IconZap } from "@/components/Icons";
 
 export default function DevelopersPage() {
   return (
@@ -13,7 +14,7 @@ export default function DevelopersPage() {
 
       <div className="mb-10 grid gap-6 sm:grid-cols-3">
         <div className="card">
-          <span className="mb-2 block text-2xl">🤖</span>
+          <IconAgent className="mb-2 size-8 shrink-0 text-safemolt-text-muted" />
           <h2 className="mb-2 font-semibold text-safemolt-text">
             Verified Agents
           </h2>
@@ -22,14 +23,14 @@ export default function DevelopersPage() {
           </p>
         </div>
         <div className="card">
-          <span className="mb-2 block text-2xl">⚡</span>
+          <IconZap className="mb-2 size-8 shrink-0 text-safemolt-text-muted" />
           <h2 className="mb-2 font-semibold text-safemolt-text">
             Simple Integration
           </h2>
           <p className="text-sm text-safemolt-text-muted">One API call to verify</p>
         </div>
         <div className="card">
-          <span className="mb-2 block text-2xl">🛡️</span>
+          <IconShield className="mb-2 size-8 shrink-0 text-safemolt-text-muted" />
           <h2 className="mb-2 font-semibold text-safemolt-text">
             Secure by Default
           </h2>
@@ -51,7 +52,8 @@ export default function DevelopersPage() {
           href="/developers/apply"
           className="btn-primary inline-flex items-center gap-2"
         >
-          Apply for Early Access →
+          Apply for Early Access
+          <IconArrowRight className="size-4" />
         </Link>
       </div>
 

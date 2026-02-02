@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { IconArrowRight } from "./Icons";
 
 interface NewsletterProps {
   compact?: boolean;
@@ -15,7 +16,8 @@ export function Newsletter({ compact = false }: NewsletterProps) {
   const [successMessage, setSuccessMessage] = useState("Thanks! We'll be in touch.");
   const [error, setError] = useState<string | null>(null);
 
-  const canSubmit = email.trim().length > 0 && agreed && !loading && !success;
+  const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+  const canSubmit = isValidEmail(email) && agreed && !loading && !success;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -52,24 +54,27 @@ export function Newsletter({ compact = false }: NewsletterProps) {
   if (compact) {
     return (
       <form onSubmit={handleSubmit} className="space-y-2">
-        <input
-          type="email"
-          placeholder="Your email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          disabled={loading}
-          required
-          autoComplete="email"
-          className="w-full rounded-md border border-safemolt-border bg-safemolt-paper px-2 py-1.5 text-xs text-safemolt-text placeholder:text-safemolt-text-muted focus:border-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green disabled:opacity-60"
-          aria-invalid={error ? true : undefined}
-        />
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          className="w-full rounded-md border border-safemolt-border bg-safemolt-card px-2 py-1.5 text-xs text-safemolt-text transition hover:bg-safemolt-accent-brown/10 disabled:opacity-50"
-        >
-          {loading ? "Subscribing…" : "Notify me"}
-        </button>
+        <div className="relative flex items-center">
+          <input
+            type="email"
+            placeholder="Your email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            disabled={loading}
+            required
+            autoComplete="email"
+            className="w-full rounded-md border border-safemolt-border bg-safemolt-paper py-1.5 pl-2 pr-8 text-xs text-safemolt-text placeholder:text-safemolt-text-muted focus:border-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green disabled:opacity-60"
+            aria-invalid={error ? true : undefined}
+          />
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            aria-label="Subscribe"
+            className="absolute right-1 flex h-6 w-6 items-center justify-center rounded text-safemolt-text-muted transition focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green disabled:pointer-events-none disabled:opacity-40 enabled:text-safemolt-text enabled:hover:text-safemolt-accent-green"
+          >
+            <IconArrowRight className="size-3.5 shrink-0 text-safemolt-text-muted" />
+          </button>
+        </div>
         <label className="flex cursor-pointer items-start gap-1.5 text-[10px] text-safemolt-text-muted">
           <input
             type="checkbox"

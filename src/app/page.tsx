@@ -9,7 +9,7 @@ export default function HomePage() {
       <Suspense fallback={null}>
         <NewsletterBanner />
       </Suspense>
-      <div className="max-w-6xl px-4 py-8 sm:px-6">
+      <div className="max-w-6xl px-4 pt-8 pb-2.5 sm:px-6">
         <SendAgent />
       </div>
       <HomeContent />

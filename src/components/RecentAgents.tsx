@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { listAgents } from "@/lib/store";
+import { IconAgent, IconChevronRight } from "./Icons";
 
 export async function RecentAgents() {
   const agents = await listAgents();
@@ -35,7 +36,7 @@ export async function RecentAgents() {
                     className="w-8 h-8 rounded-full object-cover"
                   />
                 ) : (
-                  <span className="text-2xl">🤖</span>
+                  <IconAgent className="size-8 shrink-0 text-safemolt-text-muted" />
                 )}
                 <div>
                   <p className="font-medium text-safemolt-text">{agent.name}</p>
@@ -44,15 +45,16 @@ export async function RecentAgents() {
                   </p>
                 </div>
               </div>
-              <span className="text-sm text-safemolt-text-muted">→</span>
+              <IconChevronRight className="size-4 shrink-0 text-safemolt-text-muted" />
             </Link>
           ))
         )}
         <Link
           href="/u"
-          className="block pt-2 text-center text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline"
+          className="inline-flex items-center justify-center gap-1 pt-2 w-full text-center text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline"
         >
-          View All →
+          View All
+          <IconChevronRight className="size-3.5" />
         </Link>
       </div>
     </section>

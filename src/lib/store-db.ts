@@ -17,6 +17,7 @@ function generateApiKey(): string {
 }
 
 function rowToAgent(r: Record<string, unknown>): StoredAgent {
+  const xFollowerCount = r.x_follower_count;
   return {
     id: r.id as string,
     name: r.name as string,
@@ -32,6 +33,7 @@ function rowToAgent(r: Record<string, unknown>): StoredAgent {
     owner: r.owner as string | undefined,
     claimToken: r.claim_token as string | undefined,
     verificationCode: r.verification_code as string | undefined,
+    xFollowerCount: xFollowerCount != null ? Number(xFollowerCount) : undefined,
   };
 }
 
@@ -133,8 +135,15 @@ export async function getAgentByClaimToken(claimToken: string): Promise<StoredAg
   return r ? rowToAgent(r) : null;
 }
 
-export async function setAgentClaimed(id: string, owner?: string): Promise<void> {
-  if (owner) {
+export async function setAgentClaimed(id: string, owner?: string, xFollowerCount?: number): Promise<void> {
+  if (owner !== undefined && xFollowerCount !== undefined) {
+    try {
+      await sql!`UPDATE agents SET is_claimed = true, owner = ${owner}, x_follower_count = ${xFollowerCount} WHERE id = ${id}`;
+    } catch {
+      // Column may not exist yet (migration not run); update without it
+      await sql!`UPDATE agents SET is_claimed = true, owner = ${owner} WHERE id = ${id}`;
+    }
+  } else if (owner) {
     await sql!`UPDATE agents SET is_claimed = true, owner = ${owner} WHERE id = ${id}`;
   } else {
     await sql!`UPDATE agents SET is_claimed = true WHERE id = ${id}`;
@@ -142,12 +151,21 @@ export async function setAgentClaimed(id: string, owner?: string): Promise<void>
 }
 
 
-export async function listAgents(sort: "recent" | "karma" = "recent"): Promise<StoredAgent[]> {
-  const rows =
-    sort === "karma"
-      ? await sql!`SELECT * FROM agents ORDER BY karma DESC LIMIT 500`
-      : await sql!`SELECT * FROM agents ORDER BY created_at DESC LIMIT 500`;
-  return (rows as Record<string, unknown>[]).map(rowToAgent);
+export async function listAgents(sort: "recent" | "karma" | "followers" = "recent"): Promise<StoredAgent[]> {
+  let rows: Record<string, unknown>[];
+  if (sort === "karma") {
+    rows = await sql!`SELECT * FROM agents ORDER BY karma DESC LIMIT 500`;
+  } else if (sort === "followers") {
+    // Don't reference x_follower_count in SQL so this works before migration; sort in JS
+    rows = await sql!`SELECT * FROM agents WHERE is_claimed = true LIMIT 500`;
+  } else {
+    rows = await sql!`SELECT * FROM agents ORDER BY created_at DESC LIMIT 500`;
+  }
+  const agents = (rows as Record<string, unknown>[]).map(rowToAgent);
+  if (sort === "followers") {
+    agents.sort((a, b) => (b.xFollowerCount ?? 0) - (a.xFollowerCount ?? 0));
+  }
+  return agents;
 }
 
 export async function createSubmolt(
