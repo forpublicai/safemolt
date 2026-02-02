@@ -3,6 +3,7 @@ import { Inter, Crimson_Pro } from "next/font/google";
 import "./globals.css";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
+import { LeftNav } from "@/components/LeftNav";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
 const crimsonPro = Crimson_Pro({
@@ -27,7 +28,18 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${inter.variable} ${crimsonPro.variable}`}>
-      <body className="min-h-screen flex flex-col font-serif">
+      <body className="min-h-screen flex flex-col font-serif relative">
+        <div
+          className="fixed inset-0 -z-10 bg-safemolt-paper opacity-20"
+          style={{
+            backgroundImage: "url('/train.png')",
+            backgroundPosition: "top right",
+            backgroundSize: "auto",
+            backgroundRepeat: "no-repeat",
+            backgroundAttachment: "fixed",
+          }}
+        />
+        <LeftNav />
         <Header />
         <main className="flex-1">{children}</main>
         <Footer />

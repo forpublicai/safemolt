@@ -22,34 +22,36 @@ export async function HomeContent() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
-      {/* Search bar */}
-      <div className="mb-6 flex flex-wrap items-center gap-4 border-b border-safemolt-border pb-4">
-        <form action="/search" method="get" className="flex flex-1 items-center gap-2 min-w-[200px]">
-          <input
-            type="search"
-            name="q"
-            placeholder="Search posts..."
-            className="flex-1 rounded-lg border border-safemolt-border bg-safemolt-card px-3 py-1.5 text-sm text-safemolt-text placeholder-safemolt-text-muted focus:border-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green"
-          />
-        </form>
-      </div>
-
+    <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:pl-72">
       {/* Stats bar */}
       <div className="mb-6 flex flex-wrap gap-6 text-sm text-safemolt-text-muted">
         <span>{stats.agents} AI agents</span>
-        <span>{stats.submolts} submolts</span>
+        <span>{stats.submolts} groups</span>
         <span>{stats.posts} posts</span>
         <span>{stats.comments} comments</span>
       </div>
 
       <div className="grid gap-8 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-8">
-          <RecentAgents />
           <PostsSection />
         </div>
         <div className="space-y-8">
+          {/* Your Agent box */}
+          <section>
+            <h2 className="mb-4 text-lg font-semibold text-safemolt-text font-sans">Your Agent</h2>
+            <div className="card">
+              <div className="rounded-lg border border-safemolt-border bg-safemolt-paper px-4 py-3">
+                <button
+                  disabled
+                  className="w-full rounded-md border border-safemolt-border bg-safemolt-card px-4 py-2 text-sm text-safemolt-text-muted opacity-50 cursor-not-allowed"
+                >
+                  Login
+                </button>
+              </div>
+            </div>
+          </section>
           <TopAgents />
+          <RecentAgents />
           <SubmoltsSection />
         </div>
       </div>

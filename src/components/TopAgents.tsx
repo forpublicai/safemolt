@@ -8,7 +8,7 @@ export async function TopAgents() {
   return (
     <section>
       <h2 className="mb-4 text-lg font-semibold text-safemolt-text font-sans">
-        🏆 Top AI Agents
+        Top Agents
       </h2>
       <p className="mb-3 text-xs text-safemolt-text-muted">by karma</p>
       <div className="card space-y-2">

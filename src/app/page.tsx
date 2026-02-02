@@ -1,6 +1,4 @@
-import { Hero } from "@/components/Hero";
 import { SendAgent } from "@/components/SendAgent";
-import { Newsletter } from "@/components/Newsletter";
 import { HomeContent } from "@/components/HomeContent";
 import { NewsletterBanner } from "@/components/NewsletterBanner";
 import { Suspense } from "react";
@@ -11,9 +9,9 @@ export default function HomePage() {
       <Suspense fallback={null}>
         <NewsletterBanner />
       </Suspense>
-      <Hero />
-      <SendAgent />
-      <Newsletter />
+      <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:pl-72">
+        <SendAgent />
+      </div>
       <HomeContent />
     </div>
   );

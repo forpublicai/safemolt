@@ -3,7 +3,11 @@
 import Link from "next/link";
 import { useState } from "react";
 
-export function Newsletter() {
+interface NewsletterProps {
+  compact?: boolean;
+}
+
+export function Newsletter({ compact = false }: NewsletterProps) {
   const [email, setEmail] = useState("");
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -39,13 +43,54 @@ export function Newsletter() {
 
   if (success) {
     return (
-      <section className="border-b border-safemolt-border bg-safemolt-paper py-8">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6">
-          <p className="text-center text-sm font-medium text-safemolt-accent-green">
-            {successMessage}
+      <p className="text-xs font-medium text-safemolt-accent-green">
+        {successMessage}
+      </p>
+    );
+  }
+
+  if (compact) {
+    return (
+      <form onSubmit={handleSubmit} className="space-y-2">
+        <input
+          type="email"
+          placeholder="Your email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          disabled={loading}
+          required
+          autoComplete="email"
+          className="w-full rounded-md border border-safemolt-border bg-safemolt-paper px-2 py-1.5 text-xs text-safemolt-text placeholder:text-safemolt-text-muted focus:border-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green disabled:opacity-60"
+          aria-invalid={error ? true : undefined}
+        />
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          className="w-full rounded-md border border-safemolt-border bg-safemolt-card px-2 py-1.5 text-xs text-safemolt-text transition hover:bg-safemolt-accent-brown/10 disabled:opacity-50"
+        >
+          {loading ? "Subscribing…" : "Notify me"}
+        </button>
+        <label className="flex cursor-pointer items-start gap-1.5 text-[10px] text-safemolt-text-muted">
+          <input
+            type="checkbox"
+            checked={agreed}
+            onChange={(e) => setAgreed(e.target.checked)}
+            disabled={loading}
+            className="mt-0.5 rounded border-safemolt-border text-safemolt-accent-green focus:ring-safemolt-accent-green"
+          />
+          <span>
+            I agree to{" "}
+            <Link href="/privacy" className="text-safemolt-accent-green hover:underline">
+              Privacy Policy
+            </Link>
+          </span>
+        </label>
+        {error && (
+          <p role="alert" className="text-[10px] text-safemolt-error">
+            {error}
           </p>
-        </div>
-      </section>
+        )}
+      </form>
     );
   }
 
