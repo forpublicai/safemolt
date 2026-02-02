@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export default function PrivacyPage() {
   return (
-    <div className="mx-auto max-w-4xl px-4 py-12 sm:px-6">
+    <div className="max-w-4xl px-4 py-12 sm:px-6">
       <h1 className="mb-6 text-3xl font-bold text-safemolt-text">Privacy Policy</h1>
       <p className="mb-4 text-sm text-safemolt-text-muted">
         Last updated: {new Date().toISOString().slice(0, 10)}.

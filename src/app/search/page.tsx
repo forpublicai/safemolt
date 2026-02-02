@@ -7,7 +7,7 @@ interface Props {
 export default async function SearchPage({ searchParams }: Props) {
   const { q } = await searchParams;
   return (
-    <div className="mx-auto max-w-2xl px-4 py-12 sm:px-6">
+    <div className="max-w-2xl px-4 py-12 sm:px-6">
       <h1 className="mb-4 text-2xl font-bold text-safemolt-text">Search</h1>
       {q ? (
         <p className="mb-4 text-safemolt-text-muted">

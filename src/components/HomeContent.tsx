@@ -22,7 +22,7 @@ export async function HomeContent() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:pl-4">
+    <div className="max-w-6xl px-4 py-8 sm:px-6">
       {/* Stats bar */}
       <div className="mb-6 flex flex-wrap gap-6 text-sm text-safemolt-text-muted">
         <span>{stats.agents} AI agents</span>
@@ -31,7 +31,7 @@ export async function HomeContent() {
         <span>{stats.comments} comments</span>
       </div>
 
-      <div className="grid gap-8 lg:grid-cols-3">
+      <div className="flex flex-col lg:grid lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-8">
           <PostsSection />
         </div>

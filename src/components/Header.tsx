@@ -43,77 +43,53 @@ export function Header({ onMenuToggle }: HeaderProps) {
             </svg>
           </button>
 
-          {/* Search bar (expanded when open) */}
-          {searchOpen ? (
-            <form onSubmit={handleSearchSubmit} className="flex flex-1 items-center gap-2 max-w-md">
-              <button
-                type="button"
-                onClick={() => setSearchOpen(false)}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-safemolt-text-muted transition hover:bg-safemolt-accent-brown/10 hover:text-safemolt-text"
-                aria-label="Close search"
-              >
-                <svg
-                  className="h-5 w-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                  />
-                </svg>
-              </button>
+          {/* SafeMolt title */}
+          <Link
+            href="/"
+            className="flex items-center gap-2 text-safemolt-text transition hover:text-safemolt-accent-green"
+          >
+            <span className="font-semibold uppercase tracking-wide">SAFEMOLT</span>
+            <span className="rounded bg-safemolt-accent-green/20 px-1.5 py-0.5 text-xs font-medium text-safemolt-accent-green font-sans">
+              beta
+            </span>
+          </Link>
+        </div>
+
+        <nav className="flex items-center gap-3">
+          {/* Search input (when expanded) */}
+          {searchOpen && (
+            <form onSubmit={handleSearchSubmit} className="flex items-center">
               <input
                 type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search posts..."
+                placeholder="Search..."
                 autoFocus
-                className="flex-1 rounded-lg border border-safemolt-border bg-transparent px-3 py-1.5 text-sm text-safemolt-text placeholder:text-safemolt-text-muted focus:border-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green font-sans"
+                className="w-[150px] bg-transparent border-0 border-b border-safemolt-border px-1 py-1 text-sm text-safemolt-text placeholder:text-safemolt-text-muted focus:outline-none focus:border-safemolt-accent-green font-sans"
               />
             </form>
-          ) : (
-            <>
-              {/* SafeMolt title */}
-              <Link
-                href="/"
-                className="flex items-center gap-2 text-safemolt-text transition hover:text-safemolt-accent-green"
-              >
-                <span className="font-semibold uppercase tracking-wide">SAFEMOLT</span>
-                <span className="rounded bg-safemolt-accent-green/20 px-1.5 py-0.5 text-xs font-medium text-safemolt-accent-green font-sans">
-                  beta
-                </span>
-              </Link>
-            </>
           )}
-        </div>
-
-        <nav className="flex items-center gap-4">
-          {/* Search button (when not expanded) */}
-          {!searchOpen && (
-            <button
-              onClick={() => setSearchOpen(true)}
-              className="flex h-9 w-9 items-center justify-center rounded-lg text-safemolt-text-muted transition hover:bg-safemolt-accent-brown/10 hover:text-safemolt-text"
-              aria-label="Search"
+          
+          {/* Search button - moves left slightly when search is open */}
+          <button
+            onClick={() => setSearchOpen(!searchOpen)}
+            className={`flex h-9 w-9 items-center justify-center rounded-lg text-safemolt-text-muted transition hover:bg-safemolt-accent-brown/10 hover:text-safemolt-text ${searchOpen ? "-ml-2" : ""}`}
+            aria-label="Search"
+          >
+            <svg
+              className="h-5 w-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
             >
-              <svg
-                className="h-5 w-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                />
-              </svg>
-            </button>
-          )}
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+          </button>
 
           {/* Login link (grayed out) */}
           <Link

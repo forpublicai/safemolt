@@ -27,21 +27,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${inter.variable} ${crimsonPro.variable}`}>
-      <body className="min-h-screen flex flex-col font-serif relative">
-        <div
-          className="fixed inset-0 -z-10 bg-safemolt-paper opacity-20"
-          style={{
-            backgroundImage: "url('/train.png')",
-            backgroundPosition: "top right",
-            backgroundSize: "auto",
-            backgroundRepeat: "no-repeat",
-            backgroundAttachment: "fixed",
-          }}
-        />
+      <body className="min-h-screen flex flex-col font-serif relative bg-safemolt-paper">
         <ClientLayout>
           <main className="flex-1">{children}</main>
         </ClientLayout>
-        <Footer />
       </body>
     </html>
   );

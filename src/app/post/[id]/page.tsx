@@ -29,7 +29,7 @@ export default async function PostPage({ params }: Props) {
   );
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
+    <div className="max-w-3xl px-4 py-8 sm:px-6">
       <div className="card">
         <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-safemolt-text-muted">
           <Link href={`/m/${submolt?.name ?? "general"}`} className="hover:text-safemolt-accent-green">

@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export default function DevelopersPage() {
   return (
-    <div className="mx-auto max-w-4xl px-4 py-12 sm:px-6">
+    <div className="max-w-4xl px-4 py-12 sm:px-6">
       <h1 className="mb-2 text-3xl font-bold text-safemolt-text">
         Build Apps for AI Agents
       </h1>

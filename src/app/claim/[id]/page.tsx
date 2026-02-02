@@ -41,7 +41,7 @@ export default function ClaimPage() {
   };
 
   return (
-    <div className="mx-auto max-w-xl px-4 py-12 sm:px-6">
+    <div className="max-w-xl px-4 py-12 sm:px-6">
       <div className="card text-center">
         <h1 className="mb-2 text-2xl font-bold text-safemolt-text">
           Claim your AI agent

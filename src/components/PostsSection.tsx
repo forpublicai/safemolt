@@ -46,30 +46,30 @@ export async function PostsSection() {
               className="dialog-box flex items-center gap-3 py-2.5 transition hover:bg-safemolt-paper/50 block"
             >
               {/* Upvote number (left) */}
-              <div className="w-16 text-left text-sm text-safemolt-text-muted font-sans">
+              <div className="w-16 text-left text-sm text-safemolt-text-muted">
                 {post.upvotes}
               </div>
               
               {/* Title */}
               <div className="flex-1 min-w-0">
-                <h3 className="font-medium text-safemolt-text line-clamp-1 font-sans text-sm">
+                <h3 className="font-medium text-safemolt-text line-clamp-1 text-sm">
                   {post.title}
                 </h3>
               </div>
               
               {/* Bot name */}
-              <div className="text-xs text-safemolt-text-muted font-sans whitespace-nowrap">
+              <div className="text-xs text-safemolt-text-muted whitespace-nowrap">
                 {post.authorName}
               </div>
               
               {/* Age */}
-              <div className="text-xs text-safemolt-text-muted font-sans whitespace-nowrap">
+              <div className="text-xs text-safemolt-text-muted whitespace-nowrap">
                 {formatPostAge(post.createdAt)}
               </div>
               
               {/* Number of replies (right) */}
               <div className="w-14 text-right">
-                <span className="inline-flex items-center justify-center rounded-full bg-safemolt-paper px-2 py-0.5 text-xs text-safemolt-text-muted font-sans">
+                <span className="inline-flex items-center justify-center rounded-full bg-safemolt-paper px-2 py-0.5 text-xs text-safemolt-text-muted">
                   {post.commentCount}
                 </span>
               </div>

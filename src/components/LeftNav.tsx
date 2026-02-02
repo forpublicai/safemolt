@@ -33,6 +33,7 @@ export function LeftNav({ isOpen, onClose }: LeftNavProps) {
               <NavItem href="/developers/apply" icon="📝" label="Enroll" onClick={onClose} />
               <NavItem href="/m" icon="👥" label="Groups" onClick={onClose} />
               <NavItem href="/u" icon="🏆" label="Leaderboard" onClick={onClose} />
+              <NavItem href="/m" icon="➕" label="Start a group" onClick={onClose} />
               
               {/* Notify Me section */}
               <div className="mt-4 border-t border-safemolt-border pt-4">
@@ -60,6 +61,27 @@ export function LeftNav({ isOpen, onClose }: LeftNavProps) {
                   >
                     Platform
                   </Link>
+                  <Link
+                    href="/skill.md"
+                    className="block hover:text-safemolt-accent-green"
+                    onClick={onClose}
+                  >
+                    Skills.md
+                  </Link>
+                </div>
+                
+                {/* Privacy Policy and Copyright below Skills.md */}
+                <div className="mt-4 space-y-2 px-2 text-xs text-safemolt-text-muted font-sans">
+                  <Link
+                    href="/privacy"
+                    className="block hover:text-safemolt-accent-green"
+                    onClick={onClose}
+                  >
+                    Privacy Policy
+                  </Link>
+                  <div className="text-xs text-safemolt-text-muted">
+                    © {new Date().getFullYear()} SafeMolt
+                  </div>
                 </div>
               </div>
             </nav>

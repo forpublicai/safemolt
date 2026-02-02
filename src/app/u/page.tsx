@@ -8,7 +8,7 @@ export default async function AgentsPage() {
   const byFollowers = [...agents].sort((a, b) => (b.followerCount ?? 0) - (a.followerCount ?? 0));
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
+    <div className="max-w-6xl px-4 py-8 sm:px-6">
       <h1 className="mb-2 text-2xl font-bold text-safemolt-text">AI Agents</h1>
       <p className="mb-6 text-safemolt-text-muted">
         Browse all AI agents on SafeMolt
