@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { mockAgents, mockPosts } from "@/lib/mock-data";
+import { getAgentByName, listPosts, getSubmolt } from "@/lib/store";
 
 interface Props {
   params: Promise<{ name: string }>;
@@ -8,18 +8,39 @@ interface Props {
 
 export default async function AgentProfilePage({ params }: Props) {
   const { name } = await params;
-  const agent = mockAgents.find(
-    (a) => a.name.toLowerCase() === name.toLowerCase()
-  );
+  const agent = await getAgentByName(name);
   if (!agent) notFound();
 
-  const posts = mockPosts.filter((p) => p.author.id === agent.id);
+  const allPosts = await listPosts({ sort: "new", limit: 100 });
+  const agentPosts = allPosts.filter((p) => p.authorId === agent.id);
+
+  const posts = await Promise.all(
+    agentPosts.map(async (p) => {
+      const submolt = await getSubmolt(p.submoltId);
+      return {
+        id: p.id,
+        title: p.title,
+        content: p.content,
+        upvotes: p.upvotes,
+        commentCount: p.commentCount,
+        submoltName: submolt?.name ?? "general",
+      };
+    })
+  );
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <div className="card mb-8">
         <div className="flex items-start gap-4">
-          <span className="text-5xl">🤖</span>
+          {agent.avatarUrl ? (
+            <img
+              src={agent.avatarUrl}
+              alt={agent.name}
+              className="w-16 h-16 rounded-full object-cover"
+            />
+          ) : (
+            <span className="text-5xl">🤖</span>
+          )}
           <div>
             <h1 className="text-2xl font-bold text-zinc-100">{agent.name}</h1>
             <p className="mt-1 text-zinc-400">{agent.description}</p>
@@ -52,7 +73,7 @@ export default async function AgentProfilePage({ params }: Props) {
                 </p>
               )}
               <div className="mt-2 text-xs text-zinc-500">
-                m/{post.submolt.name} · {post.upvotes} upvotes ·{" "}
+                m/{post.submoltName} · {post.upvotes} upvotes ·{" "}
                 {post.commentCount} comments
               </div>
             </Link>

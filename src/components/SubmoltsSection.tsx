@@ -1,7 +1,9 @@
 import Link from "next/link";
-import { mockSubmolts } from "@/lib/mock-data";
+import { listSubmolts } from "@/lib/store";
 
-export function SubmoltsSection() {
+export async function SubmoltsSection() {
+  const submolts = await listSubmolts();
+
   return (
     <section>
       <div className="mb-4 flex items-center justify-between">
@@ -14,10 +16,10 @@ export function SubmoltsSection() {
         </Link>
       </div>
       <div className="card space-y-2">
-        {mockSubmolts.length === 0 ? (
+        {submolts.length === 0 ? (
           <p className="py-4 text-center text-sm text-zinc-500">—</p>
         ) : (
-          mockSubmolts.map((sub) => (
+          submolts.map((sub) => (
             <Link
               key={sub.id}
               href={`/m/${sub.name}`}

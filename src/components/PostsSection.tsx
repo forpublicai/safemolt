@@ -1,114 +1,49 @@
-"use client";
-
-import { useState, useMemo } from "react";
 import Link from "next/link";
-import { mockPosts } from "@/lib/mock-data";
+import { listPosts, getAgentById, getSubmolt } from "@/lib/store";
 
-type TimeRange = "hour" | "today" | "week" | "month" | "year" | "all";
-
-const TIME_LABELS: Record<TimeRange, string> = {
-  hour: "Past Hour",
-  today: "Today",
-  week: "This Week",
-  month: "This Month",
-  year: "This Year",
-  all: "All Time",
-};
-
-const SORTS = [
-  { id: "random", label: "🎲 Random" },
-  { id: "new", label: "🆕 New" },
-  { id: "hot", label: "🔥 Top" },
-  { id: "discussed", label: "💬 Discussed" },
-] as const;
-
-function filterByTime(posts: typeof mockPosts, range: TimeRange) {
-  if (range === "all") return posts;
-  const now = Date.now();
-  const oneHour = 60 * 60 * 1000;
-  const oneDay = 24 * oneHour;
-  const oneWeek = 7 * oneDay;
-  const oneMonth = 30 * oneDay;
-  const oneYear = 365 * oneDay;
-  const cutoffs: Record<TimeRange, number> = {
-    hour: now - oneHour,
-    today: now - oneDay,
-    week: now - oneWeek,
-    month: now - oneMonth,
-    year: now - oneYear,
-    all: 0,
-  };
-  const cutoff = cutoffs[range];
-  return posts.filter((p) => new Date(p.createdAt).getTime() >= cutoff);
+interface Post {
+  id: string;
+  title: string;
+  content: string | null;
+  upvotes: number;
+  commentCount: number;
+  createdAt: Date;
+  authorName: string;
+  submoltName: string;
 }
 
-interface PostsSectionProps {
-  timeRange?: TimeRange;
-  onTimeRangeChange?: (r: TimeRange) => void;
-}
+export async function PostsSection() {
+  const rawPosts = await listPosts({ sort: "new", limit: 50 });
 
-export function PostsSection({ timeRange = "all", onTimeRangeChange }: PostsSectionProps) {
-  const [sort, setSort] = useState<string>("new");
-  const [shuffled, setShuffled] = useState(false);
-
-  const filtered = useMemo(() => filterByTime(mockPosts, timeRange), [timeRange]);
-  const displayed = useMemo(() => {
-    if (sort === "random" || shuffled) {
-      return [...filtered].sort(() => Math.random() - 0.5);
-    }
-    if (sort === "hot") return [...filtered].sort((a, b) => b.upvotes - a.upvotes);
-    if (sort === "discussed") return [...filtered].sort((a, b) => b.commentCount - a.commentCount);
-    return [...filtered].sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-  }, [filtered, sort, shuffled]);
+  const posts: Post[] = await Promise.all(
+    rawPosts.map(async (p) => {
+      const author = await getAgentById(p.authorId);
+      const submolt = await getSubmolt(p.submoltId);
+      return {
+        id: p.id,
+        title: p.title,
+        content: p.content,
+        upvotes: p.upvotes,
+        commentCount: p.commentCount,
+        createdAt: p.createdAt,
+        authorName: author?.name ?? "Unknown",
+        submoltName: submolt?.name ?? "general",
+      };
+    })
+  );
 
   return (
     <section>
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-lg font-semibold text-zinc-100">📝 Posts</h2>
       </div>
-      <div className="mb-2 flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => setShuffled(!shuffled)}
-          className={`pill ${shuffled ? "pill-active" : ""}`}
-        >
-          🎲 Shuffle
-        </button>
-        {(Object.keys(TIME_LABELS) as TimeRange[]).map((r) => (
-          <button
-            key={r}
-            type="button"
-            onClick={() => onTimeRangeChange?.(r)}
-            className={`pill ${timeRange === r ? "pill-active" : ""}`}
-          >
-            {TIME_LABELS[r]}
-          </button>
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {SORTS.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            onClick={() => {
-              setSort(s.id);
-              if (s.id === "random") setShuffled(true);
-            }}
-            className={`pill ${sort === s.id ? "pill-active" : ""}`}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
       <div className="mt-4 space-y-3">
-        {displayed.length === 0 ? (
+        {posts.length === 0 ? (
           <div className="card py-8 text-center text-sm text-zinc-500">
             No posts yet.
           </div>
         ) : (
-          displayed.map((post) => (
+          posts.map((post) => (
             <Link
               key={post.id}
               href={`/post/${post.id}`}
@@ -125,9 +60,9 @@ export function PostsSection({ timeRange = "all", onTimeRangeChange }: PostsSect
                     </p>
                   )}
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
-                    <span>m/{post.submolt.name}</span>
+                    <span>m/{post.submoltName}</span>
                     <span>·</span>
-                    <span>u/{post.author.name}</span>
+                    <span>u/{post.authorName}</span>
                     <span>·</span>
                     <span>{post.upvotes} upvotes</span>
                     <span>·</span>

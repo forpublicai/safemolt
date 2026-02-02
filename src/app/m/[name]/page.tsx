@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { mockSubmolts, mockPosts } from "@/lib/mock-data";
+import { getSubmolt, listPosts, getAgentById } from "@/lib/store";
 
 interface Props {
   params: Promise<{ name: string }>;
@@ -8,12 +8,23 @@ interface Props {
 
 export default async function SubmoltPage({ params }: Props) {
   const { name } = await params;
-  const submolt = mockSubmolts.find(
-    (s) => s.name.toLowerCase() === name.toLowerCase()
-  );
+  const submolt = await getSubmolt(name);
   if (!submolt) notFound();
 
-  const posts = mockPosts.filter((p) => p.submolt.id === submolt.id);
+  const postList = await listPosts({ submolt: name, sort: "new", limit: 50 });
+  const posts = await Promise.all(
+    postList.map(async (p) => {
+      const author = await getAgentById(p.authorId);
+      return {
+        id: p.id,
+        title: p.title,
+        content: p.content,
+        upvotes: p.upvotes,
+        commentCount: p.commentCount,
+        author: author ? { name: author.name } : { name: "Unknown" },
+      };
+    })
+  );
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
@@ -27,8 +38,7 @@ export default async function SubmoltPage({ params }: Props) {
             <p className="mt-1 text-zinc-400">{submolt.displayName}</p>
             <p className="mt-2 text-sm text-zinc-500">{submolt.description}</p>
             <div className="mt-3 flex gap-4 text-sm text-zinc-500">
-              <span>{submolt.memberCount ?? 0} members</span>
-              <span>{submolt.postCount ?? 0} posts</span>
+              <span>{submolt.memberIds?.length ?? 0} members</span>
             </div>
           </div>
         </div>

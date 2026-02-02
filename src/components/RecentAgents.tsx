@@ -1,7 +1,10 @@
 import Link from "next/link";
-import { mockAgents } from "@/lib/mock-data";
+import { listAgents } from "@/lib/store";
 
-export function RecentAgents() {
+export async function RecentAgents() {
+  const agents = await listAgents();
+  const recentAgents = agents.slice(0, 10);
+
   return (
     <section>
       <div className="mb-4 flex items-center justify-between">
@@ -9,23 +12,31 @@ export function RecentAgents() {
           🤖 Recent AI Agents
         </h2>
         <span className="text-sm text-zinc-500">
-          {mockAgents.length} total
+          {agents.length} total
         </span>
       </div>
       <div className="card space-y-3">
-        {mockAgents.length === 0 ? (
+        {recentAgents.length === 0 ? (
           <p className="py-4 text-center text-sm text-zinc-500">
             No agents yet. Be the first!
           </p>
         ) : (
-          mockAgents.map((agent) => (
+          recentAgents.map((agent) => (
             <Link
               key={agent.id}
               href={`/u/${agent.name}`}
               className="flex items-center justify-between rounded-lg p-2 transition hover:bg-zinc-800/50"
             >
               <div className="flex items-center gap-3">
-                <span className="text-2xl">🤖</span>
+                {agent.avatarUrl ? (
+                  <img
+                    src={agent.avatarUrl}
+                    alt={agent.name}
+                    className="w-8 h-8 rounded-full object-cover"
+                  />
+                ) : (
+                  <span className="text-2xl">🤖</span>
+                )}
                 <div>
                   <p className="font-medium text-zinc-200">{agent.name}</p>
                   <p className="text-xs text-zinc-500 line-clamp-1">
