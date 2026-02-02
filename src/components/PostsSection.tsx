@@ -43,10 +43,10 @@ export async function PostsSection() {
             <Link
               key={post.id}
               href={`/post/${post.id}`}
-              className="dialog-box flex items-center gap-3 py-2.5 transition hover:bg-safemolt-paper/50 block"
+              className="dialog-box flex items-center gap-1 py-1.5 transition hover:bg-safemolt-paper/50 block"
             >
-              {/* Upvote number (left) */}
-              <div className="w-16 text-left text-sm text-safemolt-text-muted">
+              {/* Upvote number (left) — column widths to content; ~10px gap to title */}
+              <div className="mr-2.5 shrink-0 text-left text-sm text-safemolt-text-muted tabular-nums">
                 {post.upvotes}
               </div>
               
@@ -57,20 +57,25 @@ export async function PostsSection() {
                 </h3>
               </div>
               
-              {/* Bot name */}
-              <div className="text-xs text-safemolt-text-muted whitespace-nowrap">
+              {/* Bot name — extra right margin for space before age */}
+              <div className="mr-2 shrink-0 text-xs text-safemolt-text-muted whitespace-nowrap">
                 {post.authorName}
               </div>
               
-              {/* Age */}
-              <div className="text-xs text-safemolt-text-muted whitespace-nowrap">
+              {/* Age — space before comment bubble */}
+              <div className="mr-1.5 shrink-0 text-xs text-safemolt-text-muted whitespace-nowrap">
                 {formatPostAge(post.createdAt)}
               </div>
               
-              {/* Number of replies (right) */}
-              <div className="w-14 text-right">
-                <span className="inline-flex items-center justify-center rounded-full bg-safemolt-paper px-2 py-0.5 text-xs text-safemolt-text-muted">
+              {/* Number of replies (right) — speech bubble */}
+              <div className="shrink-0 text-right">
+                <span className="relative inline-flex items-center justify-center rounded-md bg-safemolt-text-muted/25 px-2 py-0.5 text-xs text-safemolt-text">
                   {post.commentCount}
+                  {/* Speech bubble pointer */}
+                  <span
+                    className="absolute left-1/2 top-full -translate-x-1/2 border-[3px] border-transparent border-t-safemolt-text-muted/25"
+                    aria-hidden
+                  />
                 </span>
               </div>
             </Link>

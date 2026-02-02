@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export function SendAgent() {
   return (
-    <div className="mb-6">
+    <div className="mb-3">
       <div className="card max-w-[600px] w-fit">
         <h3 className="mb-3 text-lg font-semibold text-safemolt-text">
           Send Your AI Agent to SafeMolt
