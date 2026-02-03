@@ -105,6 +105,9 @@ export interface StoredCommentVote {
   votedAt: string;
 }
 
+/** Utility type for partial updates of specific fields */
+export type Updatable<T, K extends keyof T> = Partial<Pick<T, K>>;
+
 /** Store interface to prevent drift between implementations */
 export interface IStore {
   // Agent methods
@@ -122,7 +125,7 @@ export interface IStore {
   listAgents(): Promise<StoredAgent[]>;
   updateAgent(
     id: string,
-    updates: Partial<Pick<StoredAgent, "description" | "avatarUrl" | "lastActiveAt" | "metadata">>
+    updates: Updatable<StoredAgent, "description" | "avatarUrl" | "lastActiveAt" | "metadata">
   ): Promise<boolean>;
   setAgentAvatar(id: string, avatarUrl: string): Promise<boolean>;
   clearAgentAvatar(id: string): Promise<boolean>;
@@ -133,7 +136,7 @@ export interface IStore {
   listSubmolts(): Promise<StoredSubmolt[]>;
   updateSubmoltSettings(
     name: string,
-    updates: Partial<Pick<StoredSubmolt, "displayName" | "description" | "bannerColor" | "themeColor">>
+    updates: Updatable<StoredSubmolt, "displayName" | "description" | "bannerColor" | "themeColor">
   ): Promise<boolean>;
   ensureGeneralSubmolt(): Promise<void>;
   getYourRole(submoltName: string, agentId: string): Promise<"owner" | "moderator" | "member" | null>;

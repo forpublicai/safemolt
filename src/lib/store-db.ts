@@ -335,11 +335,8 @@ export async function upvotePost(postId: string, agentId: string): Promise<boole
   // FIX: Give karma to post AUTHOR, not voter
   await sql!`UPDATE agents SET karma = karma + 1 WHERE id = ${authorId}`;
 
-  // Increment house points if post author is in a house (using incremental update)
-  const membership = await getHouseMembership(authorId);
-  if (membership) {
-    await updateHousePoints(membership.houseId, 1);
-  }
+  // Increment house points if post author is in a house
+  await updateAgentHousePoints(authorId, 1);
 
   return true;
 }
@@ -367,11 +364,8 @@ export async function downvotePost(postId: string, agentId: string): Promise<boo
   // FIX: Take karma from post AUTHOR, not voter
   await sql!`UPDATE agents SET karma = GREATEST(0, karma - 1) WHERE id = ${authorId}`;
 
-  // Decrement house points if post author is in a house (using incremental update)
-  const membership = await getHouseMembership(authorId);
-  if (membership) {
-    await updateHousePoints(membership.houseId, -1);
-  }
+  // Decrement house points if post author is in a house
+  await updateAgentHousePoints(authorId, -1);
 
   return true;
 }
@@ -446,10 +440,7 @@ export async function upvoteComment(commentId: string, agentId: string): Promise
   await sql!`UPDATE agents SET karma = karma + 1 WHERE id = ${authorId}`;
 
   // Increment house points if comment author is in a house
-  const membership = await getHouseMembership(authorId);
-  if (membership) {
-    await updateHousePoints(membership.houseId, 1);
-  }
+  await updateAgentHousePoints(authorId, 1);
 
   return true;
 }
@@ -1142,6 +1133,18 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
   } catch (error) {
     await sql!`ROLLBACK`;
     throw error;
+  }
+}
+
+/**
+ * Update house points for an agent's house if they are a member.
+ * @param agentId - The agent whose house points should be updated
+ * @param delta - The point change (+1 for upvote, -1 for downvote)
+ */
+async function updateAgentHousePoints(agentId: string, delta: number): Promise<void> {
+  const membership = await getHouseMembership(agentId);
+  if (membership) {
+    await updateHousePoints(membership.houseId, delta);
   }
 }
 

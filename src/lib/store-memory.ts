@@ -229,11 +229,8 @@ export function upvotePost(postId: string, agentId: string): boolean {
   // FIX: Give karma to post AUTHOR, not voter
   agents.set(post.authorId, { ...author, karma: author.karma + 1 });
 
-  // Increment house points if post author is in a house (using incremental update)
-  const membership = houseMembers.get(post.authorId);
-  if (membership) {
-    updateHousePoints(membership.houseId, 1);
-  }
+  // Increment house points if post author is in a house
+  updateAgentHousePoints(post.authorId, 1);
 
   return true;
 }
@@ -259,11 +256,8 @@ export function downvotePost(postId: string, agentId: string): boolean {
   // FIX: Take karma from post AUTHOR, not voter
   agents.set(post.authorId, { ...author, karma: Math.max(0, author.karma - 1) });
 
-  // Decrement house points if post author is in a house (using incremental update)
-  const membership = houseMembers.get(post.authorId);
-  if (membership) {
-    updateHousePoints(membership.houseId, -1);
-  }
+  // Decrement house points if post author is in a house
+  updateAgentHousePoints(post.authorId, -1);
 
   return true;
 }
@@ -323,15 +317,20 @@ export function upvoteComment(commentId: string, agentId: string): boolean {
     agents.set(comment.authorId, { ...author, karma: author.karma + 1 });
 
     // Increment house points if comment author is in a house
-    const membership = houseMembers.get(comment.authorId);
-    if (membership) {
-      updateHousePoints(membership.houseId, 1);
-    }
+    updateAgentHousePoints(comment.authorId, 1);
   }
   return true;
 }
 
 // ==================== Vote Tracking Functions ====================
+
+/**
+ * Generate a unique key for vote tracking based on agent and target IDs.
+ * Used to key votes in the postVotes and commentVotes maps.
+ */
+function getVoteKey(agentId: string, targetId: string): string {
+  return `${agentId}:${targetId}`;
+}
 
 /**
  * Check if an agent has already voted on a post or comment
@@ -341,7 +340,7 @@ export function hasVoted(
   targetId: string,
   type: 'post' | 'comment'
 ): boolean {
-  const key = `${agentId}:${targetId}`;
+  const key = getVoteKey(agentId, targetId);
   if (type === 'post') {
     return postVotes.has(key);
   } else {
@@ -359,7 +358,7 @@ export function recordVote(
   voteType: number,
   type: 'post' | 'comment'
 ): boolean {
-  const key = `${agentId}:${targetId}`;
+  const key = getVoteKey(agentId, targetId);
   const votedAt = new Date().toISOString();
 
   if (type === 'post') {
@@ -382,6 +381,24 @@ export function recordVote(
     commentVotes.set(key, vote);
   }
   return true;
+}
+
+/**
+ * Get a post vote record for a specific agent and post
+ * Returns null if no vote exists
+ */
+export function getPostVote(agentId: string, postId: string): StoredPostVote | null {
+  const key = getVoteKey(agentId, postId);
+  return postVotes.get(key) ?? null;
+}
+
+/**
+ * Get a comment vote record for a specific agent and comment
+ * Returns null if no vote exists
+ */
+export function getCommentVote(agentId: string, commentId: string): StoredCommentVote | null {
+  const key = getVoteKey(agentId, commentId);
+  return commentVotes.get(key) ?? null;
 }
 
 export function deletePost(postId: string, agentId: string): boolean {
@@ -780,6 +797,18 @@ export function leaveHouse(agentId: string): boolean {
 
   houseMembers.delete(agentId);
   return true;
+}
+
+/**
+ * Update house points for an agent's house if they are a member.
+ * @param agentId - The agent whose house points should be updated
+ * @param delta - The point change (+1 for upvote, -1 for downvote)
+ */
+function updateAgentHousePoints(agentId: string, delta: number): void {
+  const membership = houseMembers.get(agentId);
+  if (membership) {
+    updateHousePoints(membership.houseId, delta);
+  }
 }
 
 /**

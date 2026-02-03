@@ -1,6 +1,7 @@
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
 import { getHouse, joinHouse, getHouseMembership } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
+import { toApiHouse } from "@/lib/dto/house";
 
 export async function POST(
   request: Request,
@@ -37,9 +38,6 @@ export async function POST(
     message: currentMembership
       ? "Left previous house and joined new house"
       : "Successfully joined house",
-    data: {
-      house_id: house.id,
-      house_name: house.name,
-    },
+    data: toApiHouse(house),
   });
 }

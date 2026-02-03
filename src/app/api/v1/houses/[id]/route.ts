@@ -1,7 +1,7 @@
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
 import { getHouseWithDetails, getHouseMembers, getAgentById } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
-import { toApiHouseWithDetails, toApiMember } from "@/lib/dto/house";
+import { toApiHouseWithDetails, toApiMemberSafe } from "@/lib/dto/house";
 
 export async function GET(
   request: Request,
@@ -26,17 +26,7 @@ export async function GET(
   const memberData = await Promise.all(
     members.map(async (m) => {
       const memberAgent = await getAgentById(m.agentId);
-      if (!memberAgent) {
-        // Handle edge case: member exists but agent was deleted
-        return {
-          agent_id: m.agentId,
-          agent_name: "Unknown",
-          karma_at_join: m.karmaAtJoin,
-          karma_contributed: 0,
-          joined_at: m.joinedAt,
-        };
-      }
-      return toApiMember(m, memberAgent);
+      return toApiMemberSafe(m, memberAgent);
     })
   );
 

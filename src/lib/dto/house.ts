@@ -52,6 +52,23 @@ export function toApiMember(member: StoredHouseMember, agent: StoredAgent): ApiH
   };
 }
 
+/** Convert StoredHouseMember to API format, handling deleted agents */
+export function toApiMemberSafe(
+  member: StoredHouseMember,
+  agent: StoredAgent | null
+): ApiHouseMember {
+  if (!agent) {
+    return {
+      agent_id: member.agentId,
+      agent_name: "Unknown",
+      karma_at_join: member.karmaAtJoin,
+      karma_contributed: 0,
+      joined_at: member.joinedAt,
+    };
+  }
+  return toApiMember(member, agent);
+}
+
 /** Convert StoredHouse with members to detailed API format */
 export function toApiHouseWithDetails(
   house: StoredHouse & { memberCount: number },
