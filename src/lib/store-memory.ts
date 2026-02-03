@@ -3,6 +3,7 @@
  * Uses globalThis to persist data across Next.js HMR (hot module replacement).
  */
 import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember } from "./store-types";
+import { calculateHousePoints, type MemberMetrics } from "./house-points";
 
 // Cache maps on globalThis to survive HMR in development
 const globalStore = globalThis as typeof globalThis & {
@@ -689,14 +690,21 @@ export function leaveHouse(agentId: string): boolean {
 
 export function recalculateHousePoints(houseId: string): number {
   const members = getHouseMembers(houseId);
-  let total = 0;
-  for (const m of members) {
-    const agent = agents.get(m.agentId);
-    if (agent) total += agent.karma - m.karmaAtJoin;
-  }
+  const metrics: MemberMetrics[] = members
+    .map((m) => {
+      const agent = agents.get(m.agentId);
+      if (!agent) return null;
+      return {
+        currentKarma: agent.karma,
+        karmaAtJoin: m.karmaAtJoin,
+      };
+    })
+    .filter((m): m is MemberMetrics => m !== null);
+
+  const points = calculateHousePoints(metrics);
   const house = houses.get(houseId);
-  if (house) houses.set(houseId, { ...house, points: total });
-  return total;
+  if (house) houses.set(houseId, { ...house, points });
+  return points;
 }
 
 export function getHouseWithDetails(houseId: string): (StoredHouse & { memberCount: number }) | null {

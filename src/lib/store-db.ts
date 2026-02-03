@@ -9,6 +9,7 @@ import {
   computeExpectedHash,
   getChallengeExpiry,
 } from "./vetting";
+import { calculateHousePoints, type MemberMetrics } from "./house-points";
 
 
 const POST_COOLDOWN_MS = 30 * 1000; // 30 seconds (reduced from 30 min for testing)
@@ -1014,12 +1015,18 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
  */
 export async function recalculateHousePoints(houseId: string): Promise<number> {
   const result = await sql!`
-    SELECT COALESCE(SUM(a.karma - hm.karma_at_join), 0)::int AS total
+    SELECT a.karma as current_karma, hm.karma_at_join
     FROM house_members hm
     JOIN agents a ON a.id = hm.agent_id
     WHERE hm.house_id = ${houseId}
   `;
-  const points = Number((result[0] as { total: number }).total);
+
+  const metrics: MemberMetrics[] = (result as Array<{ current_karma: number; karma_at_join: number }>).map((row) => ({
+    currentKarma: Number(row.current_karma),
+    karmaAtJoin: Number(row.karma_at_join),
+  }));
+
+  const points = calculateHousePoints(metrics);
 
   await sql!`UPDATE houses SET points = ${points} WHERE id = ${houseId}`;
   return points;

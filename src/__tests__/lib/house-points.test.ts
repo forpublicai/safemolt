@@ -1,8 +1,12 @@
 /**
- * Unit tests for house points recalculation on karma changes (safemolt-pv1)
- * Tests that upvote/downvote actions trigger house points recalculation
- * when the affected agent is a member of a house.
+ * Unit tests for house points calculation (safemolt-6or, safemolt-pv1)
+ * Tests both pure calculation functions and integration with store operations.
  */
+import {
+  calculateMemberContribution,
+  calculateHousePoints,
+  type MemberMetrics,
+} from "@/lib/house-points";
 import {
   createAgent,
   createHouse,
@@ -15,6 +19,106 @@ import {
   createComment,
   upvoteComment,
 } from "@/lib/store-memory";
+
+describe("Pure Points Calculation Functions (safemolt-6or)", () => {
+  describe("calculateMemberContribution", () => {
+    it("should calculate positive contribution for karma gained after joining", () => {
+      const member: MemberMetrics = {
+        currentKarma: 50,
+        karmaAtJoin: 30,
+      };
+      expect(calculateMemberContribution(member)).toBe(20);
+    });
+
+    it("should calculate negative contribution for karma lost after joining", () => {
+      const member: MemberMetrics = {
+        currentKarma: 10,
+        karmaAtJoin: 25,
+      };
+      expect(calculateMemberContribution(member)).toBe(-15);
+    });
+
+    it("should calculate zero contribution when karma unchanged since joining", () => {
+      const member: MemberMetrics = {
+        currentKarma: 42,
+        karmaAtJoin: 42,
+      };
+      expect(calculateMemberContribution(member)).toBe(0);
+    });
+
+    it("should handle zero karma at join", () => {
+      const member: MemberMetrics = {
+        currentKarma: 100,
+        karmaAtJoin: 0,
+      };
+      expect(calculateMemberContribution(member)).toBe(100);
+    });
+
+    it("should handle negative karma values", () => {
+      const member: MemberMetrics = {
+        currentKarma: -5,
+        karmaAtJoin: 10,
+      };
+      expect(calculateMemberContribution(member)).toBe(-15);
+    });
+  });
+
+  describe("calculateHousePoints", () => {
+    it("should calculate total points from multiple members", () => {
+      const members: MemberMetrics[] = [
+        { currentKarma: 50, karmaAtJoin: 30 },  // +20
+        { currentKarma: 40, karmaAtJoin: 35 },  // +5
+        { currentKarma: 60, karmaAtJoin: 50 },  // +10
+      ];
+      expect(calculateHousePoints(members)).toBe(35);
+    });
+
+    it("should handle empty members array", () => {
+      expect(calculateHousePoints([])).toBe(0);
+    });
+
+    it("should handle single member", () => {
+      const members: MemberMetrics[] = [
+        { currentKarma: 100, karmaAtJoin: 75 },
+      ];
+      expect(calculateHousePoints(members)).toBe(25);
+    });
+
+    it("should handle negative contributions correctly", () => {
+      const members: MemberMetrics[] = [
+        { currentKarma: 50, karmaAtJoin: 30 },   // +20
+        { currentKarma: 10, karmaAtJoin: 40 },   // -30
+        { currentKarma: 25, karmaAtJoin: 20 },   // +5
+      ];
+      expect(calculateHousePoints(members)).toBe(-5);
+    });
+
+    it("should handle all members with zero contribution", () => {
+      const members: MemberMetrics[] = [
+        { currentKarma: 10, karmaAtJoin: 10 },
+        { currentKarma: 20, karmaAtJoin: 20 },
+        { currentKarma: 30, karmaAtJoin: 30 },
+      ];
+      expect(calculateHousePoints(members)).toBe(0);
+    });
+
+    it("should handle members who joined with zero karma", () => {
+      const members: MemberMetrics[] = [
+        { currentKarma: 100, karmaAtJoin: 0 },  // +100
+        { currentKarma: 50, karmaAtJoin: 0 },   // +50
+      ];
+      expect(calculateHousePoints(members)).toBe(150);
+    });
+
+    it("should handle large numbers correctly", () => {
+      const members: MemberMetrics[] = [
+        { currentKarma: 10000, karmaAtJoin: 5000 },
+        { currentKarma: 20000, karmaAtJoin: 15000 },
+      ];
+      expect(calculateHousePoints(members)).toBe(10000);
+    });
+  });
+});
 
 describe("House Points Recalculation on Karma Changes (safemolt-pv1)", () => {
   let agent1: ReturnType<typeof createAgent>;
