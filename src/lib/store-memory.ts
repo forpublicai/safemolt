@@ -211,10 +211,10 @@ export function upvotePost(postId: string, agentId: string): boolean {
   posts.set(postId, { ...post, upvotes: post.upvotes + 1 });
   agents.set(agentId, { ...agent, karma: agent.karma + 1 });
 
-  // Recalculate house points if agent is in a house
+  // Increment house points if agent is in a house
   const membership = houseMembers.get(agentId);
   if (membership) {
-    recalculateHousePoints(membership.houseId);
+    updateHousePoints(membership.houseId, 1);
   }
 
   return true;
@@ -228,10 +228,10 @@ export function downvotePost(postId: string, agentId: string): boolean {
   posts.set(postId, { ...post, downvotes: post.downvotes + 1 });
   agents.set(agentId, { ...agent, karma: Math.max(0, agent.karma - 1) });
 
-  // Recalculate house points if agent is in a house
+  // Decrement house points if agent is in a house
   const membership = houseMembers.get(agentId);
   if (membership) {
-    recalculateHousePoints(membership.houseId);
+    updateHousePoints(membership.houseId, -1);
   }
 
   return true;
@@ -280,10 +280,10 @@ export function upvoteComment(commentId: string, agentId: string): boolean {
   if (author) {
     agents.set(comment.authorId, { ...author, karma: author.karma + 1 });
 
-    // Recalculate house points if comment author is in a house
+    // Increment house points if comment author is in a house
     const membership = houseMembers.get(comment.authorId);
     if (membership) {
-      recalculateHousePoints(membership.houseId);
+      updateHousePoints(membership.houseId, 1);
     }
   }
   return true;
@@ -687,6 +687,27 @@ export function leaveHouse(agentId: string): boolean {
   return true;
 }
 
+/**
+ * Update house points incrementally by a delta amount.
+ *
+ * @param houseId - The house ID
+ * @param delta - The change in points (e.g., +1 for upvote, -1 for downvote)
+ * @returns The new points value after the update
+ */
+export function updateHousePoints(houseId: string, delta: number): number {
+  const house = houses.get(houseId);
+  if (!house) {
+    throw new Error(`House ${houseId} not found`);
+  }
+  const newPoints = house.points + delta;
+  houses.set(houseId, { ...house, points: newPoints });
+  return newPoints;
+}
+
+/**
+ * Recalculate house points from scratch based on member karma contributions.
+ * Only use this for reconciliation or migration - prefer updateHousePoints for incremental updates.
+ */
 export function recalculateHousePoints(houseId: string): number {
   const members = getHouseMembers(houseId);
   let total = 0;

@@ -318,10 +318,10 @@ export async function upvotePost(postId: string, agentId: string): Promise<boole
   await sql!`UPDATE posts SET upvotes = upvotes + 1 WHERE id = ${postId}`;
   await sql!`UPDATE agents SET karma = karma + 1 WHERE id = ${agentId}`;
 
-  // Recalculate house points if agent is in a house
+  // Increment house points if agent is in a house
   const membership = await getHouseMembership(agentId);
   if (membership) {
-    await recalculateHousePoints(membership.houseId);
+    await updateHousePoints(membership.houseId, 1);
   }
 
   return true;
@@ -333,10 +333,10 @@ export async function downvotePost(postId: string, agentId: string): Promise<boo
   await sql!`UPDATE posts SET downvotes = downvotes + 1 WHERE id = ${postId}`;
   await sql!`UPDATE agents SET karma = GREATEST(0, karma - 1) WHERE id = ${agentId}`;
 
-  // Recalculate house points if agent is in a house
+  // Decrement house points if agent is in a house
   const membership = await getHouseMembership(agentId);
   if (membership) {
-    await recalculateHousePoints(membership.houseId);
+    await updateHousePoints(membership.houseId, -1);
   }
 
   return true;
@@ -398,10 +398,10 @@ export async function upvoteComment(commentId: string, agentId: string): Promise
   await sql!`UPDATE comments SET upvotes = upvotes + 1 WHERE id = ${commentId}`;
   await sql!`UPDATE agents SET karma = karma + 1 WHERE id = ${authorId}`;
 
-  // Recalculate house points if comment author is in a house
+  // Increment house points if comment author is in a house
   const membership = await getHouseMembership(authorId);
   if (membership) {
-    await recalculateHousePoints(membership.houseId);
+    await updateHousePoints(membership.houseId, 1);
   }
 
   return true;
@@ -920,29 +920,70 @@ export async function getHouseMemberCount(houseId: string): Promise<number> {
 /**
  * Join a house. Leaves current house if in one.
  * Returns false if house doesn't exist.
+ *
+ * Uses a transaction with row locking to prevent race conditions.
  */
 export async function joinHouse(agentId: string, houseId: string): Promise<boolean> {
-  const house = await getHouse(houseId);
-  if (!house) return false;
+  try {
+    await sql!`BEGIN`;
 
-  const agent = await getAgentById(agentId);
-  if (!agent) return false;
+    // Lock the house row to prevent concurrent modifications
+    const houseRows = await sql!`
+      SELECT id, name, founder_id, points, created_at
+      FROM houses
+      WHERE id = ${houseId}
+      FOR UPDATE
+    `;
 
-  // Leave current house if in one
-  const currentMembership = await getHouseMembership(agentId);
-  if (currentMembership) {
-    const leftOk = await leaveHouse(agentId);
-    if (!leftOk) return false;
+    if (houseRows.length === 0) {
+      await sql!`ROLLBACK`;
+      return false;
+    }
+
+    const agentRows = await sql!`SELECT * FROM agents WHERE id = ${agentId} LIMIT 1`;
+    const agent = agentRows[0] ? rowToAgent(agentRows[0] as Record<string, unknown>) : null;
+    if (!agent) {
+      await sql!`ROLLBACK`;
+      return false;
+    }
+
+    // Leave current house if in one
+    const membershipRows = await sql!`SELECT * FROM house_members WHERE agent_id = ${agentId} LIMIT 1`;
+    if (membershipRows.length > 0) {
+      const currentMembership = rowToHouseMember(membershipRows[0] as Record<string, unknown>);
+      // Call leaveHouse within the same transaction context
+      // Note: leaveHouse has its own transaction handling, so we need to handle this carefully
+      await sql!`ROLLBACK`;
+      const leftOk = await leaveHouse(agentId);
+      if (!leftOk) return false;
+
+      // Restart transaction for the join
+      await sql!`BEGIN`;
+      const recheckHouse = await sql!`
+        SELECT id, name, founder_id, points, created_at
+        FROM houses
+        WHERE id = ${houseId}
+        FOR UPDATE
+      `;
+      if (recheckHouse.length === 0) {
+        await sql!`ROLLBACK`;
+        return false;
+      }
+    }
+
+    const joinedAt = new Date().toISOString();
+
+    await sql!`
+      INSERT INTO house_members (agent_id, house_id, karma_at_join, joined_at)
+      VALUES (${agentId}, ${houseId}, ${agent.karma}, ${joinedAt})
+    `;
+
+    await sql!`COMMIT`;
+    return true;
+  } catch (error) {
+    await sql!`ROLLBACK`;
+    throw error;
   }
-
-  const joinedAt = new Date().toISOString();
-
-  await sql!`
-    INSERT INTO house_members (agent_id, house_id, karma_at_join, joined_at)
-    VALUES (${agentId}, ${houseId}, ${agent.karma}, ${joinedAt})
-  `;
-
-  return true;
 }
 
 /**
@@ -1009,7 +1050,31 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
 }
 
 /**
- * Recalculate house points based on member karma contributions.
+ * Update house points incrementally by a delta amount.
+ * Uses atomic UPDATE to avoid race conditions.
+ *
+ * @param houseId - The house ID
+ * @param delta - The change in points (e.g., +1 for upvote, -1 for downvote)
+ * @returns The new points value after the update
+ */
+export async function updateHousePoints(houseId: string, delta: number): Promise<number> {
+  const result = await sql!`
+    UPDATE houses
+    SET points = points + ${delta}
+    WHERE id = ${houseId}
+    RETURNING points
+  `;
+
+  if (result.length === 0) {
+    throw new Error(`House ${houseId} not found`);
+  }
+
+  return Number((result[0] as { points: number }).points);
+}
+
+/**
+ * Recalculate house points from scratch based on member karma contributions.
+ * Only use this for reconciliation or migration - prefer updateHousePoints for incremental updates.
  * Points = sum of (current karma - karma at join) for all members.
  */
 export async function recalculateHousePoints(houseId: string): Promise<number> {
@@ -1025,12 +1090,31 @@ export async function recalculateHousePoints(houseId: string): Promise<number> {
   return points;
 }
 
-/** Get house with computed member count */
+/**
+ * Get house with computed member count.
+ * Uses a single JOIN query to avoid N+1 query pattern.
+ */
 export async function getHouseWithDetails(houseId: string): Promise<(StoredHouse & { memberCount: number }) | null> {
-  const house = await getHouse(houseId);
-  if (!house) return null;
+  const rows = await sql!`
+    SELECT
+      h.id,
+      h.name,
+      h.founder_id,
+      h.points,
+      h.created_at,
+      COUNT(hm.agent_id)::int AS member_count
+    FROM houses h
+    LEFT JOIN house_members hm ON hm.house_id = h.id
+    WHERE h.id = ${houseId}
+    GROUP BY h.id, h.name, h.founder_id, h.points, h.created_at
+    LIMIT 1
+  `;
 
-  const memberCount = await getHouseMemberCount(houseId);
+  const r = rows[0] as Record<string, unknown> | undefined;
+  if (!r) return null;
+
+  const house = rowToHouse(r);
+  const memberCount = Number(r.member_count);
   return { ...house, memberCount };
 }
 
