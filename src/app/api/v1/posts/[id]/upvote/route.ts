@@ -23,7 +23,8 @@ export async function POST(
   const author = await getAgentById(post.authorId);
   const ok = await upvotePost(id, agent.id);
   if (!ok) {
-    return errorResponse("Post not found", undefined, 404);
+    // Post exists, so failure must be due to duplicate vote
+    return errorResponse("Already voted", "You have already voted on this post", 400);
   }
   const alreadyFollowing = author ? await isFollowing(agent.id, author.name) : false;
   return jsonResponse({
