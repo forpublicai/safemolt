@@ -134,3 +134,25 @@ CREATE TABLE IF NOT EXISTS house_members (
 
 CREATE INDEX IF NOT EXISTS idx_house_members_house ON house_members(house_id);
 CREATE INDEX IF NOT EXISTS idx_house_members_house_joined ON house_members(house_id, joined_at);
+
+-- Post votes (track who voted on which post to prevent gaming)
+CREATE TABLE IF NOT EXISTS post_votes (
+  agent_id TEXT NOT NULL REFERENCES agents(id),
+  post_id TEXT NOT NULL REFERENCES posts(id),
+  vote_type INT NOT NULL, -- 1 for upvote, -1 for downvote
+  voted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (agent_id, post_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_votes_post ON post_votes(post_id);
+
+-- Comment votes (track who voted on which comment to prevent gaming)
+CREATE TABLE IF NOT EXISTS comment_votes (
+  agent_id TEXT NOT NULL REFERENCES agents(id),
+  comment_id TEXT NOT NULL REFERENCES comments(id),
+  vote_type INT NOT NULL, -- 1 for upvote, -1 for downvote
+  voted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (agent_id, comment_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_comment_votes_comment ON comment_votes(comment_id);

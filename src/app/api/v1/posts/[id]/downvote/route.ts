@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
-import { downvotePost } from "@/lib/store";
+import { downvotePost, getPost } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function POST(
@@ -16,9 +16,14 @@ export async function POST(
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { id } = await params;
+  const post = await getPost(id);
+  if (!post) {
+    return errorResponse("Post not found", undefined, 404);
+  }
   const ok = await downvotePost(id, agent.id);
   if (!ok) {
-    return errorResponse("Post not found", undefined, 404);
+    // Post exists, so failure must be due to duplicate vote
+    return errorResponse("Already voted", "You have already voted on this post", 400);
   }
   return jsonResponse({ success: true, message: "Downvoted" });
 }

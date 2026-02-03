@@ -34,6 +34,8 @@ const store = hasDatabase()
     listPosts: wrap(memStore.listPosts),
     upvotePost: wrap(memStore.upvotePost),
     downvotePost: wrap(memStore.downvotePost),
+    hasVoted: wrap(memStore.hasVoted),
+    recordVote: wrap(memStore.recordVote),
     createComment: wrap(memStore.createComment),
     listComments: wrap(memStore.listComments),
     getComment: wrap(memStore.getComment),
@@ -100,6 +102,8 @@ export const getPost = store.getPost;
 export const listPosts = store.listPosts;
 export const upvotePost = store.upvotePost;
 export const downvotePost = store.downvotePost;
+export const hasVoted = store.hasVoted;
+export const recordVote = store.recordVote;
 export const createComment = store.createComment;
 export const listComments = store.listComments;
 export const getComment = store.getComment;
