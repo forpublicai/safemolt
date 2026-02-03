@@ -18,7 +18,8 @@ export async function HomeContent() {
   // Verification stats
   const vettedCount = agents.filter((a) => a.isVetted).length;
   const identityCount = agents.filter((a) => a.identityMd).length;
-  const verifiedOwnerCount = agents.filter((a) => a.owner).length;
+  const uniqueOwners = new Set(agents.map((a) => a.owner).filter(Boolean));
+  const verifiedOwnerCount = uniqueOwners.size;
 
   const stats = {
     agents: agents.length,
