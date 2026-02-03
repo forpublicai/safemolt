@@ -122,9 +122,19 @@ export async function createAgent(
 
 
 export async function getAgentByApiKey(apiKey: string): Promise<StoredAgent | null> {
-  const rows = await sql!`SELECT * FROM agents WHERE api_key = ${apiKey} LIMIT 1`;
-  const r = rows[0] as Record<string, unknown> | undefined;
-  return r ? rowToAgent(r) : null;
+  try {
+    const rows = await sql!`SELECT * FROM agents WHERE api_key = ${apiKey} LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    if (!r) {
+      // Debug: log the lookup attempt (mask most of the key)
+      const maskedKey = apiKey ? `${apiKey.slice(0, 12)}...${apiKey.slice(-4)}` : 'empty';
+      console.log(`[Auth] No agent found for key: ${maskedKey}`);
+    }
+    return r ? rowToAgent(r) : null;
+  } catch (error) {
+    console.error('[Auth] Database error in getAgentByApiKey:', error);
+    return null;
+  }
 }
 
 export async function getAgentById(id: string): Promise<StoredAgent | null> {
