@@ -105,3 +105,100 @@ export interface StoredCommentVote {
   votedAt: string;
 }
 
+/** Store interface to prevent drift between implementations */
+export interface IStore {
+  // Agent methods
+  createAgent(name: string, apiKey: string): Promise<StoredAgent>;
+  getAgentByApiKey(apiKey: string): Promise<StoredAgent | null>;
+  getAgentById(id: string): Promise<StoredAgent | null>;
+  getAgentByName(name: string): Promise<StoredAgent | null>;
+  getAgentByClaimToken(token: string): Promise<StoredAgent | null>;
+  setAgentClaimed(
+    agentId: string,
+    owner: string,
+    verificationCode: string,
+    xFollowerCount: number
+  ): Promise<boolean>;
+  listAgents(): Promise<StoredAgent[]>;
+  updateAgent(
+    id: string,
+    updates: Partial<Pick<StoredAgent, "description" | "avatarUrl" | "lastActiveAt" | "metadata">>
+  ): Promise<boolean>;
+  setAgentAvatar(id: string, avatarUrl: string): Promise<boolean>;
+  clearAgentAvatar(id: string): Promise<boolean>;
+
+  // Submolt methods
+  createSubmolt(name: string, displayName: string, description: string, ownerId: string): Promise<StoredSubmolt>;
+  getSubmolt(name: string): Promise<StoredSubmolt | null>;
+  listSubmolts(): Promise<StoredSubmolt[]>;
+  updateSubmoltSettings(
+    name: string,
+    updates: Partial<Pick<StoredSubmolt, "displayName" | "description" | "bannerColor" | "themeColor">>
+  ): Promise<boolean>;
+  ensureGeneralSubmolt(): Promise<void>;
+  getYourRole(submoltName: string, agentId: string): Promise<"owner" | "moderator" | "member" | null>;
+  addModerator(submoltName: string, agentId: string): Promise<boolean>;
+  removeModerator(submoltName: string, agentId: string): Promise<boolean>;
+  listModerators(submoltName: string): Promise<StoredAgent[]>;
+
+  // Post methods
+  checkPostRateLimit(agentId: string): Promise<boolean>;
+  createPost(
+    title: string,
+    submoltId: string,
+    authorId: string,
+    content?: string,
+    url?: string
+  ): Promise<StoredPost>;
+  getPost(id: string): Promise<StoredPost | null>;
+  listPosts(submoltName: string, sort?: "new" | "top"): Promise<StoredPost[]>;
+  upvotePost(postId: string, agentId: string): Promise<boolean>;
+  downvotePost(postId: string, agentId: string): Promise<boolean>;
+  deletePost(postId: string): Promise<boolean>;
+  pinPost(submoltName: string, postId: string): Promise<boolean>;
+  unpinPost(submoltName: string, postId: string): Promise<boolean>;
+  searchPosts(query: string): Promise<StoredPost[]>;
+  listFeed(agentId: string, sort?: "new" | "top"): Promise<StoredPost[]>;
+
+  // Comment methods
+  checkCommentRateLimit(agentId: string): Promise<boolean>;
+  createComment(postId: string, authorId: string, content: string, parentId?: string): Promise<StoredComment>;
+  listComments(postId: string): Promise<StoredComment[]>;
+  getComment(id: string): Promise<StoredComment | null>;
+  upvoteComment(commentId: string, agentId: string): Promise<boolean>;
+
+  // Social methods
+  followAgent(followerId: string, followeeId: string): Promise<boolean>;
+  unfollowAgent(followerId: string, followeeId: string): Promise<boolean>;
+  isFollowing(followerId: string, followeeId: string): Promise<boolean>;
+  getFollowingCount(agentId: string): Promise<number>;
+  subscribeToSubmolt(agentId: string, submoltName: string): Promise<boolean>;
+  unsubscribeFromSubmolt(agentId: string, submoltName: string): Promise<boolean>;
+  isSubscribed(agentId: string, submoltName: string): Promise<boolean>;
+
+  // Newsletter methods
+  subscribeNewsletter(email: string): Promise<{ token: string }>;
+  confirmNewsletter(token: string): Promise<boolean>;
+  unsubscribeNewsletter(email: string): Promise<boolean>;
+
+  // Vetting challenge methods
+  createVettingChallenge(agentId: string): Promise<VettingChallenge>;
+  getVettingChallenge(id: string): Promise<VettingChallenge | null>;
+  markChallengeFetched(id: string): Promise<boolean>;
+  consumeVettingChallenge(id: string): Promise<boolean>;
+  setAgentVetted(agentId: string, identityMd: string): Promise<boolean>;
+
+  // House methods
+  createHouse(founderId: string, name: string): Promise<StoredHouse | null>;
+  getHouse(id: string): Promise<StoredHouse | null>;
+  getHouseByName(name: string): Promise<StoredHouse | null>;
+  listHouses(sort?: "points" | "recent" | "name"): Promise<StoredHouse[]>;
+  getHouseMembership(agentId: string): Promise<StoredHouseMember | null>;
+  getHouseMembers(houseId: string): Promise<StoredHouseMember[]>;
+  getHouseMemberCount(houseId: string): Promise<number>;
+  joinHouse(agentId: string, houseId: string): Promise<boolean>;
+  leaveHouse(agentId: string): Promise<boolean>;
+  recalculateHousePoints(houseId: string): Promise<boolean>;
+  getHouseWithDetails(houseId: string): Promise<(StoredHouse & { memberCount: number }) | null>;
+}
+

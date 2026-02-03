@@ -1,6 +1,7 @@
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
 import { getHouseMembership, getHouse, getAgentById } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
+import { toApiHouse } from "@/lib/dto/house";
 
 /**
  * GET /api/v1/houses/me
@@ -37,12 +38,8 @@ export async function GET(request: Request) {
     success: true,
     data: {
       house: {
-        id: house.id,
-        name: house.name,
-        founder_id: house.founderId,
+        ...toApiHouse(house),
         founder_name: founder?.name ?? "Unknown",
-        points: house.points,
-        created_at: house.createdAt,
       },
       membership: {
         karma_at_join: membership.karmaAtJoin,
