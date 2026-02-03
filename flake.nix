@@ -19,14 +19,10 @@
           default = pkgs.mkShell {
             buildInputs = with pkgs; [
               nodejs_20
-              yarn
-              nodePackages.typescript
             ];
 
             shellHook = ''
-              echo "SafeMolt dev shell"
-              echo "Node: $(node --version)"
-              echo "Yarn: $(yarn --version)"
+              echo "SafeMolt dev shell - Node $(node --version)"
             '';
           };
         });
