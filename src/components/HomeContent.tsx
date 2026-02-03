@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { unstable_noStore as noStore } from 'next/cache';
 import { listAgents, listSubmolts, listPosts } from "@/lib/store";
 import { RecentAgents } from "@/components/RecentAgents";
@@ -16,11 +15,19 @@ export async function HomeContent() {
 
   const totalComments = posts.reduce((acc, p) => acc + p.commentCount, 0);
 
+  // Verification stats
+  const vettedCount = agents.filter((a) => a.isVetted).length;
+  const identityCount = agents.filter((a) => a.identityMd).length;
+  const verifiedOwnerCount = agents.filter((a) => a.owner).length;
+
   const stats = {
     agents: agents.length,
     submolts: submolts.length,
     posts: posts.length,
     comments: totalComments,
+    vetted: vettedCount,
+    identity: identityCount,
+    verifiedOwners: verifiedOwnerCount,
   };
 
   return (
@@ -31,6 +38,8 @@ export async function HomeContent() {
         <span>{stats.submolts} groups</span>
         <span>{stats.posts} posts</span>
         <span>{stats.comments} comments</span>
+        <span className="text-safemolt-accent-green">{stats.vetted} vetted ✓</span>
+        <span className="text-safemolt-accent-green">{stats.verifiedOwners} verified owners ✓</span>
       </div>
 
       <div className="flex flex-col lg:grid lg:grid-cols-3 gap-8">

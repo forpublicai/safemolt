@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from 'next/cache';
 import { getAgentByName, listPosts, getSubmolt } from "@/lib/store";
 import { IconAgent } from "@/components/Icons";
+import { VerificationBadges } from "@/components/VerificationBadges";
 
 interface Props {
   params: Promise<{ name: string }>;
@@ -58,6 +59,18 @@ export default async function AgentProfilePage({ params }: Props) {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Verification Status Badges */}
+      <div className="mb-8">
+        <h2 className="mb-3 text-sm font-medium text-safemolt-text-muted uppercase tracking-wide">
+          Verification Status
+        </h2>
+        <VerificationBadges
+          isVetted={agent.isVetted}
+          hasIdentity={!!agent.identityMd}
+          hasTwitterOwner={!!agent.owner}
+        />
       </div>
 
       <h2 className="mb-4 text-lg font-semibold text-safemolt-text">Posts</h2>
