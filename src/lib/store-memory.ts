@@ -1,18 +1,36 @@
 /**
  * In-memory store. Used when no POSTGRES_URL/DATABASE_URL is set.
+ * Uses globalThis to persist data across Next.js HMR (hot module replacement).
  */
-import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment } from "./store-types";
+import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge } from "./store-types";
 
-const agents = new Map<string, StoredAgent>();
-const apiKeyToAgentId = new Map<string, string>();
-const claimTokenToAgentId = new Map<string, string>();
-const submolts = new Map<string, StoredSubmolt>();
-const posts = new Map<string, StoredPost>();
-const comments = new Map<string, StoredComment>();
-const following = new Map<string, Set<string>>();
-const lastPostAt = new Map<string, number>();
-const lastCommentAt = new Map<string, number>();
-const commentCountToday = new Map<string, { date: string; count: number }>();
+// Cache maps on globalThis to survive HMR in development
+const globalStore = globalThis as typeof globalThis & {
+  __safemolt_agents?: Map<string, StoredAgent>;
+  __safemolt_apiKeyToAgentId?: Map<string, string>;
+  __safemolt_claimTokenToAgentId?: Map<string, string>;
+  __safemolt_submolts?: Map<string, StoredSubmolt>;
+  __safemolt_posts?: Map<string, StoredPost>;
+  __safemolt_comments?: Map<string, StoredComment>;
+  __safemolt_following?: Map<string, Set<string>>;
+  __safemolt_lastPostAt?: Map<string, number>;
+  __safemolt_lastCommentAt?: Map<string, number>;
+  __safemolt_commentCountToday?: Map<string, { date: string; count: number }>;
+  __safemolt_vettingChallenges?: Map<string, VettingChallenge>;
+};
+
+const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
+const apiKeyToAgentId = globalStore.__safemolt_apiKeyToAgentId ??= new Map<string, string>();
+const claimTokenToAgentId = globalStore.__safemolt_claimTokenToAgentId ??= new Map<string, string>();
+const submolts = globalStore.__safemolt_submolts ??= new Map<string, StoredSubmolt>();
+const posts = globalStore.__safemolt_posts ??= new Map<string, StoredPost>();
+const comments = globalStore.__safemolt_comments ??= new Map<string, StoredComment>();
+const following = globalStore.__safemolt_following ??= new Map<string, Set<string>>();
+const lastPostAt = globalStore.__safemolt_lastPostAt ??= new Map<string, number>();
+const lastCommentAt = globalStore.__safemolt_lastCommentAt ??= new Map<string, number>();
+const commentCountToday = globalStore.__safemolt_commentCountToday ??= new Map<string, { date: string; count: number }>();
+const vettingChallenges = globalStore.__safemolt_vettingChallenges ??= new Map<string, VettingChallenge>();
+
 
 
 const POST_COOLDOWN_MS = 30 * 60 * 1000;
@@ -468,3 +486,67 @@ export function unsubscribeNewsletter(token: string): boolean {
   }
   return false;
 }
+
+// ==================== Vetting Challenge Functions ====================
+
+import {
+  generateChallengeValues,
+  generateNonce,
+  computeExpectedHash,
+  getChallengeExpiry,
+} from "./vetting";
+
+
+function generateChallengeId(): string {
+  return `vc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+export function createVettingChallenge(agentId: string): VettingChallenge {
+  const id = generateChallengeId();
+  const values = generateChallengeValues();
+  const nonce = generateNonce();
+  const expectedHash = computeExpectedHash(values, nonce);
+  const createdAt = new Date().toISOString();
+  const expiresAt = getChallengeExpiry();
+
+  const challenge: VettingChallenge = {
+    id,
+    agentId,
+    values,
+    nonce,
+    expectedHash,
+    createdAt,
+    expiresAt,
+    fetched: false,
+    consumed: false,
+  };
+
+  vettingChallenges.set(id, challenge);
+  return challenge;
+}
+
+export function getVettingChallenge(id: string): VettingChallenge | null {
+  return vettingChallenges.get(id) ?? null;
+}
+
+export function markChallengeFetched(id: string): boolean {
+  const challenge = vettingChallenges.get(id);
+  if (!challenge) return false;
+  vettingChallenges.set(id, { ...challenge, fetched: true });
+  return true;
+}
+
+export function consumeVettingChallenge(id: string): boolean {
+  const challenge = vettingChallenges.get(id);
+  if (!challenge || challenge.consumed) return false;
+  vettingChallenges.set(id, { ...challenge, consumed: true });
+  return true;
+}
+
+export function setAgentVetted(agentId: string, identityMd: string): boolean {
+  const agent = agents.get(agentId);
+  if (!agent) return false;
+  agents.set(agentId, { ...agent, isVetted: true, identityMd });
+  return true;
+}
+

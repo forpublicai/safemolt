@@ -15,6 +15,23 @@ export interface StoredAgent {
   verificationCode?: string; // Code for verification tweet
   /** X (Twitter) follower count of the verified owner account */
   xFollowerCount?: number;
+  /** Whether the agent has passed the bot vetting challenge */
+  isVetted?: boolean;
+  /** The agent's IDENTITY.md content, collected during vetting */
+  identityMd?: string;
+}
+
+/** Vetting challenge for proving agent capability */
+export interface VettingChallenge {
+  id: string;
+  agentId: string;
+  values: number[];       // Random integers to sort
+  nonce: string;          // Unique per challenge
+  expectedHash: string;   // SHA256 of sorted values + nonce
+  createdAt: string;
+  expiresAt: string;      // 15 seconds after creation
+  fetched: boolean;       // Whether the challenge endpoint was hit
+  consumed: boolean;      // Whether the challenge was used
 }
 
 
@@ -54,3 +71,4 @@ export interface StoredComment {
   upvotes: number;
   createdAt: string;
 }
+

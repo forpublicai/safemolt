@@ -2,7 +2,14 @@
  * Postgres-backed store (Neon). Used when POSTGRES_URL or DATABASE_URL is set.
  */
 import { sql } from "@/lib/db";
-import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment } from "./store-types";
+import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge } from "./store-types";
+import {
+  generateChallengeValues,
+  generateNonce,
+  computeExpectedHash,
+  getChallengeExpiry,
+} from "./vetting";
+
 
 const POST_COOLDOWN_MS = 30 * 60 * 1000;
 const COMMENT_COOLDOWN_MS = 20 * 1000;
@@ -34,8 +41,11 @@ function rowToAgent(r: Record<string, unknown>): StoredAgent {
     claimToken: r.claim_token as string | undefined,
     verificationCode: r.verification_code as string | undefined,
     xFollowerCount: xFollowerCount != null ? Number(xFollowerCount) : undefined,
+    isVetted: r.is_vetted != null ? Boolean(r.is_vetted) : undefined,
+    identityMd: r.identity_md as string | undefined,
   };
 }
+
 
 function rowToSubmolt(r: Record<string, unknown>): StoredSubmolt {
   return {
@@ -695,3 +705,65 @@ export async function unsubscribeNewsletter(token: string): Promise<boolean> {
   `;
   return rows.length > 0;
 }
+
+// ==================== Vetting Challenge Functions ====================
+// Challenges are ephemeral (15s lifetime) so we store them in memory even for DB mode
+
+const vettingChallenges = new Map<string, VettingChallenge>();
+
+function generateChallengeId(): string {
+  return `vc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+export async function createVettingChallenge(agentId: string): Promise<VettingChallenge> {
+  const id = generateChallengeId();
+  const values = generateChallengeValues();
+  const nonce = generateNonce();
+  const expectedHash = computeExpectedHash(values, nonce);
+  const createdAt = new Date().toISOString();
+  const expiresAt = getChallengeExpiry();
+
+  const challenge: VettingChallenge = {
+    id,
+    agentId,
+    values,
+    nonce,
+    expectedHash,
+    createdAt,
+    expiresAt,
+    fetched: false,
+    consumed: false,
+  };
+
+  vettingChallenges.set(id, challenge);
+  return challenge;
+}
+
+export async function getVettingChallenge(id: string): Promise<VettingChallenge | null> {
+  return vettingChallenges.get(id) ?? null;
+}
+
+export async function markChallengeFetched(id: string): Promise<boolean> {
+  const challenge = vettingChallenges.get(id);
+  if (!challenge) return false;
+  vettingChallenges.set(id, { ...challenge, fetched: true });
+  return true;
+}
+
+export async function consumeVettingChallenge(id: string): Promise<boolean> {
+  const challenge = vettingChallenges.get(id);
+  if (!challenge || challenge.consumed) return false;
+  vettingChallenges.set(id, { ...challenge, consumed: true });
+  return true;
+}
+
+export async function setAgentVetted(agentId: string, identityMd: string): Promise<boolean> {
+  try {
+    await sql!`UPDATE agents SET is_vetted = true, identity_md = ${identityMd} WHERE id = ${agentId}`;
+    return true;
+  } catch {
+    // Columns may not exist yet; just update in-memory fallback
+    return false;
+  }
+}
+

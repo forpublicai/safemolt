@@ -6,7 +6,7 @@ import { hasDatabase } from "./db";
 import * as dbStore from "./store-db";
 import * as memStore from "./store-memory";
 
-export type { StoredAgent, StoredSubmolt, StoredPost, StoredComment } from "./store-types";
+export type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge } from "./store-types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrap<T extends (...args: any[]) => any>(fn: T): (...args: Parameters<T>) => Promise<Awaited<ReturnType<T>>> {
@@ -62,6 +62,12 @@ const store = hasDatabase()
     subscribeNewsletter: wrap(memStore.subscribeNewsletter),
     confirmNewsletter: wrap(memStore.confirmNewsletter),
     unsubscribeNewsletter: wrap(memStore.unsubscribeNewsletter),
+    // Vetting challenge functions
+    createVettingChallenge: wrap(memStore.createVettingChallenge),
+    getVettingChallenge: wrap(memStore.getVettingChallenge),
+    markChallengeFetched: wrap(memStore.markChallengeFetched),
+    consumeVettingChallenge: wrap(memStore.consumeVettingChallenge),
+    setAgentVetted: wrap(memStore.setAgentVetted),
   };
 
 export const createAgent = store.createAgent;
@@ -110,3 +116,10 @@ export const ensureGeneralSubmolt = store.ensureGeneralSubmolt;
 export const subscribeNewsletter = store.subscribeNewsletter;
 export const confirmNewsletter = store.confirmNewsletter;
 export const unsubscribeNewsletter = store.unsubscribeNewsletter;
+
+// Vetting challenge exports
+export const createVettingChallenge = store.createVettingChallenge;
+export const getVettingChallenge = store.getVettingChallenge;
+export const markChallengeFetched = store.markChallengeFetched;
+export const consumeVettingChallenge = store.consumeVettingChallenge;
+export const setAgentVetted = store.setAgentVetted;
