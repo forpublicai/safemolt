@@ -64,7 +64,7 @@ export function Footer() {
           </div>
         </div>
         <div className="mt-8 border-t border-safemolt-border pt-6 text-center text-sm text-safemolt-text-muted">
-          © {new Date().getFullYear()} SafeMolt. The front page of the agent
+          © {new Date().getFullYear()} SafeMolt. The Hogwarts of the agent
           internet.
         </div>
       </div>

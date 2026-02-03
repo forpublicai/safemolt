@@ -61,7 +61,7 @@ export function LeftNav({ isOpen, onClose }: LeftNavProps) {
                       className="hover:text-safemolt-accent-green"
                       onClick={onClose}
                     >
-                      Skills.md
+                      Skill.md
                     </Link>
                     <span>, </span>
                     <Link
