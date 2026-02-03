@@ -2,7 +2,7 @@
  * In-memory store. Used when no POSTGRES_URL/DATABASE_URL is set.
  * Uses globalThis to persist data across Next.js HMR (hot module replacement).
  */
-import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember } from "./store-types";
+import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote } from "./store-types";
 
 // Cache maps on globalThis to survive HMR in development
 const globalStore = globalThis as typeof globalThis & {
@@ -19,6 +19,8 @@ const globalStore = globalThis as typeof globalThis & {
   __safemolt_vettingChallenges?: Map<string, VettingChallenge>;
   __safemolt_houses?: Map<string, StoredHouse>;
   __safemolt_houseMembers?: Map<string, StoredHouseMember>;  // keyed by agent_id
+  __safemolt_postVotes?: Map<string, StoredPostVote>;  // keyed by "agentId:postId"
+  __safemolt_commentVotes?: Map<string, StoredCommentVote>;  // keyed by "agentId:commentId"
 };
 
 const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
@@ -34,6 +36,8 @@ const commentCountToday = globalStore.__safemolt_commentCountToday ??= new Map<s
 const vettingChallenges = globalStore.__safemolt_vettingChallenges ??= new Map<string, VettingChallenge>();
 const houses = globalStore.__safemolt_houses ??= new Map<string, StoredHouse>();
 const houseMembers = globalStore.__safemolt_houseMembers ??= new Map<string, StoredHouseMember>();
+const postVotes = globalStore.__safemolt_postVotes ??= new Map<string, StoredPostVote>();
+const commentVotes = globalStore.__safemolt_commentVotes ??= new Map<string, StoredCommentVote>();
 
 
 
@@ -204,15 +208,28 @@ export function listPosts(options: { submolt?: string; sort?: string; limit?: nu
 }
 
 export function upvotePost(postId: string, agentId: string): boolean {
+  // Check if already voted
+  if (hasVoted(agentId, postId, 'post')) {
+    return false; // Duplicate vote error
+  }
+
   const post = posts.get(postId);
   if (!post) return false;
-  const agent = agents.get(agentId);
-  if (!agent) return false;
-  posts.set(postId, { ...post, upvotes: post.upvotes + 1 });
-  agents.set(agentId, { ...agent, karma: agent.karma + 1 });
 
-  // Recalculate house points if agent is in a house
-  const membership = houseMembers.get(agentId);
+  // Record the vote
+  if (!recordVote(agentId, postId, 1, 'post')) {
+    return false; // Failed to record vote
+  }
+
+  const author = agents.get(post.authorId);
+  if (!author) return false;
+
+  posts.set(postId, { ...post, upvotes: post.upvotes + 1 });
+  // FIX: Give karma to post AUTHOR, not voter
+  agents.set(post.authorId, { ...author, karma: author.karma + 1 });
+
+  // Recalculate house points if post author is in a house
+  const membership = houseMembers.get(post.authorId);
   if (membership) {
     recalculateHousePoints(membership.houseId);
   }
@@ -221,15 +238,28 @@ export function upvotePost(postId: string, agentId: string): boolean {
 }
 
 export function downvotePost(postId: string, agentId: string): boolean {
+  // Check if already voted
+  if (hasVoted(agentId, postId, 'post')) {
+    return false; // Duplicate vote error
+  }
+
   const post = posts.get(postId);
   if (!post) return false;
-  const agent = agents.get(agentId);
-  if (!agent) return false;
-  posts.set(postId, { ...post, downvotes: post.downvotes + 1 });
-  agents.set(agentId, { ...agent, karma: Math.max(0, agent.karma - 1) });
 
-  // Recalculate house points if agent is in a house
-  const membership = houseMembers.get(agentId);
+  // Record the vote
+  if (!recordVote(agentId, postId, -1, 'post')) {
+    return false; // Failed to record vote
+  }
+
+  const author = agents.get(post.authorId);
+  if (!author) return false;
+
+  posts.set(postId, { ...post, downvotes: post.downvotes + 1 });
+  // FIX: Take karma from post AUTHOR, not voter
+  agents.set(post.authorId, { ...author, karma: Math.max(0, author.karma - 1) });
+
+  // Recalculate house points if post author is in a house
+  const membership = houseMembers.get(post.authorId);
   if (membership) {
     recalculateHousePoints(membership.houseId);
   }
@@ -273,8 +303,19 @@ export function getComment(id: string): StoredComment | null {
 }
 
 export function upvoteComment(commentId: string, agentId: string): boolean {
+  // Check if already voted
+  if (hasVoted(agentId, commentId, 'comment')) {
+    return false; // Duplicate vote error
+  }
+
   const comment = comments.get(commentId);
   if (!comment) return false;
+
+  // Record the vote
+  if (!recordVote(agentId, commentId, 1, 'comment')) {
+    return false; // Failed to record vote
+  }
+
   comments.set(commentId, { ...comment, upvotes: comment.upvotes + 1 });
   const author = agents.get(comment.authorId);
   if (author) {
@@ -285,6 +326,59 @@ export function upvoteComment(commentId: string, agentId: string): boolean {
     if (membership) {
       recalculateHousePoints(membership.houseId);
     }
+  }
+  return true;
+}
+
+// ==================== Vote Tracking Functions ====================
+
+/**
+ * Check if an agent has already voted on a post or comment
+ */
+export function hasVoted(
+  agentId: string,
+  targetId: string,
+  type: 'post' | 'comment'
+): boolean {
+  const key = `${agentId}:${targetId}`;
+  if (type === 'post') {
+    return postVotes.has(key);
+  } else {
+    return commentVotes.has(key);
+  }
+}
+
+/**
+ * Record a vote on a post or comment
+ * Returns false if duplicate vote
+ */
+export function recordVote(
+  agentId: string,
+  targetId: string,
+  voteType: number,
+  type: 'post' | 'comment'
+): boolean {
+  const key = `${agentId}:${targetId}`;
+  const votedAt = new Date().toISOString();
+
+  if (type === 'post') {
+    if (postVotes.has(key)) return false; // Duplicate vote
+    const vote: StoredPostVote = {
+      agentId,
+      postId: targetId,
+      voteType,
+      votedAt,
+    };
+    postVotes.set(key, vote);
+  } else {
+    if (commentVotes.has(key)) return false; // Duplicate vote
+    const vote: StoredCommentVote = {
+      agentId,
+      commentId: targetId,
+      voteType,
+      votedAt,
+    };
+    commentVotes.set(key, vote);
   }
   return true;
 }

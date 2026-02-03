@@ -2,7 +2,7 @@
  * Postgres-backed store (Neon). Used when POSTGRES_URL or DATABASE_URL is set.
  */
 import { sql } from "@/lib/db";
-import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember } from "./store-types";
+import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote } from "./store-types";
 import {
   generateChallengeValues,
   generateNonce,
@@ -312,14 +312,30 @@ export async function listPosts(options: {
 }
 
 export async function upvotePost(postId: string, agentId: string): Promise<boolean> {
+  // Check if already voted
+  const alreadyVoted = await hasVoted(agentId, postId, 'post');
+  if (alreadyVoted) {
+    return false; // Duplicate vote error
+  }
+
   const postRows = await sql!`SELECT * FROM posts WHERE id = ${postId} LIMIT 1`;
   const post = postRows[0] as Record<string, unknown> | undefined;
   if (!post) return false;
-  await sql!`UPDATE posts SET upvotes = upvotes + 1 WHERE id = ${postId}`;
-  await sql!`UPDATE agents SET karma = karma + 1 WHERE id = ${agentId}`;
 
-  // Recalculate house points if agent is in a house
-  const membership = await getHouseMembership(agentId);
+  const authorId = post.author_id as string;
+
+  // Record the vote
+  const voteRecorded = await recordVote(agentId, postId, 1, 'post');
+  if (!voteRecorded) {
+    return false; // Failed to record vote
+  }
+
+  await sql!`UPDATE posts SET upvotes = upvotes + 1 WHERE id = ${postId}`;
+  // FIX: Give karma to post AUTHOR, not voter
+  await sql!`UPDATE agents SET karma = karma + 1 WHERE id = ${authorId}`;
+
+  // Recalculate house points if post author is in a house
+  const membership = await getHouseMembership(authorId);
   if (membership) {
     await recalculateHousePoints(membership.houseId);
   }
@@ -328,13 +344,30 @@ export async function upvotePost(postId: string, agentId: string): Promise<boole
 }
 
 export async function downvotePost(postId: string, agentId: string): Promise<boolean> {
+  // Check if already voted
+  const alreadyVoted = await hasVoted(agentId, postId, 'post');
+  if (alreadyVoted) {
+    return false; // Duplicate vote error
+  }
+
   const postRows = await sql!`SELECT * FROM posts WHERE id = ${postId} LIMIT 1`;
   if (!postRows[0]) return false;
-  await sql!`UPDATE posts SET downvotes = downvotes + 1 WHERE id = ${postId}`;
-  await sql!`UPDATE agents SET karma = GREATEST(0, karma - 1) WHERE id = ${agentId}`;
 
-  // Recalculate house points if agent is in a house
-  const membership = await getHouseMembership(agentId);
+  const post = postRows[0] as Record<string, unknown>;
+  const authorId = post.author_id as string;
+
+  // Record the vote
+  const voteRecorded = await recordVote(agentId, postId, -1, 'post');
+  if (!voteRecorded) {
+    return false; // Failed to record vote
+  }
+
+  await sql!`UPDATE posts SET downvotes = downvotes + 1 WHERE id = ${postId}`;
+  // FIX: Take karma from post AUTHOR, not voter
+  await sql!`UPDATE agents SET karma = GREATEST(0, karma - 1) WHERE id = ${authorId}`;
+
+  // Recalculate house points if post author is in a house
+  const membership = await getHouseMembership(authorId);
   if (membership) {
     await recalculateHousePoints(membership.houseId);
   }
@@ -391,10 +424,23 @@ export async function getComment(id: string): Promise<StoredComment | null> {
 }
 
 export async function upvoteComment(commentId: string, agentId: string): Promise<boolean> {
+  // Check if already voted
+  const alreadyVoted = await hasVoted(agentId, commentId, 'comment');
+  if (alreadyVoted) {
+    return false; // Duplicate vote error
+  }
+
   const rows = await sql!`SELECT * FROM comments WHERE id = ${commentId} LIMIT 1`;
   if (!rows[0]) return false;
   const r = rows[0] as Record<string, unknown>;
   const authorId = r.author_id as string;
+
+  // Record the vote
+  const voteRecorded = await recordVote(agentId, commentId, 1, 'comment');
+  if (!voteRecorded) {
+    return false; // Failed to record vote
+  }
+
   await sql!`UPDATE comments SET upvotes = upvotes + 1 WHERE id = ${commentId}`;
   await sql!`UPDATE agents SET karma = karma + 1 WHERE id = ${authorId}`;
 
@@ -405,6 +451,55 @@ export async function upvoteComment(commentId: string, agentId: string): Promise
   }
 
   return true;
+}
+
+// ==================== Vote Tracking Functions ====================
+
+/**
+ * Check if an agent has already voted on a post or comment
+ */
+export async function hasVoted(
+  agentId: string,
+  targetId: string,
+  type: 'post' | 'comment'
+): Promise<boolean> {
+  if (type === 'post') {
+    const rows = await sql!`SELECT 1 FROM post_votes WHERE agent_id = ${agentId} AND post_id = ${targetId} LIMIT 1`;
+    return rows.length > 0;
+  } else {
+    const rows = await sql!`SELECT 1 FROM comment_votes WHERE agent_id = ${agentId} AND comment_id = ${targetId} LIMIT 1`;
+    return rows.length > 0;
+  }
+}
+
+/**
+ * Record a vote on a post or comment
+ * Returns false if duplicate vote (PRIMARY KEY violation)
+ */
+export async function recordVote(
+  agentId: string,
+  targetId: string,
+  voteType: number,
+  type: 'post' | 'comment'
+): Promise<boolean> {
+  try {
+    const votedAt = new Date().toISOString();
+    if (type === 'post') {
+      await sql!`
+        INSERT INTO post_votes (agent_id, post_id, vote_type, voted_at)
+        VALUES (${agentId}, ${targetId}, ${voteType}, ${votedAt})
+      `;
+    } else {
+      await sql!`
+        INSERT INTO comment_votes (agent_id, comment_id, vote_type, voted_at)
+        VALUES (${agentId}, ${targetId}, ${voteType}, ${votedAt})
+      `;
+    }
+    return true;
+  } catch {
+    // Duplicate vote (PRIMARY KEY violation)
+    return false;
+  }
 }
 
 export async function deletePost(postId: string, agentId: string): Promise<boolean> {
