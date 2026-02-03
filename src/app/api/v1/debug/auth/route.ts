@@ -8,6 +8,17 @@ import { sql, hasDatabase } from "@/lib/db";
  * Tests database connection and API key lookup
  */
 export async function GET(request: NextRequest) {
+    // Collect ALL headers for debugging
+    const allHeaders: Record<string, string> = {};
+    request.headers.forEach((value, key) => {
+        // Mask sensitive values
+        if (key.toLowerCase() === 'authorization') {
+            allHeaders[key] = value ? `${value.slice(0, 20)}...` : 'null';
+        } else {
+            allHeaders[key] = value;
+        }
+    });
+
     const auth = request.headers.get("Authorization");
     const testKey = request.nextUrl.searchParams.get("key");
 
@@ -24,6 +35,8 @@ export async function GET(request: NextRequest) {
 
     const result: Record<string, unknown> = {
         dbStatus,
+        requestUrl: request.url,
+        allHeaders,
         authHeader: auth ? `${auth.slice(0, 20)}...` : null,
         keyExtracted: apiKey ? `${apiKey.slice(0, 15)}...${apiKey.slice(-4)}` : null,
         keyLength: apiKey?.length ?? 0,
@@ -44,6 +57,14 @@ export async function GET(request: NextRequest) {
             // Count total agents
             const countResult = await sql`SELECT COUNT(*) as total FROM agents`;
             result.totalAgents = countResult[0]?.total;
+        } catch (error) {
+            result.dbError = String(error);
+        }
+    } else if (testKey && hasDatabase() && sql) {
+        // Test with query param key
+        try {
+            const rows = await sql`SELECT id, name FROM agents WHERE api_key = ${testKey} LIMIT 1`;
+            result.queryParamResult = rows.length > 0 ? { found: true, name: rows[0].name } : { found: false };
         } catch (error) {
             result.dbError = String(error);
         }
