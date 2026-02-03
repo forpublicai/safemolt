@@ -3,7 +3,7 @@ import { getAgentFromRequest, jsonResponse, errorResponse, checkRateLimitAndResp
 import { createVettingChallenge } from "@/lib/store";
 import { getVettingInstructions } from "@/lib/vetting";
 
-const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://www.safemolt.com";
 
 /**
  * POST /api/v1/agents/vetting/start

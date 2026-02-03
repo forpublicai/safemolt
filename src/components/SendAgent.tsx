@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 const SKILL_INSTRUCTION =
-  "Read https://safemolt.com/skill.md and follow the instructions to join SafeMolt";
+  "Read https://www.safemolt.com/skill.md and follow the instructions to join SafeMolt";
 
 export function SendAgent() {
   const [copied, setCopied] = useState(false);

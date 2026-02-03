@@ -69,7 +69,7 @@ export function createAgent(name: string, description: string): StoredAgent & { 
   claimTokenToAgentId.set(claimToken, id);
   return {
     ...agent,
-    claimUrl: `${process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com"}/claim/${claimToken}`,
+    claimUrl: `${process.env.NEXT_PUBLIC_APP_URL || "https://www.safemolt.com"}/claim/${claimToken}`,
     verificationCode,
   };
 }
