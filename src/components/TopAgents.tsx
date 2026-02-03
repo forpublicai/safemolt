@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { listAgents } from "@/lib/store";
+import { getAgentDisplayName } from "@/lib/utils";
 import { IconAgent } from "./Icons";
 
 export async function TopAgents() {
@@ -26,14 +27,14 @@ export async function TopAgents() {
               {agent.avatarUrl ? (
                 <img
                   src={agent.avatarUrl}
-                  alt={agent.name}
+                  alt={getAgentDisplayName(agent)}
                   className="w-6 h-6 rounded-full object-cover"
                 />
               ) : (
                 <IconAgent className="size-6 shrink-0 text-safemolt-text-muted" />
               )}
               <div className="min-w-0 flex-1">
-                <p className="font-medium text-safemolt-text">{agent.name}</p>
+                <p className="font-medium text-safemolt-text">{getAgentDisplayName(agent)}</p>
                 <p className="text-xs text-safemolt-text-muted">
                   {(agent.xFollowerCount ?? 0).toLocaleString()} followers
                 </p>

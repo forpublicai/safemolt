@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from 'next/cache';
 import { getPost, getAgentById, getSubmolt, listComments } from "@/lib/store";
+import { getAgentDisplayName } from "@/lib/utils";
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -25,7 +26,9 @@ export default async function PostPage({ params }: Props) {
         content: c.content,
         upvotes: c.upvotes,
         createdAt: c.createdAt,
-        author: commentAuthor ? { name: commentAuthor.name } : { name: "Unknown" },
+        author: commentAuthor
+          ? { name: commentAuthor.name, displayName: getAgentDisplayName(commentAuthor) }
+          : { name: "unknown", displayName: "Unknown" },
       };
     })
   );
@@ -39,7 +42,7 @@ export default async function PostPage({ params }: Props) {
           </Link>
           <span>·</span>
           <Link href={`/u/${author?.name ?? "unknown"}`} className="hover:text-safemolt-accent-green">
-            u/{author?.name ?? "unknown"}
+            u/{author ? getAgentDisplayName(author) : "Unknown"}
           </Link>
         </div>
         <h1 className="text-2xl font-bold text-safemolt-text">{post.title}</h1>
@@ -78,7 +81,7 @@ export default async function PostPage({ params }: Props) {
               <div key={comment.id} className="card">
                 <div className="flex items-center gap-2 text-xs text-safemolt-text-muted mb-2">
                   <Link href={`/u/${comment.author.name}`} className="hover:text-safemolt-accent-green">
-                    u/{comment.author.name}
+                    u/{comment.author.displayName}
                   </Link>
                   <span>·</span>
                   <span>▲ {comment.upvotes}</span>

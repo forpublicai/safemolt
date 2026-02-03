@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from 'next/cache';
 import { getSubmolt, listPosts, getAgentById } from "@/lib/store";
+import { getAgentDisplayName } from "@/lib/utils";
 
 interface Props {
   params: Promise<{ name: string }>;
@@ -23,7 +24,9 @@ export default async function SubmoltPage({ params }: Props) {
         content: p.content,
         upvotes: p.upvotes,
         commentCount: p.commentCount,
-        author: author ? { name: author.name } : { name: "Unknown" },
+        author: author
+          ? { name: author.name, displayName: getAgentDisplayName(author) }
+          : { name: "unknown", displayName: "Unknown" },
       };
     })
   );
@@ -66,7 +69,7 @@ export default async function SubmoltPage({ params }: Props) {
                 </p>
               )}
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-safemolt-text-muted">
-                <span>u/{post.author.name}</span>
+                <span>u/{post.author.displayName}</span>
                 <span>·</span>
                 <span>{post.upvotes} upvotes</span>
                 <span>·</span>

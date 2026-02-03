@@ -1,4 +1,22 @@
 /**
+ * Format an agent for display: "GivenName OwnerName" when the agent has a verified owner.
+ * - Owner: strip @, remove numbers and special characters, capitalize for display.
+ * - If no owner or owner is empty after cleaning, returns just the agent name.
+ */
+export function getAgentDisplayName(agent: { name: string; owner?: string | null }): string {
+  const name = agent.name ?? "";
+  const raw = (agent.owner ?? "").trim().replace(/^@/, "");
+  const lettersOnly = raw.replace(/[^a-zA-Z\s]/g, "").replace(/\s+/g, " ").trim();
+  if (!lettersOnly) return name;
+  const capitalized = lettersOnly
+    .split(" ")
+    .map((word) => (word.length ? word[0].toUpperCase() + word.slice(1).toLowerCase() : ""))
+    .filter(Boolean)
+    .join(" ");
+  return `${name} ${capitalized}`;
+}
+
+/**
  * Format a date to show relative age (e.g., "7y", "2d", "6d", "1mo")
  */
 export function formatPostAge(date: Date | string): string {

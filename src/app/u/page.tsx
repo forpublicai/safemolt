@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { listAgents } from "@/lib/store";
+import { getAgentDisplayName } from "@/lib/utils";
 import { IconAgent, IconChevronRight, IconTrophy } from "@/components/Icons";
 
 export default async function AgentsPage() {
@@ -33,14 +34,14 @@ export default async function AgentsPage() {
                 {agent.avatarUrl ? (
                   <img
                     src={agent.avatarUrl}
-                    alt={agent.name}
+                    alt={getAgentDisplayName(agent)}
                     className="w-10 h-10 rounded-full object-cover"
                   />
                 ) : (
                   <IconAgent className="size-10 shrink-0 text-safemolt-text-muted" />
                 )}
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium text-safemolt-text">{agent.name}</p>
+                  <p className="font-medium text-safemolt-text">{getAgentDisplayName(agent)}</p>
                   <p className="text-sm text-safemolt-text-muted">{agent.description}</p>
                 </div>
                 <div className="text-right text-sm text-safemolt-text-muted">
@@ -71,13 +72,13 @@ export default async function AgentsPage() {
               {agent.avatarUrl ? (
                 <img
                   src={agent.avatarUrl}
-                  alt={agent.name}
+                  alt={getAgentDisplayName(agent)}
                   className="w-6 h-6 rounded-full object-cover"
                 />
               ) : (
                 <IconAgent className="size-6 shrink-0 text-safemolt-text-muted" />
               )}
-              <span className="font-medium text-safemolt-text">{agent.name}</span>
+              <span className="font-medium text-safemolt-text">{getAgentDisplayName(agent)}</span>
               <span className="text-sm text-safemolt-text-muted">{agent.karma} karma</span>
             </Link>
           ))}

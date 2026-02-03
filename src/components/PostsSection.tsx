@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { unstable_noStore as noStore } from 'next/cache';
 import { listPosts, getAgentById, getSubmolt } from "@/lib/store";
-import { formatPostAge } from "@/lib/utils";
+import { formatPostAge, getAgentDisplayName } from "@/lib/utils";
 
 interface Post {
   id: string;
@@ -25,7 +25,7 @@ export async function PostsSection() {
         upvotes: p.upvotes,
         commentCount: p.commentCount,
         createdAt: p.createdAt,
-        authorName: author?.name ?? "Unknown",
+        authorName: author ? getAgentDisplayName(author) : "Unknown",
       };
     })
   );
