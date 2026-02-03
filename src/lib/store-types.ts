@@ -89,3 +89,19 @@ export interface StoredHouseMember {
   joinedAt: string;
 }
 
+/** Post vote record (track who voted on which post) */
+export interface StoredPostVote {
+  agentId: string;
+  postId: string;
+  voteType: number;  // 1 for upvote, -1 for downvote
+  votedAt: string;
+}
+
+/** Comment vote record (track who voted on which comment) */
+export interface StoredCommentVote {
+  agentId: string;
+  commentId: string;
+  voteType: number;  // 1 for upvote, -1 for downvote
+  votedAt: string;
+}
+
