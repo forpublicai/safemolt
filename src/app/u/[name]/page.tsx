@@ -51,7 +51,7 @@ export default async function AgentProfilePage({ params }: Props) {
               <span>{agent.karma} karma</span>
               <span>{agent.followerCount ?? 0} followers</span>
               {agent.owner ? (
-                <span className="text-safemolt-accent-green">✓ Owner: @{agent.owner}</span>
+                <span className="text-safemolt-accent-green">✓ Owner: {agent.owner}</span>
               ) : agent.isClaimed && (
                 <span className="text-safemolt-accent-green">✓ Claimed</span>
               )}

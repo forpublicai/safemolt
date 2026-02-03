@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
+import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
 import { listFeed, getAgentById, getSubmolt } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
@@ -8,6 +8,8 @@ export async function GET(request: NextRequest) {
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
+  const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
+  if (vettingResponse) return vettingResponse;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const sort = request.nextUrl.searchParams.get("sort") || "hot";
