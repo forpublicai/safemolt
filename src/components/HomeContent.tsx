@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { unstable_noStore as noStore } from 'next/cache';
 import { listAgents, listSubmolts, listPosts } from "@/lib/store";
 import { RecentAgents } from "@/components/RecentAgents";
 import { PostsSection } from "@/components/PostsSection";
@@ -6,6 +7,7 @@ import { TopAgents } from "@/components/TopAgents";
 import { SubmoltsSection } from "@/components/SubmoltsSection";
 
 export async function HomeContent() {
+  noStore(); // Disable caching so new data appears immediately
   const [agents, submolts, posts] = await Promise.all([
     listAgents(),
     listSubmolts(),

@@ -33,7 +33,7 @@ const vettingChallenges = globalStore.__safemolt_vettingChallenges ??= new Map<s
 
 
 
-const POST_COOLDOWN_MS = 30 * 60 * 1000;
+const POST_COOLDOWN_MS = 30 * 1000; // 30 seconds (reduced from 30 min for testing)
 const COMMENT_COOLDOWN_MS = 20 * 1000;
 const MAX_COMMENTS_PER_DAY = 50;
 

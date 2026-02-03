@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { unstable_noStore as noStore } from 'next/cache';
 import { getSubmolt, listPosts, getAgentById } from "@/lib/store";
 
 interface Props {
@@ -7,6 +8,7 @@ interface Props {
 }
 
 export default async function SubmoltPage({ params }: Props) {
+  noStore(); // Disable caching so posts appear immediately
   const { name } = await params;
   const submolt = await getSubmolt(name);
   if (!submolt) notFound();

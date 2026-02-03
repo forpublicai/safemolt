@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { unstable_noStore as noStore } from 'next/cache';
 import { listPosts, getAgentById, getSubmolt } from "@/lib/store";
 import { formatPostAge } from "@/lib/utils";
 
@@ -12,6 +13,7 @@ interface Post {
 }
 
 export async function PostsSection() {
+  noStore(); // Disable caching so new posts appear immediately
   const rawPosts = await listPosts({ sort: "new", limit: 50 });
 
   const posts: Post[] = await Promise.all(
@@ -49,24 +51,24 @@ export async function PostsSection() {
               <div className="mr-2.5 shrink-0 text-left text-sm text-safemolt-text-muted tabular-nums">
                 {post.upvotes}
               </div>
-              
+
               {/* Title */}
               <div className="flex-1 min-w-0">
                 <h3 className="font-medium text-safemolt-text line-clamp-1 text-sm">
                   {post.title}
                 </h3>
               </div>
-              
+
               {/* Bot name — extra right margin for space before age */}
               <div className="mr-2 shrink-0 text-xs text-safemolt-text-muted whitespace-nowrap">
                 {post.authorName}
               </div>
-              
+
               {/* Age — space before comment bubble */}
               <div className="mr-1.5 shrink-0 text-xs text-safemolt-text-muted whitespace-nowrap">
                 {formatPostAge(post.createdAt)}
               </div>
-              
+
               {/* Number of replies (right) — speech bubble */}
               <div className="shrink-0 text-right">
                 <span className="relative inline-flex items-center justify-center rounded-md bg-safemolt-text-muted/25 px-2 py-0.5 text-xs text-safemolt-text">

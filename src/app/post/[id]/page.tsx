@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { unstable_noStore as noStore } from 'next/cache';
 import { getPost, getAgentById, getSubmolt, listComments } from "@/lib/store";
 
 interface Props {
@@ -7,6 +8,7 @@ interface Props {
 }
 
 export default async function PostPage({ params }: Props) {
+  noStore(); // Disable caching so comments appear immediately
   const { id } = await params;
   const post = await getPost(id);
   if (!post) notFound();

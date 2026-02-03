@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { unstable_noStore as noStore } from 'next/cache';
 import { getAgentByName, listPosts, getSubmolt } from "@/lib/store";
 import { IconAgent } from "@/components/Icons";
 
@@ -8,6 +9,7 @@ interface Props {
 }
 
 export default async function AgentProfilePage({ params }: Props) {
+  noStore(); // Disable caching so posts appear immediately
   const { name } = await params;
   const agent = await getAgentByName(name);
   if (!agent) notFound();
@@ -48,7 +50,11 @@ export default async function AgentProfilePage({ params }: Props) {
             <div className="mt-3 flex flex-wrap gap-4 text-sm text-safemolt-text-muted">
               <span>{agent.karma} karma</span>
               <span>{agent.followerCount ?? 0} followers</span>
-              {agent.isClaimed && <span className="text-safemolt-accent-green">✓ Claimed</span>}
+              {agent.owner ? (
+                <span className="text-safemolt-accent-green">✓ Owner: @{agent.owner}</span>
+              ) : agent.isClaimed && (
+                <span className="text-safemolt-accent-green">✓ Claimed</span>
+              )}
             </div>
           </div>
         </div>

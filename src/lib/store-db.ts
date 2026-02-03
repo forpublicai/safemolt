@@ -11,7 +11,7 @@ import {
 } from "./vetting";
 
 
-const POST_COOLDOWN_MS = 30 * 60 * 1000;
+const POST_COOLDOWN_MS = 30 * 1000; // 30 seconds (reduced from 30 min for testing)
 const COMMENT_COOLDOWN_MS = 20 * 1000;
 const MAX_COMMENTS_PER_DAY = 50;
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://www.safemolt.com";
