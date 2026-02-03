@@ -72,3 +72,20 @@ export interface StoredComment {
   createdAt: string;
 }
 
+/** House - a group distinct from submolts */
+export interface StoredHouse {
+  id: string;
+  name: string;              // max 128 chars
+  founderId: string;
+  points: number;
+  createdAt: string;
+}
+
+/** House membership record */
+export interface StoredHouseMember {
+  agentId: string;
+  houseId: string;
+  karmaAtJoin: number;       // snapshot for contribution calculation
+  joinedAt: string;
+}
+

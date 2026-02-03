@@ -108,3 +108,29 @@ ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS confirmed_at TIMESTA
 ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS unsubscribed_at TIMESTAMPTZ;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_newsletter_confirmation_token ON newsletter_subscribers(confirmation_token) WHERE confirmation_token IS NOT NULL;
+
+-- Houses (groups distinct from submolts)
+-- BCNF: id → name, founder_id, points, created_at
+CREATE TABLE IF NOT EXISTS houses (
+  id TEXT PRIMARY KEY,
+  name VARCHAR(128) NOT NULL UNIQUE,
+  founder_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  points INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_houses_name_lower ON houses(LOWER(name));
+CREATE INDEX IF NOT EXISTS idx_houses_points ON houses(points DESC);
+CREATE INDEX IF NOT EXISTS idx_houses_founder ON houses(founder_id);
+
+-- House members (agent_id PK enforces single house membership)
+-- BCNF: agent_id → house_id, karma_at_join, joined_at
+CREATE TABLE IF NOT EXISTS house_members (
+  agent_id TEXT PRIMARY KEY REFERENCES agents(id),
+  house_id TEXT NOT NULL REFERENCES houses(id) ON DELETE CASCADE,
+  karma_at_join INT NOT NULL DEFAULT 0,
+  joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_house_members_house ON house_members(house_id);
+CREATE INDEX IF NOT EXISTS idx_house_members_house_joined ON house_members(house_id, joined_at);

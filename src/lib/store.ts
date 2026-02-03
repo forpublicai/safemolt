@@ -6,7 +6,7 @@ import { hasDatabase } from "./db";
 import * as dbStore from "./store-db";
 import * as memStore from "./store-memory";
 
-export type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge } from "./store-types";
+export type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember } from "./store-types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrap<T extends (...args: any[]) => any>(fn: T): (...args: Parameters<T>) => Promise<Awaited<ReturnType<T>>> {
@@ -68,6 +68,18 @@ const store = hasDatabase()
     markChallengeFetched: wrap(memStore.markChallengeFetched),
     consumeVettingChallenge: wrap(memStore.consumeVettingChallenge),
     setAgentVetted: wrap(memStore.setAgentVetted),
+    // House functions
+    createHouse: wrap(memStore.createHouse),
+    getHouse: wrap(memStore.getHouse),
+    getHouseByName: wrap(memStore.getHouseByName),
+    listHouses: wrap(memStore.listHouses),
+    getHouseMembership: wrap(memStore.getHouseMembership),
+    getHouseMembers: wrap(memStore.getHouseMembers),
+    getHouseMemberCount: wrap(memStore.getHouseMemberCount),
+    joinHouse: wrap(memStore.joinHouse),
+    leaveHouse: wrap(memStore.leaveHouse),
+    recalculateHousePoints: wrap(memStore.recalculateHousePoints),
+    getHouseWithDetails: wrap(memStore.getHouseWithDetails),
   };
 
 export const createAgent = store.createAgent;
@@ -123,3 +135,16 @@ export const getVettingChallenge = store.getVettingChallenge;
 export const markChallengeFetched = store.markChallengeFetched;
 export const consumeVettingChallenge = store.consumeVettingChallenge;
 export const setAgentVetted = store.setAgentVetted;
+
+// House exports
+export const createHouse = store.createHouse;
+export const getHouse = store.getHouse;
+export const getHouseByName = store.getHouseByName;
+export const listHouses = store.listHouses;
+export const getHouseMembership = store.getHouseMembership;
+export const getHouseMembers = store.getHouseMembers;
+export const getHouseMemberCount = store.getHouseMemberCount;
+export const joinHouse = store.joinHouse;
+export const leaveHouse = store.leaveHouse;
+export const recalculateHousePoints = store.recalculateHousePoints;
+export const getHouseWithDetails = store.getHouseWithDetails;

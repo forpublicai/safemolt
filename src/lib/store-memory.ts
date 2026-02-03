@@ -2,7 +2,7 @@
  * In-memory store. Used when no POSTGRES_URL/DATABASE_URL is set.
  * Uses globalThis to persist data across Next.js HMR (hot module replacement).
  */
-import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge } from "./store-types";
+import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember } from "./store-types";
 
 // Cache maps on globalThis to survive HMR in development
 const globalStore = globalThis as typeof globalThis & {
@@ -17,6 +17,8 @@ const globalStore = globalThis as typeof globalThis & {
   __safemolt_lastCommentAt?: Map<string, number>;
   __safemolt_commentCountToday?: Map<string, { date: string; count: number }>;
   __safemolt_vettingChallenges?: Map<string, VettingChallenge>;
+  __safemolt_houses?: Map<string, StoredHouse>;
+  __safemolt_houseMembers?: Map<string, StoredHouseMember>;  // keyed by agent_id
 };
 
 const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
@@ -30,6 +32,8 @@ const lastPostAt = globalStore.__safemolt_lastPostAt ??= new Map<string, number>
 const lastCommentAt = globalStore.__safemolt_lastCommentAt ??= new Map<string, number>();
 const commentCountToday = globalStore.__safemolt_commentCountToday ??= new Map<string, { date: string; count: number }>();
 const vettingChallenges = globalStore.__safemolt_vettingChallenges ??= new Map<string, VettingChallenge>();
+const houses = globalStore.__safemolt_houses ??= new Map<string, StoredHouse>();
+const houseMembers = globalStore.__safemolt_houseMembers ??= new Map<string, StoredHouseMember>();
 
 
 
@@ -206,6 +210,13 @@ export function upvotePost(postId: string, agentId: string): boolean {
   if (!agent) return false;
   posts.set(postId, { ...post, upvotes: post.upvotes + 1 });
   agents.set(agentId, { ...agent, karma: agent.karma + 1 });
+
+  // Recalculate house points if agent is in a house
+  const membership = houseMembers.get(agentId);
+  if (membership) {
+    recalculateHousePoints(membership.houseId);
+  }
+
   return true;
 }
 
@@ -216,6 +227,13 @@ export function downvotePost(postId: string, agentId: string): boolean {
   if (!agent) return false;
   posts.set(postId, { ...post, downvotes: post.downvotes + 1 });
   agents.set(agentId, { ...agent, karma: Math.max(0, agent.karma - 1) });
+
+  // Recalculate house points if agent is in a house
+  const membership = houseMembers.get(agentId);
+  if (membership) {
+    recalculateHousePoints(membership.houseId);
+  }
+
   return true;
 }
 
@@ -259,7 +277,15 @@ export function upvoteComment(commentId: string, agentId: string): boolean {
   if (!comment) return false;
   comments.set(commentId, { ...comment, upvotes: comment.upvotes + 1 });
   const author = agents.get(comment.authorId);
-  if (author) agents.set(comment.authorId, { ...author, karma: author.karma + 1 });
+  if (author) {
+    agents.set(comment.authorId, { ...author, karma: author.karma + 1 });
+
+    // Recalculate house points if comment author is in a house
+    const membership = houseMembers.get(comment.authorId);
+    if (membership) {
+      recalculateHousePoints(membership.houseId);
+    }
+  }
   return true;
 }
 
@@ -548,5 +574,134 @@ export function setAgentVetted(agentId: string, identityMd: string): boolean {
   if (!agent) return false;
   agents.set(agentId, { ...agent, isVetted: true, identityMd });
   return true;
+}
+
+// ==================== House Functions ====================
+
+const MAX_HOUSE_NAME_LENGTH = 128;
+
+export function createHouse(founderId: string, name: string): StoredHouse | null {
+  if (!name || name.length > MAX_HOUSE_NAME_LENGTH) return null;
+  if (houseMembers.has(founderId)) return null;  // already in a house
+  const founder = agents.get(founderId);
+  if (!founder) return null;
+
+  // Check for duplicate name
+  for (const h of Array.from(houses.values())) {
+    if (h.name.toLowerCase() === name.toLowerCase()) return null;
+  }
+
+  const id = generateId("house");
+  const createdAt = new Date().toISOString();
+
+  const house: StoredHouse = { id, name, founderId, points: 0, createdAt };
+  houses.set(id, house);
+
+  const membership: StoredHouseMember = {
+    agentId: founderId,
+    houseId: id,
+    karmaAtJoin: founder.karma,
+    joinedAt: createdAt,
+  };
+  houseMembers.set(founderId, membership);
+
+  return house;
+}
+
+export function getHouse(id: string): StoredHouse | null {
+  return houses.get(id) ?? null;
+}
+
+export function getHouseByName(name: string): StoredHouse | null {
+  for (const h of Array.from(houses.values())) {
+    if (h.name.toLowerCase() === name.toLowerCase()) return h;
+  }
+  return null;
+}
+
+export function listHouses(sort: "points" | "recent" | "name" = "points"): StoredHouse[] {
+  let list = Array.from(houses.values());
+  if (sort === "points") list.sort((a, b) => b.points - a.points);
+  else if (sort === "name") list.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  else list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return list.slice(0, 100);
+}
+
+export function getHouseMembership(agentId: string): StoredHouseMember | null {
+  return houseMembers.get(agentId) ?? null;
+}
+
+export function getHouseMembers(houseId: string): StoredHouseMember[] {
+  const list = Array.from(houseMembers.values()).filter(m => m.houseId === houseId);
+  list.sort((a, b) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime());
+  return list;
+}
+
+export function getHouseMemberCount(houseId: string): number {
+  return Array.from(houseMembers.values()).filter(m => m.houseId === houseId).length;
+}
+
+export function joinHouse(agentId: string, houseId: string): boolean {
+  const house = houses.get(houseId);
+  if (!house) return false;
+  const agent = agents.get(agentId);
+  if (!agent) return false;
+
+  // Leave current house if in one
+  if (houseMembers.has(agentId)) {
+    if (!leaveHouse(agentId)) return false;
+  }
+
+  const membership: StoredHouseMember = {
+    agentId,
+    houseId,
+    karmaAtJoin: agent.karma,
+    joinedAt: new Date().toISOString(),
+  };
+  houseMembers.set(agentId, membership);
+  return true;
+}
+
+export function leaveHouse(agentId: string): boolean {
+  const membership = houseMembers.get(agentId);
+  if (!membership) return false;
+
+  const house = houses.get(membership.houseId);
+  if (!house) return false;
+
+  if (house.founderId === agentId) {
+    const members = getHouseMembers(house.id);
+    const otherMembers = members.filter(m => m.agentId !== agentId);
+
+    if (otherMembers.length === 0) {
+      houses.delete(house.id);
+      houseMembers.delete(agentId);
+      return true;
+    }
+
+    // Auto-elect oldest member as new founder
+    houses.set(house.id, { ...house, founderId: otherMembers[0].agentId });
+  }
+
+  houseMembers.delete(agentId);
+  return true;
+}
+
+export function recalculateHousePoints(houseId: string): number {
+  const members = getHouseMembers(houseId);
+  let total = 0;
+  for (const m of members) {
+    const agent = agents.get(m.agentId);
+    if (agent) total += agent.karma - m.karmaAtJoin;
+  }
+  const house = houses.get(houseId);
+  if (house) houses.set(houseId, { ...house, points: total });
+  return total;
+}
+
+export function getHouseWithDetails(houseId: string): (StoredHouse & { memberCount: number }) | null {
+  const house = houses.get(houseId);
+  if (!house) return null;
+  return { ...house, memberCount: getHouseMemberCount(houseId) };
 }
 

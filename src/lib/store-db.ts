@@ -2,7 +2,7 @@
  * Postgres-backed store (Neon). Used when POSTGRES_URL or DATABASE_URL is set.
  */
 import { sql } from "@/lib/db";
-import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge } from "./store-types";
+import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember } from "./store-types";
 import {
   generateChallengeValues,
   generateNonce,
@@ -317,6 +317,13 @@ export async function upvotePost(postId: string, agentId: string): Promise<boole
   if (!post) return false;
   await sql!`UPDATE posts SET upvotes = upvotes + 1 WHERE id = ${postId}`;
   await sql!`UPDATE agents SET karma = karma + 1 WHERE id = ${agentId}`;
+
+  // Recalculate house points if agent is in a house
+  const membership = await getHouseMembership(agentId);
+  if (membership) {
+    await recalculateHousePoints(membership.houseId);
+  }
+
   return true;
 }
 
@@ -325,6 +332,13 @@ export async function downvotePost(postId: string, agentId: string): Promise<boo
   if (!postRows[0]) return false;
   await sql!`UPDATE posts SET downvotes = downvotes + 1 WHERE id = ${postId}`;
   await sql!`UPDATE agents SET karma = GREATEST(0, karma - 1) WHERE id = ${agentId}`;
+
+  // Recalculate house points if agent is in a house
+  const membership = await getHouseMembership(agentId);
+  if (membership) {
+    await recalculateHousePoints(membership.houseId);
+  }
+
   return true;
 }
 
@@ -380,8 +394,16 @@ export async function upvoteComment(commentId: string, agentId: string): Promise
   const rows = await sql!`SELECT * FROM comments WHERE id = ${commentId} LIMIT 1`;
   if (!rows[0]) return false;
   const r = rows[0] as Record<string, unknown>;
+  const authorId = r.author_id as string;
   await sql!`UPDATE comments SET upvotes = upvotes + 1 WHERE id = ${commentId}`;
-  await sql!`UPDATE agents SET karma = karma + 1 WHERE id = ${r.author_id}`;
+  await sql!`UPDATE agents SET karma = karma + 1 WHERE id = ${authorId}`;
+
+  // Recalculate house points if comment author is in a house
+  const membership = await getHouseMembership(authorId);
+  if (membership) {
+    await recalculateHousePoints(membership.houseId);
+  }
+
   return true;
 }
 
@@ -775,5 +797,240 @@ export async function setAgentVetted(agentId: string, identityMd: string): Promi
     // Columns may not exist yet; just update in-memory fallback
     return false;
   }
+}
+
+// ==================== House Functions ====================
+
+const MAX_HOUSE_NAME_LENGTH = 128;
+
+function rowToHouse(r: Record<string, unknown>): StoredHouse {
+  return {
+    id: r.id as string,
+    name: r.name as string,
+    founderId: r.founder_id as string,
+    points: Number(r.points),
+    createdAt: String(r.created_at),
+  };
+}
+
+function rowToHouseMember(r: Record<string, unknown>): StoredHouseMember {
+  return {
+    agentId: r.agent_id as string,
+    houseId: r.house_id as string,
+    karmaAtJoin: Number(r.karma_at_join),
+    joinedAt: String(r.joined_at),
+  };
+}
+
+/**
+ * Create a new house. The creator becomes founder and first member.
+ * Returns null if agent is already in a house or name is invalid.
+ */
+export async function createHouse(
+  founderId: string,
+  name: string
+): Promise<StoredHouse | null> {
+  // Validate name length
+  if (!name || name.length > MAX_HOUSE_NAME_LENGTH) {
+    return null;
+  }
+
+  // Check if founder is already in a house
+  const existingMembership = await getHouseMembership(founderId);
+  if (existingMembership) {
+    return null;
+  }
+
+  // Get founder's current karma for snapshot
+  const founder = await getAgentById(founderId);
+  if (!founder) return null;
+
+  const id = generateId("house");
+  const createdAt = new Date().toISOString();
+
+  try {
+    // Create house
+    await sql!`
+      INSERT INTO houses (id, name, founder_id, points, created_at)
+      VALUES (${id}, ${name}, ${founderId}, 0, ${createdAt})
+    `;
+
+    // Add founder as first member
+    await sql!`
+      INSERT INTO house_members (agent_id, house_id, karma_at_join, joined_at)
+      VALUES (${founderId}, ${id}, ${founder.karma}, ${createdAt})
+    `;
+
+    const rows = await sql!`SELECT * FROM houses WHERE id = ${id} LIMIT 1`;
+    return rowToHouse(rows[0] as Record<string, unknown>);
+  } catch {
+    // Likely duplicate name
+    return null;
+  }
+}
+
+/** Get a house by ID */
+export async function getHouse(id: string): Promise<StoredHouse | null> {
+  const rows = await sql!`SELECT * FROM houses WHERE id = ${id} LIMIT 1`;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r ? rowToHouse(r) : null;
+}
+
+/** Get a house by name (case-insensitive) */
+export async function getHouseByName(name: string): Promise<StoredHouse | null> {
+  const rows = await sql!`SELECT * FROM houses WHERE LOWER(name) = LOWER(${name}) LIMIT 1`;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r ? rowToHouse(r) : null;
+}
+
+/** List houses, optionally sorted */
+export async function listHouses(
+  sort: "points" | "recent" | "name" = "points"
+): Promise<StoredHouse[]> {
+  let rows: Record<string, unknown>[];
+  if (sort === "points") {
+    rows = await sql!`SELECT * FROM houses ORDER BY points DESC LIMIT 100`;
+  } else if (sort === "name") {
+    rows = await sql!`SELECT * FROM houses ORDER BY LOWER(name) ASC LIMIT 100`;
+  } else {
+    rows = await sql!`SELECT * FROM houses ORDER BY created_at DESC LIMIT 100`;
+  }
+  return (rows as Record<string, unknown>[]).map(rowToHouse);
+}
+
+/** Get an agent's current house membership */
+export async function getHouseMembership(agentId: string): Promise<StoredHouseMember | null> {
+  const rows = await sql!`SELECT * FROM house_members WHERE agent_id = ${agentId} LIMIT 1`;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r ? rowToHouseMember(r) : null;
+}
+
+/** Get all members of a house */
+export async function getHouseMembers(houseId: string): Promise<StoredHouseMember[]> {
+  const rows = await sql!`SELECT * FROM house_members WHERE house_id = ${houseId} ORDER BY joined_at ASC`;
+  return (rows as Record<string, unknown>[]).map(rowToHouseMember);
+}
+
+/** Get member count for a house */
+export async function getHouseMemberCount(houseId: string): Promise<number> {
+  const rows = await sql!`SELECT COUNT(*)::int AS c FROM house_members WHERE house_id = ${houseId}`;
+  return Number((rows[0] as { c: number }).c);
+}
+
+/**
+ * Join a house. Leaves current house if in one.
+ * Returns false if house doesn't exist.
+ */
+export async function joinHouse(agentId: string, houseId: string): Promise<boolean> {
+  const house = await getHouse(houseId);
+  if (!house) return false;
+
+  const agent = await getAgentById(agentId);
+  if (!agent) return false;
+
+  // Leave current house if in one
+  const currentMembership = await getHouseMembership(agentId);
+  if (currentMembership) {
+    const leftOk = await leaveHouse(agentId);
+    if (!leftOk) return false;
+  }
+
+  const joinedAt = new Date().toISOString();
+
+  await sql!`
+    INSERT INTO house_members (agent_id, house_id, karma_at_join, joined_at)
+    VALUES (${agentId}, ${houseId}, ${agent.karma}, ${joinedAt})
+  `;
+
+  return true;
+}
+
+/**
+ * Leave current house.
+ * If founder leaves, promotes oldest member or dissolves house.
+ *
+ * Uses a transaction with row locking to prevent race conditions
+ * when multiple founders attempt to leave simultaneously.
+ */
+export async function leaveHouse(agentId: string): Promise<boolean> {
+  const membership = await getHouseMembership(agentId);
+  if (!membership) return false;
+
+  // Use transaction with row locking to prevent race conditions
+  try {
+    await sql!`BEGIN`;
+
+    // Lock the house row to prevent concurrent modifications
+    const houseRows = await sql!`
+      SELECT id, name, founder_id, points, created_at
+      FROM houses
+      WHERE id = ${membership.houseId}
+      FOR UPDATE
+    `;
+
+    if (houseRows.length === 0) {
+      await sql!`ROLLBACK`;
+      return false;
+    }
+    const house = rowToHouse(houseRows[0] as Record<string, unknown>);
+
+    // Check if leaving agent is founder
+    if (house.founderId === agentId) {
+      // Get other members ordered by join date (oldest first)
+      const memberRows = await sql!`
+        SELECT agent_id, house_id, karma_at_join, joined_at
+        FROM house_members
+        WHERE house_id = ${house.id}
+        ORDER BY joined_at ASC
+      `;
+      const members = memberRows.map(r => rowToHouseMember(r as Record<string, unknown>));
+      const otherMembers = members.filter(m => m.agentId !== agentId);
+
+      if (otherMembers.length === 0) {
+        // No other members - dissolve house (CASCADE will delete membership)
+        await sql!`DELETE FROM houses WHERE id = ${house.id}`;
+        await sql!`COMMIT`;
+        return true;
+      }
+
+      // Auto-elect oldest member as new founder
+      const newFounder = otherMembers[0];
+      await sql!`UPDATE houses SET founder_id = ${newFounder.agentId} WHERE id = ${house.id}`;
+    }
+
+    // Remove membership
+    await sql!`DELETE FROM house_members WHERE agent_id = ${agentId}`;
+    await sql!`COMMIT`;
+    return true;
+  } catch (error) {
+    await sql!`ROLLBACK`;
+    throw error;
+  }
+}
+
+/**
+ * Recalculate house points based on member karma contributions.
+ * Points = sum of (current karma - karma at join) for all members.
+ */
+export async function recalculateHousePoints(houseId: string): Promise<number> {
+  const result = await sql!`
+    SELECT COALESCE(SUM(a.karma - hm.karma_at_join), 0)::int AS total
+    FROM house_members hm
+    JOIN agents a ON a.id = hm.agent_id
+    WHERE hm.house_id = ${houseId}
+  `;
+  const points = Number((result[0] as { total: number }).total);
+
+  await sql!`UPDATE houses SET points = ${points} WHERE id = ${houseId}`;
+  return points;
+}
+
+/** Get house with computed member count */
+export async function getHouseWithDetails(houseId: string): Promise<(StoredHouse & { memberCount: number }) | null> {
+  const house = await getHouse(houseId);
+  if (!house) return null;
+
+  const memberCount = await getHouseMemberCount(houseId);
+  return { ...house, memberCount };
 }
 

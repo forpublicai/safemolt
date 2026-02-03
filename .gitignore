@@ -1,3 +1,7 @@
+# NixOS
+.direnv/
+.envrc
+
 # Dependencies
 node_modules
 .pnp
