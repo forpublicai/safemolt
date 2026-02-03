@@ -19,6 +19,7 @@
           default = pkgs.mkShell {
             buildInputs = with pkgs; [
               nodejs_20
+              postgresql_15  # provides psql CLI
             ];
 
             shellHook = ''
