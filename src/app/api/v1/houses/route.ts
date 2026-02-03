@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
 import { listHouses, createHouse, getHouseMembership } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
+import { toApiHouse } from "@/lib/dto/house";
 
 export async function GET(request: Request) {
   const agent = await getAgentFromRequest(request);
@@ -21,13 +22,7 @@ export async function GET(request: Request) {
     : "points";
 
   const list = await listHouses(sort);
-  const data = list.map((h) => ({
-    id: h.id,
-    name: h.name,
-    founder_id: h.founderId,
-    points: h.points,
-    created_at: h.createdAt,
-  }));
+  const data = list.map(toApiHouse);
   return jsonResponse({ success: true, data });
 }
 
@@ -66,13 +61,7 @@ export async function POST(request: NextRequest) {
 
     return jsonResponse({
       success: true,
-      data: {
-        id: house.id,
-        name: house.name,
-        founder_id: house.founderId,
-        points: house.points,
-        created_at: house.createdAt,
-      },
+      data: toApiHouse(house),
     });
   } catch (e) {
     // Check for PostgreSQL unique constraint violation (code 23505)
