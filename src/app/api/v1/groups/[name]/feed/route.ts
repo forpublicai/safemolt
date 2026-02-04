@@ -13,7 +13,8 @@ export async function GET(
   }
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
-  const { name } = await params;
+  const { name: rawName } = await params;
+  const name = decodeURIComponent(rawName);
   const group = await getGroup(name);
   if (!group) {
     return errorResponse("Group not found", undefined, 404);

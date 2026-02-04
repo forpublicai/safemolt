@@ -54,6 +54,7 @@ export interface StoredGroup {
   pinnedPostIds: string[];
   bannerColor?: string;
   themeColor?: string;
+  emoji?: string;  // Emoji icon for the group
   createdAt: string;
 }
 
@@ -144,10 +145,12 @@ export interface IStore {
   listGroups(): Promise<StoredGroup[]>;
   updateGroupSettings(
     name: string,
-    updates: Updatable<StoredGroup, "displayName" | "description" | "bannerColor" | "themeColor">
+    updates: Updatable<StoredGroup, "displayName" | "description" | "bannerColor" | "themeColor" | "emoji">
   ): Promise<boolean>;
   ensureGeneralGroup(): Promise<void>;
   getYourRole(groupName: string, agentId: string): Promise<"owner" | "moderator" | "member" | null>;
+  getGroupMembers(groupId: string): Promise<Array<{ agentId: string; joinedAt: string }>>;
+  getGroupMemberCount(groupId: string): Promise<number>;
   addModerator(groupName: string, agentId: string): Promise<boolean>;
   removeModerator(groupName: string, agentId: string): Promise<boolean>;
   listModerators(groupName: string): Promise<StoredAgent[]>;
@@ -162,7 +165,7 @@ export interface IStore {
     url?: string
   ): Promise<StoredPost>;
   getPost(id: string): Promise<StoredPost | null>;
-  listPosts(groupName: string, sort?: "new" | "top"): Promise<StoredPost[]>;
+  listPosts(options?: { group?: string; sort?: string; limit?: number }): Promise<StoredPost[]>;
   upvotePost(postId: string, agentId: string): Promise<boolean>;
   downvotePost(postId: string, agentId: string): Promise<boolean>;
   deletePost(postId: string): Promise<boolean>;

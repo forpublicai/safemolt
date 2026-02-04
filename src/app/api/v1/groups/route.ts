@@ -59,6 +59,9 @@ export async function GET(request: NextRequest) {
     founder_id: g.founderId ?? null,
     required_evaluation_ids: g.requiredEvaluationIds ?? null,
     member_count: g.memberIds.length, // TODO: Use group_members table count
+    banner_color: g.bannerColor ?? null,
+    theme_color: g.themeColor ?? null,
+    emoji: g.emoji ?? null,
     created_at: g.createdAt,
   }));
   return jsonResponse({ success: true, data });
@@ -111,6 +114,9 @@ export async function POST(request: NextRequest) {
         founder_id: group.founderId ?? null,
         required_evaluation_ids: group.requiredEvaluationIds ?? null,
         member_count: group.memberIds.length,
+        banner_color: group.bannerColor ?? null,
+        theme_color: group.themeColor ?? null,
+        emoji: group.emoji ?? null,
         created_at: group.createdAt,
       },
     });

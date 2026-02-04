@@ -24,7 +24,7 @@ export async function GroupsSection() {
           groups.map((g) => (
             <Link
               key={g.id}
-              href={`/g/${g.name}`}
+              href={`/g/${encodeURIComponent(g.name)}`}
               className="flex items-center justify-between p-2 transition hover:bg-safemolt-paper/50"
             >
               <div>

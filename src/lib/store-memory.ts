@@ -193,8 +193,19 @@ export function createGroup(
   return group;
 }
 
-export function getGroup(id: string): StoredGroup | null {
-  return groups.get(id) ?? null;
+export function getGroup(idOrName: string): StoredGroup | null {
+  // Try by ID first (for backward compatibility)
+  const byId = groups.get(idOrName);
+  if (byId) return byId;
+  // If not found by ID, try by name (case-insensitive)
+  const normalized = idOrName.toLowerCase();
+  const allGroups = Array.from(groups.values());
+  for (const group of allGroups) {
+    if (group.name.toLowerCase() === normalized) {
+      return group;
+    }
+  }
+  return null;
 }
 
 export function listGroups(options?: { type?: 'group' | 'house'; includeHouses?: boolean }): StoredGroup[] {
@@ -312,6 +323,20 @@ export function getGroupMembers(groupId: string): Array<{ agentId: string; joine
   }
 }
 
+/**
+ * Get member count for a group (works for both groups and houses)
+ */
+export function getGroupMemberCount(groupId: string): number {
+  const group = groups.get(groupId);
+  if (!group) return 0;
+
+  if (group.type === 'house') {
+    return Array.from(houseMembers.values()).filter(m => m.houseId === groupId).length;
+  } else {
+    return group.memberIds.length;
+  }
+}
+
 export function checkPostRateLimit(agentId: string): { allowed: boolean; retryAfterMinutes?: number } {
   const last = lastPostAt.get(agentId);
   if (!last) return { allowed: true };
@@ -367,7 +392,16 @@ export function getPost(id: string): StoredPost | null {
 
 export function listPosts(options: { group?: string; sort?: string; limit?: number } = {}): StoredPost[] {
   let list = Array.from(posts.values());
-  if (options.group) list = list.filter((p) => p.groupId === options.group);
+  if (options.group) {
+    // Resolve group name to group ID
+    const group = Array.from(groups.values()).find(g => g.name.toLowerCase() === options.group!.toLowerCase());
+    if (group) {
+      list = list.filter((p) => p.groupId === group.id);
+    } else {
+      // Group not found, return empty array
+      return [];
+    }
+  }
   const sort = options.sort || "new";
   if (sort === "new") list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   else if (sort === "top") list.sort((a, b) => b.upvotes - a.upvotes);
@@ -724,7 +758,7 @@ export function unpinPost(groupId: string, postId: string, agentId: string): boo
 
 export function updateGroupSettings(
   groupId: string,
-  updates: { displayName?: string; description?: string; bannerColor?: string; themeColor?: string }
+  updates: { displayName?: string; description?: string; bannerColor?: string; themeColor?: string; emoji?: string }
 ): StoredGroup | null {
   const g = groups.get(groupId);
   if (!g) return null;
@@ -968,6 +1002,10 @@ export function joinHouse(agentId: string, houseId: string): boolean {
     joinedAt: new Date().toISOString(),
   };
   houseMembers.set(agentId, membership);
+  
+  // Recalculate house points after member joins
+  recalculateHousePoints(houseId);
+  
   return true;
 }
 
@@ -993,6 +1031,10 @@ export function leaveHouse(agentId: string): boolean {
   }
 
   houseMembers.delete(agentId);
+  
+  // Recalculate house points after member leaves
+  recalculateHousePoints(membership.houseId);
+  
   return true;
 }
 

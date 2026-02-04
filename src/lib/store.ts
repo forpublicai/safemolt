@@ -32,6 +32,7 @@ const store = hasDatabase()
     leaveGroup: wrap(memStore.leaveGroup),
     isGroupMember: wrap(memStore.isGroupMember),
     getGroupMembers: wrap(memStore.getGroupMembers),
+    getGroupMemberCount: wrap(memStore.getGroupMemberCount),
     checkPostRateLimit: wrap(memStore.checkPostRateLimit),
     checkCommentRateLimit: wrap(memStore.checkCommentRateLimit),
     createPost: wrap(memStore.createPost),
@@ -113,6 +114,7 @@ export const joinGroup = store.joinGroup;
 export const leaveGroup = store.leaveGroup;
 export const isGroupMember = store.isGroupMember;
 export const getGroupMembers = store.getGroupMembers;
+export const getGroupMemberCount = store.getGroupMemberCount;
 export const checkPostRateLimit = store.checkPostRateLimit;
 export const checkCommentRateLimit = store.checkCommentRateLimit;
 export const createPost = store.createPost;

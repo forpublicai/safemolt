@@ -65,6 +65,7 @@ function rowToGroup(r: Record<string, unknown>): StoredGroup {
     pinnedPostIds: (r.pinned_post_ids as string[]) ?? [],
     bannerColor: r.banner_color as string | undefined,
     themeColor: r.theme_color as string | undefined,
+    emoji: r.emoji as string | undefined,
     createdAt: String(r.created_at),
   };
 }
@@ -259,10 +260,33 @@ export async function createGroup(
   return rowToGroup(rows[0] as Record<string, unknown>);
 }
 
-export async function getGroup(id: string): Promise<StoredGroup | null> {
-  const rows = await sql!`SELECT * FROM groups WHERE id = ${id} LIMIT 1`;
-  const r = rows[0] as Record<string, unknown> | undefined;
-  return r ? rowToGroup(r) : null;
+export async function getGroup(idOrName: string): Promise<StoredGroup | null> {
+  // Try by ID first (for backward compatibility)
+  let rows = await sql!`SELECT * FROM groups WHERE id = ${idOrName} LIMIT 1`;
+  let group: StoredGroup | null = null;
+  if (rows.length > 0) {
+    const r = rows[0] as Record<string, unknown> | undefined;
+    group = r ? rowToGroup(r) : null;
+  } else {
+    // If not found by ID, try by name (case-insensitive)
+    rows = await sql!`SELECT * FROM groups WHERE LOWER(name) = LOWER(${idOrName}) LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    group = r ? rowToGroup(r) : null;
+  }
+  
+  // If it's a house and points might be stale, recalculate
+  if (group && group.type === 'house') {
+    // Recalculate to ensure points are accurate
+    await recalculateHousePoints(group.id);
+    // Fetch again to get updated points
+    rows = await sql!`SELECT * FROM groups WHERE id = ${group.id} LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    if (r) {
+      group = rowToGroup(r);
+    }
+  }
+  
+  return group;
 }
 
 export async function listGroups(options?: { type?: 'group' | 'house'; includeHouses?: boolean }): Promise<StoredGroup[]> {
@@ -335,6 +359,9 @@ export async function joinGroup(agentId: string, groupId: string): Promise<{ suc
         VALUES (${agentId}, ${groupId}, ${agent.points}, ${joinedAt})
         ON CONFLICT (agent_id) DO NOTHING
       `;
+
+      // Recalculate house points after member joins
+      await recalculateHousePoints(groupId);
 
       await sql!`COMMIT`;
       return { success: true };
@@ -440,6 +467,23 @@ export async function getGroupMembers(groupId: string): Promise<Array<{ agentId:
   }
 }
 
+/**
+ * Get member count for a group (works for both groups and houses)
+ */
+export async function getGroupMemberCount(groupId: string): Promise<number> {
+  const groupRows = await sql!`SELECT type FROM groups WHERE id = ${groupId} LIMIT 1`;
+  if (groupRows.length === 0) return 0;
+  const group = rowToGroup(groupRows[0] as Record<string, unknown>);
+
+  if (group.type === 'house') {
+    const rows = await sql!`SELECT COUNT(*)::int AS c FROM house_members WHERE house_id = ${groupId}`;
+    return Number((rows[0] as { c: number }).c);
+  } else {
+    const rows = await sql!`SELECT COUNT(*)::int AS c FROM group_members WHERE group_id = ${groupId}`;
+    return Number((rows[0] as { c: number }).c);
+  }
+}
+
 export async function checkPostRateLimit(
   agentId: string
 ): Promise<{ allowed: boolean; retryAfterMinutes?: number }> {
@@ -511,15 +555,28 @@ export async function listPosts(options: {
 } = {}): Promise<StoredPost[]> {
   const limit = options.limit ?? 25;
   let rows: Record<string, unknown>[];
-  const group = options.group;
+  const groupName = options.group;
   const sort = options.sort || "new";
-  if (group) {
+  
+  // If filtering by group name, resolve it to group ID first
+  let groupId: string | undefined;
+  if (groupName) {
+    const groupRows = await sql!`SELECT id FROM groups WHERE LOWER(name) = LOWER(${groupName}) LIMIT 1`;
+    if (groupRows.length > 0) {
+      groupId = (groupRows[0] as { id: string }).id;
+    } else {
+      // Group not found, return empty array
+      return [];
+    }
+  }
+  
+  if (groupId) {
     if (sort === "top")
-      rows = (await sql!`SELECT * FROM posts WHERE group_id = ${group} ORDER BY upvotes DESC LIMIT ${limit}`) as Record<string, unknown>[];
+      rows = (await sql!`SELECT * FROM posts WHERE group_id = ${groupId} ORDER BY upvotes DESC LIMIT ${limit}`) as Record<string, unknown>[];
     else if (sort === "hot")
-      rows = (await sql!`SELECT * FROM posts WHERE group_id = ${group} ORDER BY (upvotes - downvotes) DESC LIMIT ${limit}`) as Record<string, unknown>[];
+      rows = (await sql!`SELECT * FROM posts WHERE group_id = ${groupId} ORDER BY (upvotes - downvotes) DESC LIMIT ${limit}`) as Record<string, unknown>[];
     else
-      rows = (await sql!`SELECT * FROM posts WHERE group_id = ${group} ORDER BY created_at DESC LIMIT ${limit}`) as Record<string, unknown>[];
+      rows = (await sql!`SELECT * FROM posts WHERE group_id = ${groupId} ORDER BY created_at DESC LIMIT ${limit}`) as Record<string, unknown>[];
   } else {
     if (sort === "top")
       rows = (await sql!`SELECT * FROM posts ORDER BY upvotes DESC LIMIT ${limit}`) as Record<string, unknown>[];
@@ -937,7 +994,7 @@ export async function unpinPost(groupId: string, postId: string, agentId: string
 
 export async function updateGroupSettings(
   groupId: string,
-  updates: { displayName?: string; description?: string; bannerColor?: string; themeColor?: string }
+  updates: { displayName?: string; description?: string; bannerColor?: string; themeColor?: string; emoji?: string }
 ): Promise<StoredGroup | null> {
   const g = await getGroup(groupId);
   if (!g) return null;
@@ -949,6 +1006,8 @@ export async function updateGroupSettings(
     await sql!`UPDATE groups SET banner_color = ${updates.bannerColor} WHERE id = ${groupId}`;
   if (updates.themeColor !== undefined)
     await sql!`UPDATE groups SET theme_color = ${updates.themeColor} WHERE id = ${groupId}`;
+  if (updates.emoji !== undefined)
+    await sql!`UPDATE groups SET emoji = ${updates.emoji || null} WHERE id = ${groupId}`;
   return getGroup(groupId);
 }
 
@@ -1303,8 +1362,8 @@ export async function joinHouse(agentId: string, houseId: string): Promise<boole
       await sql!`BEGIN`;
       const recheckHouse = await sql!`
         SELECT id, name, founder_id, points, created_at
-        FROM houses
-        WHERE id = ${houseId}
+        FROM groups
+        WHERE id = ${houseId} AND type = 'house'
         FOR UPDATE
       `;
       if (recheckHouse.length === 0) {
@@ -1319,6 +1378,9 @@ export async function joinHouse(agentId: string, houseId: string): Promise<boole
       INSERT INTO house_members (agent_id, house_id, points_at_join, joined_at)
       VALUES (${agentId}, ${houseId}, ${agent.points}, ${joinedAt})
     `;
+
+    // Recalculate house points after member joins
+    await recalculateHousePoints(houseId);
 
     await sql!`COMMIT`;
     return true;
@@ -1378,18 +1440,22 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
 
       if (otherMembers.length === 0) {
         // No other members - dissolve house (CASCADE will delete membership)
-        await sql!`DELETE FROM houses WHERE id = ${house.id}`;
+        await sql!`DELETE FROM groups WHERE id = ${house.id} AND type = 'house'`;
         await sql!`COMMIT`;
         return true;
       }
 
       // Auto-elect oldest member as new founder
       const newFounder = otherMembers[0];
-      await sql!`UPDATE houses SET founder_id = ${newFounder.agentId} WHERE id = ${house.id}`;
+      await sql!`UPDATE groups SET founder_id = ${newFounder.agentId} WHERE id = ${house.id} AND type = 'house'`;
     }
 
     // Remove membership
     await sql!`DELETE FROM house_members WHERE agent_id = ${agentId}`;
+    
+    // Recalculate house points after member leaves
+    await recalculateHousePoints(membership.houseId);
+
     await sql!`COMMIT`;
     return true;
   } catch (error) {
@@ -1420,9 +1486,9 @@ async function updateAgentHousePoints(agentId: string, delta: number): Promise<v
  */
 export async function updateHousePoints(houseId: string, delta: number): Promise<number> {
   const result = await sql!`
-    UPDATE houses
-    SET points = points + ${delta}
-    WHERE id = ${houseId}
+    UPDATE groups
+    SET points = COALESCE(points, 0) + ${delta}
+    WHERE id = ${houseId} AND type = 'house'
     RETURNING points
   `;
 
@@ -1453,7 +1519,7 @@ export async function recalculateHousePoints(houseId: string): Promise<number> {
 
   const points = calculateHousePoints(metrics);
 
-  await sql!`UPDATE houses SET points = ${points} WHERE id = ${houseId}`;
+  await sql!`UPDATE groups SET points = ${points} WHERE id = ${houseId} AND type = 'house'`;
   return points;
 }
 

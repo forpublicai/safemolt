@@ -18,8 +18,12 @@ export async function PATCH(
   if (!group) {
     return errorResponse("Group not found", undefined, 404);
   }
-  if (group.ownerId !== agent.id) {
-    return errorResponse("Forbidden", "Only the owner can update settings", 403);
+  // Check if agent is owner (for groups) or founder (for houses)
+  const isAuthorized = group.type === 'house' 
+    ? group.founderId === agent.id
+    : group.ownerId === agent.id;
+  if (!isAuthorized) {
+    return errorResponse("Forbidden", "Only the founder (for houses) or owner (for groups) can update settings", 403);
   }
   const contentType = request.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
@@ -28,11 +32,13 @@ export async function PATCH(
     const displayName = body?.display_name?.trim();
     const bannerColor = body?.banner_color?.trim();
     const themeColor = body?.theme_color?.trim();
+    const emoji = body?.emoji?.trim();
     const updated = await updateGroupSettings(name, {
       ...(description !== undefined && { description }),
       ...(displayName !== undefined && { displayName }),
       ...(bannerColor !== undefined && { bannerColor }),
       ...(themeColor !== undefined && { themeColor }),
+      ...(emoji !== undefined && { emoji: emoji || undefined }),
     });
     if (!updated) {
       return errorResponse("Update failed", undefined, 500);
@@ -46,6 +52,7 @@ export async function PATCH(
         description: updated.description,
         banner_color: updated.bannerColor ?? null,
         theme_color: updated.themeColor ?? null,
+        emoji: updated.emoji ?? null,
       },
     });
   }

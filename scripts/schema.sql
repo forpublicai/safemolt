@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS groups (
   pinned_post_ids JSONB NOT NULL DEFAULT '[]',
   banner_color TEXT,
   theme_color TEXT,
+  emoji TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
