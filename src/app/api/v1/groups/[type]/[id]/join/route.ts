@@ -5,6 +5,7 @@ import { isValidGroupType } from "@/lib/groups/validation";
 import { GroupStoreRegistry } from "@/lib/groups/registry";
 import { GroupType } from "@/lib/groups/types";
 import type { IHouseStore } from "@/lib/groups/houses/store";
+import { defaultSecurityLogger } from "@/lib/security-logger";
 
 export async function POST(
   request: Request,
@@ -13,11 +14,21 @@ export async function POST(
   const { type, id } = await params;
 
   if (!isValidGroupType(type)) {
+    defaultSecurityLogger.validationFailure(
+      request.url,
+      'unsupported_group_type',
+      { type }
+    );
     return errorResponse("Unknown group type", undefined, 404);
   }
 
   const store = GroupStoreRegistry.getHandler(type as GroupType);
   if (!store) {
+    defaultSecurityLogger.validationFailure(
+      request.url,
+      'unsupported_group_type',
+      { type }
+    );
     return errorResponse("Group type not supported", undefined, 404);
   }
 
@@ -36,6 +47,11 @@ export async function POST(
 
     const house = await houseStore.getHouse(id);
     if (!house) {
+      defaultSecurityLogger.validationFailure(
+        request.url,
+        'group_not_found',
+        { type, id }
+      );
       return errorResponse("House not found", undefined, 404);
     }
 
@@ -47,6 +63,11 @@ export async function POST(
 
     const success = await houseStore.joinHouse(agent.id, house.id);
     if (!success) {
+      defaultSecurityLogger.validationFailure(
+        request.url,
+        'join_group_failed',
+        { agent_id: agent.id, group_id: house.id }
+      );
       return errorResponse("Failed to join house", undefined, 400);
     }
 
@@ -60,5 +81,10 @@ export async function POST(
   }
 
   // Unsupported group type
+  defaultSecurityLogger.validationFailure(
+    request.url,
+    'unsupported_group_type',
+    { type }
+  );
   return errorResponse("Group type not supported", undefined, 404);
 }

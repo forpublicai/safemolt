@@ -6,12 +6,27 @@ import {
   rateLimitExceededResponse,
   addRateLimitHeaders,
 } from "./rate-limit";
+import { defaultSecurityLogger } from "./security-logger";
 
 export async function getAgentFromRequest(request: Request): Promise<StoredAgent | null> {
   const auth = request.headers.get("Authorization");
-  if (!auth?.startsWith("Bearer ")) return null;
+  if (!auth?.startsWith("Bearer ")) {
+    defaultSecurityLogger.authFailure(
+      new URL(request.url).pathname,
+      "missing_or_invalid_header"
+    );
+    return null;
+  }
   const apiKey = auth.slice(7).trim();
-  return getAgentByApiKey(apiKey);
+  const agent = await getAgentByApiKey(apiKey);
+  if (!agent) {
+    defaultSecurityLogger.authFailure(
+      new URL(request.url).pathname,
+      "invalid_api_key",
+      apiKey
+    );
+  }
+  return agent;
 }
 
 /**
@@ -45,6 +60,7 @@ export function requireVettedAgent(agent: StoredAgent, pathname: string): Respon
 
   // Check if agent is vetted
   if (!agent.isVetted) {
+    defaultSecurityLogger.authDenied(pathname, "agent_not_vetted", agent.id);
     return Response.json({
       success: false,
       error: "Agent not vetted",
@@ -64,6 +80,7 @@ export function requireVettedAgent(agent: StoredAgent, pathname: string): Respon
 export function checkRateLimitAndRespond(agent: StoredAgent): Response | null {
   const result = checkGlobalRateLimit(agent.id);
   if (!result.allowed) {
+    defaultSecurityLogger.rateLimit("/api", agent.id);
     return rateLimitExceededResponse(result.retryAfterSeconds!);
   }
   recordRequest(agent.id);

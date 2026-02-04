@@ -115,14 +115,23 @@ describe('GroupStoreRegistry', () => {
 
   describe('register', () => {
     it('adds a store handler for a specific type', () => {
-      // Arrange: Create a mock store
-      const mockStore: IGroupStore = {
+      // Arrange: Create a mock store with all required house methods
+      const mockStore: IHouseStore = {
         createGroup: jest.fn(),
         getGroup: jest.fn(),
         getGroupByName: jest.fn(),
         listGroups: jest.fn(),
         updateGroup: jest.fn(),
         deleteGroup: jest.fn(),
+        getHouse: jest.fn(),
+        getHouseByName: jest.fn(),
+        listHouses: jest.fn(),
+        getHouseMembership: jest.fn(),
+        getHouseMembers: jest.fn(),
+        joinHouse: jest.fn(),
+        leaveHouse: jest.fn(),
+        updateHousePoints: jest.fn(),
+        recalculateHousePoints: jest.fn(),
       };
 
       // Act: Register the mock store
@@ -134,15 +143,61 @@ describe('GroupStoreRegistry', () => {
       expect(handler).toBe(mockStore);
     });
 
-    it('allows registering multiple store types', () => {
-      // Arrange: Create mock stores
-      const houseStore: IGroupStore = {
+    it('throws error when registering invalid handler for houses type', () => {
+      // Arrange: Create a store missing house-specific methods
+      const invalidStore: IGroupStore = {
         createGroup: jest.fn(),
         getGroup: jest.fn(),
         getGroupByName: jest.fn(),
         listGroups: jest.fn(),
         updateGroup: jest.fn(),
         deleteGroup: jest.fn(),
+      };
+
+      // Act & Assert: Registration should throw
+      expect(() => {
+        GroupStoreRegistry.register(GroupType.HOUSES, invalidStore as any);
+      }).toThrow('Invalid handler for houses: missing house-specific methods');
+    });
+
+    it('throws error when handler is missing specific house methods', () => {
+      // Arrange: Create a store with some but not all house methods
+      const partialStore = {
+        createGroup: jest.fn(),
+        getGroup: jest.fn(),
+        getGroupByName: jest.fn(),
+        listGroups: jest.fn(),
+        updateGroup: jest.fn(),
+        deleteGroup: jest.fn(),
+        getHouse: jest.fn(),
+        getHouseByName: jest.fn(),
+        // Missing: listHouses, getHouseMembership, getHouseMembers, etc.
+      };
+
+      // Act & Assert: Registration should throw due to missing methods
+      expect(() => {
+        GroupStoreRegistry.register(GroupType.HOUSES, partialStore as any);
+      }).toThrow('Invalid handler for houses: missing house-specific methods');
+    });
+
+    it('allows registering multiple store types', () => {
+      // Arrange: Create mock stores
+      const houseStore: IHouseStore = {
+        createGroup: jest.fn(),
+        getGroup: jest.fn(),
+        getGroupByName: jest.fn(),
+        listGroups: jest.fn(),
+        updateGroup: jest.fn(),
+        deleteGroup: jest.fn(),
+        getHouse: jest.fn(),
+        getHouseByName: jest.fn(),
+        listHouses: jest.fn(),
+        getHouseMembership: jest.fn(),
+        getHouseMembers: jest.fn(),
+        joinHouse: jest.fn(),
+        leaveHouse: jest.fn(),
+        updateHousePoints: jest.fn(),
+        recalculateHousePoints: jest.fn(),
       };
       const clanStore: IGroupStore = {
         createGroup: jest.fn(),
@@ -169,21 +224,39 @@ describe('GroupStoreRegistry', () => {
 
     it('overwrites existing handler when registering same type', () => {
       // Arrange: Create two different stores
-      const store1: IGroupStore = {
+      const store1: IHouseStore = {
         createGroup: jest.fn().mockResolvedValue({ id: 'store1' }),
         getGroup: jest.fn(),
         getGroupByName: jest.fn(),
         listGroups: jest.fn(),
         updateGroup: jest.fn(),
         deleteGroup: jest.fn(),
+        getHouse: jest.fn(),
+        getHouseByName: jest.fn(),
+        listHouses: jest.fn(),
+        getHouseMembership: jest.fn(),
+        getHouseMembers: jest.fn(),
+        joinHouse: jest.fn(),
+        leaveHouse: jest.fn(),
+        updateHousePoints: jest.fn(),
+        recalculateHousePoints: jest.fn(),
       };
-      const store2: IGroupStore = {
+      const store2: IHouseStore = {
         createGroup: jest.fn().mockResolvedValue({ id: 'store2' }),
         getGroup: jest.fn(),
         getGroupByName: jest.fn(),
         listGroups: jest.fn(),
         updateGroup: jest.fn(),
         deleteGroup: jest.fn(),
+        getHouse: jest.fn(),
+        getHouseByName: jest.fn(),
+        listHouses: jest.fn(),
+        getHouseMembership: jest.fn(),
+        getHouseMembers: jest.fn(),
+        joinHouse: jest.fn(),
+        leaveHouse: jest.fn(),
+        updateHousePoints: jest.fn(),
+        recalculateHousePoints: jest.fn(),
       };
 
       // Act: Register first store, then overwrite with second
@@ -226,13 +299,22 @@ describe('GroupStoreRegistry', () => {
 
     it('clears multiple registered handlers', () => {
       // Arrange: Register multiple stores
-      const store1: IGroupStore = {
+      const store1: IHouseStore = {
         createGroup: jest.fn(),
         getGroup: jest.fn(),
         getGroupByName: jest.fn(),
         listGroups: jest.fn(),
         updateGroup: jest.fn(),
         deleteGroup: jest.fn(),
+        getHouse: jest.fn(),
+        getHouseByName: jest.fn(),
+        listHouses: jest.fn(),
+        getHouseMembership: jest.fn(),
+        getHouseMembers: jest.fn(),
+        joinHouse: jest.fn(),
+        leaveHouse: jest.fn(),
+        updateHousePoints: jest.fn(),
+        recalculateHousePoints: jest.fn(),
       };
       const store2: IGroupStore = {
         createGroup: jest.fn(),

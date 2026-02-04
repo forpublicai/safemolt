@@ -255,19 +255,28 @@ describe("createSecurityLogger", () => {
       expect(event.api_key_prefix).toBe("saf...def");
     });
 
-    it("masks keys with exactly 8 characters", () => {
+    it("masks keys with exactly 10 characters", () => {
       const logger = createSecurityLogger({ output: outputSpy });
 
-      logger.authFailure("/api/test", "test", "12345678");
+      logger.authFailure("/api/test", "test", "1234567890");
 
       const [, event] = outputSpy.mock.calls[0];
-      expect(event.api_key_prefix).toBe("123...678");
+      expect(event.api_key_prefix).toBe("123...890");
     });
 
-    it("masks keys shorter than 8 characters as ***", () => {
+    it("masks keys shorter than 10 characters as ***", () => {
       const logger = createSecurityLogger({ output: outputSpy });
 
       logger.authFailure("/api/test", "test", "short");
+
+      const [, event] = outputSpy.mock.calls[0];
+      expect(event.api_key_prefix).toBe("***");
+    });
+
+    it("masks 9-character keys as ***", () => {
+      const logger = createSecurityLogger({ output: outputSpy });
+
+      logger.authFailure("/api/test", "test", "123456789");
 
       const [, event] = outputSpy.mock.calls[0];
       expect(event.api_key_prefix).toBe("***");

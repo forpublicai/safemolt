@@ -9,6 +9,7 @@
  */
 
 import { GroupType, CreateGroupInput } from './types';
+import { defaultSecurityLogger } from '../security-logger';
 
 /**
  * Maximum length for group names (enforced by database schema).
@@ -163,6 +164,15 @@ export function validateAvatarUrl(url: string): { valid: boolean; error?: string
     const parsed = new URL(url);
     const allowedProtocols = getAllowedProtocols();
     if (!allowedProtocols.includes(parsed.protocol)) {
+      // Log suspicious protocols (javascript:, data:, file:, or http: in prod)
+      const isSuspicious = ['javascript:', 'data:', 'file:'].includes(parsed.protocol);
+      if (isSuspicious) {
+        defaultSecurityLogger.suspiciousInput(
+          '/api/v1/groups',
+          'malicious_url_protocol',
+          { protocol: parsed.protocol, url: url.slice(0, 100) }
+        );
+      }
       return {
         valid: false,
         error: process.env.NODE_ENV === 'production'
@@ -195,7 +205,15 @@ export function validateAvatarUrl(url: string): { valid: boolean; error?: string
 export function sanitizeSettings(obj: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj)) {
-    if (DANGEROUS_KEYS.includes(key)) continue;
+    if (DANGEROUS_KEYS.includes(key)) {
+      // Log prototype pollution attempt
+      defaultSecurityLogger.suspiciousInput(
+        '/api/v1/groups',
+        'prototype_pollution_attempt',
+        { key }
+      );
+      continue;
+    }
 
     // Recursively sanitize nested objects
     if (value && typeof value === 'object' && !Array.isArray(value)) {

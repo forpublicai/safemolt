@@ -54,11 +54,28 @@ export const GroupStoreRegistry = {
    *
    * @param type - Group type discriminant
    * @param store - Store instance implementing the type's interface
+   * @throws {Error} If store does not implement required type-specific methods
    *
    * @example
    * GroupStoreRegistry.register('houses', houseStore);
    */
   register<T extends GroupType>(type: T, store: StoreForType<T>): void {
+    // Runtime validation for type-specific stores
+    if (type === GroupType.HOUSES) {
+      // Verify IHouseStore has required methods
+      const houseStore = store as IHouseStore;
+      if (typeof houseStore.getHouse !== 'function' ||
+          typeof houseStore.getHouseByName !== 'function' ||
+          typeof houseStore.listHouses !== 'function' ||
+          typeof houseStore.getHouseMembership !== 'function' ||
+          typeof houseStore.getHouseMembers !== 'function' ||
+          typeof houseStore.joinHouse !== 'function' ||
+          typeof houseStore.leaveHouse !== 'function' ||
+          typeof houseStore.updateHousePoints !== 'function' ||
+          typeof houseStore.recalculateHousePoints !== 'function') {
+        throw new Error(`Invalid handler for ${type}: missing house-specific methods`);
+      }
+    }
     stores.set(type, store);
   },
 
@@ -68,6 +85,9 @@ export const GroupStoreRegistry = {
    *
    * @param type - Group type discriminant
    * @returns The type-specific store or null if not registered
+   *
+   * @warning This method uses a type assertion. Callers should ensure
+   * the store was registered with the correct type via register().
    *
    * @example
    * const store = GroupStoreRegistry.getHandler('houses');

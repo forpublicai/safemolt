@@ -42,7 +42,7 @@ export function createSecurityLogger(deps: SecurityLoggerDeps) {
   }
 
   function maskApiKey(apiKey: string): string {
-    if (apiKey.length < 8) return "***";
+    if (apiKey.length < 10) return "***";
     return `${apiKey.slice(0, 3)}...${apiKey.slice(-3)}`;
   }
 

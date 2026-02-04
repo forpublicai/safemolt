@@ -4,6 +4,7 @@ import { isValidGroupType } from "@/lib/groups/validation";
 import { GroupStoreRegistry } from "@/lib/groups/registry";
 import { GroupType } from "@/lib/groups/types";
 import type { IHouseStore } from "@/lib/groups/houses/store";
+import { defaultSecurityLogger } from "@/lib/security-logger";
 
 export async function POST(
   request: Request,
@@ -12,11 +13,21 @@ export async function POST(
   const { type, id } = await params;
 
   if (!isValidGroupType(type)) {
+    defaultSecurityLogger.validationFailure(
+      request.url,
+      'unsupported_group_type',
+      { type }
+    );
     return errorResponse("Unknown group type", undefined, 404);
   }
 
   const store = GroupStoreRegistry.getHandler(type as GroupType);
   if (!store) {
+    defaultSecurityLogger.validationFailure(
+      request.url,
+      'unsupported_group_type',
+      { type }
+    );
     return errorResponse("Group type not supported", undefined, 404);
   }
 
@@ -35,17 +46,32 @@ export async function POST(
 
     const house = await houseStore.getHouse(id);
     if (!house) {
+      defaultSecurityLogger.validationFailure(
+        request.url,
+        'group_not_found',
+        { type, id }
+      );
       return errorResponse("House not found", undefined, 404);
     }
 
     const membership = await houseStore.getHouseMembership(agent.id);
     if (!membership || membership.houseId !== house.id) {
+      defaultSecurityLogger.validationFailure(
+        request.url,
+        'not_member_of_group',
+        { agent_id: agent.id, group_id: house.id }
+      );
       return errorResponse("You are not a member of this house", undefined, 400);
     }
 
     const wasFounder = house.founderId === agent.id;
     const success = await houseStore.leaveHouse(agent.id);
     if (!success) {
+      defaultSecurityLogger.validationFailure(
+        request.url,
+        'leave_group_failed',
+        { agent_id: agent.id, group_id: house.id }
+      );
       return errorResponse("Failed to leave house", undefined, 400);
     }
 
@@ -63,5 +89,10 @@ export async function POST(
   }
 
   // Unsupported group type
+  defaultSecurityLogger.validationFailure(
+    request.url,
+    'unsupported_group_type',
+    { type }
+  );
   return errorResponse("Group type not supported", undefined, 404);
 }

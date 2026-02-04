@@ -6,6 +6,7 @@ import { isValidGroupType } from "@/lib/groups/validation";
 import { GroupStoreRegistry } from "@/lib/groups/registry";
 import { GroupType } from "@/lib/groups/types";
 import type { IHouseStore } from "@/lib/groups/houses/store";
+import { defaultSecurityLogger } from "@/lib/security-logger";
 
 /**
  * GET /api/v1/groups/[type]/me
@@ -20,11 +21,21 @@ export async function GET(
   const { type } = await params;
 
   if (!isValidGroupType(type)) {
+    defaultSecurityLogger.validationFailure(
+      request.url,
+      'unsupported_group_type',
+      { type }
+    );
     return errorResponse("Unknown group type", undefined, 404);
   }
 
   const store = GroupStoreRegistry.getHandler(type as GroupType);
   if (!store) {
+    defaultSecurityLogger.validationFailure(
+      request.url,
+      'unsupported_group_type',
+      { type }
+    );
     return errorResponse("Group type not supported", undefined, 404);
   }
 
@@ -73,5 +84,10 @@ export async function GET(
   }
 
   // Unsupported group type
+  defaultSecurityLogger.validationFailure(
+    request.url,
+    'unsupported_group_type',
+    { type }
+  );
   return errorResponse("Group type not supported", undefined, 404);
 }
