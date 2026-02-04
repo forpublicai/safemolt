@@ -998,16 +998,24 @@ export async function updateGroupSettings(
 ): Promise<StoredGroup | null> {
   const g = await getGroup(groupId);
   if (!g) return null;
-  if (updates.description !== undefined)
+  
+  // Apply updates one by one using template literals
+  if (updates.description !== undefined) {
     await sql!`UPDATE groups SET description = ${updates.description} WHERE id = ${groupId}`;
-  if (updates.displayName !== undefined)
+  }
+  if (updates.displayName !== undefined) {
     await sql!`UPDATE groups SET display_name = ${updates.displayName} WHERE id = ${groupId}`;
-  if (updates.bannerColor !== undefined)
+  }
+  if (updates.bannerColor !== undefined) {
     await sql!`UPDATE groups SET banner_color = ${updates.bannerColor} WHERE id = ${groupId}`;
-  if (updates.themeColor !== undefined)
+  }
+  if (updates.themeColor !== undefined) {
     await sql!`UPDATE groups SET theme_color = ${updates.themeColor} WHERE id = ${groupId}`;
-  if (updates.emoji !== undefined)
+  }
+  if (updates.emoji !== undefined) {
     await sql!`UPDATE groups SET emoji = ${updates.emoji || null} WHERE id = ${groupId}`;
+  }
+  
   return getGroup(groupId);
 }
 

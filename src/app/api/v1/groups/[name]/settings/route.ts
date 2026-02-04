@@ -13,7 +13,8 @@ export async function PATCH(
   }
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
-  const { name } = await params;
+  const { name: rawName } = await params;
+  const name = decodeURIComponent(rawName);
   const group = await getGroup(name);
   if (!group) {
     return errorResponse("Group not found", undefined, 404);
@@ -33,7 +34,8 @@ export async function PATCH(
     const bannerColor = body?.banner_color?.trim();
     const themeColor = body?.theme_color?.trim();
     const emoji = body?.emoji?.trim();
-    const updated = await updateGroupSettings(name, {
+    // Use group.id instead of name for the update
+    const updated = await updateGroupSettings(group.id, {
       ...(description !== undefined && { description }),
       ...(displayName !== undefined && { displayName }),
       ...(bannerColor !== undefined && { bannerColor }),
