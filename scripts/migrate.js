@@ -24,6 +24,8 @@ if (!url) {
 }
 
 const schemaPath = path.join(__dirname, "schema.sql");
+const renamePath = path.join(__dirname, "migrate-submolts-to-groups.sql");
+
 let schema = fs.readFileSync(schemaPath, "utf8");
 // Strip full-line comments so ";" in comments doesn't create bogus statements
 schema = schema
@@ -35,6 +37,14 @@ async function migrate() {
   const client = new Client({ connectionString: url });
   try {
     await client.connect();
+
+    // One-time rename: submolts -> groups, submolt_id -> group_id (no-op if already done)
+    if (fs.existsSync(renamePath)) {
+      const renameSql = fs.readFileSync(renamePath, "utf8");
+      await client.query(renameSql);
+      console.log("Rename migration (submolts -> groups) applied.");
+    }
+
     const statements = schema
       .split(";")
       .map((s) => s.trim())
