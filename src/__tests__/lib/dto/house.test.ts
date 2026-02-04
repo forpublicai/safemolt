@@ -1,13 +1,19 @@
 import { toApiHouse, toApiMember, toApiMemberSafe } from "@/lib/groups/houses/dto";
 import type { StoredHouse, StoredHouseMember, StoredAgent } from "@/lib/store-types";
+import { GroupType } from "@/lib/groups/types";
 
 describe("House DTOs", () => {
   describe("toApiHouse", () => {
     it("converts camelCase to snake_case and extends ApiGroup", () => {
       const house: StoredHouse = {
         id: "house-123",
+        type: GroupType.HOUSES,
         name: "Test House",
+        description: null,
         founderId: "agent-456",
+        avatarUrl: null,
+        settings: {},
+        visibility: "public",
         points: 100,
         createdAt: "2024-01-15T10:00:00Z",
       };
@@ -32,8 +38,13 @@ describe("House DTOs", () => {
     it("preserves all house fields and includes group metadata", () => {
       const house: StoredHouse = {
         id: "house-abc",
+        type: GroupType.HOUSES,
         name: "Another House",
+        description: null,
         founderId: "founder-xyz",
+        avatarUrl: null,
+        settings: {},
+        visibility: "public",
         points: 500,
         createdAt: "2024-02-20T15:30:00Z",
       };

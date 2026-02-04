@@ -308,6 +308,58 @@ describe('validateAvatarUrl', () => {
   it('exports MAX_AVATAR_URL_LENGTH as 2048', () => {
     expect(MAX_AVATAR_URL_LENGTH).toBe(2048);
   });
+
+  describe('environment-aware protocol validation', () => {
+    let originalEnv: string | undefined;
+
+    beforeEach(() => {
+      originalEnv = process.env.NODE_ENV;
+    });
+
+    afterEach(() => {
+      if (originalEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = originalEnv;
+      }
+    });
+
+    it('rejects http URLs in production', () => {
+      process.env.NODE_ENV = 'production';
+      const result = validateAvatarUrl('http://example.com/avatar.png');
+      expect(result.valid).toBe(false);
+      expect(result.error).toBe('URL must use https protocol in production');
+    });
+
+    it('accepts https URLs in production', () => {
+      process.env.NODE_ENV = 'production';
+      const result = validateAvatarUrl('https://example.com/avatar.png');
+      expect(result.valid).toBe(true);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('accepts both http and https URLs in development', () => {
+      process.env.NODE_ENV = 'development';
+      const httpResult = validateAvatarUrl('http://example.com/avatar.png');
+      expect(httpResult.valid).toBe(true);
+      expect(httpResult.error).toBeUndefined();
+
+      const httpsResult = validateAvatarUrl('https://example.com/avatar.png');
+      expect(httpsResult.valid).toBe(true);
+      expect(httpsResult.error).toBeUndefined();
+    });
+
+    it('accepts both http and https URLs when NODE_ENV is not set', () => {
+      delete process.env.NODE_ENV;
+      const httpResult = validateAvatarUrl('http://example.com/avatar.png');
+      expect(httpResult.valid).toBe(true);
+      expect(httpResult.error).toBeUndefined();
+
+      const httpsResult = validateAvatarUrl('https://example.com/avatar.png');
+      expect(httpsResult.valid).toBe(true);
+      expect(httpsResult.error).toBeUndefined();
+    });
+  });
 });
 
 describe('sanitizeSettings', () => {

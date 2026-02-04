@@ -26,10 +26,17 @@ export const MAX_DESCRIPTION_LENGTH = 10000;
 export const MAX_AVATAR_URL_LENGTH = 2048;
 
 /**
- * Allowed protocols for avatar URLs.
+ * Returns allowed protocols for avatar URLs based on current environment.
  * Only http and https are permitted to prevent XSS via javascript:, data:, or file: URLs.
+ * In production, only https is allowed.
+ *
+ * @returns Array of allowed protocol strings (e.g., ['https:'] or ['http:', 'https:'])
  */
-const ALLOWED_PROTOCOLS = ['http:', 'https:'];
+function getAllowedProtocols(): string[] {
+  return process.env.NODE_ENV === 'production'
+    ? ['https:']
+    : ['http:', 'https:'];
+}
 
 /**
  * Keys that are dangerous in settings objects and must be stripped to prevent prototype pollution.
@@ -154,10 +161,13 @@ export function validateAvatarUrl(url: string): { valid: boolean; error?: string
 
   try {
     const parsed = new URL(url);
-    if (!ALLOWED_PROTOCOLS.includes(parsed.protocol)) {
+    const allowedProtocols = getAllowedProtocols();
+    if (!allowedProtocols.includes(parsed.protocol)) {
       return {
         valid: false,
-        error: 'URL must use http or https protocol',
+        error: process.env.NODE_ENV === 'production'
+          ? 'URL must use https protocol in production'
+          : 'URL must use http or https protocol',
       };
     }
     return { valid: true };
