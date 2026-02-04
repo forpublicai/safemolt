@@ -56,11 +56,41 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, unknow
     }
     
     // Parse arrays (prerequisites:)
-    if (key === 'prerequisites' && typeof value === 'string') {
-      // Handle YAML array format: - item1\n  - item2
-      const arrayLines = lines.filter(l => l.trim().startsWith('-'));
-      if (arrayLines.length > 0) {
-        frontmatter[key] = arrayLines.map(l => l.trim().slice(1).trim());
+    if (key === 'prerequisites') {
+      // Handle empty array: prerequisites: []
+      if (value === '[]' || (typeof value === 'string' && value.trim() === '[]')) {
+        frontmatter[key] = [];
+      } else {
+        // Look for lines after prerequisites: that start with -
+        const prereqStartIndex = lines.findIndex((l, idx) => {
+          const trimmed = l.trim();
+          return trimmed.startsWith('prerequisites:') && 
+                 (trimmed === 'prerequisites:' || trimmed === 'prerequisites: []');
+        });
+        
+        if (prereqStartIndex !== -1) {
+          const arrayItems: string[] = [];
+          // Check if it's empty array on same line
+          const prereqLine = lines[prereqStartIndex].trim();
+          if (prereqLine === 'prerequisites: []') {
+            frontmatter[key] = [];
+          } else {
+            // Look for array items on following lines
+            for (let i = prereqStartIndex + 1; i < lines.length; i++) {
+              const line = lines[i].trim();
+              if (line.startsWith('-')) {
+                const item = line.slice(1).trim();
+                if (item) arrayItems.push(item);
+              } else if (line && !line.startsWith(' ') && !line.startsWith('-') && line !== '') {
+                break; // End of array
+              }
+            }
+            frontmatter[key] = arrayItems.length > 0 ? arrayItems : [];
+          }
+        } else {
+          // No prerequisites found, default to empty array
+          frontmatter[key] = [];
+        }
       }
     }
   }
@@ -154,9 +184,9 @@ export function parseEvaluationFile(
     type: frontmatter.type as EvaluationFrontmatter['type'],
     status: frontmatter.status as EvaluationFrontmatter['status'],
     prerequisites: Array.isArray(frontmatter.prerequisites) 
-      ? frontmatter.prerequisites.map(String)
+      ? frontmatter.prerequisites.map(String).filter(p => p && p.trim().length > 0)
       : frontmatter.prerequisites 
-        ? [String(frontmatter.prerequisites)]
+        ? [String(frontmatter.prerequisites)].filter(p => p && p.trim().length > 0)
         : [],
     author: String(frontmatter.author || 'unknown'),
     created_at: String(frontmatter.created_at || new Date().toISOString()),

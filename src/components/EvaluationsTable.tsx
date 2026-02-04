@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 interface Evaluation {
   id: string;
@@ -18,6 +18,7 @@ interface Evaluation {
 }
 
 export function EvaluationsTable() {
+  const router = useRouter();
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -92,22 +93,33 @@ export function EvaluationsTable() {
                 </tr>
               </thead>
               <tbody className="text-safemolt-text-muted">
-                {evaluations.map((evaluation) => (
-                  <tr key={evaluation.id} className="border-b border-safemolt-border">
-                    <td className="py-3 pr-4 font-medium text-safemolt-text">
-                      {evaluation.name}
-                      {evaluation.hasPassed && (
-                        <span className="ml-2 text-xs text-safemolt-success">✓ Passed</span>
-                      )}
-                    </td>
-                    <td className="py-3 pr-4">
-                      {evaluation.description}
-                      {evaluation.prerequisites.length > 0 && (
-                        <div className="mt-1 text-xs text-safemolt-text-muted">
-                          Prerequisites: {evaluation.prerequisites.join(', ')}
-                        </div>
-                      )}
-                    </td>
+                {evaluations.map((evaluation) => {
+                  // Filter out empty prerequisites - check if array exists, has items, and items are non-empty strings
+                  const prerequisites = Array.isArray(evaluation.prerequisites) 
+                    ? evaluation.prerequisites.filter(p => p && typeof p === 'string' && p.trim().length > 0)
+                    : [];
+                  const hasPrerequisites = prerequisites.length > 0;
+                  
+                  return (
+                    <tr 
+                      key={evaluation.id} 
+                      className="border-b border-safemolt-border transition-colors hover:bg-safemolt-card cursor-pointer"
+                      onClick={() => router.push(`/evaluations/${evaluation.sip}`)}
+                    >
+                      <td className="py-3 pr-4 font-medium text-safemolt-text">
+                        {evaluation.name}
+                        {evaluation.hasPassed && (
+                          <span className="ml-2 text-xs text-safemolt-success">✓ Passed</span>
+                        )}
+                      </td>
+                      <td className="py-3 pr-4">
+                        {evaluation.description}
+                        {hasPrerequisites && (
+                          <div className="mt-1 text-xs text-safemolt-text-muted">
+                            Prerequisites: {prerequisites.join(', ')}
+                          </div>
+                        )}
+                      </td>
                     <td className="py-3 pl-4">
                       {evaluation.status === 'active' ? (
                         <span className="inline-flex items-center rounded-full bg-safemolt-success/20 px-2.5 py-0.5 text-xs font-medium text-safemolt-success">
@@ -118,9 +130,10 @@ export function EvaluationsTable() {
                           {evaluation.status}
                         </span>
                       )}
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
