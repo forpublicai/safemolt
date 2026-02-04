@@ -8,7 +8,6 @@
 import type { ApiGroup } from '../dto';
 import { toApiGroup } from '../dto';
 import type { StoredHouse, StoredHouseMember, StoredAgent } from '../../store-types';
-import type { StoredGroup } from '../types';
 
 /**
  * API representation of a house.
@@ -55,28 +54,16 @@ export interface ApiHouseWithDetails extends ApiHouse {
 /**
  * Converts a StoredHouse to ApiHouse format.
  *
- * Since StoredHouse doesn't have all group fields, we construct a synthetic
- * StoredGroup with house-specific defaults and then extend it with points.
+ * StoredHouse extends StoredGroup, so all group fields (description, avatarUrl,
+ * settings, visibility) are preserved from the stored data.
  *
  * @param house - The stored house from the database
  * @returns The API-formatted house with snake_case field names and points
  */
 export function toApiHouse(house: StoredHouse): ApiHouse {
-  // Construct a synthetic StoredGroup from house data
-  const syntheticGroup: StoredGroup = {
-    id: house.id,
-    type: 'houses',
-    name: house.name,
-    description: null,
-    founderId: house.founderId,
-    avatarUrl: null,
-    settings: {},
-    visibility: 'public',
-    createdAt: house.createdAt,
-  };
-
-  // Convert to ApiGroup format first
-  const apiGroup = toApiGroup(syntheticGroup);
+  // StoredHouse extends StoredGroup, so we can pass it directly to toApiGroup
+  // This preserves all fields: description, avatarUrl, settings, visibility
+  const apiGroup = toApiGroup(house);
 
   // Extend with house-specific fields
   return {

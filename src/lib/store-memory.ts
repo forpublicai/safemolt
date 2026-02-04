@@ -2,7 +2,8 @@
  * In-memory store. Used when no POSTGRES_URL/DATABASE_URL is set.
  * Uses globalThis to persist data across Next.js HMR (hot module replacement).
  */
-import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredGroup } from "./store-types";
+import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredGroup, GroupVisibility } from "./store-types";
+import { GroupType } from "./groups/types";
 import { calculateHousePoints, type MemberMetrics } from "./groups/houses/points";
 import type { StoredHouse } from "./groups/houses/types";
 
@@ -711,7 +712,7 @@ export function createHouse(founderId: string, name: string): StoredHouse | null
 
   const house: StoredHouse = {
     id,
-    type: 'houses',
+    type: GroupType.HOUSES,
     name,
     description: null,
     founderId,
@@ -879,13 +880,13 @@ const MAX_GROUP_NAME_LENGTH = 128;
  * Create a new group.
  */
 export function createGroup(
-  type: string,
+  type: GroupType,
   founderId: string,
   name: string,
   description?: string,
   avatarUrl?: string,
   settings?: Record<string, unknown>,
-  visibility?: string
+  visibility?: GroupVisibility
 ): StoredGroup | null {
   // Validate name length
   if (!name || name.length > MAX_GROUP_NAME_LENGTH) {
@@ -924,7 +925,7 @@ export function createGroup(
 /**
  * Get a group by ID and type.
  */
-export function getGroup(type: string, id: string): StoredGroup | null {
+export function getGroup(type: GroupType, id: string): StoredGroup | null {
   const group = groups.get(id);
   if (!group || group.type !== type) {
     return null;
@@ -935,7 +936,7 @@ export function getGroup(type: string, id: string): StoredGroup | null {
 /**
  * Get a group by name (case-insensitive) and type.
  */
-export function getGroupByName(type: string, name: string): StoredGroup | null {
+export function getGroupByName(type: GroupType, name: string): StoredGroup | null {
   const list = Array.from(groups.values());
   return list.find((g) => g.type === type && g.name.toLowerCase() === name.toLowerCase()) ?? null;
 }
@@ -944,7 +945,7 @@ export function getGroupByName(type: string, name: string): StoredGroup | null {
  * List all groups of a specific type with optional sorting.
  */
 export function listGroups(
-  type: string,
+  type: GroupType,
   sort: "name" | "recent" = "name"
 ): StoredGroup[] {
   const list = Array.from(groups.values()).filter((g) => g.type === type);
@@ -962,14 +963,14 @@ export function listGroups(
  * Update a group's base fields.
  */
 export function updateGroup(
-  type: string,
+  type: GroupType,
   id: string,
   updates: {
     name?: string;
     description?: string;
     avatarUrl?: string;
     settings?: Record<string, unknown>;
-    visibility?: string;
+    visibility?: GroupVisibility;
   }
 ): StoredGroup | null {
   const group = getGroup(type, id);
@@ -1004,12 +1005,25 @@ export function updateGroup(
 }
 
 /**
- * Delete a group.
+ * Delete a group with cascade cleanup.
+ * Cleans up houseMembers entries and type-specific extension maps.
  */
-export function deleteGroup(type: string, id: string): boolean {
+export function deleteGroup(type: GroupType, id: string): boolean {
   const group = getGroup(type, id);
   if (!group) {
     return false;
+  }
+
+  // Cascade cleanup for houses type
+  if (type === GroupType.HOUSES) {
+    // Remove all houseMembers where houseId === id
+    for (const [agentId, membership] of Array.from(houseMembers.entries())) {
+      if (membership.houseId === id) {
+        houseMembers.delete(agentId);
+      }
+    }
+    // Remove from type-specific extension map (houses)
+    houses.delete(id);
   }
 
   groups.delete(id);

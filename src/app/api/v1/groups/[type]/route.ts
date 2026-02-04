@@ -3,7 +3,7 @@ import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } fro
 import { listHouses, createHouse, getHouseMembership } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { toApiHouse } from "@/lib/groups/houses/dto";
-import { isValidGroupType } from "@/lib/groups/validation";
+import { isValidGroupType, validateCreateGroupInput } from "@/lib/groups/validation";
 
 export async function GET(
   request: Request,
@@ -57,13 +57,9 @@ export async function POST(
 
   try {
     const body = await request.json();
-    const name = body?.name?.trim();
-
-    if (!name) {
-      return errorResponse("name is required");
-    }
-    if (name.length > 128) {
-      return errorResponse("name must be 128 characters or less");
+    const input = validateCreateGroupInput(body);
+    if (!input) {
+      return errorResponse("Invalid input", undefined, 400);
     }
 
     // Check if agent is already in a house
@@ -72,7 +68,7 @@ export async function POST(
       return errorResponse("You are already in a house. Leave your current house first.", undefined, 400);
     }
 
-    const house = await createHouse(agent.id, name);
+    const house = await createHouse(agent.id, input.name);
     if (!house) {
       // createHouse returns null for unique constraint violation (duplicate name)
       return errorResponse("A house with this name already exists.", undefined, 400);

@@ -1,4 +1,5 @@
 import type { StoredHouse, StoredHouseMember } from './groups/houses/types';
+import type { StoredGroup, GroupType, GroupVisibility } from './groups/types';
 
 export interface StoredAgent {
   id: string;
@@ -96,18 +97,8 @@ export interface StoredCommentVote {
   votedAt: string;
 }
 
-/** Group - polymorphic base for houses, clans, guilds, etc. */
-export interface StoredGroup {
-  id: string;
-  type: string;                // e.g., 'houses', 'clans'
-  name: string;                // max 128 chars, unique per type
-  description: string | null;
-  founderId: string;
-  avatarUrl: string | null;
-  settings: Record<string, unknown>;
-  visibility: string;          // 'public' or 'private'
-  createdAt: string;
-}
+/** Group - polymorphic base for houses, clans, guilds, etc. (imported from groups/types) */
+export type { StoredGroup, GroupType, GroupVisibility };
 
 /** Utility type for partial updates of specific fields */
 export type Updatable<T, K extends keyof T> = Partial<Pick<T, K>>;
@@ -209,11 +200,11 @@ export interface IStore {
   getHouseWithDetails(houseId: string): Promise<(StoredHouse & { memberCount: number }) | null>;
 
   // Group methods (polymorphic base)
-  createGroup(type: string, founderId: string, name: string, description?: string, avatarUrl?: string, settings?: Record<string, unknown>, visibility?: string): Promise<StoredGroup | null>;
-  getGroup(type: string, id: string): Promise<StoredGroup | null>;
-  getGroupByName(type: string, name: string): Promise<StoredGroup | null>;
-  listGroups(type: string, sort?: "name" | "recent"): Promise<StoredGroup[]>;
-  updateGroup(type: string, id: string, updates: { name?: string; description?: string; avatarUrl?: string; settings?: Record<string, unknown>; visibility?: string }): Promise<StoredGroup | null>;
-  deleteGroup(type: string, id: string): Promise<boolean>;
+  createGroup(type: GroupType, founderId: string, name: string, description?: string, avatarUrl?: string, settings?: Record<string, unknown>, visibility?: GroupVisibility): Promise<StoredGroup | null>;
+  getGroup(type: GroupType, id: string): Promise<StoredGroup | null>;
+  getGroupByName(type: GroupType, name: string): Promise<StoredGroup | null>;
+  listGroups(type: GroupType, sort?: "name" | "recent"): Promise<StoredGroup[]>;
+  updateGroup(type: GroupType, id: string, updates: { name?: string; description?: string; avatarUrl?: string; settings?: Record<string, unknown>; visibility?: GroupVisibility }): Promise<StoredGroup | null>;
+  deleteGroup(type: GroupType, id: string): Promise<boolean>;
 }
 

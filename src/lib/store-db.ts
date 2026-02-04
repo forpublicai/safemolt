@@ -2,7 +2,9 @@
  * Postgres-backed store (Neon). Used when POSTGRES_URL or DATABASE_URL is set.
  */
 import { sql } from "@/lib/db";
-import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredGroup } from "./store-types";
+import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredGroup, GroupVisibility } from "./store-types";
+import type { GroupType as GroupTypeType } from "./store-types";
+import { GroupType } from "./groups/types";
 import {
   generateChallengeValues,
   generateNonce,
@@ -894,7 +896,7 @@ const MAX_HOUSE_NAME_LENGTH = 128;
 function rowToHouse(r: Record<string, unknown>): StoredHouse {
   return {
     id: r.id as string,
-    type: 'houses',
+    type: GroupType.HOUSES,
     name: r.name as string,
     description: r.description as string | null,
     founderId: r.founder_id as string,
@@ -918,13 +920,13 @@ function rowToHouseMember(r: Record<string, unknown>): StoredHouseMember {
 function rowToGroup(r: Record<string, unknown>): StoredGroup {
   return {
     id: r.id as string,
-    type: r.type as string,
+    type: r.type as GroupType,
     name: r.name as string,
     description: r.description as string | null,
     founderId: r.founder_id as string,
     avatarUrl: r.avatar_url as string | null,
     settings: (r.settings as Record<string, unknown>) ?? {},
-    visibility: r.visibility as string,
+    visibility: r.visibility as GroupVisibility,
     createdAt: String(r.created_at),
   };
 }
@@ -959,7 +961,7 @@ export async function createHouse(
     // Create base group entry
     await sql!`
       INSERT INTO groups (id, type, name, description, founder_id, avatar_url, settings, visibility, created_at)
-      VALUES (${id}, 'houses', ${name}, NULL, ${founderId}, NULL, '{}'::jsonb, 'public', ${createdAt})
+      VALUES (${id}, ${GroupType.HOUSES}, ${name}, NULL, ${founderId}, NULL, '{}'::jsonb, 'public', ${createdAt})
     `;
 
     // Create house extension entry
@@ -994,7 +996,7 @@ export async function getHouse(id: string): Promise<StoredHouse | null> {
     SELECT g.*, he.points
     FROM groups g
     JOIN houses_ext he ON he.group_id = g.id
-    WHERE g.id = ${id} AND g.type = 'houses'
+    WHERE g.id = ${id} AND g.type = ${GroupType.HOUSES}
     LIMIT 1
   `;
   const r = rows[0] as Record<string, unknown> | undefined;
@@ -1007,7 +1009,7 @@ export async function getHouseByName(name: string): Promise<StoredHouse | null> 
     SELECT g.*, he.points
     FROM groups g
     JOIN houses_ext he ON he.group_id = g.id
-    WHERE g.type = 'houses' AND LOWER(g.name) = LOWER(${name})
+    WHERE g.type = ${GroupType.HOUSES} AND LOWER(g.name) = LOWER(${name})
     LIMIT 1
   `;
   const r = rows[0] as Record<string, unknown> | undefined;
@@ -1024,7 +1026,7 @@ export async function listHouses(
       SELECT g.*, he.points
       FROM groups g
       JOIN houses_ext he ON he.group_id = g.id
-      WHERE g.type = 'houses'
+      WHERE g.type = ${GroupType.HOUSES}
       ORDER BY he.points DESC
       LIMIT 100
     `;
@@ -1033,7 +1035,7 @@ export async function listHouses(
       SELECT g.*, he.points
       FROM groups g
       JOIN houses_ext he ON he.group_id = g.id
-      WHERE g.type = 'houses'
+      WHERE g.type = ${GroupType.HOUSES}
       ORDER BY LOWER(g.name) ASC
       LIMIT 100
     `;
@@ -1042,7 +1044,7 @@ export async function listHouses(
       SELECT g.*, he.points
       FROM groups g
       JOIN houses_ext he ON he.group_id = g.id
-      WHERE g.type = 'houses'
+      WHERE g.type = ${GroupType.HOUSES}
       ORDER BY g.created_at DESC
       LIMIT 100
     `;
@@ -1073,18 +1075,19 @@ export async function getHouseMemberCount(houseId: string): Promise<number> {
  * Join a house. Leaves current house if in one.
  * Returns false if house doesn't exist.
  *
- * Uses a transaction with row locking to prevent race conditions.
+ * Uses a single transaction with row locking to prevent race conditions.
+ * If the agent is already in a house, leaves it within the same transaction.
  */
 export async function joinHouse(agentId: string, houseId: string): Promise<boolean> {
   try {
     await sql!`BEGIN`;
 
-    // Lock the house row to prevent concurrent modifications
+    // Lock the target house row to prevent concurrent modifications
     const houseRows = await sql!`
       SELECT g.id
       FROM groups g
       JOIN houses_ext he ON he.group_id = g.id
-      WHERE g.id = ${houseId} AND g.type = 'houses'
+      WHERE g.id = ${houseId} AND g.type = ${GroupType.HOUSES}
       FOR UPDATE
     `;
 
@@ -1100,31 +1103,35 @@ export async function joinHouse(agentId: string, houseId: string): Promise<boole
       return false;
     }
 
-    // Leave current house if in one
+    // Check if agent is already in a house
     const membershipRows = await sql!`SELECT * FROM house_members WHERE agent_id = ${agentId} LIMIT 1`;
     if (membershipRows.length > 0) {
       const currentMembership = rowToHouseMember(membershipRows[0] as Record<string, unknown>);
-      // Call leaveHouse within the same transaction context
-      // Note: leaveHouse has its own transaction handling, so we need to handle this carefully
-      await sql!`ROLLBACK`;
-      const leftOk = await leaveHouse(agentId);
-      if (!leftOk) return false;
 
-      // Restart transaction for the join
-      await sql!`BEGIN`;
-      const recheckHouse = await sql!`
+      // If already in the target house, nothing to do
+      if (currentMembership.houseId === houseId) {
+        await sql!`COMMIT`;
+        return true;
+      }
+
+      // Lock the current house as well to prevent concurrent modifications
+      await sql!`
         SELECT g.id
         FROM groups g
         JOIN houses_ext he ON he.group_id = g.id
-        WHERE g.id = ${houseId} AND g.type = 'houses'
+        WHERE g.id = ${currentMembership.houseId} AND g.type = ${GroupType.HOUSES}
         FOR UPDATE
       `;
-      if (recheckHouse.length === 0) {
+
+      // Leave current house within this transaction (no BEGIN/COMMIT)
+      const leftOk = await _leaveHouseInternal(agentId, currentMembership.houseId);
+      if (!leftOk) {
         await sql!`ROLLBACK`;
         return false;
       }
     }
 
+    // Join the new house
     const joinedAt = new Date().toISOString();
 
     await sql!`
@@ -1138,6 +1145,59 @@ export async function joinHouse(agentId: string, houseId: string): Promise<boole
     await sql!`ROLLBACK`;
     throw error;
   }
+}
+
+/**
+ * Internal helper to leave a house within an existing transaction.
+ * Operates on the provided SQL context without BEGIN/COMMIT/ROLLBACK.
+ * Assumes the caller has already:
+ * - Verified membership exists
+ * - Locked the house row with FOR UPDATE
+ *
+ * @param agentId - The agent leaving the house
+ * @param houseId - The house being left
+ * @returns true if successful, false if house not found
+ */
+async function _leaveHouseInternal(agentId: string, houseId: string): Promise<boolean> {
+  // Get house info (should already be locked by caller)
+  const houseRows = await sql!`
+    SELECT g.*, he.points
+    FROM groups g
+    JOIN houses_ext he ON he.group_id = g.id
+    WHERE g.id = ${houseId} AND g.type = ${GroupType.HOUSES}
+  `;
+
+  if (houseRows.length === 0) {
+    return false;
+  }
+  const house = rowToHouse(houseRows[0] as Record<string, unknown>);
+
+  // Check if leaving agent is founder
+  if (house.founderId === agentId) {
+    // Get other members ordered by join date (oldest first)
+    const memberRows = await sql!`
+      SELECT agent_id, house_id, karma_at_join, joined_at
+      FROM house_members
+      WHERE house_id = ${house.id}
+      ORDER BY joined_at ASC
+    `;
+    const members = memberRows.map(r => rowToHouseMember(r as Record<string, unknown>));
+    const otherMembers = members.filter(m => m.agentId !== agentId);
+
+    if (otherMembers.length === 0) {
+      // No other members - dissolve house (CASCADE will delete membership and houses_ext)
+      await sql!`DELETE FROM groups WHERE id = ${house.id}`;
+      return true;
+    }
+
+    // Auto-elect oldest member as new founder
+    const newFounder = otherMembers[0];
+    await sql!`UPDATE groups SET founder_id = ${newFounder.agentId} WHERE id = ${house.id}`;
+  }
+
+  // Remove membership
+  await sql!`DELETE FROM house_members WHERE agent_id = ${agentId}`;
+  return true;
 }
 
 /**
@@ -1157,10 +1217,10 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
 
     // Lock the house row to prevent concurrent modifications
     const houseRows = await sql!`
-      SELECT g.*, he.points
+      SELECT g.id
       FROM groups g
       JOIN houses_ext he ON he.group_id = g.id
-      WHERE g.id = ${membership.houseId} AND g.type = 'houses'
+      WHERE g.id = ${membership.houseId} AND g.type = ${GroupType.HOUSES}
       FOR UPDATE
     `;
 
@@ -1168,34 +1228,14 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
       await sql!`ROLLBACK`;
       return false;
     }
-    const house = rowToHouse(houseRows[0] as Record<string, unknown>);
 
-    // Check if leaving agent is founder
-    if (house.founderId === agentId) {
-      // Get other members ordered by join date (oldest first)
-      const memberRows = await sql!`
-        SELECT agent_id, house_id, karma_at_join, joined_at
-        FROM house_members
-        WHERE house_id = ${house.id}
-        ORDER BY joined_at ASC
-      `;
-      const members = memberRows.map(r => rowToHouseMember(r as Record<string, unknown>));
-      const otherMembers = members.filter(m => m.agentId !== agentId);
-
-      if (otherMembers.length === 0) {
-        // No other members - dissolve house (CASCADE will delete membership and houses_ext)
-        await sql!`DELETE FROM groups WHERE id = ${house.id}`;
-        await sql!`COMMIT`;
-        return true;
-      }
-
-      // Auto-elect oldest member as new founder
-      const newFounder = otherMembers[0];
-      await sql!`UPDATE groups SET founder_id = ${newFounder.agentId} WHERE id = ${house.id}`;
+    // Use internal helper within transaction
+    const result = await _leaveHouseInternal(agentId, membership.houseId);
+    if (!result) {
+      await sql!`ROLLBACK`;
+      return false;
     }
 
-    // Remove membership
-    await sql!`DELETE FROM house_members WHERE agent_id = ${agentId}`;
     await sql!`COMMIT`;
     return true;
   } catch (error) {
@@ -1284,7 +1324,7 @@ export async function getHouseWithDetails(houseId: string): Promise<(StoredHouse
     FROM groups g
     JOIN houses_ext he ON he.group_id = g.id
     LEFT JOIN house_members hm ON hm.house_id = g.id
-    WHERE g.id = ${houseId} AND g.type = 'houses'
+    WHERE g.id = ${houseId} AND g.type = ${GroupType.HOUSES}
     GROUP BY g.id, g.type, g.name, g.description, g.founder_id, g.avatar_url, g.settings, g.visibility, g.created_at, he.points
     LIMIT 1
   `;
@@ -1315,13 +1355,13 @@ const MAX_GROUP_NAME_LENGTH = 128;
  * @returns The created group or null if creation failed
  */
 export async function createGroup(
-  type: string,
+  type: GroupType,
   founderId: string,
   name: string,
   description?: string,
   avatarUrl?: string,
   settings?: Record<string, unknown>,
-  visibility?: string
+  visibility?: GroupVisibility
 ): Promise<StoredGroup | null> {
   // Validate name length
   if (!name || name.length > MAX_GROUP_NAME_LENGTH) {
@@ -1357,7 +1397,7 @@ export async function createGroup(
  * Get a group by ID and type.
  * Returns null if not found or type mismatch.
  */
-export async function getGroup(type: string, id: string): Promise<StoredGroup | null> {
+export async function getGroup(type: GroupType, id: string): Promise<StoredGroup | null> {
   const rows = await sql!`SELECT * FROM groups WHERE id = ${id} AND type = ${type} LIMIT 1`;
   const r = rows[0] as Record<string, unknown> | undefined;
   return r ? rowToGroup(r) : null;
@@ -1366,7 +1406,7 @@ export async function getGroup(type: string, id: string): Promise<StoredGroup | 
 /**
  * Get a group by name (case-insensitive) and type.
  */
-export async function getGroupByName(type: string, name: string): Promise<StoredGroup | null> {
+export async function getGroupByName(type: GroupType, name: string): Promise<StoredGroup | null> {
   const rows = await sql!`SELECT * FROM groups WHERE type = ${type} AND LOWER(name) = LOWER(${name}) LIMIT 1`;
   const r = rows[0] as Record<string, unknown> | undefined;
   return r ? rowToGroup(r) : null;
@@ -1377,7 +1417,7 @@ export async function getGroupByName(type: string, name: string): Promise<Stored
  * Returns max 100 results.
  */
 export async function listGroups(
-  type: string,
+  type: GroupType,
   sort: "name" | "recent" = "name"
 ): Promise<StoredGroup[]> {
   let rows: Record<string, unknown>[];
@@ -1394,14 +1434,14 @@ export async function listGroups(
  * Returns null if not found or type mismatch.
  */
 export async function updateGroup(
-  type: string,
+  type: GroupType,
   id: string,
   updates: {
     name?: string;
     description?: string;
     avatarUrl?: string;
     settings?: Record<string, unknown>;
-    visibility?: string;
+    visibility?: GroupVisibility;
   }
 ): Promise<StoredGroup | null> {
   // Verify group exists and type matches
@@ -1449,7 +1489,7 @@ export async function updateGroup(
  * Cascades to type-specific extension tables (e.g., houses_ext).
  * Returns false if not found or type mismatch.
  */
-export async function deleteGroup(type: string, id: string): Promise<boolean> {
+export async function deleteGroup(type: GroupType, id: string): Promise<boolean> {
   // Verify group exists and type matches
   const existing = await getGroup(type, id);
   if (!existing) {

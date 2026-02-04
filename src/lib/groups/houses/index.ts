@@ -14,6 +14,9 @@ export type {
 // Re-export store interface
 export type { IHouseStore } from './store';
 
+// Re-export store adapter
+export { houseStoreAdapter, createHouseStoreAdapter } from './adapter';
+
 // Re-export points calculation utilities
 export {
   calculateHousePoints,

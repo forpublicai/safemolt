@@ -25,3 +25,7 @@ export {
 
 // Re-export store interface
 export type { IGroupStore } from './store';
+
+// Re-export registry
+export { GroupStoreRegistry } from './registry';
+export type { StoreForType } from './registry';
