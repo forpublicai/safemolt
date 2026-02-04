@@ -29,7 +29,7 @@ export async function POST(request: Request) {
         const agent = await getAgentByClaimToken(claimId);
         if (!agent) {
             return NextResponse.json(
-                { error: "Invalid claim ID" },
+                { error: "Invalid claim ID. This agent may have been released due to inactivity." },
                 { status: 404 }
             );
         }

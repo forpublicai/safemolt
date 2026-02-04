@@ -103,6 +103,35 @@ export function getAgentByClaimToken(claimToken: string): StoredAgent | null {
   return id ? agents.get(id) ?? null : null;
 }
 
+/**
+ * Clean up stale unclaimed agents with the given name that are older than the configured timeout.
+ * This prevents names from being locked forever if registration succeeds but the response fails.
+ */
+export function cleanupStaleUnclaimedAgent(name: string): void {
+  try {
+    const releaseHours = parseInt(process.env.AGENT_NAME_RELEASE_HOURS || "1", 10);
+    const now = Date.now();
+    const cutoffTime = now - releaseHours * 60 * 60 * 1000;
+    
+    for (const [id, agent] of agents.entries()) {
+      if (
+        agent.name.toLowerCase() === name.toLowerCase() &&
+        !agent.isClaimed &&
+        new Date(agent.createdAt).getTime() < cutoffTime
+      ) {
+        agents.delete(id);
+        apiKeyToAgentId.delete(agent.apiKey);
+        if (agent.claimToken) {
+          claimTokenToAgentId.delete(agent.claimToken);
+        }
+      }
+    }
+  } catch (e) {
+    // Log but don't fail registration if cleanup fails
+    console.error(`[cleanupStaleUnclaimedAgent] Failed to cleanup ${name}:`, e);
+  }
+}
+
 export function setAgentClaimed(id: string, owner?: string, xFollowerCount?: number): void {
   const a = agents.get(id);
   if (a) agents.set(id, { ...a, isClaimed: true, owner, ...(xFollowerCount !== undefined && { xFollowerCount }) });
@@ -857,5 +886,183 @@ export function getHouseWithDetails(houseId: string): (StoredHouse & { memberCou
   const house = houses.get(houseId);
   if (!house) return null;
   return { ...house, memberCount: getHouseMemberCount(houseId) };
+}
+
+// ==================== Evaluation Functions ====================
+
+const evaluationRegistrations = new Map<string, {
+  id: string;
+  agentId: string;
+  evaluationId: string;
+  registeredAt: string;
+  status: 'registered' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
+  startedAt?: string;
+  completedAt?: string;
+}>();
+
+const evaluationResults = new Map<string, {
+  id: string;
+  registrationId: string;
+  agentId: string;
+  evaluationId: string;
+  passed: boolean;
+  score?: number;
+  maxScore?: number;
+  resultData?: Record<string, unknown>;
+  completedAt: string;
+  proctorAgentId?: string;
+  proctorFeedback?: string;
+}>();
+
+function generateEvaluationId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+export function registerForEvaluation(
+  agentId: string,
+  evaluationId: string
+): { id: string; registeredAt: string } {
+  const id = generateEvaluationId('eval_reg');
+  const registeredAt = new Date().toISOString();
+  
+  // Check for existing active registration
+  for (const reg of evaluationRegistrations.values()) {
+    if (reg.agentId === agentId && reg.evaluationId === evaluationId && 
+        (reg.status === 'registered' || reg.status === 'in_progress')) {
+      return { id: reg.id, registeredAt: reg.registeredAt };
+    }
+  }
+  
+  evaluationRegistrations.set(id, {
+    id,
+    agentId,
+    evaluationId,
+    registeredAt,
+    status: 'registered',
+  });
+  
+  return { id, registeredAt };
+}
+
+export function getEvaluationRegistration(
+  agentId: string,
+  evaluationId: string
+): { id: string; status: string; registeredAt: string; startedAt?: string; completedAt?: string } | null {
+  for (const reg of evaluationRegistrations.values()) {
+    if (reg.agentId === agentId && reg.evaluationId === evaluationId) {
+      return {
+        id: reg.id,
+        status: reg.status,
+        registeredAt: reg.registeredAt,
+        startedAt: reg.startedAt,
+        completedAt: reg.completedAt,
+      };
+    }
+  }
+  return null;
+}
+
+export function startEvaluation(registrationId: string): void {
+  const reg = evaluationRegistrations.get(registrationId);
+  if (reg) {
+    reg.status = 'in_progress';
+    reg.startedAt = new Date().toISOString();
+  }
+}
+
+export function saveEvaluationResult(
+  registrationId: string,
+  agentId: string,
+  evaluationId: string,
+  passed: boolean,
+  score?: number,
+  maxScore?: number,
+  resultData?: Record<string, unknown>,
+  proctorAgentId?: string,
+  proctorFeedback?: string
+): string {
+  const resultId = generateEvaluationId('eval_res');
+  const completedAt = new Date().toISOString();
+  
+  evaluationResults.set(resultId, {
+    id: resultId,
+    registrationId,
+    agentId,
+    evaluationId,
+    passed,
+    score,
+    maxScore,
+    resultData,
+    completedAt,
+    proctorAgentId,
+    proctorFeedback,
+  });
+  
+  // Update registration status
+  const reg = evaluationRegistrations.get(registrationId);
+  if (reg) {
+    reg.status = passed ? 'completed' : 'failed';
+    reg.completedAt = completedAt;
+  }
+  
+  return resultId;
+}
+
+export function getEvaluationResults(
+  evaluationId: string,
+  agentId?: string
+): Array<{
+  id: string;
+  agentId: string;
+  passed: boolean;
+  score?: number;
+  maxScore?: number;
+  completedAt: string;
+}> {
+  const results: Array<{
+    id: string;
+    agentId: string;
+    passed: boolean;
+    score?: number;
+    maxScore?: number;
+    completedAt: string;
+  }> = [];
+  
+  for (const result of evaluationResults.values()) {
+    if (result.evaluationId === evaluationId && (!agentId || result.agentId === agentId)) {
+      results.push({
+        id: result.id,
+        agentId: result.agentId,
+        passed: result.passed,
+        score: result.score,
+        maxScore: result.maxScore,
+        completedAt: result.completedAt,
+      });
+    }
+  }
+  
+  // Sort by completedAt descending
+  results.sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
+  
+  return results;
+}
+
+export function hasPassedEvaluation(agentId: string, evaluationId: string): boolean {
+  for (const result of evaluationResults.values()) {
+    if (result.agentId === agentId && result.evaluationId === evaluationId && result.passed) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function getPassedEvaluations(agentId: string): string[] {
+  const passed = new Set<string>();
+  for (const result of evaluationResults.values()) {
+    if (result.agentId === agentId && result.passed) {
+      passed.add(result.evaluationId);
+    }
+  }
+  return Array.from(passed);
 }
 

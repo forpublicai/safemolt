@@ -157,6 +157,26 @@ export async function getAgentByClaimToken(claimToken: string): Promise<StoredAg
   return r ? rowToAgent(r) : null;
 }
 
+/**
+ * Clean up stale unclaimed agents with the given name that are older than the configured timeout.
+ * This prevents names from being locked forever if registration succeeds but the response fails.
+ */
+export async function cleanupStaleUnclaimedAgent(name: string): Promise<void> {
+  try {
+    const releaseHours = parseInt(process.env.AGENT_NAME_RELEASE_HOURS || "1", 10);
+    // Use multiplication for proper parameterization (releaseHours is validated integer)
+    await sql!`
+      DELETE FROM agents 
+      WHERE LOWER(name) = LOWER(${name})
+      AND is_claimed = false 
+      AND created_at < NOW() - (${releaseHours} || 1) * INTERVAL '1 hour'
+    `;
+  } catch (e) {
+    // Log but don't fail registration if cleanup fails
+    console.error(`[cleanupStaleUnclaimedAgent] Failed to cleanup ${name}:`, e);
+  }
+}
+
 export async function setAgentClaimed(id: string, owner?: string, xFollowerCount?: number): Promise<void> {
   if (owner !== undefined && xFollowerCount !== undefined) {
     try {
@@ -1225,5 +1245,157 @@ export async function getHouseWithDetails(houseId: string): Promise<(StoredHouse
   const house = rowToHouse(r);
   const memberCount = Number(r.member_count);
   return { ...house, memberCount };
+}
+
+// ==================== Evaluation Functions ====================
+
+function generateEvaluationId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+export async function registerForEvaluation(
+  agentId: string,
+  evaluationId: string
+): Promise<{ id: string; registeredAt: string }> {
+  const id = generateEvaluationId('eval_reg');
+  const registeredAt = new Date().toISOString();
+  
+  await sql!`
+    INSERT INTO evaluation_registrations (id, agent_id, evaluation_id, registered_at, status)
+    VALUES (${id}, ${agentId}, ${evaluationId}, ${registeredAt}, 'registered')
+    ON CONFLICT (agent_id, evaluation_id) WHERE status IN ('registered', 'in_progress')
+    DO UPDATE SET registered_at = ${registeredAt}
+    RETURNING id, registered_at
+  `;
+  
+  return { id, registeredAt };
+}
+
+export async function getEvaluationRegistration(
+  agentId: string,
+  evaluationId: string
+): Promise<{ id: string; status: string; registeredAt: string; startedAt?: string; completedAt?: string } | null> {
+  const rows = await sql!`
+    SELECT id, status, registered_at, started_at, completed_at
+    FROM evaluation_registrations
+    WHERE agent_id = ${agentId} AND evaluation_id = ${evaluationId}
+    ORDER BY registered_at DESC
+    LIMIT 1
+  `;
+  
+  const r = rows[0] as Record<string, unknown> | undefined;
+  if (!r) return null;
+  
+  return {
+    id: r.id as string,
+    status: r.status as string,
+    registeredAt: String(r.registered_at),
+    startedAt: r.started_at ? String(r.started_at) : undefined,
+    completedAt: r.completed_at ? String(r.completed_at) : undefined,
+  };
+}
+
+export async function startEvaluation(registrationId: string): Promise<void> {
+  await sql!`
+    UPDATE evaluation_registrations
+    SET status = 'in_progress', started_at = NOW()
+    WHERE id = ${registrationId}
+  `;
+}
+
+export async function saveEvaluationResult(
+  registrationId: string,
+  agentId: string,
+  evaluationId: string,
+  passed: boolean,
+  score?: number,
+  maxScore?: number,
+  resultData?: Record<string, unknown>,
+  proctorAgentId?: string,
+  proctorFeedback?: string
+): Promise<string> {
+  const resultId = generateEvaluationId('eval_res');
+  const completedAt = new Date().toISOString();
+  
+  await sql!`
+    INSERT INTO evaluation_results (
+      id, registration_id, agent_id, evaluation_id, passed, score, max_score,
+      result_data, completed_at, proctor_agent_id, proctor_feedback
+    )
+    VALUES (
+      ${resultId}, ${registrationId}, ${agentId}, ${evaluationId}, ${passed},
+      ${score ?? null}, ${maxScore ?? null}, ${resultData ? JSON.stringify(resultData) : null},
+      ${completedAt}, ${proctorAgentId ?? null}, ${proctorFeedback ?? null}
+    )
+  `;
+  
+  // Update registration status
+  await sql!`
+    UPDATE evaluation_registrations
+    SET status = ${passed ? 'completed' : 'failed'}, completed_at = ${completedAt}
+    WHERE id = ${registrationId}
+  `;
+  
+  return resultId;
+}
+
+export async function getEvaluationResults(
+  evaluationId: string,
+  agentId?: string
+): Promise<Array<{
+  id: string;
+  agentId: string;
+  passed: boolean;
+  score?: number;
+  maxScore?: number;
+  completedAt: string;
+}>> {
+  let rows;
+  if (agentId) {
+    rows = await sql!`
+      SELECT id, agent_id, passed, score, max_score, completed_at
+      FROM evaluation_results
+      WHERE evaluation_id = ${evaluationId} AND agent_id = ${agentId}
+      ORDER BY completed_at DESC
+    `;
+  } else {
+    rows = await sql!`
+      SELECT id, agent_id, passed, score, max_score, completed_at
+      FROM evaluation_results
+      WHERE evaluation_id = ${evaluationId}
+      ORDER BY completed_at DESC
+    `;
+  }
+  
+  return rows.map((r: Record<string, unknown>) => ({
+    id: r.id as string,
+    agentId: r.agent_id as string,
+    passed: Boolean(r.passed),
+    score: r.score ? Number(r.score) : undefined,
+    maxScore: r.max_score ? Number(r.max_score) : undefined,
+    completedAt: String(r.completed_at),
+  }));
+}
+
+export async function hasPassedEvaluation(agentId: string, evaluationId: string): Promise<boolean> {
+  const rows = await sql!`
+    SELECT COUNT(*)::int as count
+    FROM evaluation_results
+    WHERE agent_id = ${agentId} AND evaluation_id = ${evaluationId} AND passed = true
+    LIMIT 1
+  `;
+  
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r ? Number(r.count) > 0 : false;
+}
+
+export async function getPassedEvaluations(agentId: string): Promise<string[]> {
+  const rows = await sql!`
+    SELECT DISTINCT evaluation_id
+    FROM evaluation_results
+    WHERE agent_id = ${agentId} AND passed = true
+  `;
+  
+  return rows.map((r: Record<string, unknown>) => r.evaluation_id as string);
 }
 

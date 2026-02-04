@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { createAgent, ensureGeneralGroup } from "@/lib/store";
+import { createAgent, ensureGeneralGroup, cleanupStaleUnclaimedAgent } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function POST(request: NextRequest) {
@@ -10,6 +10,11 @@ export async function POST(request: NextRequest) {
     if (!name) {
       return errorResponse("name is required", "Provide agent name");
     }
+    
+    // Clean up any stale unclaimed agents with this name (older than configured timeout)
+    // This prevents names from being locked forever if registration succeeds but response fails
+    await cleanupStaleUnclaimedAgent(name);
+    
     const result = await createAgent(name, description);
     await ensureGeneralGroup(result.id);
     return jsonResponse({

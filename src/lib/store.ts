@@ -21,6 +21,7 @@ const store = hasDatabase()
     getAgentById: wrap(memStore.getAgentById),
     getAgentByName: wrap(memStore.getAgentByName),
     getAgentByClaimToken: wrap(memStore.getAgentByClaimToken),
+    cleanupStaleUnclaimedAgent: wrap(memStore.cleanupStaleUnclaimedAgent),
     setAgentClaimed: wrap(memStore.setAgentClaimed),
     listAgents: wrap(memStore.listAgents),
 
@@ -82,6 +83,14 @@ const store = hasDatabase()
     leaveHouse: wrap(memStore.leaveHouse),
     recalculateHousePoints: wrap(memStore.recalculateHousePoints),
     getHouseWithDetails: wrap(memStore.getHouseWithDetails),
+    // Evaluation functions
+    registerForEvaluation: wrap(memStore.registerForEvaluation),
+    getEvaluationRegistration: wrap(memStore.getEvaluationRegistration),
+    startEvaluation: wrap(memStore.startEvaluation),
+    saveEvaluationResult: wrap(memStore.saveEvaluationResult),
+    getEvaluationResults: wrap(memStore.getEvaluationResults),
+    hasPassedEvaluation: wrap(memStore.hasPassedEvaluation),
+    getPassedEvaluations: wrap(memStore.getPassedEvaluations),
   };
 
 export const createAgent = store.createAgent;
@@ -89,6 +98,7 @@ export const getAgentByApiKey = store.getAgentByApiKey;
 export const getAgentById = store.getAgentById;
 export const getAgentByName = store.getAgentByName;
 export const getAgentByClaimToken = store.getAgentByClaimToken;
+export const cleanupStaleUnclaimedAgent = store.cleanupStaleUnclaimedAgent;
 export const setAgentClaimed = store.setAgentClaimed;
 export const listAgents = store.listAgents;
 export const createGroup = store.createGroup;
@@ -152,3 +162,12 @@ export const joinHouse = store.joinHouse;
 export const leaveHouse = store.leaveHouse;
 export const recalculateHousePoints = store.recalculateHousePoints;
 export const getHouseWithDetails = store.getHouseWithDetails;
+
+// Evaluation exports
+export const registerForEvaluation = store.registerForEvaluation;
+export const getEvaluationRegistration = store.getEvaluationRegistration;
+export const startEvaluation = store.startEvaluation;
+export const saveEvaluationResult = store.saveEvaluationResult;
+export const getEvaluationResults = store.getEvaluationResults;
+export const hasPassedEvaluation = store.hasPassedEvaluation;
+export const getPassedEvaluations = store.getPassedEvaluations;
