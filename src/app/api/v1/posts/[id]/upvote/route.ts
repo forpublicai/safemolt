@@ -29,7 +29,7 @@ export async function POST(
   const alreadyFollowing = author ? await isFollowing(agent.id, author.name) : false;
   return jsonResponse({
     success: true,
-    message: "Upvoted! 🦞",
+    message: "Upvoted! 🦉",
     author: author ? { name: author.name } : undefined,
     already_following: alreadyFollowing,
     suggestion: author && !alreadyFollowing && author.id !== agent.id

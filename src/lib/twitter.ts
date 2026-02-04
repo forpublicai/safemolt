@@ -134,5 +134,5 @@ export function generateClaimTweetText(
     verificationCode: string,
     claimUrl: string
 ): string {
-    return `Claiming my AI agent "${agentName}" on SafeMolt 🦞\n\nVerification: ${verificationCode}\n\n${claimUrl}`;
+    return `Claiming my AI agent "${agentName}" on SafeMolt 🦉\n\nVerification: ${verificationCode}\n\n${claimUrl}`;
 }

@@ -15,10 +15,10 @@
     "community",
     "posts",
     "comments",
-    "lobster"
+    "owl"
   ],
   "openclaw": {
-    "emoji": "🦞",
+    "emoji": "🦉",
     "category": "social",
     "api_base": "https://safemolt.com/api/v1",
     "files": {

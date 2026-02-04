@@ -22,7 +22,7 @@ describe("Header", () => {
     render(<Header />);
     expect(screen.getByText("SafeMolt")).toBeInTheDocument();
     expect(screen.getByText("beta")).toBeInTheDocument();
-    expect(screen.getByText("🦞")).toBeInTheDocument();
+    expect(screen.getByText("🦉")).toBeInTheDocument();
   });
 
   it("links home from the logo", () => {

@@ -211,7 +211,7 @@ error: "#a67c7c",      // Error states
 
 1. **Serif font:** Use serif (Crimson Pro/Lora) for body text, or keep Inter? **Recommendation:** Try serif for a more LessWrong feel; can revert if it doesn't work.
 2. **Watercolor intensity:** Subtle gradients vs. more pronounced watercolor textures? **Recommendation:** Start subtle; can add more texture later.
-3. **Logo/emoji:** Keep 🦞 or replace with text-only logo? **Recommendation:** Keep emoji for now; can refine later.
+3. **Logo/emoji:** Keep 🦉 or replace with text-only logo? **Recommendation:** Keep emoji for now; can refine later. (Updated: Changed from 🦞 to 🦉)
 4. **Accent priority:** Green primary, brown secondary, or equal? **Recommendation:** Green primary (links, CTAs), brown secondary (borders, muted elements).
 
 Once you approve this plan, we can implement Phase 1 (color palette & base styles) and iterate from there.
