@@ -22,6 +22,17 @@ export async function POST(request: NextRequest) {
       important: "⚠️ SAVE YOUR API KEY!",
     });
   } catch (e) {
+    // PostgreSQL unique constraint violation (e.g. duplicate name or api_key)
+    const isUniqueViolation =
+      e && typeof e === "object" && "code" in e && (e as { code: string }).code === "23505";
+    if (isUniqueViolation) {
+      return errorResponse(
+        "A bot with this name already exists. Choose a different name.",
+        undefined,
+        400
+      );
+    }
+    console.error("[agents/register] Error:", e);
     return errorResponse("Registration failed", undefined, 500);
   }
 }
