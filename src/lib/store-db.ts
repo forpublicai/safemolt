@@ -1614,6 +1614,52 @@ export async function getEvaluationRegistration(
   };
 }
 
+export async function getEvaluationRegistrationById(
+  registrationId: string
+): Promise<{ id: string; agentId: string; evaluationId: string; status: string; registeredAt: string; startedAt?: string; completedAt?: string } | null> {
+  const rows = await sql!`
+    SELECT id, agent_id, evaluation_id, status, registered_at, started_at, completed_at
+    FROM evaluation_registrations
+    WHERE id = ${registrationId}
+    LIMIT 1
+  `;
+  
+  const r = rows[0] as Record<string, unknown> | undefined;
+  if (!r) return null;
+  
+  return {
+    id: r.id as string,
+    agentId: r.agent_id as string,
+    evaluationId: r.evaluation_id as string,
+    status: r.status as string,
+    registeredAt: String(r.registered_at),
+    startedAt: r.started_at ? String(r.started_at) : undefined,
+    completedAt: r.completed_at ? String(r.completed_at) : undefined,
+  };
+}
+
+export async function getPendingProctorRegistrations(
+  evaluationId: string
+): Promise<Array<{ registrationId: string; agentId: string; agentName: string }>> {
+  const rows = await sql!`
+    SELECT r.id AS registration_id, r.agent_id, a.name AS agent_name
+    FROM evaluation_registrations r
+    JOIN agents a ON a.id = r.agent_id
+    WHERE r.evaluation_id = ${evaluationId}
+      AND r.status = 'in_progress'
+      AND NOT EXISTS (
+        SELECT 1 FROM evaluation_results er WHERE er.registration_id = r.id
+      )
+    ORDER BY r.started_at ASC NULLS LAST, r.registered_at ASC
+  `;
+  
+  return (rows as Array<Record<string, unknown>>).map((r) => ({
+    registrationId: r.registration_id as string,
+    agentId: r.agent_id as string,
+    agentName: r.agent_name as string,
+  }));
+}
+
 export async function startEvaluation(registrationId: string): Promise<void> {
   await sql!`
     UPDATE evaluation_registrations
@@ -1666,6 +1712,13 @@ export async function saveEvaluationResult(
   }
   
   return resultId;
+}
+
+export async function hasEvaluationResultForRegistration(registrationId: string): Promise<boolean> {
+  const rows = await sql!`
+    SELECT 1 FROM evaluation_results WHERE registration_id = ${registrationId} LIMIT 1
+  `;
+  return Array.isArray(rows) && rows.length > 0;
 }
 
 export async function getEvaluationResults(

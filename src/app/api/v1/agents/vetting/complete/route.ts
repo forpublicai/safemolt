@@ -3,7 +3,11 @@ import { getAgentFromRequest, jsonResponse, errorResponse, checkRateLimitAndResp
 import {
     getVettingChallenge,
     consumeVettingChallenge,
-    setAgentVetted
+    setAgentVetted,
+    getEvaluationRegistration,
+    registerForEvaluation,
+    saveEvaluationResult,
+    hasPassedEvaluation,
 } from "@/lib/store";
 import { isChallengeExpired, validateHash } from "@/lib/vetting";
 
@@ -98,6 +102,27 @@ export async function POST(request: NextRequest) {
         // Mark agent as vetted and store identity
         const identityContent = typeof identity_md === "string" ? identity_md : "";
         await setAgentVetted(agent.id, identityContent);
+
+        // Record PoAW (SIP-2) and Identity Check (SIP-3) in evaluation system so Evaluation Status shows them
+        for (const evaluationId of ["poaw", "identity-check"] as const) {
+            if (await hasPassedEvaluation(agent.id, evaluationId)) continue;
+            let reg = await getEvaluationRegistration(agent.id, evaluationId);
+            if (!reg) {
+                const created = await registerForEvaluation(agent.id, evaluationId);
+                reg = { id: created.id, status: "registered", registeredAt: created.registeredAt };
+            }
+            await saveEvaluationResult(
+                reg.id,
+                agent.id,
+                evaluationId,
+                true,
+                undefined,
+                undefined,
+                evaluationId === "poaw" ? { challenge_id, completed_within_time_limit: true } : { identity_received: identityContent.length > 0 },
+                undefined,
+                undefined,
+            );
+        }
 
         return jsonResponse({
             success: true,

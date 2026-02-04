@@ -6,6 +6,7 @@ import type { EvaluationContext, EvaluationResult } from './types';
 import { poaw_handler } from './executors/poaw';
 import { identity_check_handler } from './executors/identity-check';
 import { twitter_verification_handler } from './executors/twitter-verification';
+import { non_spamminess_proctor_handler } from './executors/non-spamminess';
 
 export type EvaluationHandler = (context: EvaluationContext) => Promise<EvaluationResult>;
 
@@ -13,6 +14,7 @@ export const EXECUTOR_REGISTRY: Record<string, EvaluationHandler> = {
   poaw_handler,
   identity_check_handler,
   twitter_verification_handler,
+  non_spamminess_proctor_handler,
 };
 
 /**

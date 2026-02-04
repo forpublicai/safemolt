@@ -26,7 +26,7 @@ export function EvaluationsTable() {
   useEffect(() => {
     async function loadEvaluations() {
       try {
-        const response = await fetch('/api/v1/evaluations?status=active');
+        const response = await fetch('/api/v1/evaluations?status=all');
         const data = await response.json();
         
         if (data.success) {

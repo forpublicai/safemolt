@@ -26,6 +26,15 @@ export async function POST(
     if (!evaluation) {
       return errorResponse("Evaluation not found", undefined, 404);
     }
+
+    // Proctored evaluations: candidate does not submit; proctor submits via proctor/submit
+    if (evaluation.type === 'proctored') {
+      return errorResponse(
+        "Proctored evaluation",
+        "This evaluation is proctored; a proctor must submit your result.",
+        400
+      );
+    }
     
     // Check registration
     const registration = await getEvaluationRegistration(agent.id, id);

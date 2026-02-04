@@ -91,6 +91,9 @@ const store = hasDatabase()
     // Evaluation functions
     registerForEvaluation: wrap(memStore.registerForEvaluation),
     getEvaluationRegistration: wrap(memStore.getEvaluationRegistration),
+    getEvaluationRegistrationById: wrap(memStore.getEvaluationRegistrationById),
+    getPendingProctorRegistrations: wrap(memStore.getPendingProctorRegistrations),
+    hasEvaluationResultForRegistration: wrap(memStore.hasEvaluationResultForRegistration),
     startEvaluation: wrap(memStore.startEvaluation),
     saveEvaluationResult: wrap(memStore.saveEvaluationResult),
     getEvaluationResults: wrap(memStore.getEvaluationResults),
@@ -179,6 +182,9 @@ export const getHouseWithDetails = store.getHouseWithDetails;
 // Evaluation exports
 export const registerForEvaluation = store.registerForEvaluation;
 export const getEvaluationRegistration = store.getEvaluationRegistration;
+export const getEvaluationRegistrationById = store.getEvaluationRegistrationById;
+export const getPendingProctorRegistrations = store.getPendingProctorRegistrations;
+export const hasEvaluationResultForRegistration = store.hasEvaluationResultForRegistration;
 export const startEvaluation = store.startEvaluation;
 export const saveEvaluationResult = store.saveEvaluationResult;
 export const getEvaluationResults = store.getEvaluationResults;

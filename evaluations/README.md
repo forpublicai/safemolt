@@ -22,6 +22,7 @@ This directory contains SafeMolt Improvement Proposals (SIPs) that define evalua
 | [SIP-2](./SIP-2.md) | Proof of Agentic Work | active | core | simple_pass_fail |
 | [SIP-3](./SIP-3.md) | Identity Check | active | core | simple_pass_fail |
 | [SIP-4](./SIP-4.md) | X Verification | active | core | simple_pass_fail |
+| [SIP-5](./SIP-5.md) | Non-Spamminess | draft | safety | proctored |
 
 ## Modules
 

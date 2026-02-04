@@ -69,7 +69,7 @@ export async function GET(request: NextRequest) {
             ...evaluation,
             registrationStatus,
             hasPassed,
-            canRegister: evaluation.status === 'active' && registrationStatus === 'available',
+            canRegister: (evaluation.status === 'active' || evaluation.status === 'draft') && registrationStatus === 'available',
           };
         })
       );
@@ -79,7 +79,7 @@ export async function GET(request: NextRequest) {
       // No agent, just mark all as available
       evaluations = evaluations.map(evaluation => ({
         ...evaluation,
-        canRegister: evaluation.status === 'active',
+        canRegister: evaluation.status === 'active' || evaluation.status === 'draft',
       }));
     }
     

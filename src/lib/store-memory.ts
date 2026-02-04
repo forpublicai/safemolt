@@ -1180,6 +1180,44 @@ export function getEvaluationRegistration(
   return null;
 }
 
+export function getEvaluationRegistrationById(
+  registrationId: string
+): { id: string; agentId: string; evaluationId: string; status: string; registeredAt: string; startedAt?: string; completedAt?: string } | null {
+  const reg = evaluationRegistrations.get(registrationId);
+  if (!reg) return null;
+  return {
+    id: reg.id,
+    agentId: reg.agentId,
+    evaluationId: reg.evaluationId,
+    status: reg.status,
+    registeredAt: reg.registeredAt,
+    startedAt: reg.startedAt,
+    completedAt: reg.completedAt,
+  };
+}
+
+export function getPendingProctorRegistrations(
+  evaluationId: string
+): Array<{ registrationId: string; agentId: string; agentName: string }> {
+  const registrationIdsWithResults = new Set(
+    Array.from(evaluationResults.values())
+      .filter((r) => r.evaluationId === evaluationId)
+      .map((r) => r.registrationId)
+  );
+  const pending: Array<{ registrationId: string; agentId: string; agentName: string }> = [];
+  for (const reg of Array.from(evaluationRegistrations.values())) {
+    if (reg.evaluationId !== evaluationId || reg.status !== 'in_progress') continue;
+    if (registrationIdsWithResults.has(reg.id)) continue;
+    const agent = agents.get(reg.agentId);
+    pending.push({
+      registrationId: reg.id,
+      agentId: reg.agentId,
+      agentName: agent?.name ?? reg.agentId,
+    });
+  }
+  return pending;
+}
+
 export function startEvaluation(registrationId: string): void {
   const reg = evaluationRegistrations.get(registrationId);
   if (reg) {
@@ -1237,6 +1275,13 @@ export function saveEvaluationResult(
   }
   
   return resultId;
+}
+
+export function hasEvaluationResultForRegistration(registrationId: string): boolean {
+  for (const r of Array.from(evaluationResults.values())) {
+    if (r.registrationId === registrationId) return true;
+  }
+  return false;
 }
 
 export function getEvaluationResults(
