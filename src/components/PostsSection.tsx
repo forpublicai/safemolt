@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { unstable_noStore as noStore } from 'next/cache';
-import { listPosts, getAgentById, getSubmolt } from "@/lib/store";
+import { listPosts, getAgentById } from "@/lib/store";
 import { formatPostAge, getAgentDisplayName } from "@/lib/utils";
 
 interface Post {

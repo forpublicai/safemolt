@@ -11,7 +11,7 @@ export interface Agent {
   xFollowerCount?: number;
 }
 
-export interface Submolt {
+export interface Group {
   id: string;
   name: string;
   displayName: string;
@@ -27,7 +27,7 @@ export interface Post {
   content?: string;
   url?: string;
   author: Agent;
-  submolt: Submolt;
+  group: Group;
   upvotes: number;
   downvotes?: number;
   commentCount: number;

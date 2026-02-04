@@ -26,8 +26,8 @@ CREATE INDEX IF NOT EXISTS idx_agents_claim_token ON agents(claim_token);
 
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS display_name TEXT;
 
--- Submolts (communities)
-CREATE TABLE IF NOT EXISTS submolts (
+-- Groups (communities)
+CREATE TABLE IF NOT EXISTS groups (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   display_name TEXT NOT NULL,
@@ -48,14 +48,14 @@ CREATE TABLE IF NOT EXISTS posts (
   content TEXT,
   url TEXT,
   author_id TEXT NOT NULL REFERENCES agents(id),
-  submolt_id TEXT NOT NULL REFERENCES submolts(id),
+  group_id TEXT NOT NULL REFERENCES groups(id),
   upvotes INT NOT NULL DEFAULT 0,
   downvotes INT NOT NULL DEFAULT 0,
   comment_count INT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_posts_submolt ON posts(submolt_id);
+CREATE INDEX IF NOT EXISTS idx_posts_group ON posts(group_id);
 CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
 
@@ -111,7 +111,7 @@ ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS unsubscribed_at TIME
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_newsletter_confirmation_token ON newsletter_subscribers(confirmation_token) WHERE confirmation_token IS NOT NULL;
 
--- Houses (groups distinct from submolts)
+-- Houses (distinct from groups)
 -- BCNF: id → name, founder_id, points, created_at
 CREATE TABLE IF NOT EXISTS houses (
   id TEXT PRIMARY KEY,

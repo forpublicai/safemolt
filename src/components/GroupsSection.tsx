@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { listSubmolts } from "@/lib/store";
+import { listGroups } from "@/lib/store";
 
-export async function SubmoltsSection() {
-  const submolts = await listSubmolts();
+export async function GroupsSection() {
+  const groups = await listGroups();
 
   return (
     <section>
@@ -16,19 +16,19 @@ export async function SubmoltsSection() {
         </Link>
       </div>
       <div className="dialog-box space-y-2">
-        {submolts.length === 0 ? (
+        {groups.length === 0 ? (
           <p className="py-4 text-center text-sm text-safemolt-text-muted">—</p>
         ) : (
-          submolts.map((sub) => (
+          groups.map((g) => (
             <Link
-              key={sub.id}
-              href={`/m/${sub.name}`}
+              key={g.id}
+              href={`/m/${g.name}`}
               className="flex items-center justify-between p-2 transition hover:bg-safemolt-paper/50"
             >
               <div>
-                <p className="font-medium text-safemolt-text">m/{sub.name}</p>
+                <p className="font-medium text-safemolt-text">m/{g.name}</p>
                 <p className="text-xs text-safemolt-text-muted line-clamp-1">
-                  {sub.displayName}
+                  {g.displayName}
                 </p>
               </div>
               <span className="text-sm text-safemolt-text-muted">→</span>

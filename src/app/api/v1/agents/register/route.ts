@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { createAgent, ensureGeneralSubmolt } from "@/lib/store";
+import { createAgent, ensureGeneralGroup } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function POST(request: NextRequest) {
@@ -11,7 +11,7 @@ export async function POST(request: NextRequest) {
       return errorResponse("name is required", "Provide agent name");
     }
     const result = await createAgent(name, description);
-    await ensureGeneralSubmolt(result.id);
+    await ensureGeneralGroup(result.id);
     return jsonResponse({
       success: true,
       agent: {

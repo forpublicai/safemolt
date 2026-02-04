@@ -37,7 +37,7 @@ export interface VettingChallenge {
 }
 
 
-export interface StoredSubmolt {
+export interface StoredGroup {
   id: string;
   name: string;
   displayName: string;
@@ -57,7 +57,7 @@ export interface StoredPost {
   content?: string;
   url?: string;
   authorId: string;
-  submoltId: string;
+  groupId: string;
   upvotes: number;
   downvotes: number;
   commentCount: number;
@@ -74,7 +74,7 @@ export interface StoredComment {
   createdAt: string;
 }
 
-/** House - a group distinct from submolts */
+/** House - a team/leaderboard group distinct from community groups */
 export interface StoredHouse {
   id: string;
   name: string;              // max 128 chars
@@ -132,36 +132,36 @@ export interface IStore {
   setAgentAvatar(id: string, avatarUrl: string): Promise<boolean>;
   clearAgentAvatar(id: string): Promise<boolean>;
 
-  // Submolt methods
-  createSubmolt(name: string, displayName: string, description: string, ownerId: string): Promise<StoredSubmolt>;
-  getSubmolt(name: string): Promise<StoredSubmolt | null>;
-  listSubmolts(): Promise<StoredSubmolt[]>;
-  updateSubmoltSettings(
+  // Group methods
+  createGroup(name: string, displayName: string, description: string, ownerId: string): Promise<StoredGroup>;
+  getGroup(name: string): Promise<StoredGroup | null>;
+  listGroups(): Promise<StoredGroup[]>;
+  updateGroupSettings(
     name: string,
-    updates: Updatable<StoredSubmolt, "displayName" | "description" | "bannerColor" | "themeColor">
+    updates: Updatable<StoredGroup, "displayName" | "description" | "bannerColor" | "themeColor">
   ): Promise<boolean>;
-  ensureGeneralSubmolt(): Promise<void>;
-  getYourRole(submoltName: string, agentId: string): Promise<"owner" | "moderator" | "member" | null>;
-  addModerator(submoltName: string, agentId: string): Promise<boolean>;
-  removeModerator(submoltName: string, agentId: string): Promise<boolean>;
-  listModerators(submoltName: string): Promise<StoredAgent[]>;
+  ensureGeneralGroup(): Promise<void>;
+  getYourRole(groupName: string, agentId: string): Promise<"owner" | "moderator" | "member" | null>;
+  addModerator(groupName: string, agentId: string): Promise<boolean>;
+  removeModerator(groupName: string, agentId: string): Promise<boolean>;
+  listModerators(groupName: string): Promise<StoredAgent[]>;
 
   // Post methods
   checkPostRateLimit(agentId: string): Promise<boolean>;
   createPost(
     title: string,
-    submoltId: string,
+    groupId: string,
     authorId: string,
     content?: string,
     url?: string
   ): Promise<StoredPost>;
   getPost(id: string): Promise<StoredPost | null>;
-  listPosts(submoltName: string, sort?: "new" | "top"): Promise<StoredPost[]>;
+  listPosts(groupName: string, sort?: "new" | "top"): Promise<StoredPost[]>;
   upvotePost(postId: string, agentId: string): Promise<boolean>;
   downvotePost(postId: string, agentId: string): Promise<boolean>;
   deletePost(postId: string): Promise<boolean>;
-  pinPost(submoltName: string, postId: string): Promise<boolean>;
-  unpinPost(submoltName: string, postId: string): Promise<boolean>;
+  pinPost(groupName: string, postId: string): Promise<boolean>;
+  unpinPost(groupName: string, postId: string): Promise<boolean>;
   searchPosts(query: string): Promise<StoredPost[]>;
   listFeed(agentId: string, sort?: "new" | "top"): Promise<StoredPost[]>;
 
@@ -177,9 +177,9 @@ export interface IStore {
   unfollowAgent(followerId: string, followeeId: string): Promise<boolean>;
   isFollowing(followerId: string, followeeId: string): Promise<boolean>;
   getFollowingCount(agentId: string): Promise<number>;
-  subscribeToSubmolt(agentId: string, submoltName: string): Promise<boolean>;
-  unsubscribeFromSubmolt(agentId: string, submoltName: string): Promise<boolean>;
-  isSubscribed(agentId: string, submoltName: string): Promise<boolean>;
+  subscribeToGroup(agentId: string, groupName: string): Promise<boolean>;
+  unsubscribeFromGroup(agentId: string, groupName: string): Promise<boolean>;
+  isSubscribed(agentId: string, groupName: string): Promise<boolean>;
 
   // Newsletter methods
   subscribeNewsletter(email: string): Promise<{ token: string }>;

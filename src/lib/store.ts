@@ -6,7 +6,7 @@ import { hasDatabase } from "./db";
 import * as dbStore from "./store-db";
 import * as memStore from "./store-memory";
 
-export type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember } from "./store-types";
+export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember } from "./store-types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrap<T extends (...args: any[]) => any>(fn: T): (...args: Parameters<T>) => Promise<Awaited<ReturnType<T>>> {
@@ -24,9 +24,9 @@ const store = hasDatabase()
     setAgentClaimed: wrap(memStore.setAgentClaimed),
     listAgents: wrap(memStore.listAgents),
 
-    createSubmolt: wrap(memStore.createSubmolt),
-    getSubmolt: wrap(memStore.getSubmolt),
-    listSubmolts: wrap(memStore.listSubmolts),
+    createGroup: wrap(memStore.createGroup),
+    getGroup: wrap(memStore.getGroup),
+    listGroups: wrap(memStore.listGroups),
     checkPostRateLimit: wrap(memStore.checkPostRateLimit),
     checkCommentRateLimit: wrap(memStore.checkCommentRateLimit),
     createPost: wrap(memStore.createPost),
@@ -45,8 +45,8 @@ const store = hasDatabase()
     unfollowAgent: wrap(memStore.unfollowAgent),
     isFollowing: wrap(memStore.isFollowing),
     getFollowingCount: wrap(memStore.getFollowingCount),
-    subscribeToSubmolt: wrap(memStore.subscribeToSubmolt),
-    unsubscribeFromSubmolt: wrap(memStore.unsubscribeFromSubmolt),
+    subscribeToGroup: wrap(memStore.subscribeToGroup),
+    unsubscribeFromGroup: wrap(memStore.unsubscribeFromGroup),
     isSubscribed: wrap(memStore.isSubscribed),
     listFeed: wrap(memStore.listFeed),
     searchPosts: wrap(memStore.searchPosts),
@@ -56,11 +56,11 @@ const store = hasDatabase()
     getYourRole: wrap(memStore.getYourRole),
     pinPost: wrap(memStore.pinPost),
     unpinPost: wrap(memStore.unpinPost),
-    updateSubmoltSettings: wrap(memStore.updateSubmoltSettings),
+    updateGroupSettings: wrap(memStore.updateGroupSettings),
     addModerator: wrap(memStore.addModerator),
     removeModerator: wrap(memStore.removeModerator),
     listModerators: wrap(memStore.listModerators),
-    ensureGeneralSubmolt: wrap(memStore.ensureGeneralSubmolt),
+    ensureGeneralGroup: wrap(memStore.ensureGeneralGroup),
     subscribeNewsletter: wrap(memStore.subscribeNewsletter),
     confirmNewsletter: wrap(memStore.confirmNewsletter),
     unsubscribeNewsletter: wrap(memStore.unsubscribeNewsletter),
@@ -91,10 +91,10 @@ export const getAgentByName = store.getAgentByName;
 export const getAgentByClaimToken = store.getAgentByClaimToken;
 export const setAgentClaimed = store.setAgentClaimed;
 export const listAgents = store.listAgents;
-export const createSubmolt = store.createSubmolt;
+export const createGroup = store.createGroup;
 
-export const getSubmolt = store.getSubmolt;
-export const listSubmolts = store.listSubmolts;
+export const getGroup = store.getGroup;
+export const listGroups = store.listGroups;
 export const checkPostRateLimit = store.checkPostRateLimit;
 export const checkCommentRateLimit = store.checkCommentRateLimit;
 export const createPost = store.createPost;
@@ -113,8 +113,8 @@ export const followAgent = store.followAgent;
 export const unfollowAgent = store.unfollowAgent;
 export const isFollowing = store.isFollowing;
 export const getFollowingCount = store.getFollowingCount;
-export const subscribeToSubmolt = store.subscribeToSubmolt;
-export const unsubscribeFromSubmolt = store.unsubscribeFromSubmolt;
+export const subscribeToGroup = store.subscribeToGroup;
+export const unsubscribeFromGroup = store.unsubscribeFromGroup;
 export const isSubscribed = store.isSubscribed;
 export const listFeed = store.listFeed;
 export const searchPosts = store.searchPosts;
@@ -124,11 +124,11 @@ export const clearAgentAvatar = store.clearAgentAvatar;
 export const getYourRole = store.getYourRole;
 export const pinPost = store.pinPost;
 export const unpinPost = store.unpinPost;
-export const updateSubmoltSettings = store.updateSubmoltSettings;
+export const updateGroupSettings = store.updateGroupSettings;
 export const addModerator = store.addModerator;
 export const removeModerator = store.removeModerator;
 export const listModerators = store.listModerators;
-export const ensureGeneralSubmolt = store.ensureGeneralSubmolt;
+export const ensureGeneralGroup = store.ensureGeneralGroup;
 export const subscribeNewsletter = store.subscribeNewsletter;
 export const confirmNewsletter = store.confirmNewsletter;
 export const unsubscribeNewsletter = store.unsubscribeNewsletter;

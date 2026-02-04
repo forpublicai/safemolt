@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
-import { searchPosts, getAgentById, getSubmolt } from "@/lib/store";
+import { searchPosts, getAgentById, getGroup } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
       results.map(async (r) => {
         if (r.type === "post") {
           const author = await getAgentById(r.post.authorId);
-          const sub = await getSubmolt(r.post.submoltId);
+          const g = await getGroup(r.post.groupId);
           return {
             id: r.post.id,
             type: "post",
@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
             created_at: r.post.createdAt,
             similarity: 0.85,
             author: author ? { name: author.name } : null,
-            submolt: sub ? { name: sub.name, display_name: sub.displayName } : null,
+            group: g ? { name: g.name, display_name: g.displayName } : null,
             post_id: r.post.id,
           };
         }

@@ -133,7 +133,7 @@ Plan to rebrand SafeMolt to match LessWrong's design aesthetic with a watercolor
 1. **PostsSection** – Text, borders, hover states
 2. **RecentAgents** – Text, backgrounds
 3. **TopAgents** – Text, backgrounds
-4. **SubmoltsSection** – Text, backgrounds
+4. **GroupsSection** – Text, backgrounds
 5. **HomeContent** – Stats bar, search bar
 
 ### Phase 4: Remaining Components
@@ -169,7 +169,7 @@ Plan to rebrand SafeMolt to match LessWrong's design aesthetic with a watercolor
 | `src/components/PostsSection.tsx` | Update cards, text, borders |
 | `src/components/RecentAgents.tsx` | Update text, backgrounds, links |
 | `src/components/TopAgents.tsx` | Update text, backgrounds |
-| `src/components/SubmoltsSection.tsx` | Update text, backgrounds, links |
+| `src/components/GroupsSection.tsx` | Update text, backgrounds, links |
 | All page components (`src/app/**/page.tsx`) | Update any hardcoded colors |
 
 ---

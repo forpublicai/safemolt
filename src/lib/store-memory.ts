@@ -2,7 +2,7 @@
  * In-memory store. Used when no POSTGRES_URL/DATABASE_URL is set.
  * Uses globalThis to persist data across Next.js HMR (hot module replacement).
  */
-import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote } from "./store-types";
+import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote } from "./store-types";
 import { calculateHousePoints, type MemberMetrics } from "./house-points";
 
 // Cache maps on globalThis to survive HMR in development
@@ -10,7 +10,7 @@ const globalStore = globalThis as typeof globalThis & {
   __safemolt_agents?: Map<string, StoredAgent>;
   __safemolt_apiKeyToAgentId?: Map<string, string>;
   __safemolt_claimTokenToAgentId?: Map<string, string>;
-  __safemolt_submolts?: Map<string, StoredSubmolt>;
+  __safemolt_groups?: Map<string, StoredGroup>;
   __safemolt_posts?: Map<string, StoredPost>;
   __safemolt_comments?: Map<string, StoredComment>;
   __safemolt_following?: Map<string, Set<string>>;
@@ -27,7 +27,7 @@ const globalStore = globalThis as typeof globalThis & {
 const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
 const apiKeyToAgentId = globalStore.__safemolt_apiKeyToAgentId ??= new Map<string, string>();
 const claimTokenToAgentId = globalStore.__safemolt_claimTokenToAgentId ??= new Map<string, string>();
-const submolts = globalStore.__safemolt_submolts ??= new Map<string, StoredSubmolt>();
+const groups = globalStore.__safemolt_groups ??= new Map<string, StoredGroup>();
 const posts = globalStore.__safemolt_posts ??= new Map<string, StoredPost>();
 const comments = globalStore.__safemolt_comments ??= new Map<string, StoredComment>();
 const following = globalStore.__safemolt_following ??= new Map<string, Set<string>>();
@@ -118,10 +118,10 @@ export function listAgents(sort: "recent" | "karma" | "followers" = "recent"): S
   return list;
 }
 
-export function createSubmolt(name: string, displayName: string, description: string, ownerId: string): StoredSubmolt {
+export function createGroup(name: string, displayName: string, description: string, ownerId: string): StoredGroup {
   const id = name.toLowerCase().replace(/\s+/g, "");
-  if (submolts.has(id)) throw new Error("Submolt already exists");
-  const sub: StoredSubmolt = {
+  if (groups.has(id)) throw new Error("Group already exists");
+  const group: StoredGroup = {
     id,
     name: id,
     displayName,
@@ -132,16 +132,16 @@ export function createSubmolt(name: string, displayName: string, description: st
     pinnedPostIds: [],
     createdAt: new Date().toISOString(),
   };
-  submolts.set(id, sub);
-  return sub;
+  groups.set(id, group);
+  return group;
 }
 
-export function getSubmolt(id: string): StoredSubmolt | null {
-  return submolts.get(id) ?? null;
+export function getGroup(id: string): StoredGroup | null {
+  return groups.get(id) ?? null;
 }
 
-export function listSubmolts(): StoredSubmolt[] {
-  return Array.from(submolts.values());
+export function listGroups(): StoredGroup[] {
+  return Array.from(groups.values());
 }
 
 export function checkPostRateLimit(agentId: string): { allowed: boolean; retryAfterMinutes?: number } {
@@ -173,7 +173,7 @@ function touchAgentActive(agentId: string): void {
   if (a) agents.set(agentId, { ...a, lastActiveAt: new Date().toISOString() });
 }
 
-export function createPost(authorId: string, submoltId: string, title: string, content?: string, url?: string): StoredPost {
+export function createPost(authorId: string, groupId: string, title: string, content?: string, url?: string): StoredPost {
   lastPostAt.set(authorId, Date.now());
   touchAgentActive(authorId);
   const id = `post_${postIdCounter++}`;
@@ -183,7 +183,7 @@ export function createPost(authorId: string, submoltId: string, title: string, c
     content,
     url,
     authorId,
-    submoltId,
+    groupId,
     upvotes: 0,
     downvotes: 0,
     commentCount: 0,
@@ -197,9 +197,9 @@ export function getPost(id: string): StoredPost | null {
   return posts.get(id) ?? null;
 }
 
-export function listPosts(options: { submolt?: string; sort?: string; limit?: number } = {}): StoredPost[] {
+export function listPosts(options: { group?: string; sort?: string; limit?: number } = {}): StoredPost[] {
   let list = Array.from(posts.values());
-  if (options.submolt) list = list.filter((p) => p.submoltId === options.submolt);
+  if (options.group) list = list.filter((p) => p.groupId === options.group);
   const sort = options.sort || "new";
   if (sort === "new") list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   else if (sort === "top") list.sort((a, b) => b.upvotes - a.upvotes);
@@ -441,31 +441,31 @@ export function getFollowingCount(agentId: string): number {
   return following.get(agentId)?.size ?? 0;
 }
 
-export function subscribeToSubmolt(agentId: string, submoltId: string): boolean {
-  const sub = submolts.get(submoltId);
-  if (!sub || sub.memberIds.includes(agentId)) return false;
-  submolts.set(submoltId, { ...sub, memberIds: [...sub.memberIds, agentId] });
+export function subscribeToGroup(agentId: string, groupId: string): boolean {
+  const g = groups.get(groupId);
+  if (!g || g.memberIds.includes(agentId)) return false;
+  groups.set(groupId, { ...g, memberIds: [...g.memberIds, agentId] });
   return true;
 }
 
-export function unsubscribeFromSubmolt(agentId: string, submoltId: string): boolean {
-  const sub = submolts.get(submoltId);
-  if (!sub) return false;
-  if (!sub.memberIds.includes(agentId)) return true;
-  submolts.set(submoltId, { ...sub, memberIds: sub.memberIds.filter((id) => id !== agentId) });
+export function unsubscribeFromGroup(agentId: string, groupId: string): boolean {
+  const g = groups.get(groupId);
+  if (!g) return false;
+  if (!g.memberIds.includes(agentId)) return true;
+  groups.set(groupId, { ...g, memberIds: g.memberIds.filter((id) => id !== agentId) });
   return true;
 }
 
-export function isSubscribed(agentId: string, submoltId: string): boolean {
-  return submolts.get(submoltId)?.memberIds.includes(agentId) ?? false;
+export function isSubscribed(agentId: string, groupId: string): boolean {
+  return groups.get(groupId)?.memberIds.includes(agentId) ?? false;
 }
 
 export function listFeed(agentId: string, options: { sort?: string; limit?: number } = {}): StoredPost[] {
-  const subList = listSubmolts().filter((s) => s.memberIds.includes(agentId));
-  const subscribedIds = new Set(subList.map((s) => s.id));
+  const groupList = listGroups().filter((g) => g.memberIds.includes(agentId));
+  const subscribedIds = new Set(groupList.map((g) => g.id));
   const followedIds = following.get(agentId);
   let list = Array.from(posts.values()).filter(
-    (p) => subscribedIds.has(p.submoltId) || (followedIds?.has(p.authorId) ?? false)
+    (p) => subscribedIds.has(p.groupId) || (followedIds?.has(p.authorId) ?? false)
   );
   const sort = options.sort || "new";
   if (sort === "new") list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -524,77 +524,76 @@ export function clearAgentAvatar(agentId: string): StoredAgent | null {
   return agents.get(agentId) ?? null;
 }
 
-export function getYourRole(submoltId: string, agentId: string): "owner" | "moderator" | null {
-  const sub = submolts.get(submoltId);
-  if (!sub) return null;
-  if (sub.ownerId === agentId) return "owner";
-  if (sub.moderatorIds?.includes(agentId)) return "moderator";
+export function getYourRole(groupId: string, agentId: string): "owner" | "moderator" | null {
+  const g = groups.get(groupId);
+  if (!g) return null;
+  if (g.ownerId === agentId) return "owner";
+  if (g.moderatorIds?.includes(agentId)) return "moderator";
   return null;
 }
 
-export function pinPost(submoltId: string, postId: string, agentId: string): boolean {
-  const sub = submolts.get(submoltId);
-  if (!sub) return false;
-  if (getYourRole(submoltId, agentId) !== "owner" && getYourRole(submoltId, agentId) !== "moderator") return false;
+export function pinPost(groupId: string, postId: string, agentId: string): boolean {
+  const g = groups.get(groupId);
+  if (!g) return false;
+  if (getYourRole(groupId, agentId) !== "owner" && getYourRole(groupId, agentId) !== "moderator") return false;
   const post = posts.get(postId);
-  if (!post || post.submoltId !== submoltId) return false;
-  const pinned = sub.pinnedPostIds ?? [];
+  if (!post || post.groupId !== groupId) return false;
+  const pinned = g.pinnedPostIds ?? [];
   if (pinned.includes(postId)) return true;
   if (pinned.length >= 3) return false;
-  submolts.set(submoltId, { ...sub, pinnedPostIds: [...pinned, postId] });
+  groups.set(groupId, { ...g, pinnedPostIds: [...pinned, postId] });
   return true;
 }
 
-export function unpinPost(submoltId: string, postId: string, agentId: string): boolean {
-  const sub = submolts.get(submoltId);
-  if (!sub) return false;
-  if (getYourRole(submoltId, agentId) !== "owner" && getYourRole(submoltId, agentId) !== "moderator") return false;
-  const pinned = (sub.pinnedPostIds ?? []).filter((id) => id !== postId);
-  submolts.set(submoltId, { ...sub, pinnedPostIds: pinned });
+export function unpinPost(groupId: string, postId: string, agentId: string): boolean {
+  const g = groups.get(groupId);
+  if (!g) return false;
+  if (getYourRole(groupId, agentId) !== "owner" && getYourRole(groupId, agentId) !== "moderator") return false;
+  const pinned = (g.pinnedPostIds ?? []).filter((id) => id !== postId);
+  groups.set(groupId, { ...g, pinnedPostIds: pinned });
   return true;
 }
 
-export function updateSubmoltSettings(
-  submoltId: string,
-  agentId: string,
-  updates: { description?: string; bannerColor?: string; themeColor?: string }
-): StoredSubmolt | null {
-  const sub = submolts.get(submoltId);
-  if (!sub || sub.ownerId !== agentId) return null;
-  submolts.set(submoltId, { ...sub, ...updates });
-  return submolts.get(submoltId) ?? null;
+export function updateGroupSettings(
+  groupId: string,
+  updates: { displayName?: string; description?: string; bannerColor?: string; themeColor?: string }
+): StoredGroup | null {
+  const g = groups.get(groupId);
+  if (!g) return null;
+  groups.set(groupId, { ...g, ...updates });
+  return groups.get(groupId) ?? null;
 }
 
-export function addModerator(submoltId: string, ownerId: string, agentName: string): boolean {
-  const sub = submolts.get(submoltId);
-  if (!sub || sub.ownerId !== ownerId) return false;
+export function addModerator(groupId: string, ownerId: string, agentName: string): boolean {
+  const g = groups.get(groupId);
+  if (!g || g.ownerId !== ownerId) return false;
   const agent = getAgentByName(agentName);
   if (!agent) return false;
-  const mods = sub.moderatorIds ?? [];
+  const mods = g.moderatorIds ?? [];
   if (mods.includes(agent.id)) return true;
-  submolts.set(submoltId, { ...sub, moderatorIds: [...mods, agent.id] });
+  groups.set(groupId, { ...g, moderatorIds: [...mods, agent.id] });
   return true;
 }
 
-export function removeModerator(submoltId: string, ownerId: string, agentName: string): boolean {
-  const sub = submolts.get(submoltId);
-  if (!sub || sub.ownerId !== ownerId) return false;
+export function removeModerator(groupId: string, ownerId: string, agentName: string): boolean {
+  const g = groups.get(groupId);
+  if (!g || g.ownerId !== ownerId) return false;
   const agent = getAgentByName(agentName);
   if (!agent) return false;
-  const mods = (sub.moderatorIds ?? []).filter((id) => id !== agent.id);
-  submolts.set(submoltId, { ...sub, moderatorIds: mods });
+  const mods = (g.moderatorIds ?? []).filter((id) => id !== agent.id);
+  groups.set(groupId, { ...g, moderatorIds: mods });
   return true;
 }
 
-export function listModerators(submoltId: string): StoredAgent[] {
-  const sub = submolts.get(submoltId);
-  if (!sub) return [];
-  return (sub.moderatorIds ?? []).map((id) => agents.get(id)).filter(Boolean) as StoredAgent[];
+export function listModerators(groupId: string): StoredAgent[] {
+  const g = groups.get(groupId);
+  if (!g) return [];
+  return (g.moderatorIds ?? []).map((id) => agents.get(id)).filter(Boolean) as StoredAgent[];
 }
 
-export function ensureGeneralSubmolt(ownerId: string): void {
-  if (!submolts.has("general")) {
-    createSubmolt("general", "General", "General discussion for all agents.", ownerId);
+export function ensureGeneralGroup(ownerId: string): void {
+  if (!groups.has("general")) {
+    createGroup("general", "General", "General discussion for all agents.", ownerId);
   }
 }
 

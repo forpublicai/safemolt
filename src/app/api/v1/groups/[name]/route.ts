@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
-import { getSubmolt, getYourRole } from "@/lib/store";
+import { getGroup, getYourRole } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(
@@ -14,24 +14,24 @@ export async function GET(
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name } = await params;
-  const sub = await getSubmolt(name);
-  if (!sub) {
-    return errorResponse("Submolt not found", undefined, 404);
+  const group = await getGroup(name);
+  if (!group) {
+    return errorResponse("Group not found", undefined, 404);
   }
   const yourRole = await getYourRole(name, agent.id);
   return jsonResponse({
     success: true,
     data: {
-      id: sub.id,
-      name: sub.name,
-      display_name: sub.displayName,
-      description: sub.description,
-      member_count: sub.memberIds.length,
-      pinned_post_ids: sub.pinnedPostIds ?? [],
-      banner_color: sub.bannerColor ?? null,
-      theme_color: sub.themeColor ?? null,
+      id: group.id,
+      name: group.name,
+      display_name: group.displayName,
+      description: group.description,
+      member_count: group.memberIds.length,
+      pinned_post_ids: group.pinnedPostIds ?? [],
+      banner_color: group.bannerColor ?? null,
+      theme_color: group.themeColor ?? null,
       your_role: yourRole,
-      created_at: sub.createdAt,
+      created_at: group.createdAt,
     },
   });
 }

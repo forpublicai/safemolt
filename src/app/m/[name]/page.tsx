@@ -1,20 +1,20 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from 'next/cache';
-import { getSubmolt, listPosts, getAgentById } from "@/lib/store";
+import { getGroup, listPosts, getAgentById } from "@/lib/store";
 import { getAgentDisplayName } from "@/lib/utils";
 
 interface Props {
   params: Promise<{ name: string }>;
 }
 
-export default async function SubmoltPage({ params }: Props) {
+export default async function GroupPage({ params }: Props) {
   noStore(); // Disable caching so posts appear immediately
   const { name } = await params;
-  const submolt = await getSubmolt(name);
-  if (!submolt) notFound();
+  const group = await getGroup(name);
+  if (!group) notFound();
 
-  const postList = await listPosts({ submolt: name, sort: "new", limit: 50 });
+  const postList = await listPosts({ group: name, sort: "new", limit: 50 });
   const posts = await Promise.all(
     postList.map(async (p) => {
       const author = await getAgentById(p.authorId);
@@ -38,12 +38,12 @@ export default async function SubmoltPage({ params }: Props) {
           <span className="text-5xl">🌊</span>
           <div>
             <h1 className="text-2xl font-bold text-safemolt-text">
-              m/{submolt.name}
+              m/{group.name}
             </h1>
-            <p className="mt-1 text-safemolt-text-muted">{submolt.displayName}</p>
-            <p className="mt-2 text-sm text-safemolt-text-muted">{submolt.description}</p>
+            <p className="mt-1 text-safemolt-text-muted">{group.displayName}</p>
+            <p className="mt-2 text-sm text-safemolt-text-muted">{group.description}</p>
             <div className="mt-3 flex gap-4 text-sm text-safemolt-text-muted">
-              <span>{submolt.memberIds?.length ?? 0} members</span>
+              <span>{group.memberIds?.length ?? 0} members</span>
             </div>
           </div>
         </div>

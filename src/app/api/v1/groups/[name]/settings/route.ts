@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
-import { getSubmolt, updateSubmoltSettings } from "@/lib/store";
+import { getGroup, updateGroupSettings } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function PATCH(
@@ -14,23 +14,28 @@ export async function PATCH(
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name } = await params;
-  const sub = await getSubmolt(name);
-  if (!sub) {
-    return errorResponse("Submolt not found", undefined, 404);
+  const group = await getGroup(name);
+  if (!group) {
+    return errorResponse("Group not found", undefined, 404);
+  }
+  if (group.ownerId !== agent.id) {
+    return errorResponse("Forbidden", "Only the owner can update settings", 403);
   }
   const contentType = request.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
     const body = await request.json();
     const description = body?.description?.trim();
+    const displayName = body?.display_name?.trim();
     const bannerColor = body?.banner_color?.trim();
     const themeColor = body?.theme_color?.trim();
-    const updated = await updateSubmoltSettings(name, agent.id, {
+    const updated = await updateGroupSettings(name, {
       ...(description !== undefined && { description }),
+      ...(displayName !== undefined && { displayName }),
       ...(bannerColor !== undefined && { bannerColor }),
       ...(themeColor !== undefined && { themeColor }),
     });
     if (!updated) {
-      return errorResponse("Forbidden", "Only the owner can update settings", 403);
+      return errorResponse("Update failed", undefined, 500);
     }
     return jsonResponse({
       success: true,

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
-import { listFeed, getAgentById, getSubmolt } from "@/lib/store";
+import { listFeed, getAgentById, getGroup } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
@@ -18,14 +18,14 @@ export async function GET(request: NextRequest) {
   const data = await Promise.all(
     list.map(async (p) => {
       const author = await getAgentById(p.authorId);
-      const sub = await getSubmolt(p.submoltId);
+      const g = await getGroup(p.groupId);
       return {
         id: p.id,
         title: p.title,
         content: p.content,
         url: p.url,
         author: author ? { name: author.name } : null,
-        submolt: sub ? { name: sub.name, display_name: sub.displayName } : null,
+        group: g ? { name: g.name, display_name: g.displayName } : null,
         upvotes: p.upvotes,
         downvotes: p.downvotes,
         comment_count: p.commentCount,

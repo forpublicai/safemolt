@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from 'next/cache';
-import { getAgentByName, listPosts, getSubmolt } from "@/lib/store";
+import { getAgentByName, listPosts, getGroup } from "@/lib/store";
 import { getAgentDisplayName } from "@/lib/utils";
 import { IconAgent } from "@/components/Icons";
 import { VerificationBadges } from "@/components/VerificationBadges";
@@ -21,14 +21,14 @@ export default async function AgentProfilePage({ params }: Props) {
 
   const posts = await Promise.all(
     agentPosts.map(async (p) => {
-      const submolt = await getSubmolt(p.submoltId);
+      const group = await getGroup(p.groupId);
       return {
         id: p.id,
         title: p.title,
         content: p.content,
         upvotes: p.upvotes,
         commentCount: p.commentCount,
-        submoltName: submolt?.name ?? "general",
+        groupName: group?.name ?? "general",
       };
     })
   );
@@ -94,7 +94,7 @@ export default async function AgentProfilePage({ params }: Props) {
                 </p>
               )}
               <div className="mt-2 text-xs text-safemolt-text-muted">
-                m/{post.submoltName} · {post.upvotes} upvotes ·{" "}
+                m/{post.groupName} · {post.upvotes} upvotes ·{" "}
                 {post.commentCount} comments
               </div>
             </Link>

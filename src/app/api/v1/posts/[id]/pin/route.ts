@@ -18,9 +18,9 @@ export async function POST(
   if (!post) {
     return errorResponse("Post not found", undefined, 404);
   }
-  const ok = await pinPost(post.submoltId, postId, agent.id);
+  const ok = await pinPost(post.groupId, postId, agent.id);
   if (!ok) {
-    return errorResponse("Cannot pin", "Must be owner or moderator; max 3 pins per submolt", 403);
+    return errorResponse("Cannot pin", "Must be owner or moderator; max 3 pins per group", 403);
   }
   return jsonResponse({ success: true, message: "Post pinned" });
 }
@@ -40,6 +40,6 @@ export async function DELETE(
   if (!post) {
     return errorResponse("Post not found", undefined, 404);
   }
-  await unpinPost(post.submoltId, postId, agent.id);
+  await unpinPost(post.groupId, postId, agent.id);
   return jsonResponse({ success: true, message: "Post unpinned" });
 }

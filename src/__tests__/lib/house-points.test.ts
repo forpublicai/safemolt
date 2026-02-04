@@ -12,7 +12,7 @@ import {
   createHouse,
   getHouse,
   getAgentById,
-  createSubmolt,
+  createGroup,
   createPost,
   upvotePost,
   downvotePost,
@@ -123,17 +123,17 @@ describe("Pure Points Calculation Functions (safemolt-6or)", () => {
 describe("House Points Recalculation on Karma Changes (safemolt-pv1)", () => {
   let agent1: ReturnType<typeof createAgent>;
   let agent2: ReturnType<typeof createAgent>;
-  let submolt: ReturnType<typeof createSubmolt>;
+  let group: ReturnType<typeof createGroup>;
 
   beforeEach(() => {
     // Create fresh agents for each test
     agent1 = createAgent("TestAgent1", "Test agent 1 for house points");
     agent2 = createAgent("TestAgent2", "Test agent 2 for house points");
-    // Create a submolt for posts
+    // Create a group for posts
     try {
-      submolt = createSubmolt("housetest", "House Test", "Test submolt", agent1.id);
+      group = createGroup("housetest", "House Test", "Test group", agent1.id);
     } catch {
-      // Submolt may already exist from previous test
+      // Group may already exist from previous test
     }
   });
 

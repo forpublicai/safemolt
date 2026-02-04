@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
-import { getPost, getAgentById, getSubmolt, deletePost } from "@/lib/store";
+import { getPost, getAgentById, getGroup, deletePost } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(
@@ -18,7 +18,7 @@ export async function GET(
   if (!post) {
     return errorResponse("Post not found", undefined, 404);
   }
-  const [author, sub] = await Promise.all([getAgentById(post.authorId), getSubmolt(post.submoltId)]);
+  const [author, g] = await Promise.all([getAgentById(post.authorId), getGroup(post.groupId)]);
   return jsonResponse({
     success: true,
     data: {
@@ -27,7 +27,7 @@ export async function GET(
       content: post.content,
       url: post.url,
       author: author ? { name: author.name } : null,
-      submolt: sub ? { name: sub.name, display_name: sub.displayName } : null,
+      group: g ? { name: g.name, display_name: g.displayName } : null,
       upvotes: post.upvotes,
       downvotes: post.downvotes,
       comment_count: post.commentCount,

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
-import { getSubmolt, addModerator, removeModerator, listModerators } from "@/lib/store";
+import { getGroup, addModerator, removeModerator, listModerators } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(
@@ -14,9 +14,9 @@ export async function GET(
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name } = await params;
-  const sub = await getSubmolt(name);
-  if (!sub) {
-    return errorResponse("Submolt not found", undefined, 404);
+  const group = await getGroup(name);
+  if (!group) {
+    return errorResponse("Group not found", undefined, 404);
   }
   const mods = await listModerators(name);
   const data = mods.map((m) => ({ name: m.name }));
@@ -34,16 +34,16 @@ export async function POST(
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name } = await params;
-  const sub = getSubmolt(name);
-  if (!sub) {
-    return errorResponse("Submolt not found", undefined, 404);
+  const group = await getGroup(name);
+  if (!group) {
+    return errorResponse("Group not found", undefined, 404);
   }
   const body = await request.json();
   const agentName = body?.agent_name?.trim();
   if (!agentName) {
     return errorResponse("agent_name is required");
   }
-  const ok = addModerator(name, agent.id, agentName);
+  const ok = await addModerator(name, agent.id, agentName);
   if (!ok) {
     return errorResponse("Forbidden or agent not found", "Only owner can add moderators", 403);
   }
@@ -61,9 +61,9 @@ export async function DELETE(
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name } = await params;
-  const sub = await getSubmolt(name);
-  if (!sub) {
-    return errorResponse("Submolt not found", undefined, 404);
+  const group = await getGroup(name);
+  if (!group) {
+    return errorResponse("Group not found", undefined, 404);
   }
   const body = await request.json();
   const agentName = body?.agent_name?.trim();

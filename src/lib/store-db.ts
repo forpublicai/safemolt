@@ -2,7 +2,7 @@
  * Postgres-backed store (Neon). Used when POSTGRES_URL or DATABASE_URL is set.
  */
 import { sql } from "@/lib/db";
-import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote } from "./store-types";
+import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote } from "./store-types";
 import {
   generateChallengeValues,
   generateNonce,
@@ -49,7 +49,7 @@ function rowToAgent(r: Record<string, unknown>): StoredAgent {
 }
 
 
-function rowToSubmolt(r: Record<string, unknown>): StoredSubmolt {
+function rowToGroup(r: Record<string, unknown>): StoredGroup {
   return {
     id: r.id as string,
     name: r.name as string,
@@ -71,7 +71,7 @@ function rowToPost(r: Record<string, unknown>): StoredPost {
     content: r.content as string | undefined,
     url: r.url as string | undefined,
     authorId: r.author_id as string,
-    submoltId: r.submolt_id as string,
+    groupId: r.group_id as string,
     upvotes: Number(r.upvotes),
     downvotes: Number(r.downvotes),
     commentCount: Number(r.comment_count),
@@ -190,36 +190,36 @@ export async function listAgents(sort: "recent" | "karma" | "followers" = "recen
   return agents;
 }
 
-export async function createSubmolt(
+export async function createGroup(
   name: string,
   displayName: string,
   description: string,
   ownerId: string
-): Promise<StoredSubmolt> {
+): Promise<StoredGroup> {
   const id = name.toLowerCase().replace(/\s+/g, "");
-  const existing = await getSubmolt(id);
-  if (existing) throw new Error("Submolt already exists");
+  const existing = await getGroup(id);
+  if (existing) throw new Error("Group already exists");
   const createdAt = new Date().toISOString();
   const memberIds = JSON.stringify([ownerId]);
   const moderatorIds = JSON.stringify([]);
   const pinnedPostIds = JSON.stringify([]);
   await sql!`
-    INSERT INTO submolts (id, name, display_name, description, owner_id, member_ids, moderator_ids, pinned_post_ids, created_at)
+    INSERT INTO groups (id, name, display_name, description, owner_id, member_ids, moderator_ids, pinned_post_ids, created_at)
     VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
   `;
-  const rows = await sql!`SELECT * FROM submolts WHERE id = ${id} LIMIT 1`;
-  return rowToSubmolt(rows[0] as Record<string, unknown>);
+  const rows = await sql!`SELECT * FROM groups WHERE id = ${id} LIMIT 1`;
+  return rowToGroup(rows[0] as Record<string, unknown>);
 }
 
-export async function getSubmolt(id: string): Promise<StoredSubmolt | null> {
-  const rows = await sql!`SELECT * FROM submolts WHERE id = ${id} LIMIT 1`;
+export async function getGroup(id: string): Promise<StoredGroup | null> {
+  const rows = await sql!`SELECT * FROM groups WHERE id = ${id} LIMIT 1`;
   const r = rows[0] as Record<string, unknown> | undefined;
-  return r ? rowToSubmolt(r) : null;
+  return r ? rowToGroup(r) : null;
 }
 
-export async function listSubmolts(): Promise<StoredSubmolt[]> {
-  const rows = await sql!`SELECT * FROM submolts`;
-  return (rows as Record<string, unknown>[]).map(rowToSubmolt);
+export async function listGroups(): Promise<StoredGroup[]> {
+  const rows = await sql!`SELECT * FROM groups`;
+  return (rows as Record<string, unknown>[]).map(rowToGroup);
 }
 
 export async function checkPostRateLimit(
@@ -259,7 +259,7 @@ export async function checkCommentRateLimit(
 
 export async function createPost(
   authorId: string,
-  submoltId: string,
+  groupId: string,
   title: string,
   content?: string,
   url?: string
@@ -267,8 +267,8 @@ export async function createPost(
   const id = `post_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
   const createdAt = new Date().toISOString();
   await sql!`
-    INSERT INTO posts (id, title, content, url, author_id, submolt_id, upvotes, downvotes, comment_count, created_at)
-    VALUES (${id}, ${title}, ${content ?? null}, ${url ?? null}, ${authorId}, ${submoltId}, 0, 0, 0, ${createdAt})
+    INSERT INTO posts (id, title, content, url, author_id, group_id, upvotes, downvotes, comment_count, created_at)
+    VALUES (${id}, ${title}, ${content ?? null}, ${url ?? null}, ${authorId}, ${groupId}, 0, 0, 0, ${createdAt})
   `;
   await sql!`
     INSERT INTO agent_rate_limits (agent_id, last_post_at, comment_count_date, comment_count)
@@ -287,21 +287,21 @@ export async function getPost(id: string): Promise<StoredPost | null> {
 }
 
 export async function listPosts(options: {
-  submolt?: string;
+  group?: string;
   sort?: string;
   limit?: number;
 } = {}): Promise<StoredPost[]> {
   const limit = options.limit ?? 25;
   let rows: Record<string, unknown>[];
-  const submolt = options.submolt;
+  const group = options.group;
   const sort = options.sort || "new";
-  if (submolt) {
+  if (group) {
     if (sort === "top")
-      rows = (await sql!`SELECT * FROM posts WHERE submolt_id = ${submolt} ORDER BY upvotes DESC LIMIT ${limit}`) as Record<string, unknown>[];
+      rows = (await sql!`SELECT * FROM posts WHERE group_id = ${group} ORDER BY upvotes DESC LIMIT ${limit}`) as Record<string, unknown>[];
     else if (sort === "hot")
-      rows = (await sql!`SELECT * FROM posts WHERE submolt_id = ${submolt} ORDER BY (upvotes - downvotes) DESC LIMIT ${limit}`) as Record<string, unknown>[];
+      rows = (await sql!`SELECT * FROM posts WHERE group_id = ${group} ORDER BY (upvotes - downvotes) DESC LIMIT ${limit}`) as Record<string, unknown>[];
     else
-      rows = (await sql!`SELECT * FROM posts WHERE submolt_id = ${submolt} ORDER BY created_at DESC LIMIT ${limit}`) as Record<string, unknown>[];
+      rows = (await sql!`SELECT * FROM posts WHERE group_id = ${group} ORDER BY created_at DESC LIMIT ${limit}`) as Record<string, unknown>[];
   } else {
     if (sort === "top")
       rows = (await sql!`SELECT * FROM posts ORDER BY upvotes DESC LIMIT ${limit}`) as Record<string, unknown>[];
@@ -532,27 +532,27 @@ export async function getFollowingCount(agentId: string): Promise<number> {
   return Number((rows[0] as { c: number }).c);
 }
 
-export async function subscribeToSubmolt(agentId: string, submoltId: string): Promise<boolean> {
-  const rows = await sql!`SELECT member_ids FROM submolts WHERE id = ${submoltId} LIMIT 1`;
+export async function subscribeToGroup(agentId: string, groupId: string): Promise<boolean> {
+  const rows = await sql!`SELECT member_ids FROM groups WHERE id = ${groupId} LIMIT 1`;
   if (!rows[0]) return false;
   const memberIds = (rows[0] as { member_ids: string[] }).member_ids ?? [];
   if (Array.isArray(memberIds) && memberIds.includes(agentId)) return true;
   const next = Array.isArray(memberIds) ? [...memberIds, agentId] : [agentId];
-  await sql!`UPDATE submolts SET member_ids = ${JSON.stringify(next)}::jsonb WHERE id = ${submoltId}`;
+  await sql!`UPDATE groups SET member_ids = ${JSON.stringify(next)}::jsonb WHERE id = ${groupId}`;
   return true;
 }
 
-export async function unsubscribeFromSubmolt(agentId: string, submoltId: string): Promise<boolean> {
-  const rows = await sql!`SELECT member_ids FROM submolts WHERE id = ${submoltId} LIMIT 1`;
+export async function unsubscribeFromGroup(agentId: string, groupId: string): Promise<boolean> {
+  const rows = await sql!`SELECT member_ids FROM groups WHERE id = ${groupId} LIMIT 1`;
   if (!rows[0]) return false;
   const memberIds = (rows[0] as { member_ids: string[] }).member_ids ?? [];
   const next = Array.isArray(memberIds) ? memberIds.filter((id: string) => id !== agentId) : [];
-  await sql!`UPDATE submolts SET member_ids = ${JSON.stringify(next)}::jsonb WHERE id = ${submoltId}`;
+  await sql!`UPDATE groups SET member_ids = ${JSON.stringify(next)}::jsonb WHERE id = ${groupId}`;
   return true;
 }
 
-export async function isSubscribed(agentId: string, submoltId: string): Promise<boolean> {
-  const rows = await sql!`SELECT member_ids FROM submolts WHERE id = ${submoltId} LIMIT 1`;
+export async function isSubscribed(agentId: string, groupId: string): Promise<boolean> {
+  const rows = await sql!`SELECT member_ids FROM groups WHERE id = ${groupId} LIMIT 1`;
   const memberIds = (rows[0] as { member_ids: string[] } | undefined)?.member_ids ?? [];
   return Array.isArray(memberIds) && memberIds.includes(agentId);
 }
@@ -562,7 +562,7 @@ export async function listFeed(
   options: { sort?: string; limit?: number } = {}
 ): Promise<StoredPost[]> {
   const limit = options.limit ?? 25;
-  const subs = await sql!`SELECT id FROM submolts WHERE member_ids @> ${JSON.stringify([agentId])}::jsonb`;
+  const subs = await sql!`SELECT id FROM groups WHERE member_ids @> ${JSON.stringify([agentId])}::jsonb`;
   const subIds = (subs as { id: string }[]).map((s) => s.id);
   const followRows = await sql!`SELECT followee_id FROM following WHERE follower_id = ${agentId}`;
   const followIds = (followRows as { followee_id: string }[]).map((f) => f.followee_id);
@@ -572,19 +572,19 @@ export async function listFeed(
   if (sort === "top")
     rows = (await sql!`
       SELECT p.* FROM posts p
-      WHERE (p.submolt_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
+      WHERE (p.group_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
       ORDER BY p.upvotes DESC LIMIT ${limit}
     `) as Record<string, unknown>[];
   else if (sort === "hot")
     rows = (await sql!`
       SELECT p.* FROM posts p
-      WHERE (p.submolt_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
+      WHERE (p.group_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
       ORDER BY (p.upvotes - p.downvotes) DESC LIMIT ${limit}
     `) as Record<string, unknown>[];
   else
     rows = (await sql!`
       SELECT p.* FROM posts p
-      WHERE (p.submolt_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
+      WHERE (p.group_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
       ORDER BY p.created_at DESC LIMIT ${limit}
     `) as Record<string, unknown>[];
   return rows.map(rowToPost);
@@ -603,7 +603,7 @@ export async function searchPosts(
   if (options.type === "comments") {
     const rows = await sql!`
       SELECT c.*, p.id AS post_id, p.title AS post_title, p.content AS post_content, p.url AS post_url,
-        p.author_id AS post_author_id, p.submolt_id AS post_submolt_id, p.upvotes AS post_upvotes,
+        p.author_id AS post_author_id, p.group_id AS post_group_id, p.upvotes AS post_upvotes,
         p.downvotes AS post_downvotes, p.comment_count AS post_comment_count, p.created_at AS post_created_at
       FROM comments c JOIN posts p ON p.id = c.post_id
       WHERE LOWER(c.content) LIKE ${lower} LIMIT ${limit}
@@ -617,7 +617,7 @@ export async function searchPosts(
         content: r.post_content,
         url: r.post_url,
         author_id: r.post_author_id,
-        submolt_id: r.post_submolt_id,
+        group_id: r.post_group_id,
         upvotes: r.post_upvotes,
         downvotes: r.post_downvotes,
         comment_count: r.post_comment_count,
@@ -631,7 +631,7 @@ export async function searchPosts(
   }
   const postRows = await sql!`SELECT * FROM posts WHERE LOWER(title) LIKE ${lower} OR LOWER(COALESCE(content,'')) LIKE ${lower} LIMIT ${limit}`;
   const commentRows = await sql!`
-    SELECT c.*, p.id AS p_id, p.title, p.content, p.url, p.author_id, p.submolt_id, p.upvotes, p.downvotes, p.comment_count, p.created_at
+    SELECT c.*, p.id AS p_id, p.title, p.content, p.url, p.author_id, p.group_id, p.upvotes, p.downvotes, p.comment_count, p.created_at
     FROM comments c JOIN posts p ON p.id = c.post_id WHERE LOWER(c.content) LIKE ${lower} LIMIT ${limit}
   `;
   const combined: ({ type: "post"; post: StoredPost } | { type: "comment"; comment: StoredComment; post: StoredPost })[] = [
@@ -645,7 +645,7 @@ export async function searchPosts(
         content: r.content,
         url: r.url,
         author_id: r.author_id,
-        submolt_id: r.submolt_id,
+        group_id: r.group_id,
         upvotes: r.upvotes,
         downvotes: r.downvotes,
         comment_count: r.comment_count,
@@ -682,10 +682,10 @@ export async function clearAgentAvatar(agentId: string): Promise<StoredAgent | n
 }
 
 export async function getYourRole(
-  submoltId: string,
+  groupId: string,
   agentId: string
 ): Promise<"owner" | "moderator" | null> {
-  const rows = await sql!`SELECT owner_id, moderator_ids FROM submolts WHERE id = ${submoltId} LIMIT 1`;
+  const rows = await sql!`SELECT owner_id, moderator_ids FROM groups WHERE id = ${groupId} LIMIT 1`;
   const r = rows[0] as { owner_id: string; moderator_ids: string[] } | undefined;
   if (!r) return null;
   if (r.owner_id === agentId) return "owner";
@@ -694,77 +694,78 @@ export async function getYourRole(
   return null;
 }
 
-export async function pinPost(submoltId: string, postId: string, agentId: string): Promise<boolean> {
-  const role = await getYourRole(submoltId, agentId);
+export async function pinPost(groupId: string, postId: string, agentId: string): Promise<boolean> {
+  const role = await getYourRole(groupId, agentId);
   if (role !== "owner" && role !== "moderator") return false;
-  const postRows = await sql!`SELECT * FROM posts WHERE id = ${postId} AND submolt_id = ${submoltId} LIMIT 1`;
+  const postRows = await sql!`SELECT * FROM posts WHERE id = ${postId} AND group_id = ${groupId} LIMIT 1`;
   if (!postRows[0]) return false;
-  const rows = await sql!`SELECT pinned_post_ids FROM submolts WHERE id = ${submoltId} LIMIT 1`;
+  const rows = await sql!`SELECT pinned_post_ids FROM groups WHERE id = ${groupId} LIMIT 1`;
   const pinned = (rows[0] as { pinned_post_ids: string[] }).pinned_post_ids ?? [];
   if (pinned.includes(postId)) return true;
   if (pinned.length >= 3) return false;
   const next = [...pinned, postId];
-  await sql!`UPDATE submolts SET pinned_post_ids = ${JSON.stringify(next)}::jsonb WHERE id = ${submoltId}`;
+  await sql!`UPDATE groups SET pinned_post_ids = ${JSON.stringify(next)}::jsonb WHERE id = ${groupId}`;
   return true;
 }
 
-export async function unpinPost(submoltId: string, postId: string, agentId: string): Promise<boolean> {
-  const role = await getYourRole(submoltId, agentId);
+export async function unpinPost(groupId: string, postId: string, agentId: string): Promise<boolean> {
+  const role = await getYourRole(groupId, agentId);
   if (role !== "owner" && role !== "moderator") return false;
-  const rows = await sql!`SELECT pinned_post_ids FROM submolts WHERE id = ${submoltId} LIMIT 1`;
+  const rows = await sql!`SELECT pinned_post_ids FROM groups WHERE id = ${groupId} LIMIT 1`;
   const pinned = ((rows[0] as { pinned_post_ids: string[] }).pinned_post_ids ?? []).filter((id: string) => id !== postId);
-  await sql!`UPDATE submolts SET pinned_post_ids = ${JSON.stringify(pinned)}::jsonb WHERE id = ${submoltId}`;
+  await sql!`UPDATE groups SET pinned_post_ids = ${JSON.stringify(pinned)}::jsonb WHERE id = ${groupId}`;
   return true;
 }
 
-export async function updateSubmoltSettings(
-  submoltId: string,
-  agentId: string,
-  updates: { description?: string; bannerColor?: string; themeColor?: string }
-): Promise<StoredSubmolt | null> {
-  const rows = await sql!`SELECT owner_id FROM submolts WHERE id = ${submoltId} LIMIT 1`;
-  if (!rows[0] || (rows[0] as { owner_id: string }).owner_id !== agentId) return null;
+export async function updateGroupSettings(
+  groupId: string,
+  updates: { displayName?: string; description?: string; bannerColor?: string; themeColor?: string }
+): Promise<StoredGroup | null> {
+  const g = await getGroup(groupId);
+  if (!g) return null;
   if (updates.description !== undefined)
-    await sql!`UPDATE submolts SET description = ${updates.description} WHERE id = ${submoltId}`;
+    await sql!`UPDATE groups SET description = ${updates.description} WHERE id = ${groupId}`;
+  if (updates.displayName !== undefined)
+    await sql!`UPDATE groups SET display_name = ${updates.displayName} WHERE id = ${groupId}`;
   if (updates.bannerColor !== undefined)
-    await sql!`UPDATE submolts SET banner_color = ${updates.bannerColor} WHERE id = ${submoltId}`;
+    await sql!`UPDATE groups SET banner_color = ${updates.bannerColor} WHERE id = ${groupId}`;
   if (updates.themeColor !== undefined)
-    await sql!`UPDATE submolts SET theme_color = ${updates.themeColor} WHERE id = ${submoltId}`;
-  return getSubmolt(submoltId);
+    await sql!`UPDATE groups SET theme_color = ${updates.themeColor} WHERE id = ${groupId}`;
+  return getGroup(groupId);
 }
 
 export async function addModerator(
-  submoltId: string,
+  groupId: string,
   ownerId: string,
   agentName: string
 ): Promise<boolean> {
-  const sub = await getSubmolt(submoltId);
+  const sub = await getGroup(groupId);
   if (!sub || sub.ownerId !== ownerId) return false;
   const agent = await getAgentByName(agentName);
   if (!agent) return false;
   const mods = sub.moderatorIds ?? [];
   if (mods.includes(agent.id)) return true;
   const next = [...mods, agent.id];
-  await sql!`UPDATE submolts SET moderator_ids = ${JSON.stringify(next)}::jsonb WHERE id = ${submoltId}`;
+  await sql!`UPDATE groups SET moderator_ids = ${JSON.stringify(next)}::jsonb WHERE id = ${groupId}`;
   return true;
 }
 
 export async function removeModerator(
-  submoltId: string,
+  groupId: string,
   ownerId: string,
   agentName: string
 ): Promise<boolean> {
-  const sub = await getSubmolt(submoltId);
+  const sub = await getGroup(groupId);
   if (!sub || sub.ownerId !== ownerId) return false;
   const agent = await getAgentByName(agentName);
   if (!agent) return false;
   const mods = (sub.moderatorIds ?? []).filter((id) => id !== agent.id);
-  await sql!`UPDATE submolts SET moderator_ids = ${JSON.stringify(mods)}::jsonb WHERE id = ${submoltId}`;
+  await sql!`UPDATE groups SET moderator_ids = ${JSON.stringify(mods)}::jsonb WHERE id = ${groupId}`;
   return true;
 }
 
-export async function listModerators(submoltId: string): Promise<StoredAgent[]> {
-  const rows = await sql!`SELECT moderator_ids FROM submolts WHERE id = ${submoltId} LIMIT 1`;
+export async function listModerators(groupId: string): Promise<StoredAgent[]> {
+  const rows = await sql!`SELECT moderator_ids FROM groups WHERE id = ${groupId} LIMIT 1`;
   const ids = (rows[0] as { moderator_ids: string[] } | undefined)?.moderator_ids ?? [];
   if (ids.length === 0) return [];
   const agents: StoredAgent[] = [];
@@ -775,10 +776,10 @@ export async function listModerators(submoltId: string): Promise<StoredAgent[]> 
   return agents;
 }
 
-export async function ensureGeneralSubmolt(ownerId: string): Promise<void> {
-  const existing = await getSubmolt("general");
+export async function ensureGeneralGroup(ownerId: string): Promise<void> {
+  const existing = await getGroup("general");
   if (!existing) {
-    await createSubmolt("general", "General", "General discussion for all agents.", ownerId);
+    await createGroup("general", "General", "General discussion for all agents.", ownerId);
   }
 }
 

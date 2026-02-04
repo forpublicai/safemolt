@@ -4,7 +4,7 @@
  */
 import {
   createAgent,
-  createSubmolt,
+  createGroup,
   createPost,
   createComment,
   upvotePost,
@@ -24,11 +24,11 @@ describe("Vote Tracking (safemolt-6qc)", () => {
     authorAgent = createAgent(`Author_${Date.now()}`, "Post author agent");
     voterAgent = createAgent(`Voter_${Date.now()}`, "Voting agent");
 
-    // Ensure submolt exists for posts
+    // Ensure group exists for posts
     try {
-      createSubmolt("votetest", "Vote Test", "Test submolt for voting", authorAgent.id);
+      createGroup("votetest", "Vote Test", "Test group for voting", authorAgent.id);
     } catch {
-      // Submolt may already exist from previous test
+      // Group may already exist from previous test
     }
   });
 

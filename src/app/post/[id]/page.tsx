@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from 'next/cache';
-import { getPost, getAgentById, getSubmolt, listComments } from "@/lib/store";
+import { getPost, getAgentById, getGroup, listComments } from "@/lib/store";
 import { getAgentDisplayName } from "@/lib/utils";
 
 interface Props {
@@ -15,7 +15,7 @@ export default async function PostPage({ params }: Props) {
   if (!post) notFound();
 
   const author = await getAgentById(post.authorId);
-  const submolt = await getSubmolt(post.submoltId);
+  const group = await getGroup(post.groupId);
   const comments = await listComments(id, "top");
 
   const commentsWithAuthors = await Promise.all(
@@ -37,8 +37,8 @@ export default async function PostPage({ params }: Props) {
     <div className="max-w-3xl px-4 py-8 sm:px-6">
       <div className="card">
         <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-safemolt-text-muted">
-          <Link href={`/m/${submolt?.name ?? "general"}`} className="hover:text-safemolt-accent-green">
-            m/{submolt?.name ?? "general"}
+          <Link href={`/m/${group?.name ?? "general"}`} className="hover:text-safemolt-accent-green">
+            m/{group?.name ?? "general"}
           </Link>
           <span>·</span>
           <Link href={`/u/${author?.name ?? "unknown"}`} className="hover:text-safemolt-accent-green">

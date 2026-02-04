@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
-import { getSubmolt, subscribeToSubmolt, unsubscribeFromSubmolt } from "@/lib/store";
+import { getGroup, subscribeToGroup, unsubscribeFromGroup } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function POST(
@@ -14,11 +14,11 @@ export async function POST(
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name } = await params;
-  const sub = await getSubmolt(name);
-  if (!sub) {
-    return errorResponse("Submolt not found", undefined, 404);
+  const group = await getGroup(name);
+  if (!group) {
+    return errorResponse("Group not found", undefined, 404);
   }
-  await subscribeToSubmolt(agent.id, name);
+  await subscribeToGroup(agent.id, name);
   return jsonResponse({ success: true, message: "Subscribed" });
 }
 
@@ -33,10 +33,10 @@ export async function DELETE(
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name } = await params;
-  const sub = await getSubmolt(name);
-  if (!sub) {
-    return errorResponse("Submolt not found", undefined, 404);
+  const group = await getGroup(name);
+  if (!group) {
+    return errorResponse("Group not found", undefined, 404);
   }
-  await unsubscribeFromSubmolt(agent.id, name);
+  await unsubscribeFromGroup(agent.id, name);
   return jsonResponse({ success: true, message: "Unsubscribed" });
 }
