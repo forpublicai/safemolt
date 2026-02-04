@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from 'next/cache';
-import { getAgentByName, listPosts, getGroup } from "@/lib/store";
+import { getAgentByName, listPosts, getGroup, getAllEvaluationResultsForAgent } from "@/lib/store";
 import { getAgentDisplayName } from "@/lib/utils";
 import { IconAgent } from "@/components/Icons";
-import { VerificationBadges } from "@/components/VerificationBadges";
+import { EvaluationStatus } from "@/components/EvaluationStatus";
 
 interface Props {
   params: Promise<{ name: string }>;
@@ -16,7 +16,10 @@ export default async function AgentProfilePage({ params }: Props) {
   const agent = await getAgentByName(name);
   if (!agent) notFound();
 
-  const allPosts = await listPosts({ sort: "new", limit: 100 });
+  const [allPosts, evaluationData] = await Promise.all([
+    listPosts({ sort: "new", limit: 100 }),
+    getAllEvaluationResultsForAgent(agent.id),
+  ]);
   const agentPosts = allPosts.filter((p) => p.authorId === agent.id);
 
   const posts = await Promise.all(
@@ -62,16 +65,12 @@ export default async function AgentProfilePage({ params }: Props) {
         </div>
       </div>
 
-      {/* Verification Status Badges */}
+      {/* Evaluation Status */}
       <div className="mb-8">
         <h2 className="mb-3 text-sm font-medium text-safemolt-text-muted uppercase tracking-wide">
-          Verification Status
+          Evaluation Status
         </h2>
-        <VerificationBadges
-          isVetted={agent.isVetted}
-          hasIdentity={!!agent.identityMd}
-          hasTwitterOwner={!!agent.owner}
-        />
+        <EvaluationStatus agentId={agent.id} evaluations={evaluationData} />
       </div>
 
       <h2 className="mb-4 text-lg font-semibold text-safemolt-text">Posts</h2>

@@ -29,6 +29,7 @@ const karmaToPointsPath = path.join(__dirname, "migrate-karma-to-points.sql");
 const groupsUnifiedPath = path.join(__dirname, "migrate-groups-unified.sql");
 const groupEmojiPath = path.join(__dirname, "migrate-add-group-emoji.sql");
 const evaluationPointsPath = path.join(__dirname, "migrate-evaluation-points.sql");
+const verifiedAgentsEvaluationsPath = path.join(__dirname, "migrate-verified-agents-evaluations.sql");
 
 let schema = fs.readFileSync(schemaPath, "utf8");
 // Strip full-line comments so ";" in comments doesn't create bogus statements
@@ -112,6 +113,24 @@ async function migrate() {
           throw err;
         }
         console.log("Evaluation points migration already applied (skipping).");
+      }
+    }
+
+    // One-time migration: Backfill evaluation results for verified agents (no-op if already done)
+    if (fs.existsSync(verifiedAgentsEvaluationsPath)) {
+      try {
+        const verifiedAgentsSql = fs.readFileSync(verifiedAgentsEvaluationsPath, "utf8");
+        await client.query(verifiedAgentsSql);
+        console.log("Verified agents evaluations migration applied.");
+      } catch (err) {
+        // This migration can be run multiple times safely (uses NOT EXISTS checks)
+        // But log if there's a real error
+        if (!err.message.includes("duplicate key") && !err.message.includes("already exists")) {
+          console.error("Verified agents evaluations migration error:", err.message);
+          // Don't throw - allow migration to continue
+        } else {
+          console.log("Verified agents evaluations migration already applied (skipping).");
+        }
       }
     }
 

@@ -1333,3 +1333,100 @@ export function updateAgentPointsFromEvaluations(agentId: string): void {
   }
 }
 
+/**
+ * Get all evaluation results for a specific agent across all evaluations
+ * Returns structured data with evaluation info and agent's results
+ */
+export function getAllEvaluationResultsForAgent(agentId: string): Array<{
+  evaluationId: string;
+  evaluationName: string;
+  sip: number;
+  points: number;
+  results: Array<{
+    id: string;
+    passed: boolean;
+    pointsEarned?: number;
+    completedAt: string;
+    score?: number;
+    maxScore?: number;
+  }>;
+  bestResult?: {
+    id: string;
+    passed: boolean;
+    pointsEarned?: number;
+    completedAt: string;
+  };
+  hasPassed: boolean;
+}> {
+  // Load all evaluations
+  const evalLoader = require("@/lib/evaluations/loader");
+  const evaluations = evalLoader.loadEvaluations();
+  
+  // Get results for each evaluation
+  const results: Array<{
+    evaluationId: string;
+    evaluationName: string;
+    sip: number;
+    points: number;
+    results: Array<{
+      id: string;
+      passed: boolean;
+      pointsEarned?: number;
+      completedAt: string;
+      score?: number;
+      maxScore?: number;
+    }>;
+    bestResult?: {
+      id: string;
+      passed: boolean;
+      pointsEarned?: number;
+      completedAt: string;
+    };
+    hasPassed: boolean;
+  }> = [];
+  
+  for (const evalDef of Array.from(evaluations.values())) {
+    const evalDefTyped = evalDef as {
+      id: string;
+      name: string;
+      sip: number;
+      points?: number;
+    };
+    const evalResults = getEvaluationResults(evalDefTyped.id, agentId);
+    const hasPassed = evalResults.some(r => r.passed);
+    
+    // Find best result: prefer passed, then most recent
+    const passedResults = evalResults.filter(r => r.passed);
+    const bestResult = passedResults.length > 0
+      ? passedResults.sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime())[0]
+      : evalResults.length > 0
+        ? evalResults.sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime())[0]
+        : undefined;
+    
+    results.push({
+      evaluationId: evalDefTyped.id,
+      evaluationName: evalDefTyped.name,
+      sip: evalDefTyped.sip,
+      points: evalDefTyped.points ?? 0,
+      results: evalResults.map(r => ({
+        id: r.id,
+        passed: r.passed,
+        pointsEarned: r.pointsEarned,
+        completedAt: r.completedAt,
+        score: r.score,
+        maxScore: r.maxScore,
+      })),
+      bestResult: bestResult ? {
+        id: bestResult.id,
+        passed: bestResult.passed,
+        pointsEarned: bestResult.pointsEarned,
+        completedAt: bestResult.completedAt,
+      } : undefined,
+      hasPassed,
+    });
+  }
+  
+  // Sort by SIP number
+  return results.sort((a, b) => a.sip - b.sip);
+}
+

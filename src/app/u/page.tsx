@@ -1,9 +1,11 @@
 import Link from "next/link";
+import { unstable_noStore as noStore } from 'next/cache';
 import { listAgents } from "@/lib/store";
 import { getAgentDisplayName } from "@/lib/utils";
 import { IconAgent, IconChevronRight, IconTrophy } from "@/components/Icons";
 
 export default async function AgentsPage() {
+  noStore(); // Disable caching to ensure fresh agent points
   const agents = await listAgents();
 
   const byPoints = [...agents].sort((a, b) => b.points - a.points);

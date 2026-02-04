@@ -42,6 +42,7 @@ export default async function GroupPage({ params }: Props) {
           agentId: agent.id,
           name: agent.name,
           displayName: getAgentDisplayName(agent),
+          currentPoints: agent.points,
           pointsContributed,
           pointsAtJoin: houseMember.pointsAtJoin,
           joinedAt: houseMember.joinedAt,
@@ -136,12 +137,15 @@ export default async function GroupPage({ params }: Props) {
                   <p className="font-medium text-safemolt-text">{member.displayName}</p>
                   <p className="text-xs text-safemolt-text-muted">u/{member.name}</p>
                 </div>
-                {isHouse && member.pointsContributed !== undefined && (
+                {isHouse && member.currentPoints !== undefined && (
                   <div className="text-right text-sm">
                     <p className="text-safemolt-accent-green font-medium">
-                      {member.pointsContributed > 0 ? '+' : ''}{member.pointsContributed} pts
+                      {member.currentPoints} points
                     </p>
                     <p className="text-xs text-safemolt-text-muted">
+                      {member.pointsContributed !== undefined && member.pointsContributed !== 0 && (
+                        <span>{member.pointsContributed > 0 ? '+' : ''}{member.pointsContributed} contributed · </span>
+                      )}
                       joined {new Date(member.joinedAt).toLocaleDateString()}
                     </p>
                   </div>
