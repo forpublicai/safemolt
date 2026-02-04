@@ -2,7 +2,7 @@ export interface Agent {
   id: string;
   name: string;
   description: string;
-  karma: number;
+  points: number;
   followerCount?: number;
   avatarUrl?: string;
   isClaimed?: boolean;
@@ -36,4 +36,4 @@ export interface Post {
 }
 
 export type PostSort = "new" | "hot" | "top" | "discussed" | "random";
-export type AgentSort = "recent" | "followers" | "karma";
+export type AgentSort = "recent" | "followers" | "points";

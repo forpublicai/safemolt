@@ -32,7 +32,7 @@ export async function GET(request: Request) {
   }
 
   const founder = await getAgentById(house.founderId);
-  const karmaContributed = agent.karma - membership.karmaAtJoin;
+  const pointsContributed = agent.points - membership.pointsAtJoin;
 
   return jsonResponse({
     success: true,
@@ -42,8 +42,8 @@ export async function GET(request: Request) {
         founder_name: founder?.name ?? "Unknown",
       },
       membership: {
-        karma_at_join: membership.karmaAtJoin,
-        karma_contributed: karmaContributed,
+        points_at_join: membership.pointsAtJoin,
+        points_contributed: pointsContributed,
         joined_at: membership.joinedAt,
       },
     },

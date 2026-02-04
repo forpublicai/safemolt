@@ -22,42 +22,42 @@ import {
 
 describe("Pure Points Calculation Functions (safemolt-6or)", () => {
   describe("calculateMemberContribution", () => {
-    it("should calculate positive contribution for karma gained after joining", () => {
+    it("should calculate positive contribution for points gained after joining", () => {
       const member: MemberMetrics = {
-        currentKarma: 50,
-        karmaAtJoin: 30,
+        currentPoints: 50,
+        pointsAtJoin: 30,
       };
       expect(calculateMemberContribution(member)).toBe(20);
     });
 
-    it("should calculate negative contribution for karma lost after joining", () => {
+    it("should calculate negative contribution for points lost after joining", () => {
       const member: MemberMetrics = {
-        currentKarma: 10,
-        karmaAtJoin: 25,
+        currentPoints: 10,
+        pointsAtJoin: 25,
       };
       expect(calculateMemberContribution(member)).toBe(-15);
     });
 
-    it("should calculate zero contribution when karma unchanged since joining", () => {
+    it("should calculate zero contribution when points unchanged since joining", () => {
       const member: MemberMetrics = {
-        currentKarma: 42,
-        karmaAtJoin: 42,
+        currentPoints: 42,
+        pointsAtJoin: 42,
       };
       expect(calculateMemberContribution(member)).toBe(0);
     });
 
-    it("should handle zero karma at join", () => {
+    it("should handle zero points at join", () => {
       const member: MemberMetrics = {
-        currentKarma: 100,
-        karmaAtJoin: 0,
+        currentPoints: 100,
+        pointsAtJoin: 0,
       };
       expect(calculateMemberContribution(member)).toBe(100);
     });
 
-    it("should handle negative karma values", () => {
+    it("should handle negative points values", () => {
       const member: MemberMetrics = {
-        currentKarma: -5,
-        karmaAtJoin: 10,
+        currentPoints: -5,
+        pointsAtJoin: 10,
       };
       expect(calculateMemberContribution(member)).toBe(-15);
     });
@@ -66,9 +66,9 @@ describe("Pure Points Calculation Functions (safemolt-6or)", () => {
   describe("calculateHousePoints", () => {
     it("should calculate total points from multiple members", () => {
       const members: MemberMetrics[] = [
-        { currentKarma: 50, karmaAtJoin: 30 },  // +20
-        { currentKarma: 40, karmaAtJoin: 35 },  // +5
-        { currentKarma: 60, karmaAtJoin: 50 },  // +10
+        { currentPoints: 50, pointsAtJoin: 30 },  // +20
+        { currentPoints: 40, pointsAtJoin: 35 },  // +5
+        { currentPoints: 60, pointsAtJoin: 50 },  // +10
       ];
       expect(calculateHousePoints(members)).toBe(35);
     });
@@ -79,48 +79,48 @@ describe("Pure Points Calculation Functions (safemolt-6or)", () => {
 
     it("should handle single member", () => {
       const members: MemberMetrics[] = [
-        { currentKarma: 100, karmaAtJoin: 75 },
+        { currentPoints: 100, pointsAtJoin: 75 },
       ];
       expect(calculateHousePoints(members)).toBe(25);
     });
 
     it("should handle negative contributions correctly", () => {
       const members: MemberMetrics[] = [
-        { currentKarma: 50, karmaAtJoin: 30 },   // +20
-        { currentKarma: 10, karmaAtJoin: 40 },   // -30
-        { currentKarma: 25, karmaAtJoin: 20 },   // +5
+        { currentPoints: 50, pointsAtJoin: 30 },   // +20
+        { currentPoints: 10, pointsAtJoin: 40 },   // -30
+        { currentPoints: 25, pointsAtJoin: 20 },   // +5
       ];
       expect(calculateHousePoints(members)).toBe(-5);
     });
 
     it("should handle all members with zero contribution", () => {
       const members: MemberMetrics[] = [
-        { currentKarma: 10, karmaAtJoin: 10 },
-        { currentKarma: 20, karmaAtJoin: 20 },
-        { currentKarma: 30, karmaAtJoin: 30 },
+        { currentPoints: 10, pointsAtJoin: 10 },
+        { currentPoints: 20, pointsAtJoin: 20 },
+        { currentPoints: 30, pointsAtJoin: 30 },
       ];
       expect(calculateHousePoints(members)).toBe(0);
     });
 
-    it("should handle members who joined with zero karma", () => {
+    it("should handle members who joined with zero points", () => {
       const members: MemberMetrics[] = [
-        { currentKarma: 100, karmaAtJoin: 0 },  // +100
-        { currentKarma: 50, karmaAtJoin: 0 },   // +50
+        { currentPoints: 100, pointsAtJoin: 0 },  // +100
+        { currentPoints: 50, pointsAtJoin: 0 },   // +50
       ];
       expect(calculateHousePoints(members)).toBe(150);
     });
 
     it("should handle large numbers correctly", () => {
       const members: MemberMetrics[] = [
-        { currentKarma: 10000, karmaAtJoin: 5000 },
-        { currentKarma: 20000, karmaAtJoin: 15000 },
+        { currentPoints: 10000, pointsAtJoin: 5000 },
+        { currentPoints: 20000, pointsAtJoin: 15000 },
       ];
       expect(calculateHousePoints(members)).toBe(10000);
     });
   });
 });
 
-describe("House Points Recalculation on Karma Changes (safemolt-pv1)", () => {
+describe("House Points Recalculation on Points Changes (safemolt-pv1)", () => {
   let agent1: ReturnType<typeof createAgent>;
   let agent2: ReturnType<typeof createAgent>;
   let group: ReturnType<typeof createGroup>;
@@ -138,7 +138,7 @@ describe("House Points Recalculation on Karma Changes (safemolt-pv1)", () => {
   });
 
   describe("upvotePost triggers house points recalculation", () => {
-    it("should increase house points when member receives upvote karma", () => {
+    it("should increase house points when member receives upvote points", () => {
       // Create a house with agent1 as founder
       const house = createHouse(agent1.id, `Test House ${Date.now()}`);
       expect(house).not.toBeNull();
@@ -146,13 +146,13 @@ describe("House Points Recalculation on Karma Changes (safemolt-pv1)", () => {
       // Create a post by agent1
       const post = createPost(agent1.id, "housetest", "Test post", "Content");
 
-      // Get initial karma and house points
+      // Get initial points and house points
       const initialAgent = getAgentById(agent1.id);
       const initialHouse = getHouse(house!.id);
-      const initialKarma = initialAgent?.karma ?? 0;
+      const initialPoints = initialAgent?.points ?? 0;
       const initialPoints = initialHouse?.points ?? 0;
 
-      // Upvote the post (gives karma to agent1)
+      // Upvote the post (gives points to agent1)
       const result = upvotePost(post.id, agent1.id);
       expect(result).toBe(true);
 
@@ -171,7 +171,7 @@ describe("House Points Recalculation on Karma Changes (safemolt-pv1)", () => {
 
       // Get initial karma
       const initialAgent = getAgentById(agent2.id);
-      const initialKarma = initialAgent?.karma ?? 0;
+      const initialPoints = initialAgent?.points ?? 0;
 
       // Upvote the post - should not throw
       const result = upvotePost(post.id, agent2.id);
@@ -184,8 +184,8 @@ describe("House Points Recalculation on Karma Changes (safemolt-pv1)", () => {
   });
 
   describe("downvotePost triggers house points recalculation", () => {
-    it("should decrease house points when member loses karma from downvote", () => {
-      // Create a house with agent1 as founder - give them some initial karma
+    it("should decrease house points when member loses points from downvote", () => {
+      // Create a house with agent1 as founder - give them some initial points
       upvotePost(createPost(agent1.id, "housetest", "Setup post", "Setup").id, agent1.id);
       upvotePost(createPost(agent1.id, "housetest", "Setup post 2", "Setup").id, agent1.id);
 
@@ -217,12 +217,12 @@ describe("House Points Recalculation on Karma Changes (safemolt-pv1)", () => {
     });
 
     it("should not error when downvoting for agent not in a house", () => {
-      // Give agent2 some karma first so downvote has effect
+      // Give agent2 some points first so downvote has effect
       upvotePost(createPost(agent2.id, "housetest", "Setup", "S").id, agent2.id);
 
       const post = createPost(agent2.id, "housetest", "Downvote test", "Content");
       const initialAgent = getAgentById(agent2.id);
-      const initialKarma = initialAgent?.karma ?? 0;
+      const initialPoints = initialAgent?.points ?? 0;
 
       // Downvote should not throw for agent not in house
       const result = downvotePost(post.id, agent2.id);
@@ -249,7 +249,7 @@ describe("House Points Recalculation on Karma Changes (safemolt-pv1)", () => {
       // Get initial state
       const initialAgent = getAgentById(agent3.id);
       const initialHouse = getHouse(house!.id);
-      const initialKarma = initialAgent?.karma ?? 0;
+      const initialPoints = initialAgent?.points ?? 0;
       const initialPoints = initialHouse?.points ?? 0;
 
       // Upvote the comment (gives karma to comment author - agent3)
@@ -272,7 +272,7 @@ describe("House Points Recalculation on Karma Changes (safemolt-pv1)", () => {
       expect(comment).not.toBeNull();
 
       const initialAgent = getAgentById(agent2.id);
-      const initialKarma = initialAgent?.karma ?? 0;
+      const initialPoints = initialAgent?.points ?? 0;
 
       // Upvote should not throw
       const result = upvoteComment(comment!.id, agent1.id);
@@ -284,7 +284,7 @@ describe("House Points Recalculation on Karma Changes (safemolt-pv1)", () => {
     });
   });
 
-  describe("Integration: multiple karma changes update house points correctly", () => {
+  describe("Integration: multiple points changes update house points correctly", () => {
     it("should accumulate points from multiple upvotes", () => {
       const agent4 = createAgent("MultiVote", "Multi-vote test agent");
       const house = createHouse(agent4.id, `Multi House ${Date.now()}`);

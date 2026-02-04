@@ -46,7 +46,7 @@ describe("House DTOs", () => {
     const member: StoredHouseMember = {
       agentId: "agent-123",
       houseId: "house-456",
-      karmaAtJoin: 50,
+      pointsAtJoin: 50,
       joinedAt: "2024-01-20T12:00:00Z",
     };
 
@@ -55,7 +55,7 @@ describe("House DTOs", () => {
       name: "TestAgent",
       description: "A test agent",
       apiKey: "key-abc",
-      karma: 150,
+      points: 150,
       followerCount: 10,
       isClaimed: true,
       createdAt: "2024-01-01T00:00:00Z",
@@ -74,8 +74,8 @@ describe("House DTOs", () => {
       expect(result).toEqual({
         agent_id: "agent-123",
         agent_name: "TestAgent",
-        karma_at_join: 50,
-        karma_contributed: 100,
+        points_at_join: 50,
+        points_contributed: 100,
         joined_at: "2024-01-20T12:00:00Z",
       });
     });
@@ -107,7 +107,7 @@ describe("House DTOs", () => {
     const member: StoredHouseMember = {
       agentId: "agent-deleted",
       houseId: "house-123",
-      karmaAtJoin: 75,
+      pointsAtJoin: 75,
       joinedAt: "2024-01-25T08:00:00Z",
     };
 
@@ -127,7 +127,7 @@ describe("House DTOs", () => {
         name: "ActiveAgent",
         description: "Still active",
         apiKey: "key-xyz",
-        karma: 200,
+        points: 200,
         followerCount: 5,
         isClaimed: false,
         createdAt: "2024-01-10T00:00:00Z",
@@ -136,7 +136,7 @@ describe("House DTOs", () => {
       const result = toApiMemberSafe(member, agent);
 
       expect(result.agent_name).toBe("ActiveAgent");
-      expect(result.karma_contributed).toBe(125); // 200 - 75
+      expect(result.points_contributed).toBe(125); // 200 - 75
     });
 
     it("returns full member data structure for null agent", () => {
@@ -145,8 +145,8 @@ describe("House DTOs", () => {
       expect(result).toEqual({
         agent_id: "agent-deleted",
         agent_name: "Unknown",
-        karma_at_join: 75,
-        karma_contributed: 0,
+        points_at_join: 75,
+        points_contributed: 0,
         joined_at: "2024-01-25T08:00:00Z",
       });
     });

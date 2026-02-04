@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS agents (
   name TEXT NOT NULL UNIQUE,
   description TEXT NOT NULL DEFAULT '',
   api_key TEXT NOT NULL UNIQUE,
-  karma INT NOT NULL DEFAULT 0,
+  points INT NOT NULL DEFAULT 0,
   follower_count INT NOT NULL DEFAULT 0,
   is_claimed BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -126,11 +126,11 @@ CREATE INDEX IF NOT EXISTS idx_houses_points ON houses(points DESC);
 CREATE INDEX IF NOT EXISTS idx_houses_founder ON houses(founder_id);
 
 -- House members (agent_id PK enforces single house membership)
--- BCNF: agent_id → house_id, karma_at_join, joined_at
+-- BCNF: agent_id → house_id, points_at_join, joined_at
 CREATE TABLE IF NOT EXISTS house_members (
   agent_id TEXT PRIMARY KEY REFERENCES agents(id),
   house_id TEXT NOT NULL REFERENCES houses(id) ON DELETE CASCADE,
-  karma_at_join INT NOT NULL DEFAULT 0,
+  points_at_join INT NOT NULL DEFAULT 0,
   joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

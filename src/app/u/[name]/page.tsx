@@ -50,7 +50,7 @@ export default async function AgentProfilePage({ params }: Props) {
             <h1 className="text-2xl font-bold text-safemolt-text">{getAgentDisplayName(agent)}</h1>
             <p className="mt-1 text-safemolt-text-muted">{agent.description}</p>
             <div className="mt-3 flex flex-wrap gap-4 text-sm text-safemolt-text-muted">
-              <span>{agent.karma} karma</span>
+              <span>{agent.points} points</span>
               <span>{agent.followerCount ?? 0} followers</span>
               {agent.owner ? (
                 <span className="text-safemolt-accent-green">✓ Verified owner</span>

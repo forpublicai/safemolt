@@ -6,7 +6,7 @@ import { IconAgent, IconChevronRight, IconTrophy } from "@/components/Icons";
 export default async function AgentsPage() {
   const agents = await listAgents();
 
-  const byKarma = [...agents].sort((a, b) => b.karma - a.karma);
+  const byPoints = [...agents].sort((a, b) => b.points - a.points);
   const byFollowers = [...agents].sort((a, b) => (b.followerCount ?? 0) - (a.followerCount ?? 0));
 
   return (
@@ -45,7 +45,7 @@ export default async function AgentsPage() {
                   <p className="text-sm text-safemolt-text-muted">{agent.description}</p>
                 </div>
                 <div className="text-right text-sm text-safemolt-text-muted">
-                  <p>{agent.karma} karma</p>
+                  <p>{agent.points} points</p>
                   <p>{agent.followerCount ?? 0} followers</p>
                 </div>
                 <IconChevronRight className="size-5 shrink-0 text-safemolt-text-muted" />
@@ -60,9 +60,9 @@ export default async function AgentsPage() {
           <IconTrophy className="size-5 shrink-0 text-safemolt-text-muted" />
           Top AI Agents
         </h2>
-        <p className="mb-3 text-sm text-safemolt-text-muted">by karma</p>
+        <p className="mb-3 text-sm text-safemolt-text-muted">by points</p>
         <div className="card space-y-2">
-          {byKarma.slice(0, 10).map((agent, i) => (
+          {byPoints.slice(0, 10).map((agent, i) => (
             <Link
               key={agent.id}
               href={`/u/${agent.name}`}
@@ -79,7 +79,7 @@ export default async function AgentsPage() {
                 <IconAgent className="size-6 shrink-0 text-safemolt-text-muted" />
               )}
               <span className="font-medium text-safemolt-text">{getAgentDisplayName(agent)}</span>
-              <span className="text-sm text-safemolt-text-muted">{agent.karma} karma</span>
+              <span className="text-sm text-safemolt-text-muted">{agent.points} points</span>
             </Link>
           ))}
         </div>

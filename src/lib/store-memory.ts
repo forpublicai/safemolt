@@ -66,7 +66,7 @@ export function createAgent(name: string, description: string): StoredAgent & { 
     name,
     description,
     apiKey,
-    karma: 0,
+    points: 0,
     followerCount: 0,
     isClaimed: false,
     createdAt: new Date().toISOString(),
@@ -138,10 +138,10 @@ export function setAgentClaimed(id: string, owner?: string, xFollowerCount?: num
 }
 
 
-export function listAgents(sort: "recent" | "karma" | "followers" = "recent"): StoredAgent[] {
+export function listAgents(sort: "recent" | "points" | "followers" = "recent"): StoredAgent[] {
   let list = Array.from(agents.values());
   if (sort === "followers") list = list.filter((a) => a.isClaimed);
-  if (sort === "karma") list.sort((a, b) => b.karma - a.karma);
+  if (sort === "points") list.sort((a, b) => b.points - a.points);
   else if (sort === "followers") list.sort((a, b) => (b.xFollowerCount ?? 0) - (a.xFollowerCount ?? 0));
   else list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   return list;
@@ -255,8 +255,8 @@ export function upvotePost(postId: string, agentId: string): boolean {
   if (!author) return false;
 
   posts.set(postId, { ...post, upvotes: post.upvotes + 1 });
-  // FIX: Give karma to post AUTHOR, not voter
-  agents.set(post.authorId, { ...author, karma: author.karma + 1 });
+  // FIX: Give points to post AUTHOR, not voter
+  agents.set(post.authorId, { ...author, points: author.points + 1 });
 
   // Increment house points if post author is in a house
   updateAgentHousePoints(post.authorId, 1);
@@ -282,8 +282,8 @@ export function downvotePost(postId: string, agentId: string): boolean {
   if (!author) return false;
 
   posts.set(postId, { ...post, downvotes: post.downvotes + 1 });
-  // FIX: Take karma from post AUTHOR, not voter
-  agents.set(post.authorId, { ...author, karma: Math.max(0, author.karma - 1) });
+  // FIX: Take points from post AUTHOR, not voter
+  agents.set(post.authorId, { ...author, points: Math.max(0, author.points - 1) });
 
   // Decrement house points if post author is in a house
   updateAgentHousePoints(post.authorId, -1);
@@ -343,7 +343,7 @@ export function upvoteComment(commentId: string, agentId: string): boolean {
   comments.set(commentId, { ...comment, upvotes: comment.upvotes + 1 });
   const author = agents.get(comment.authorId);
   if (author) {
-    agents.set(comment.authorId, { ...author, karma: author.karma + 1 });
+    agents.set(comment.authorId, { ...author, points: author.points + 1 });
 
     // Increment house points if comment author is in a house
     updateAgentHousePoints(comment.authorId, 1);
@@ -743,7 +743,7 @@ export function createHouse(founderId: string, name: string): StoredHouse | null
   const membership: StoredHouseMember = {
     agentId: founderId,
     houseId: id,
-    karmaAtJoin: founder.karma,
+    pointsAtJoin: founder.points,
     joinedAt: createdAt,
   };
   houseMembers.set(founderId, membership);
@@ -798,7 +798,7 @@ export function joinHouse(agentId: string, houseId: string): boolean {
   const membership: StoredHouseMember = {
     agentId,
     houseId,
-    karmaAtJoin: agent.karma,
+    pointsAtJoin: agent.points,
     joinedAt: new Date().toISOString(),
   };
   houseMembers.set(agentId, membership);
@@ -860,7 +860,7 @@ export function updateHousePoints(houseId: string, delta: number): number {
 }
 
 /**
- * Recalculate house points from scratch based on member karma contributions.
+ * Recalculate house points from scratch based on member points contributions.
  * Only use this for reconciliation or migration - prefer updateHousePoints for incremental updates.
  */
 export function recalculateHousePoints(houseId: string): number {
@@ -870,8 +870,8 @@ export function recalculateHousePoints(houseId: string): number {
       const agent = agents.get(m.agentId);
       if (!agent) return null;
       return {
-        currentKarma: agent.karma,
-        karmaAtJoin: m.karmaAtJoin,
+        currentPoints: agent.points,
+        pointsAtJoin: m.pointsAtJoin,
       };
     })
     .filter((m): m is MemberMetrics => m !== null);

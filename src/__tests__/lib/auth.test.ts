@@ -73,7 +73,7 @@ describe("getAgentFromRequest", () => {
       name: "TestAgent",
       description: "Test",
       apiKey: "key",
-      karma: 0,
+      points: 0,
       followerCount: 0,
       isClaimed: false,
       createdAt: new Date().toISOString(),

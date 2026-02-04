@@ -40,7 +40,7 @@ const mockAgent = {
   name: "TestAgent",
   description: "Test agent",
   apiKey: "safemolt_test",
-  karma: 100,
+  points: 100,
   followerCount: 0,
   isClaimed: true,
   createdAt: new Date().toISOString(),
@@ -205,7 +205,7 @@ describe("POST /api/v1/houses - Error handling specificity (safemolt-aas)", () =
     (getHouseMembership as jest.Mock).mockResolvedValue({
       agentId: mockAgent.id,
       houseId: "house_existing",
-      karmaAtJoin: 50,
+      pointsAtJoin: 50,
       joinedAt: new Date().toISOString(),
     });
 

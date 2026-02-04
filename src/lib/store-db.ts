@@ -31,7 +31,7 @@ function rowToAgent(r: Record<string, unknown>): StoredAgent {
     name: r.name as string,
     description: r.description as string,
     apiKey: r.api_key as string,
-    karma: Number(r.karma),
+    points: Number(r.points),
     followerCount: Number(r.follower_count),
     isClaimed: Boolean(r.is_claimed),
     createdAt: String(r.created_at),
@@ -100,7 +100,7 @@ export async function createAgent(
   const verificationCode = `reef-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
   const createdAt = new Date().toISOString();
   await sql!`
-    INSERT INTO agents (id, name, description, api_key, karma, follower_count, is_claimed, created_at, claim_token, verification_code)
+    INSERT INTO agents (id, name, description, api_key, points, follower_count, is_claimed, created_at, claim_token, verification_code)
     VALUES (${id}, ${name}, ${description}, ${apiKey}, 0, 0, false, ${createdAt}, ${claimToken}, ${verificationCode})
   `;
   const agent: StoredAgent = {
@@ -108,7 +108,7 @@ export async function createAgent(
     name,
     description,
     apiKey,
-    karma: 0,
+    points: 0,
     followerCount: 0,
     isClaimed: false,
     createdAt,
@@ -193,10 +193,10 @@ export async function setAgentClaimed(id: string, owner?: string, xFollowerCount
 }
 
 
-export async function listAgents(sort: "recent" | "karma" | "followers" = "recent"): Promise<StoredAgent[]> {
+export async function listAgents(sort: "recent" | "points" | "followers" = "recent"): Promise<StoredAgent[]> {
   let rows: Record<string, unknown>[];
-  if (sort === "karma") {
-    rows = await sql!`SELECT * FROM agents ORDER BY karma DESC LIMIT 500`;
+  if (sort === "points") {
+    rows = await sql!`SELECT * FROM agents ORDER BY points DESC LIMIT 500`;
   } else if (sort === "followers") {
     // Don't reference x_follower_count in SQL so this works before migration; sort in JS
     rows = await sql!`SELECT * FROM agents WHERE is_claimed = true LIMIT 500`;
@@ -353,8 +353,8 @@ export async function upvotePost(postId: string, agentId: string): Promise<boole
   }
 
   await sql!`UPDATE posts SET upvotes = upvotes + 1 WHERE id = ${postId}`;
-  // FIX: Give karma to post AUTHOR, not voter
-  await sql!`UPDATE agents SET karma = karma + 1 WHERE id = ${authorId}`;
+  // FIX: Give points to post AUTHOR, not voter
+  await sql!`UPDATE agents SET points = points + 1 WHERE id = ${authorId}`;
 
   // Increment house points if post author is in a house
   await updateAgentHousePoints(authorId, 1);
@@ -382,8 +382,8 @@ export async function downvotePost(postId: string, agentId: string): Promise<boo
   }
 
   await sql!`UPDATE posts SET downvotes = downvotes + 1 WHERE id = ${postId}`;
-  // FIX: Take karma from post AUTHOR, not voter
-  await sql!`UPDATE agents SET karma = GREATEST(0, karma - 1) WHERE id = ${authorId}`;
+  // FIX: Take points from post AUTHOR, not voter
+  await sql!`UPDATE agents SET points = GREATEST(0, points - 1) WHERE id = ${authorId}`;
 
   // Decrement house points if post author is in a house
   await updateAgentHousePoints(authorId, -1);
@@ -458,7 +458,7 @@ export async function upvoteComment(commentId: string, agentId: string): Promise
   }
 
   await sql!`UPDATE comments SET upvotes = upvotes + 1 WHERE id = ${commentId}`;
-  await sql!`UPDATE agents SET karma = karma + 1 WHERE id = ${authorId}`;
+  await sql!`UPDATE agents SET points = points + 1 WHERE id = ${authorId}`;
 
   // Increment house points if comment author is in a house
   await updateAgentHousePoints(authorId, 1);
@@ -928,7 +928,7 @@ function rowToHouseMember(r: Record<string, unknown>): StoredHouseMember {
   return {
     agentId: r.agent_id as string,
     houseId: r.house_id as string,
-    karmaAtJoin: Number(r.karma_at_join),
+    pointsAtJoin: Number(r.points_at_join),
     joinedAt: String(r.joined_at),
   };
 }
@@ -968,8 +968,8 @@ export async function createHouse(
 
     // Add founder as first member
     await sql!`
-      INSERT INTO house_members (agent_id, house_id, karma_at_join, joined_at)
-      VALUES (${founderId}, ${id}, ${founder.karma}, ${createdAt})
+      INSERT INTO house_members (agent_id, house_id, points_at_join, joined_at)
+      VALUES (${founderId}, ${id}, ${founder.points}, ${createdAt})
     `;
 
     const rows = await sql!`SELECT * FROM houses WHERE id = ${id} LIMIT 1`;
@@ -1085,8 +1085,8 @@ export async function joinHouse(agentId: string, houseId: string): Promise<boole
     const joinedAt = new Date().toISOString();
 
     await sql!`
-      INSERT INTO house_members (agent_id, house_id, karma_at_join, joined_at)
-      VALUES (${agentId}, ${houseId}, ${agent.karma}, ${joinedAt})
+      INSERT INTO house_members (agent_id, house_id, points_at_join, joined_at)
+      VALUES (${agentId}, ${houseId}, ${agent.points}, ${joinedAt})
     `;
 
     await sql!`COMMIT`;
@@ -1130,7 +1130,7 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
     if (house.founderId === agentId) {
       // Get other members ordered by join date (oldest first)
       const memberRows = await sql!`
-        SELECT agent_id, house_id, karma_at_join, joined_at
+        SELECT agent_id, house_id, points_at_join, joined_at
         FROM house_members
         WHERE house_id = ${house.id}
         ORDER BY joined_at ASC
@@ -1202,15 +1202,15 @@ export async function updateHousePoints(houseId: string, delta: number): Promise
  */
 export async function recalculateHousePoints(houseId: string): Promise<number> {
   const result = await sql!`
-    SELECT a.karma as current_karma, hm.karma_at_join
+    SELECT a.points as current_points, hm.points_at_join
     FROM house_members hm
     JOIN agents a ON a.id = hm.agent_id
     WHERE hm.house_id = ${houseId}
   `;
 
-  const metrics: MemberMetrics[] = (result as Array<{ current_karma: number; karma_at_join: number }>).map((row) => ({
-    currentKarma: Number(row.current_karma),
-    karmaAtJoin: Number(row.karma_at_join),
+  const metrics: MemberMetrics[] = (result as Array<{ current_points: number; points_at_join: number }>).map((row) => ({
+    currentPoints: Number(row.current_points),
+    pointsAtJoin: Number(row.points_at_join),
   }));
 
   const points = calculateHousePoints(metrics);

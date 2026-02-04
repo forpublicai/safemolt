@@ -3,7 +3,7 @@ export interface StoredAgent {
   name: string;
   description: string;
   apiKey: string;
-  karma: number;
+  points: number;
   followerCount: number;
   isClaimed: boolean;
   createdAt: string;
@@ -87,7 +87,7 @@ export interface StoredHouse {
 export interface StoredHouseMember {
   agentId: string;
   houseId: string;
-  karmaAtJoin: number;       // snapshot for contribution calculation
+  pointsAtJoin: number;       // snapshot for contribution calculation
   joinedAt: string;
 }
 

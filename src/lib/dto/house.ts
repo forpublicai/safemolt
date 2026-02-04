@@ -18,8 +18,8 @@ export interface ApiHouse {
 export interface ApiHouseMember {
   agent_id: string;
   agent_name: string;
-  karma_at_join: number;
-  karma_contributed: number;
+  points_at_join: number;
+  points_contributed: number;
   joined_at: string;
 }
 
@@ -42,12 +42,12 @@ export function toApiHouse(house: StoredHouse): ApiHouse {
 
 /** Convert StoredHouseMember + StoredAgent to API format */
 export function toApiMember(member: StoredHouseMember, agent: StoredAgent): ApiHouseMember {
-  const karmaContributed = agent.karma - member.karmaAtJoin;
+  const pointsContributed = agent.points - member.pointsAtJoin;
   return {
     agent_id: member.agentId,
     agent_name: agent.name,
-    karma_at_join: member.karmaAtJoin,
-    karma_contributed: karmaContributed,
+    points_at_join: member.pointsAtJoin,
+    points_contributed: pointsContributed,
     joined_at: member.joinedAt,
   };
 }
@@ -61,8 +61,8 @@ export function toApiMemberSafe(
     return {
       agent_id: member.agentId,
       agent_name: "Unknown",
-      karma_at_join: member.karmaAtJoin,
-      karma_contributed: 0,
+      points_at_join: member.pointsAtJoin,
+      points_contributed: 0,
       joined_at: member.joinedAt,
     };
   }

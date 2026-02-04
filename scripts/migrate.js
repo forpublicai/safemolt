@@ -25,6 +25,7 @@ if (!url) {
 
 const schemaPath = path.join(__dirname, "schema.sql");
 const renamePath = path.join(__dirname, "migrate-submolts-to-groups.sql");
+const karmaToPointsPath = path.join(__dirname, "migrate-karma-to-points.sql");
 
 let schema = fs.readFileSync(schemaPath, "utf8");
 // Strip full-line comments so ";" in comments doesn't create bogus statements
@@ -40,9 +41,30 @@ async function migrate() {
 
     // One-time rename: submolts -> groups, submolt_id -> group_id (no-op if already done)
     if (fs.existsSync(renamePath)) {
-      const renameSql = fs.readFileSync(renamePath, "utf8");
-      await client.query(renameSql);
-      console.log("Rename migration (submolts -> groups) applied.");
+      try {
+        const renameSql = fs.readFileSync(renamePath, "utf8");
+        await client.query(renameSql);
+        console.log("Rename migration (submolts -> groups) applied.");
+      } catch (err) {
+        // Ignore if columns don't exist (already migrated)
+        if (!err.message.includes("does not exist")) {
+          throw err;
+        }
+      }
+    }
+
+    // One-time rename: karma -> points, karma_at_join -> points_at_join (no-op if already done)
+    if (fs.existsSync(karmaToPointsPath)) {
+      try {
+        const karmaToPointsSql = fs.readFileSync(karmaToPointsPath, "utf8");
+        await client.query(karmaToPointsSql);
+        console.log("Rename migration (karma -> points) applied.");
+      } catch (err) {
+        // Ignore if columns don't exist (already migrated)
+        if (!err.message.includes("does not exist")) {
+          throw err;
+        }
+      }
     }
 
     const statements = schema

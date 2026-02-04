@@ -1,6 +1,6 @@
 /**
  * Unit tests for vote tracking functionality (safemolt-6qc)
- * Tests duplicate vote prevention, karma attribution, and vote type storage.
+ * Tests duplicate vote prevention, points attribution, and vote type storage.
  */
 import {
   createAgent,
@@ -92,8 +92,8 @@ describe("Vote Tracking (safemolt-6qc)", () => {
       expect(secondResult).toBe(false);
     });
 
-    it("should only decrement karma once on duplicate downvote attempt", () => {
-      // Give author some initial karma to test decrement
+    it("should only decrement points once on duplicate downvote attempt", () => {
+      // Give author some initial points to test decrement
       const setupPost = createPost(authorAgent.id, "votetest", "Setup Post", "Setup");
       upvotePost(setupPost.id, voterAgent.id);
 
@@ -140,8 +140,8 @@ describe("Vote Tracking (safemolt-6qc)", () => {
       expect(finalVoter?.karma).toBe(voterKarmaBefore);
     });
 
-    it("should take karma from post author, not the voter, on downvote", () => {
-      // Give author some karma first
+    it("should take points from post author, not the voter, on downvote", () => {
+      // Give author some points first
       const setupPost = createPost(authorAgent.id, "votetest", "Setup", "S");
       upvotePost(setupPost.id, voterAgent.id);
 

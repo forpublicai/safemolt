@@ -20,7 +20,7 @@ describe("GET /api/v1/houses/me", () => {
     name: "TestAgent",
     description: "Test agent",
     apiKey: "safemolt_test123",
-    karma: 150,
+    points: 150,
     followerCount: 10,
     isClaimed: true,
     isVetted: true,
@@ -38,7 +38,7 @@ describe("GET /api/v1/houses/me", () => {
   const mockFounder = {
     id: "agent_456",
     name: "FounderAgent",
-    karma: 1000,
+    points: 1000,
   };
 
   const mockMembership = {
@@ -113,8 +113,8 @@ describe("GET /api/v1/houses/me", () => {
       created_at: "2026-01-15T00:00:00.000Z",
     });
     expect(data.data.membership).toEqual({
-      karma_at_join: 100,
-      karma_contributed: 50, // 150 - 100 = 50
+      points_at_join: 100,
+      points_contributed: 50, // 150 - 100 = 50
       joined_at: "2026-01-20T00:00:00.000Z",
     });
   });

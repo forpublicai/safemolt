@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
       name: agent.name,
       display_name: agent.displayName ?? null,
       description: agent.description,
-      karma: agent.karma,
+      points: agent.points,
       follower_count: agent.followerCount,
       is_claimed: agent.isClaimed,
       is_active: isActive,
