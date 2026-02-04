@@ -1125,6 +1125,7 @@ const evaluationResults = new Map<string, {
   passed: boolean;
   score?: number;
   maxScore?: number;
+  pointsEarned?: number;
   resultData?: Record<string, unknown>;
   completedAt: string;
   proctorAgentId?: string;
@@ -1201,6 +1202,12 @@ export function saveEvaluationResult(
   const resultId = generateEvaluationId('eval_res');
   const completedAt = new Date().toISOString();
   
+  // Get evaluation definition to determine points
+  // Use synchronous require since this is a synchronous function
+  const evalLoader = require("@/lib/evaluations/loader");
+  const evalDef = evalLoader.getEvaluation(evaluationId);
+  const pointsEarned = passed ? (evalDef?.points ?? 0) : undefined;
+  
   evaluationResults.set(resultId, {
     id: resultId,
     registrationId,
@@ -1209,6 +1216,7 @@ export function saveEvaluationResult(
     passed,
     score,
     maxScore,
+    pointsEarned,
     resultData,
     completedAt,
     proctorAgentId,
@@ -1220,6 +1228,12 @@ export function saveEvaluationResult(
   if (reg) {
     reg.status = passed ? 'completed' : 'failed';
     reg.completedAt = completedAt;
+  }
+  
+  // Update agent's points from evaluation results if they passed
+  // Note: This is synchronous for memory store, but will be async for DB store
+  if (passed) {
+    updateAgentPointsFromEvaluations(agentId);
   }
   
   return resultId;
@@ -1234,6 +1248,7 @@ export function getEvaluationResults(
   passed: boolean;
   score?: number;
   maxScore?: number;
+  pointsEarned?: number;
   completedAt: string;
 }> {
   const results: Array<{
@@ -1242,6 +1257,7 @@ export function getEvaluationResults(
     passed: boolean;
     score?: number;
     maxScore?: number;
+    pointsEarned?: number;
     completedAt: string;
   }> = [];
   
@@ -1253,6 +1269,7 @@ export function getEvaluationResults(
         passed: result.passed,
         score: result.score,
         maxScore: result.maxScore,
+        pointsEarned: result.pointsEarned,
         completedAt: result.completedAt,
       });
     }
@@ -1281,5 +1298,38 @@ export function getPassedEvaluations(agentId: string): string[] {
     }
   }
   return Array.from(passed);
+}
+
+/**
+ * Calculate total evaluation points for an agent
+ * Sum of points_earned from all passed evaluation results
+ * This REPLACES the existing upvote/downvote points system
+ */
+export function getAgentEvaluationPoints(agentId: string): number {
+  let totalPoints = 0;
+  for (const result of Array.from(evaluationResults.values())) {
+    if (result.agentId === agentId && result.passed && result.pointsEarned !== undefined) {
+      totalPoints += result.pointsEarned;
+    }
+  }
+  return totalPoints;
+}
+
+/**
+ * Update agent's points field to reflect evaluation points
+ * Call this after saving an evaluation result
+ */
+export function updateAgentPointsFromEvaluations(agentId: string): void {
+  const evaluationPoints = getAgentEvaluationPoints(agentId);
+  const agent = agents.get(agentId);
+  if (agent) {
+    agents.set(agentId, { ...agent, points: evaluationPoints });
+    
+    // Update house points if agent is in a house
+    const membership = houseMembers.get(agentId);
+    if (membership) {
+      recalculateHousePoints(membership.houseId);
+    }
+  }
 }
 

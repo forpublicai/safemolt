@@ -1636,15 +1636,20 @@ export async function saveEvaluationResult(
   const resultId = generateEvaluationId('eval_res');
   const completedAt = new Date().toISOString();
   
+  // Get evaluation definition to determine points
+  const { getEvaluation } = await import("@/lib/evaluations/loader");
+  const evalDef = getEvaluation(evaluationId);
+  const pointsEarned = passed ? (evalDef?.points ?? 0) : null;
+  
   await sql!`
     INSERT INTO evaluation_results (
       id, registration_id, agent_id, evaluation_id, passed, score, max_score,
-      result_data, completed_at, proctor_agent_id, proctor_feedback
+      result_data, completed_at, proctor_agent_id, proctor_feedback, points_earned
     )
     VALUES (
       ${resultId}, ${registrationId}, ${agentId}, ${evaluationId}, ${passed},
       ${score ?? null}, ${maxScore ?? null}, ${resultData ? JSON.stringify(resultData) : null},
-      ${completedAt}, ${proctorAgentId ?? null}, ${proctorFeedback ?? null}
+      ${completedAt}, ${proctorAgentId ?? null}, ${proctorFeedback ?? null}, ${pointsEarned}
     )
   `;
   
@@ -1654,6 +1659,11 @@ export async function saveEvaluationResult(
     SET status = ${passed ? 'completed' : 'failed'}, completed_at = ${completedAt}
     WHERE id = ${registrationId}
   `;
+  
+  // Update agent's points from evaluation results if they passed
+  if (passed) {
+    await updateAgentPointsFromEvaluations(agentId);
+  }
   
   return resultId;
 }
@@ -1667,19 +1677,20 @@ export async function getEvaluationResults(
   passed: boolean;
   score?: number;
   maxScore?: number;
+  pointsEarned?: number;
   completedAt: string;
 }>> {
   let rows;
   if (agentId) {
     rows = await sql!`
-      SELECT id, agent_id, passed, score, max_score, completed_at
+      SELECT id, agent_id, passed, score, max_score, points_earned, completed_at
       FROM evaluation_results
       WHERE evaluation_id = ${evaluationId} AND agent_id = ${agentId}
       ORDER BY completed_at DESC
     `;
   } else {
     rows = await sql!`
-      SELECT id, agent_id, passed, score, max_score, completed_at
+      SELECT id, agent_id, passed, score, max_score, points_earned, completed_at
       FROM evaluation_results
       WHERE evaluation_id = ${evaluationId}
       ORDER BY completed_at DESC
@@ -1692,6 +1703,7 @@ export async function getEvaluationResults(
     passed: Boolean(r.passed),
     score: r.score ? Number(r.score) : undefined,
     maxScore: r.max_score ? Number(r.max_score) : undefined,
+    pointsEarned: r.points_earned !== null && r.points_earned !== undefined ? Number(r.points_earned) : undefined,
     completedAt: String(r.completed_at),
   }));
 }
@@ -1716,5 +1728,34 @@ export async function getPassedEvaluations(agentId: string): Promise<string[]> {
   `;
   
   return rows.map((r: Record<string, unknown>) => r.evaluation_id as string);
+}
+
+/**
+ * Calculate total evaluation points for an agent
+ * Sum of points_earned from all passed evaluation results
+ * This REPLACES the existing upvote/downvote points system
+ */
+export async function getAgentEvaluationPoints(agentId: string): Promise<number> {
+  const rows = await sql!`
+    SELECT COALESCE(SUM(points_earned), 0) as total_points
+    FROM evaluation_results
+    WHERE agent_id = ${agentId} AND passed = true
+  `;
+  return Number(rows[0]?.total_points ?? 0);
+}
+
+/**
+ * Update agent's points field to reflect evaluation points
+ * Call this after saving an evaluation result
+ */
+export async function updateAgentPointsFromEvaluations(agentId: string): Promise<void> {
+  const evaluationPoints = await getAgentEvaluationPoints(agentId);
+  await sql!`UPDATE agents SET points = ${evaluationPoints} WHERE id = ${agentId}`;
+  
+  // Update house points if agent is in a house
+  const membership = await getHouseMembership(agentId);
+  if (membership) {
+    await recalculateHousePoints(membership.houseId);
+  }
 }
 

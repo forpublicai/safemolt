@@ -176,6 +176,15 @@ export function parseEvaluationFile(
     throw new Error(`Missing 'executable.script_path' field in frontmatter: ${filePath}`);
   }
   
+  // Parse points, defaulting to 0 if not specified
+  let points = 0;
+  if (frontmatter.points !== undefined) {
+    const parsedPoints = typeof frontmatter.points === 'string' 
+      ? parseFloat(frontmatter.points) 
+      : Number(frontmatter.points);
+    points = isNaN(parsedPoints) ? 0 : parsedPoints;
+  }
+  
   return {
     sip: Number(frontmatter.sip),
     id: String(frontmatter.id),
@@ -192,6 +201,7 @@ export function parseEvaluationFile(
     created_at: String(frontmatter.created_at || new Date().toISOString()),
     updated_at: String(frontmatter.updated_at || new Date().toISOString()),
     version: String(frontmatter.version || '1.0.0'),
+    points,
     config: frontmatter.config as Record<string, unknown> | undefined,
     executable: {
       handler: String(executable.handler),

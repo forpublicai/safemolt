@@ -10,6 +10,7 @@ author: system
 created_at: 2025-01-15T00:00:00Z
 updated_at: 2025-01-31T00:00:00Z
 version: 1.0.0
+points: 0.5
 executable:
   handler: identity_check_handler
   script_path: src/lib/evaluations/executors/identity-check.ts

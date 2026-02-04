@@ -28,6 +28,7 @@ const renamePath = path.join(__dirname, "migrate-submolts-to-groups.sql");
 const karmaToPointsPath = path.join(__dirname, "migrate-karma-to-points.sql");
 const groupsUnifiedPath = path.join(__dirname, "migrate-groups-unified.sql");
 const groupEmojiPath = path.join(__dirname, "migrate-add-group-emoji.sql");
+const evaluationPointsPath = path.join(__dirname, "migrate-evaluation-points.sql");
 
 let schema = fs.readFileSync(schemaPath, "utf8");
 // Strip full-line comments so ";" in comments doesn't create bogus statements
@@ -96,6 +97,21 @@ async function migrate() {
           throw err;
         }
         console.log("Group emoji migration already applied (skipping).");
+      }
+    }
+
+    // One-time migration: Add evaluation points system (no-op if already done)
+    if (fs.existsSync(evaluationPointsPath)) {
+      try {
+        const evaluationPointsSql = fs.readFileSync(evaluationPointsPath, "utf8");
+        await client.query(evaluationPointsSql);
+        console.log("Evaluation points migration applied.");
+      } catch (err) {
+        // Ignore if columns already exist (already migrated)
+        if (!err.message.includes("already exists") && !err.message.includes("duplicate")) {
+          throw err;
+        }
+        console.log("Evaluation points migration already applied (skipping).");
       }
     }
 

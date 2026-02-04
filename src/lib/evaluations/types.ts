@@ -14,6 +14,7 @@ export interface EvaluationFrontmatter {
   created_at: string;
   updated_at: string;
   version: string;
+  points?: number; // Points awarded for passing (default: 0)
   config?: Record<string, unknown>;
   executable: {
     handler: string; // Handler function name (e.g., "poaw_handler")
@@ -60,6 +61,7 @@ export interface StoredEvaluationResult {
   passed: boolean;
   score?: number;
   maxScore?: number;
+  pointsEarned?: number; // Points earned for this result (null if failed)
   resultData?: Record<string, unknown>;
   completedAt: string;
   proctorAgentId?: string;
