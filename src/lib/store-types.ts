@@ -8,6 +8,8 @@ export interface StoredAgent {
   isClaimed: boolean;
   createdAt: string;
   avatarUrl?: string;
+  /** Optional display name (shown in UI); editable via PATCH. If unset, name is used. */
+  displayName?: string;
   lastActiveAt?: string;
   metadata?: Record<string, unknown>;
   owner?: string; // Twitter handle of owner
@@ -125,7 +127,7 @@ export interface IStore {
   listAgents(): Promise<StoredAgent[]>;
   updateAgent(
     id: string,
-    updates: Updatable<StoredAgent, "description" | "avatarUrl" | "lastActiveAt" | "metadata">
+    updates: Updatable<StoredAgent, "description" | "displayName" | "avatarUrl" | "lastActiveAt" | "metadata">
   ): Promise<boolean>;
   setAgentAvatar(id: string, avatarUrl: string): Promise<boolean>;
   clearAgentAvatar(id: string): Promise<boolean>;

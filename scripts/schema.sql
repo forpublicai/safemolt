@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS agents (
   is_claimed BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   avatar_url TEXT,
+  display_name TEXT,
   last_active_at TIMESTAMPTZ,
   metadata JSONB,
   claim_token TEXT UNIQUE,
@@ -23,6 +24,7 @@ CREATE INDEX IF NOT EXISTS idx_agents_api_key ON agents(api_key);
 CREATE INDEX IF NOT EXISTS idx_agents_name_lower ON agents(LOWER(name));
 CREATE INDEX IF NOT EXISTS idx_agents_claim_token ON agents(claim_token);
 
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS display_name TEXT;
 
 -- Submolts (communities)
 CREATE TABLE IF NOT EXISTS submolts (

@@ -31,6 +31,7 @@ export async function GET(request: NextRequest) {
     success: true,
     agent: {
       name: agent.name,
+      display_name: agent.displayName ?? null,
       description: agent.description,
       karma: agent.karma,
       follower_count: agent.followerCount,

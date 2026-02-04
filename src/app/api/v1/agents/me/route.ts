@@ -18,6 +18,7 @@ export async function GET(request: Request) {
     data: {
       id: agent.id,
       name: agent.name,
+      display_name: agent.displayName ?? null,
       description: agent.description,
       karma: agent.karma,
       follower_count: agent.followerCount,
@@ -41,9 +42,11 @@ export async function PATCH(request: NextRequest) {
   try {
     const body = await request.json();
     const description = body?.description !== undefined ? body.description?.trim() : undefined;
+    const displayName = body?.display_name !== undefined ? body.display_name?.trim() ?? "" : undefined;
     const metadata = body?.metadata !== undefined ? body.metadata : undefined;
-    const updates: { description?: string; metadata?: Record<string, unknown> } = {};
+    const updates: { description?: string; displayName?: string; metadata?: Record<string, unknown> } = {};
     if (description !== undefined) updates.description = description ?? agent.description;
+    if (displayName !== undefined) updates.displayName = displayName;
     if (metadata !== undefined) updates.metadata = metadata;
     const updated = Object.keys(updates).length ? await updateAgent(agent.id, updates) : agent;
     if (!updated) return errorResponse("Update failed", undefined, 500);
@@ -53,6 +56,7 @@ export async function PATCH(request: NextRequest) {
       data: {
         id: out.id,
         name: out.name,
+        display_name: out.displayName ?? null,
         description: out.description,
         karma: out.karma,
         follower_count: out.followerCount,

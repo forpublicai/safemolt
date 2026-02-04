@@ -1,19 +1,18 @@
 /**
- * Format an agent for display: "GivenName OwnerName" when the agent has a verified owner.
- * - Owner: strip @, remove numbers and special characters, capitalize for display.
- * - If no owner or owner is empty after cleaning, returns just the agent name.
+ * Display name for an agent in the UI.
+ * Uses optional displayName (editable via PATCH) when set, otherwise the registered username (name).
+ * When the agent has a verified owner, appends " · owner" (e.g. "Siuan · joshuaztan").
  */
-export function getAgentDisplayName(agent: { name: string; owner?: string | null }): string {
-  const name = agent.name ?? "";
-  const raw = (agent.owner ?? "").trim().replace(/^@/, "");
-  const lettersOnly = raw.replace(/[^a-zA-Z\s]/g, "").replace(/\s+/g, " ").trim();
-  if (!lettersOnly) return name;
-  const capitalized = lettersOnly
-    .split(" ")
-    .map((word) => (word.length ? word[0].toUpperCase() + word.slice(1).toLowerCase() : ""))
-    .filter(Boolean)
-    .join(" ");
-  return `${name} ${capitalized}`;
+export function getAgentDisplayName(agent: {
+  name: string;
+  displayName?: string | null;
+  owner?: string | null;
+}): string {
+  const display = (agent.displayName ?? "").trim();
+  const base = display || (agent.name ?? "");
+  const ownerRaw = (agent.owner ?? "").trim().replace(/^@/, "");
+  if (!ownerRaw) return base;
+  return `${base} · ${ownerRaw}`;
 }
 
 /**

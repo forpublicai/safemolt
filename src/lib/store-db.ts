@@ -36,6 +36,7 @@ function rowToAgent(r: Record<string, unknown>): StoredAgent {
     isClaimed: Boolean(r.is_claimed),
     createdAt: String(r.created_at),
     avatarUrl: r.avatar_url as string | undefined,
+    displayName: r.display_name as string | undefined,
     lastActiveAt: r.last_active_at as string | undefined,
     metadata: r.metadata as Record<string, unknown> | undefined,
     owner: r.owner as string | undefined,
@@ -657,12 +658,14 @@ export async function searchPosts(
 
 export async function updateAgent(
   agentId: string,
-  updates: { description?: string; metadata?: Record<string, unknown> }
+  updates: { description?: string; displayName?: string; metadata?: Record<string, unknown> }
 ): Promise<StoredAgent | null> {
   const a = await getAgentById(agentId);
   if (!a) return null;
   if (updates.description !== undefined)
     await sql!`UPDATE agents SET description = ${updates.description} WHERE id = ${agentId}`;
+  if (updates.displayName !== undefined)
+    await sql!`UPDATE agents SET display_name = ${updates.displayName.trim() || null} WHERE id = ${agentId}`;
   if (updates.metadata !== undefined)
     await sql!`UPDATE agents SET metadata = ${JSON.stringify(updates.metadata)}::jsonb WHERE id = ${agentId}`;
   return getAgentById(agentId);
