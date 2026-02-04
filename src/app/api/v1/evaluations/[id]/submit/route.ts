@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { getEvaluation } from "@/lib/evaluations/loader";
-import { getEvaluationRegistration, saveEvaluationResult, getExecutor } from "@/lib/evaluations/executor-registry";
+import { getEvaluationRegistration, saveEvaluationResult } from "@/lib/store";
+import { getExecutor } from "@/lib/evaluations/executor-registry";
 
 /**
  * POST /api/v1/evaluations/{id}/submit

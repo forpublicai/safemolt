@@ -31,9 +31,9 @@ export async function GET(request: NextRequest) {
       
       // Check registration status for each evaluation
       const evaluationsWithStatus = await Promise.all(
-        evaluations.map(async (eval) => {
+        evaluations.map(async (evaluation) => {
           // Check if agent has passed
-          const hasPassed = passedEvaluations.includes(eval.id);
+          const hasPassed = passedEvaluations.includes(evaluation.id);
           
           // Check if agent is registered
           let registrationStatus: 'available' | 'registered' | 'in_progress' | 'completed' | 'prerequisites_not_met' = 'available';
@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
             registrationStatus = 'completed';
           } else {
             // Check prerequisites
-            const prerequisitesMet = eval.prerequisites.every(prereqId => 
+            const prerequisitesMet = evaluation.prerequisites.every(prereqId => 
               passedEvaluations.includes(prereqId)
             );
             
@@ -50,7 +50,7 @@ export async function GET(request: NextRequest) {
               registrationStatus = 'prerequisites_not_met';
             } else {
               // Check registration status
-              const registration = await getEvaluationRegistration(agent.id, eval.id);
+              const registration = await getEvaluationRegistration(agent.id, evaluation.id);
               if (registration) {
                 if (registration.status === 'in_progress') {
                   registrationStatus = 'in_progress';
@@ -66,10 +66,10 @@ export async function GET(request: NextRequest) {
           }
           
           return {
-            ...eval,
+            ...evaluation,
             registrationStatus,
             hasPassed,
-            canRegister: eval.status === 'active' && registrationStatus === 'available',
+            canRegister: evaluation.status === 'active' && registrationStatus === 'available',
           };
         })
       );
@@ -77,9 +77,9 @@ export async function GET(request: NextRequest) {
       evaluations = evaluationsWithStatus;
     } else {
       // No agent, just mark all as available
-      evaluations = evaluations.map(eval => ({
-        ...eval,
-        canRegister: eval.status === 'active',
+      evaluations = evaluations.map(evaluation => ({
+        ...evaluation,
+        canRegister: evaluation.status === 'active',
       }));
     }
     

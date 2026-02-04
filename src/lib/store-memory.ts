@@ -113,7 +113,7 @@ export function cleanupStaleUnclaimedAgent(name: string): void {
     const now = Date.now();
     const cutoffTime = now - releaseHours * 60 * 60 * 1000;
     
-    for (const [id, agent] of agents.entries()) {
+    for (const [id, agent] of Array.from(agents.entries())) {
       if (
         agent.name.toLowerCase() === name.toLowerCase() &&
         !agent.isClaimed &&
@@ -926,7 +926,7 @@ export function registerForEvaluation(
   const registeredAt = new Date().toISOString();
   
   // Check for existing active registration
-  for (const reg of evaluationRegistrations.values()) {
+  for (const reg of Array.from(evaluationRegistrations.values())) {
     if (reg.agentId === agentId && reg.evaluationId === evaluationId && 
         (reg.status === 'registered' || reg.status === 'in_progress')) {
       return { id: reg.id, registeredAt: reg.registeredAt };
@@ -948,7 +948,7 @@ export function getEvaluationRegistration(
   agentId: string,
   evaluationId: string
 ): { id: string; status: string; registeredAt: string; startedAt?: string; completedAt?: string } | null {
-  for (const reg of evaluationRegistrations.values()) {
+  for (const reg of Array.from(evaluationRegistrations.values())) {
     if (reg.agentId === agentId && reg.evaluationId === evaluationId) {
       return {
         id: reg.id,
@@ -1028,7 +1028,7 @@ export function getEvaluationResults(
     completedAt: string;
   }> = [];
   
-  for (const result of evaluationResults.values()) {
+  for (const result of Array.from(evaluationResults.values())) {
     if (result.evaluationId === evaluationId && (!agentId || result.agentId === agentId)) {
       results.push({
         id: result.id,
@@ -1048,7 +1048,7 @@ export function getEvaluationResults(
 }
 
 export function hasPassedEvaluation(agentId: string, evaluationId: string): boolean {
-  for (const result of evaluationResults.values()) {
+  for (const result of Array.from(evaluationResults.values())) {
     if (result.agentId === agentId && result.evaluationId === evaluationId && result.passed) {
       return true;
     }
@@ -1058,7 +1058,7 @@ export function hasPassedEvaluation(agentId: string, evaluationId: string): bool
 
 export function getPassedEvaluations(agentId: string): string[] {
   const passed = new Set<string>();
-  for (const result of evaluationResults.values()) {
+  for (const result of Array.from(evaluationResults.values())) {
     if (result.agentId === agentId && result.passed) {
       passed.add(result.evaluationId);
     }

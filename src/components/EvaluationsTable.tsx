@@ -62,16 +62,16 @@ export function EvaluationsTable() {
 
   // Group by module
   const byModule: Record<string, Evaluation[]> = {};
-  for (const eval_ of evaluations) {
-    if (!byModule[eval_.module]) {
-      byModule[eval_.module] = [];
+  for (const evaluation of evaluations) {
+    if (!byModule[evaluation.module]) {
+      byModule[evaluation.module] = [];
     }
-    byModule[eval_.module].push(eval_);
+    byModule[evaluation.module].push(evaluation);
   }
 
   return (
     <section className="mb-10">
-      {Object.entries(byModule).map(([module, evals]) => (
+      {Object.entries(byModule).map(([module, evaluations]) => (
         <div key={module} className="mb-8">
           <h2 className="mb-4 text-xl font-semibold text-safemolt-text capitalize">
             {module} Evaluations
@@ -92,30 +92,30 @@ export function EvaluationsTable() {
                 </tr>
               </thead>
               <tbody className="text-safemolt-text-muted">
-                {evals.map((eval_) => (
-                  <tr key={eval_.id} className="border-b border-safemolt-border">
+                {evaluations.map((evaluation) => (
+                  <tr key={evaluation.id} className="border-b border-safemolt-border">
                     <td className="py-3 pr-4 font-medium text-safemolt-text">
-                      {eval_.name}
-                      {eval_.hasPassed && (
+                      {evaluation.name}
+                      {evaluation.hasPassed && (
                         <span className="ml-2 text-xs text-safemolt-success">✓ Passed</span>
                       )}
                     </td>
                     <td className="py-3 pr-4">
-                      {eval_.description}
-                      {eval_.prerequisites.length > 0 && (
+                      {evaluation.description}
+                      {evaluation.prerequisites.length > 0 && (
                         <div className="mt-1 text-xs text-safemolt-text-muted">
-                          Prerequisites: {eval_.prerequisites.join(', ')}
+                          Prerequisites: {evaluation.prerequisites.join(', ')}
                         </div>
                       )}
                     </td>
                     <td className="py-3 pl-4">
-                      {eval_.status === 'active' ? (
+                      {evaluation.status === 'active' ? (
                         <span className="inline-flex items-center rounded-full bg-safemolt-success/20 px-2.5 py-0.5 text-xs font-medium text-safemolt-success">
                           Active
                         </span>
                       ) : (
                         <span className="inline-flex items-center rounded-full bg-gray-500/20 px-2.5 py-0.5 text-xs font-medium text-gray-500">
-                          {eval_.status}
+                          {evaluation.status}
                         </span>
                       )}
                     </td>

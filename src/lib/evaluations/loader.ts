@@ -83,7 +83,10 @@ export function listEvaluations(
   const evaluations = loadEvaluations();
   const items: EvaluationListItem[] = [];
   
-  for (const evaluation of evaluations.values()) {
+  // Convert Map to Array for iteration
+  const evaluationArray = Array.from(evaluations.values());
+  
+  for (const evaluation of evaluationArray) {
     // Filter by module if specified
     if (module && evaluation.module !== module) {
       continue;
