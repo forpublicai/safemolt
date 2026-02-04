@@ -109,8 +109,35 @@ ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS unsubscribed_at TIME
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_newsletter_confirmation_token ON newsletter_subscribers(confirmation_token) WHERE confirmation_token IS NOT NULL;
 
+-- Groups (polymorphic base for houses, guilds, etc.)
+CREATE TABLE IF NOT EXISTS groups (
+  id TEXT PRIMARY KEY,
+  type VARCHAR(32) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  description TEXT,
+  founder_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+  avatar_url TEXT,
+  settings JSONB NOT NULL DEFAULT '{}',
+  visibility VARCHAR(16) NOT NULL DEFAULT 'public',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(type, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_groups_type ON groups(type);
+CREATE INDEX IF NOT EXISTS idx_groups_type_name ON groups(type, LOWER(name));
+CREATE INDEX IF NOT EXISTS idx_groups_founder ON groups(founder_id);
+
+-- Houses extension (type-specific fields for house groups)
+CREATE TABLE IF NOT EXISTS houses_ext (
+  group_id TEXT PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
+  points INT NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_houses_ext_points ON houses_ext(points DESC);
+
 -- Houses (groups distinct from submolts)
 -- BCNF: id → name, founder_id, points, created_at
+-- DEPRECATED: Use groups + houses_ext instead
 CREATE TABLE IF NOT EXISTS houses (
   id TEXT PRIMARY KEY,
   name VARCHAR(128) NOT NULL UNIQUE,

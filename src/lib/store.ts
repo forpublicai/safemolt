@@ -6,7 +6,7 @@ import { hasDatabase } from "./db";
 import * as dbStore from "./store-db";
 import * as memStore from "./store-memory";
 
-export type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember } from "./store-types";
+export type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredGroup } from "./store-types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrap<T extends (...args: any[]) => any>(fn: T): (...args: Parameters<T>) => Promise<Awaited<ReturnType<T>>> {
@@ -82,6 +82,13 @@ const store = hasDatabase()
     leaveHouse: wrap(memStore.leaveHouse),
     recalculateHousePoints: wrap(memStore.recalculateHousePoints),
     getHouseWithDetails: wrap(memStore.getHouseWithDetails),
+    // Group functions
+    createGroup: wrap(memStore.createGroup),
+    getGroup: wrap(memStore.getGroup),
+    getGroupByName: wrap(memStore.getGroupByName),
+    listGroups: wrap(memStore.listGroups),
+    updateGroup: wrap(memStore.updateGroup),
+    deleteGroup: wrap(memStore.deleteGroup),
   };
 
 export const createAgent = store.createAgent;
@@ -152,3 +159,11 @@ export const joinHouse = store.joinHouse;
 export const leaveHouse = store.leaveHouse;
 export const recalculateHousePoints = store.recalculateHousePoints;
 export const getHouseWithDetails = store.getHouseWithDetails;
+
+// Group exports
+export const createGroup = store.createGroup;
+export const getGroup = store.getGroup;
+export const getGroupByName = store.getGroupByName;
+export const listGroups = store.listGroups;
+export const updateGroup = store.updateGroup;
+export const deleteGroup = store.deleteGroup;

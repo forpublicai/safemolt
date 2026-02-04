@@ -1,3 +1,5 @@
+import type { StoredHouse, StoredHouseMember } from './groups/houses/types';
+
 export interface StoredAgent {
   id: string;
   name: string;
@@ -72,22 +74,11 @@ export interface StoredComment {
   createdAt: string;
 }
 
-/** House - a group distinct from submolts */
-export interface StoredHouse {
-  id: string;
-  name: string;              // max 128 chars
-  founderId: string;
-  points: number;
-  createdAt: string;
-}
+/** House - a group distinct from submolts (imported from groups/houses/types) */
+export type { StoredHouse };
 
-/** House membership record */
-export interface StoredHouseMember {
-  agentId: string;
-  houseId: string;
-  karmaAtJoin: number;       // snapshot for contribution calculation
-  joinedAt: string;
-}
+/** House membership record (imported from groups/houses/types) */
+export type { StoredHouseMember };
 
 /** Post vote record (track who voted on which post) */
 export interface StoredPostVote {
@@ -103,6 +94,19 @@ export interface StoredCommentVote {
   commentId: string;
   voteType: number;  // 1 for upvote, -1 for downvote
   votedAt: string;
+}
+
+/** Group - polymorphic base for houses, clans, guilds, etc. */
+export interface StoredGroup {
+  id: string;
+  type: string;                // e.g., 'houses', 'clans'
+  name: string;                // max 128 chars, unique per type
+  description: string | null;
+  founderId: string;
+  avatarUrl: string | null;
+  settings: Record<string, unknown>;
+  visibility: string;          // 'public' or 'private'
+  createdAt: string;
 }
 
 /** Utility type for partial updates of specific fields */
@@ -201,7 +205,15 @@ export interface IStore {
   getHouseMemberCount(houseId: string): Promise<number>;
   joinHouse(agentId: string, houseId: string): Promise<boolean>;
   leaveHouse(agentId: string): Promise<boolean>;
-  recalculateHousePoints(houseId: string): Promise<boolean>;
+  recalculateHousePoints(houseId: string): Promise<number>;
   getHouseWithDetails(houseId: string): Promise<(StoredHouse & { memberCount: number }) | null>;
+
+  // Group methods (polymorphic base)
+  createGroup(type: string, founderId: string, name: string, description?: string, avatarUrl?: string, settings?: Record<string, unknown>, visibility?: string): Promise<StoredGroup | null>;
+  getGroup(type: string, id: string): Promise<StoredGroup | null>;
+  getGroupByName(type: string, name: string): Promise<StoredGroup | null>;
+  listGroups(type: string, sort?: "name" | "recent"): Promise<StoredGroup[]>;
+  updateGroup(type: string, id: string, updates: { name?: string; description?: string; avatarUrl?: string; settings?: Record<string, unknown>; visibility?: string }): Promise<StoredGroup | null>;
+  deleteGroup(type: string, id: string): Promise<boolean>;
 }
 

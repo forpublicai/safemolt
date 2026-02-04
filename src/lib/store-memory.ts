@@ -2,8 +2,9 @@
  * In-memory store. Used when no POSTGRES_URL/DATABASE_URL is set.
  * Uses globalThis to persist data across Next.js HMR (hot module replacement).
  */
-import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote } from "./store-types";
-import { calculateHousePoints, type MemberMetrics } from "./house-points";
+import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredGroup } from "./store-types";
+import { calculateHousePoints, type MemberMetrics } from "./groups/houses/points";
+import type { StoredHouse } from "./groups/houses/types";
 
 // Cache maps on globalThis to survive HMR in development
 const globalStore = globalThis as typeof globalThis & {
@@ -22,6 +23,7 @@ const globalStore = globalThis as typeof globalThis & {
   __safemolt_houseMembers?: Map<string, StoredHouseMember>;  // keyed by agent_id
   __safemolt_postVotes?: Map<string, StoredPostVote>;  // keyed by "agentId:postId"
   __safemolt_commentVotes?: Map<string, StoredCommentVote>;  // keyed by "agentId:commentId"
+  __safemolt_groups?: Map<string, StoredGroup>;  // keyed by id
 };
 
 const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
@@ -39,6 +41,7 @@ const houses = globalStore.__safemolt_houses ??= new Map<string, StoredHouse>();
 const houseMembers = globalStore.__safemolt_houseMembers ??= new Map<string, StoredHouseMember>();
 const postVotes = globalStore.__safemolt_postVotes ??= new Map<string, StoredPostVote>();
 const commentVotes = globalStore.__safemolt_commentVotes ??= new Map<string, StoredCommentVote>();
+const groups = globalStore.__safemolt_groups ??= new Map<string, StoredGroup>();
 
 
 
@@ -703,10 +706,21 @@ export function createHouse(founderId: string, name: string): StoredHouse | null
     if (h.name.toLowerCase() === name.toLowerCase()) return null;
   }
 
-  const id = generateId("house");
+  const id = generateId("grp");
   const createdAt = new Date().toISOString();
 
-  const house: StoredHouse = { id, name, founderId, points: 0, createdAt };
+  const house: StoredHouse = {
+    id,
+    type: 'houses',
+    name,
+    description: null,
+    founderId,
+    avatarUrl: null,
+    settings: {},
+    visibility: 'public',
+    points: 0,
+    createdAt,
+  };
   houses.set(id, house);
 
   const membership: StoredHouseMember = {
@@ -855,5 +869,150 @@ export function getHouseWithDetails(houseId: string): (StoredHouse & { memberCou
   const house = houses.get(houseId);
   if (!house) return null;
   return { ...house, memberCount: getHouseMemberCount(houseId) };
+}
+
+// ==================== Group Functions (Polymorphic Base) ====================
+
+const MAX_GROUP_NAME_LENGTH = 128;
+
+/**
+ * Create a new group.
+ */
+export function createGroup(
+  type: string,
+  founderId: string,
+  name: string,
+  description?: string,
+  avatarUrl?: string,
+  settings?: Record<string, unknown>,
+  visibility?: string
+): StoredGroup | null {
+  // Validate name length
+  if (!name || name.length > MAX_GROUP_NAME_LENGTH) {
+    return null;
+  }
+
+  // Validate founder exists
+  const founder = getAgentById(founderId);
+  if (!founder) {
+    return null;
+  }
+
+  // Check for duplicate name (case-insensitive) within this type
+  const existing = getGroupByName(type, name);
+  if (existing) {
+    return null;
+  }
+
+  const id = generateId("grp");
+  const group: StoredGroup = {
+    id,
+    type,
+    name,
+    description: description ?? null,
+    founderId,
+    avatarUrl: avatarUrl ?? null,
+    settings: settings ?? {},
+    visibility: visibility ?? 'public',
+    createdAt: new Date().toISOString(),
+  };
+
+  groups.set(id, group);
+  return group;
+}
+
+/**
+ * Get a group by ID and type.
+ */
+export function getGroup(type: string, id: string): StoredGroup | null {
+  const group = groups.get(id);
+  if (!group || group.type !== type) {
+    return null;
+  }
+  return group;
+}
+
+/**
+ * Get a group by name (case-insensitive) and type.
+ */
+export function getGroupByName(type: string, name: string): StoredGroup | null {
+  const list = Array.from(groups.values());
+  return list.find((g) => g.type === type && g.name.toLowerCase() === name.toLowerCase()) ?? null;
+}
+
+/**
+ * List all groups of a specific type with optional sorting.
+ */
+export function listGroups(
+  type: string,
+  sort: "name" | "recent" = "name"
+): StoredGroup[] {
+  const list = Array.from(groups.values()).filter((g) => g.type === type);
+
+  if (sort === "name") {
+    list.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  } else {
+    list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  return list.slice(0, 100);
+}
+
+/**
+ * Update a group's base fields.
+ */
+export function updateGroup(
+  type: string,
+  id: string,
+  updates: {
+    name?: string;
+    description?: string;
+    avatarUrl?: string;
+    settings?: Record<string, unknown>;
+    visibility?: string;
+  }
+): StoredGroup | null {
+  const group = getGroup(type, id);
+  if (!group) {
+    return null;
+  }
+
+  // Validate name if updating
+  if (updates.name !== undefined) {
+    if (updates.name.length > MAX_GROUP_NAME_LENGTH) {
+      return null;
+    }
+
+    // Check for duplicate name (case-insensitive) within this type
+    const existing = getGroupByName(type, updates.name);
+    if (existing && existing.id !== id) {
+      return null;
+    }
+  }
+
+  const updated: StoredGroup = {
+    ...group,
+    name: updates.name ?? group.name,
+    description: updates.description !== undefined ? updates.description : group.description,
+    avatarUrl: updates.avatarUrl !== undefined ? updates.avatarUrl : group.avatarUrl,
+    settings: updates.settings ?? group.settings,
+    visibility: updates.visibility ?? group.visibility,
+  };
+
+  groups.set(id, updated);
+  return updated;
+}
+
+/**
+ * Delete a group.
+ */
+export function deleteGroup(type: string, id: string): boolean {
+  const group = getGroup(type, id);
+  if (!group) {
+    return false;
+  }
+
+  groups.delete(id);
+  return true;
 }
 

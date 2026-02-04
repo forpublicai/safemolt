@@ -2,14 +2,15 @@
  * Postgres-backed store (Neon). Used when POSTGRES_URL or DATABASE_URL is set.
  */
 import { sql } from "@/lib/db";
-import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote } from "./store-types";
+import type { StoredAgent, StoredSubmolt, StoredPost, StoredComment, VettingChallenge, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredGroup } from "./store-types";
 import {
   generateChallengeValues,
   generateNonce,
   computeExpectedHash,
   getChallengeExpiry,
 } from "./vetting";
-import { calculateHousePoints, type MemberMetrics } from "./house-points";
+import { calculateHousePoints, type MemberMetrics } from "./groups/houses/points";
+import type { StoredHouse } from "./groups/houses/types";
 
 
 const POST_COOLDOWN_MS = 30 * 1000; // 30 seconds (reduced from 30 min for testing)
@@ -893,8 +894,13 @@ const MAX_HOUSE_NAME_LENGTH = 128;
 function rowToHouse(r: Record<string, unknown>): StoredHouse {
   return {
     id: r.id as string,
+    type: 'houses',
     name: r.name as string,
+    description: r.description as string | null,
     founderId: r.founder_id as string,
+    avatarUrl: r.avatar_url as string | null,
+    settings: (r.settings as Record<string, unknown>) ?? {},
+    visibility: ((r.visibility as string) ?? 'public') as 'public' | 'private',
     points: Number(r.points),
     createdAt: String(r.created_at),
   };
@@ -906,6 +912,20 @@ function rowToHouseMember(r: Record<string, unknown>): StoredHouseMember {
     houseId: r.house_id as string,
     karmaAtJoin: Number(r.karma_at_join),
     joinedAt: String(r.joined_at),
+  };
+}
+
+function rowToGroup(r: Record<string, unknown>): StoredGroup {
+  return {
+    id: r.id as string,
+    type: r.type as string,
+    name: r.name as string,
+    description: r.description as string | null,
+    founderId: r.founder_id as string,
+    avatarUrl: r.avatar_url as string | null,
+    settings: (r.settings as Record<string, unknown>) ?? {},
+    visibility: r.visibility as string,
+    createdAt: String(r.created_at),
   };
 }
 
@@ -932,14 +952,20 @@ export async function createHouse(
   const founder = await getAgentById(founderId);
   if (!founder) return null;
 
-  const id = generateId("house");
+  const id = generateId("grp");
   const createdAt = new Date().toISOString();
 
   try {
-    // Create house
+    // Create base group entry
     await sql!`
-      INSERT INTO houses (id, name, founder_id, points, created_at)
-      VALUES (${id}, ${name}, ${founderId}, 0, ${createdAt})
+      INSERT INTO groups (id, type, name, description, founder_id, avatar_url, settings, visibility, created_at)
+      VALUES (${id}, 'houses', ${name}, NULL, ${founderId}, NULL, '{}'::jsonb, 'public', ${createdAt})
+    `;
+
+    // Create house extension entry
+    await sql!`
+      INSERT INTO houses_ext (group_id, points)
+      VALUES (${id}, 0)
     `;
 
     // Add founder as first member
@@ -948,7 +974,13 @@ export async function createHouse(
       VALUES (${founderId}, ${id}, ${founder.karma}, ${createdAt})
     `;
 
-    const rows = await sql!`SELECT * FROM houses WHERE id = ${id} LIMIT 1`;
+    const rows = await sql!`
+      SELECT g.*, he.points
+      FROM groups g
+      JOIN houses_ext he ON he.group_id = g.id
+      WHERE g.id = ${id}
+      LIMIT 1
+    `;
     return rowToHouse(rows[0] as Record<string, unknown>);
   } catch {
     // Likely duplicate name
@@ -958,14 +990,26 @@ export async function createHouse(
 
 /** Get a house by ID */
 export async function getHouse(id: string): Promise<StoredHouse | null> {
-  const rows = await sql!`SELECT * FROM houses WHERE id = ${id} LIMIT 1`;
+  const rows = await sql!`
+    SELECT g.*, he.points
+    FROM groups g
+    JOIN houses_ext he ON he.group_id = g.id
+    WHERE g.id = ${id} AND g.type = 'houses'
+    LIMIT 1
+  `;
   const r = rows[0] as Record<string, unknown> | undefined;
   return r ? rowToHouse(r) : null;
 }
 
 /** Get a house by name (case-insensitive) */
 export async function getHouseByName(name: string): Promise<StoredHouse | null> {
-  const rows = await sql!`SELECT * FROM houses WHERE LOWER(name) = LOWER(${name}) LIMIT 1`;
+  const rows = await sql!`
+    SELECT g.*, he.points
+    FROM groups g
+    JOIN houses_ext he ON he.group_id = g.id
+    WHERE g.type = 'houses' AND LOWER(g.name) = LOWER(${name})
+    LIMIT 1
+  `;
   const r = rows[0] as Record<string, unknown> | undefined;
   return r ? rowToHouse(r) : null;
 }
@@ -976,11 +1020,32 @@ export async function listHouses(
 ): Promise<StoredHouse[]> {
   let rows: Record<string, unknown>[];
   if (sort === "points") {
-    rows = await sql!`SELECT * FROM houses ORDER BY points DESC LIMIT 100`;
+    rows = await sql!`
+      SELECT g.*, he.points
+      FROM groups g
+      JOIN houses_ext he ON he.group_id = g.id
+      WHERE g.type = 'houses'
+      ORDER BY he.points DESC
+      LIMIT 100
+    `;
   } else if (sort === "name") {
-    rows = await sql!`SELECT * FROM houses ORDER BY LOWER(name) ASC LIMIT 100`;
+    rows = await sql!`
+      SELECT g.*, he.points
+      FROM groups g
+      JOIN houses_ext he ON he.group_id = g.id
+      WHERE g.type = 'houses'
+      ORDER BY LOWER(g.name) ASC
+      LIMIT 100
+    `;
   } else {
-    rows = await sql!`SELECT * FROM houses ORDER BY created_at DESC LIMIT 100`;
+    rows = await sql!`
+      SELECT g.*, he.points
+      FROM groups g
+      JOIN houses_ext he ON he.group_id = g.id
+      WHERE g.type = 'houses'
+      ORDER BY g.created_at DESC
+      LIMIT 100
+    `;
   }
   return (rows as Record<string, unknown>[]).map(rowToHouse);
 }
@@ -1016,9 +1081,10 @@ export async function joinHouse(agentId: string, houseId: string): Promise<boole
 
     // Lock the house row to prevent concurrent modifications
     const houseRows = await sql!`
-      SELECT id, name, founder_id, points, created_at
-      FROM houses
-      WHERE id = ${houseId}
+      SELECT g.id
+      FROM groups g
+      JOIN houses_ext he ON he.group_id = g.id
+      WHERE g.id = ${houseId} AND g.type = 'houses'
       FOR UPDATE
     `;
 
@@ -1047,9 +1113,10 @@ export async function joinHouse(agentId: string, houseId: string): Promise<boole
       // Restart transaction for the join
       await sql!`BEGIN`;
       const recheckHouse = await sql!`
-        SELECT id, name, founder_id, points, created_at
-        FROM houses
-        WHERE id = ${houseId}
+        SELECT g.id
+        FROM groups g
+        JOIN houses_ext he ON he.group_id = g.id
+        WHERE g.id = ${houseId} AND g.type = 'houses'
         FOR UPDATE
       `;
       if (recheckHouse.length === 0) {
@@ -1090,9 +1157,10 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
 
     // Lock the house row to prevent concurrent modifications
     const houseRows = await sql!`
-      SELECT id, name, founder_id, points, created_at
-      FROM houses
-      WHERE id = ${membership.houseId}
+      SELECT g.*, he.points
+      FROM groups g
+      JOIN houses_ext he ON he.group_id = g.id
+      WHERE g.id = ${membership.houseId} AND g.type = 'houses'
       FOR UPDATE
     `;
 
@@ -1115,15 +1183,15 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
       const otherMembers = members.filter(m => m.agentId !== agentId);
 
       if (otherMembers.length === 0) {
-        // No other members - dissolve house (CASCADE will delete membership)
-        await sql!`DELETE FROM houses WHERE id = ${house.id}`;
+        // No other members - dissolve house (CASCADE will delete membership and houses_ext)
+        await sql!`DELETE FROM groups WHERE id = ${house.id}`;
         await sql!`COMMIT`;
         return true;
       }
 
       // Auto-elect oldest member as new founder
       const newFounder = otherMembers[0];
-      await sql!`UPDATE houses SET founder_id = ${newFounder.agentId} WHERE id = ${house.id}`;
+      await sql!`UPDATE groups SET founder_id = ${newFounder.agentId} WHERE id = ${house.id}`;
     }
 
     // Remove membership
@@ -1152,15 +1220,15 @@ async function updateAgentHousePoints(agentId: string, delta: number): Promise<v
  * Update house points incrementally by a delta amount.
  * Uses atomic UPDATE to avoid race conditions.
  *
- * @param houseId - The house ID
+ * @param houseId - The house ID (group_id in houses_ext)
  * @param delta - The change in points (e.g., +1 for upvote, -1 for downvote)
  * @returns The new points value after the update
  */
 export async function updateHousePoints(houseId: string, delta: number): Promise<number> {
   const result = await sql!`
-    UPDATE houses
+    UPDATE houses_ext
     SET points = points + ${delta}
-    WHERE id = ${houseId}
+    WHERE group_id = ${houseId}
     RETURNING points
   `;
 
@@ -1191,7 +1259,7 @@ export async function recalculateHousePoints(houseId: string): Promise<number> {
 
   const points = calculateHousePoints(metrics);
 
-  await sql!`UPDATE houses SET points = ${points} WHERE id = ${houseId}`;
+  await sql!`UPDATE houses_ext SET points = ${points} WHERE group_id = ${houseId}`;
   return points;
 }
 
@@ -1202,16 +1270,22 @@ export async function recalculateHousePoints(houseId: string): Promise<number> {
 export async function getHouseWithDetails(houseId: string): Promise<(StoredHouse & { memberCount: number }) | null> {
   const rows = await sql!`
     SELECT
-      h.id,
-      h.name,
-      h.founder_id,
-      h.points,
-      h.created_at,
+      g.id,
+      g.type,
+      g.name,
+      g.description,
+      g.founder_id,
+      g.avatar_url,
+      g.settings,
+      g.visibility,
+      g.created_at,
+      he.points,
       COUNT(hm.agent_id)::int AS member_count
-    FROM houses h
-    LEFT JOIN house_members hm ON hm.house_id = h.id
-    WHERE h.id = ${houseId}
-    GROUP BY h.id, h.name, h.founder_id, h.points, h.created_at
+    FROM groups g
+    JOIN houses_ext he ON he.group_id = g.id
+    LEFT JOIN house_members hm ON hm.house_id = g.id
+    WHERE g.id = ${houseId} AND g.type = 'houses'
+    GROUP BY g.id, g.type, g.name, g.description, g.founder_id, g.avatar_url, g.settings, g.visibility, g.created_at, he.points
     LIMIT 1
   `;
 
@@ -1221,5 +1295,169 @@ export async function getHouseWithDetails(houseId: string): Promise<(StoredHouse
   const house = rowToHouse(r);
   const memberCount = Number(r.member_count);
   return { ...house, memberCount };
+}
+
+// ==================== Group Functions (Polymorphic Base) ====================
+
+const MAX_GROUP_NAME_LENGTH = 128;
+
+/**
+ * Create a new group.
+ * Generates a unique ID and inserts into the groups table.
+ *
+ * @param type - Group type discriminator (e.g., 'houses')
+ * @param founderId - Agent ID of the group founder
+ * @param name - Group name (max 128 chars, unique per type)
+ * @param description - Optional markdown description
+ * @param avatarUrl - Optional avatar/logo URL
+ * @param settings - Optional type-specific configuration
+ * @param visibility - Visibility level ('public' or 'private', defaults to 'public')
+ * @returns The created group or null if creation failed
+ */
+export async function createGroup(
+  type: string,
+  founderId: string,
+  name: string,
+  description?: string,
+  avatarUrl?: string,
+  settings?: Record<string, unknown>,
+  visibility?: string
+): Promise<StoredGroup | null> {
+  // Validate name length
+  if (!name || name.length > MAX_GROUP_NAME_LENGTH) {
+    return null;
+  }
+
+  // Validate founder exists
+  const founder = await getAgentById(founderId);
+  if (!founder) {
+    return null;
+  }
+
+  const id = generateId("grp");
+  const createdAt = new Date().toISOString();
+  const settingsJson = JSON.stringify(settings ?? {});
+  const visibilityValue = visibility ?? 'public';
+
+  try {
+    await sql!`
+      INSERT INTO groups (id, type, name, description, founder_id, avatar_url, settings, visibility, created_at)
+      VALUES (${id}, ${type}, ${name}, ${description ?? null}, ${founderId}, ${avatarUrl ?? null}, ${settingsJson}::jsonb, ${visibilityValue}, ${createdAt})
+    `;
+
+    const rows = await sql!`SELECT * FROM groups WHERE id = ${id} LIMIT 1`;
+    return rowToGroup(rows[0] as Record<string, unknown>);
+  } catch {
+    // Likely duplicate name for this type
+    return null;
+  }
+}
+
+/**
+ * Get a group by ID and type.
+ * Returns null if not found or type mismatch.
+ */
+export async function getGroup(type: string, id: string): Promise<StoredGroup | null> {
+  const rows = await sql!`SELECT * FROM groups WHERE id = ${id} AND type = ${type} LIMIT 1`;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r ? rowToGroup(r) : null;
+}
+
+/**
+ * Get a group by name (case-insensitive) and type.
+ */
+export async function getGroupByName(type: string, name: string): Promise<StoredGroup | null> {
+  const rows = await sql!`SELECT * FROM groups WHERE type = ${type} AND LOWER(name) = LOWER(${name}) LIMIT 1`;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r ? rowToGroup(r) : null;
+}
+
+/**
+ * List all groups of a specific type with optional sorting.
+ * Returns max 100 results.
+ */
+export async function listGroups(
+  type: string,
+  sort: "name" | "recent" = "name"
+): Promise<StoredGroup[]> {
+  let rows: Record<string, unknown>[];
+  if (sort === "name") {
+    rows = await sql!`SELECT * FROM groups WHERE type = ${type} ORDER BY LOWER(name) ASC LIMIT 100`;
+  } else {
+    rows = await sql!`SELECT * FROM groups WHERE type = ${type} ORDER BY created_at DESC LIMIT 100`;
+  }
+  return (rows as Record<string, unknown>[]).map(rowToGroup);
+}
+
+/**
+ * Update a group's base fields.
+ * Returns null if not found or type mismatch.
+ */
+export async function updateGroup(
+  type: string,
+  id: string,
+  updates: {
+    name?: string;
+    description?: string;
+    avatarUrl?: string;
+    settings?: Record<string, unknown>;
+    visibility?: string;
+  }
+): Promise<StoredGroup | null> {
+  // Verify group exists and type matches
+  const existing = await getGroup(type, id);
+  if (!existing) {
+    return null;
+  }
+
+  // Apply updates
+  if (updates.name !== undefined) {
+    if (updates.name.length > MAX_GROUP_NAME_LENGTH) {
+      return null;
+    }
+    try {
+      await sql!`UPDATE groups SET name = ${updates.name} WHERE id = ${id} AND type = ${type}`;
+    } catch {
+      // Likely duplicate name
+      return null;
+    }
+  }
+
+  if (updates.description !== undefined) {
+    await sql!`UPDATE groups SET description = ${updates.description} WHERE id = ${id} AND type = ${type}`;
+  }
+
+  if (updates.avatarUrl !== undefined) {
+    await sql!`UPDATE groups SET avatar_url = ${updates.avatarUrl} WHERE id = ${id} AND type = ${type}`;
+  }
+
+  if (updates.settings !== undefined) {
+    const settingsJson = JSON.stringify(updates.settings);
+    await sql!`UPDATE groups SET settings = ${settingsJson}::jsonb WHERE id = ${id} AND type = ${type}`;
+  }
+
+  if (updates.visibility !== undefined) {
+    await sql!`UPDATE groups SET visibility = ${updates.visibility} WHERE id = ${id} AND type = ${type}`;
+  }
+
+  // Fetch and return updated group
+  return getGroup(type, id);
+}
+
+/**
+ * Delete a group.
+ * Cascades to type-specific extension tables (e.g., houses_ext).
+ * Returns false if not found or type mismatch.
+ */
+export async function deleteGroup(type: string, id: string): Promise<boolean> {
+  // Verify group exists and type matches
+  const existing = await getGroup(type, id);
+  if (!existing) {
+    return false;
+  }
+
+  // Delete will CASCADE to extension tables
+  await sql!`DELETE FROM groups WHERE id = ${id} AND type = ${type}`;
+  return true;
 }
 

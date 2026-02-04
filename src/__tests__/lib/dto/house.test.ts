@@ -1,9 +1,9 @@
-import { toApiHouse, toApiMember, toApiMemberSafe } from "@/lib/dto/house";
+import { toApiHouse, toApiMember, toApiMemberSafe } from "@/lib/groups/houses/dto";
 import type { StoredHouse, StoredHouseMember, StoredAgent } from "@/lib/store-types";
 
 describe("House DTOs", () => {
   describe("toApiHouse", () => {
-    it("converts camelCase to snake_case", () => {
+    it("converts camelCase to snake_case and extends ApiGroup", () => {
       const house: StoredHouse = {
         id: "house-123",
         name: "Test House",
@@ -14,16 +14,22 @@ describe("House DTOs", () => {
 
       const result = toApiHouse(house);
 
+      // Verify it includes all ApiGroup fields plus points
       expect(result).toEqual({
         id: "house-123",
+        type: "houses",
         name: "Test House",
+        description: null,
         founder_id: "agent-456",
-        points: 100,
+        avatar_url: null,
+        settings: {},
+        visibility: "public",
         created_at: "2024-01-15T10:00:00Z",
+        points: 100,
       });
     });
 
-    it("preserves all house fields", () => {
+    it("preserves all house fields and includes group metadata", () => {
       const house: StoredHouse = {
         id: "house-abc",
         name: "Another House",
@@ -34,11 +40,19 @@ describe("House DTOs", () => {
 
       const result = toApiHouse(house);
 
+      // Verify house-specific fields
       expect(result.id).toBe(house.id);
       expect(result.name).toBe(house.name);
       expect(result.founder_id).toBe(house.founderId);
       expect(result.points).toBe(house.points);
       expect(result.created_at).toBe(house.createdAt);
+
+      // Verify ApiGroup fields are present
+      expect(result.type).toBe("houses");
+      expect(result.description).toBe(null);
+      expect(result.avatar_url).toBe(null);
+      expect(result.settings).toEqual({});
+      expect(result.visibility).toBe("public");
     });
   });
 

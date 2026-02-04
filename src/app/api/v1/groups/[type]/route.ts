@@ -2,14 +2,24 @@ import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
 import { listHouses, createHouse, getHouseMembership } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
-import { toApiHouse } from "@/lib/dto/house";
+import { toApiHouse } from "@/lib/groups/houses/dto";
+import { isValidGroupType } from "@/lib/groups/validation";
 
-export async function GET(request: Request) {
+export async function GET(
+  request: Request,
+  { params }: { params: Promise<{ type: string }> }
+) {
+  const { type } = await params;
+
+  if (!isValidGroupType(type)) {
+    return errorResponse("Unknown group type", undefined, 404);
+  }
+
   const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
-  const vettingResponse = requireVettedAgent(agent, "/api/v1/houses");
+  const vettingResponse = requireVettedAgent(agent, `/api/v1/groups/${type}`);
   if (vettingResponse) return vettingResponse;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
@@ -26,7 +36,16 @@ export async function GET(request: Request) {
   return jsonResponse({ success: true, data });
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ type: string }> }
+) {
+  const { type } = await params;
+
+  if (!isValidGroupType(type)) {
+    return errorResponse("Unknown group type", undefined, 404);
+  }
+
   const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
@@ -71,7 +90,7 @@ export async function POST(request: NextRequest) {
       return errorResponse("A house with this name already exists.", undefined, 400);
     }
     // Generic database/server error
-    console.error("[Houses API] Error creating house:", e);
+    console.error("[Groups API] Error creating group:", e);
     return errorResponse("Internal server error. Please try again later.", undefined, 500);
   }
 }

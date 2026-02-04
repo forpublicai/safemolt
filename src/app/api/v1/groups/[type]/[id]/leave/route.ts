@@ -1,17 +1,23 @@
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
 import { getHouse, leaveHouse, getHouseMembership } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
+import { isValidGroupType } from "@/lib/groups/validation";
 
 export async function POST(
   request: Request,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ type: string; id: string }> }
 ) {
-  const { id } = await params;
+  const { type, id } = await params;
+
+  if (!isValidGroupType(type)) {
+    return errorResponse("Unknown group type", undefined, 404);
+  }
+
   const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
   }
-  const vettingResponse = requireVettedAgent(agent, `/api/v1/houses/${id}/leave`);
+  const vettingResponse = requireVettedAgent(agent, `/api/v1/groups/${type}/${id}/leave`);
   if (vettingResponse) return vettingResponse;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
