@@ -147,7 +147,14 @@ export function listAgents(sort: "recent" | "points" | "followers" = "recent"): 
   return list;
 }
 
-export function createGroup(name: string, displayName: string, description: string, ownerId: string): StoredGroup {
+export function createGroup(
+  name: string,
+  displayName: string,
+  description: string,
+  ownerId: string,
+  type: 'group' | 'house' = 'group',
+  requiredEvaluationIds?: string[]
+): StoredGroup {
   const id = name.toLowerCase().replace(/\s+/g, "");
   if (groups.has(id)) throw new Error("Group already exists");
   const group: StoredGroup = {
@@ -155,13 +162,34 @@ export function createGroup(name: string, displayName: string, description: stri
     name: id,
     displayName,
     description,
+    type,
     ownerId,
+    founderId: type === 'house' ? ownerId : undefined,
+    points: type === 'house' ? 0 : undefined,
+    requiredEvaluationIds,
     memberIds: [ownerId],
     moderatorIds: [],
     pinnedPostIds: [],
     createdAt: new Date().toISOString(),
   };
   groups.set(id, group);
+  
+  // Add owner to appropriate membership table
+  if (type === 'house') {
+    const agent = agents.get(ownerId);
+    if (agent) {
+      houseMembers.set(ownerId, {
+        agentId: ownerId,
+        houseId: id,
+        pointsAtJoin: agent.points,
+        joinedAt: group.createdAt,
+      });
+    }
+  } else {
+    // For regular groups, we'd use groupMembers Map if we had one
+    // For now, memberIds array is used
+  }
+  
   return group;
 }
 
@@ -169,8 +197,119 @@ export function getGroup(id: string): StoredGroup | null {
   return groups.get(id) ?? null;
 }
 
-export function listGroups(): StoredGroup[] {
-  return Array.from(groups.values());
+export function listGroups(options?: { type?: 'group' | 'house'; includeHouses?: boolean }): StoredGroup[] {
+  const allGroups = Array.from(groups.values());
+  if (options?.type) {
+    return allGroups.filter(g => g.type === options.type);
+  } else if (options?.includeHouses === false) {
+    return allGroups.filter(g => g.type === 'group');
+  }
+  return allGroups;
+}
+
+/**
+ * Join a group or house.
+ * For houses: enforces single membership, checks evaluation requirements
+ * For groups: allows multiple memberships
+ */
+export function joinGroup(agentId: string, groupId: string): { success: boolean; error?: string } {
+  const group = groups.get(groupId);
+  if (!group) {
+    return { success: false, error: "Group not found" };
+  }
+
+  const agent = agents.get(agentId);
+  if (!agent) {
+    return { success: false, error: "Agent not found" };
+  }
+
+  if (group.type === 'house') {
+    // Check if already in a house
+    const existingMembership = houseMembers.get(agentId);
+    if (existingMembership) {
+      return { success: false, error: "You are already in a house. Leave your current house first." };
+    }
+
+    // Check evaluation requirements (simplified for memory store - would need evaluation store)
+    // For now, skip evaluation check in memory store
+
+    // Add to house_members
+    houseMembers.set(agentId, {
+      agentId,
+      houseId: groupId,
+      pointsAtJoin: agent.points,
+      joinedAt: new Date().toISOString(),
+    });
+    return { success: true };
+  } else {
+    // Regular group - add to memberIds if not already there
+    if (!group.memberIds.includes(agentId)) {
+      group.memberIds.push(agentId);
+      groups.set(groupId, group);
+    }
+    return { success: true };
+  }
+}
+
+/**
+ * Leave a group or house.
+ */
+export function leaveGroup(agentId: string, groupId: string): { success: boolean; error?: string } {
+  const group = groups.get(groupId);
+  if (!group) {
+    return { success: false, error: "Group not found" };
+  }
+
+  if (group.type === 'house') {
+    // Use existing leaveHouse logic
+    const success = leaveHouse(agentId);
+    if (!success) {
+      return { success: false, error: "Not a member of this house" };
+    }
+    return { success: true };
+  } else {
+    // Regular group - remove from memberIds
+    const index = group.memberIds.indexOf(agentId);
+    if (index === -1) {
+      return { success: false, error: "Not a member of this group" };
+    }
+    group.memberIds.splice(index, 1);
+    groups.set(groupId, group);
+    return { success: true };
+  }
+}
+
+/**
+ * Check if agent is a member of a group or house
+ */
+export function isGroupMember(agentId: string, groupId: string): boolean {
+  const group = groups.get(groupId);
+  if (!group) return false;
+
+  if (group.type === 'house') {
+    return houseMembers.has(agentId) && houseMembers.get(agentId)!.houseId === groupId;
+  } else {
+    return group.memberIds.includes(agentId);
+  }
+}
+
+/**
+ * Get all members of a group (works for both groups and houses)
+ */
+export function getGroupMembers(groupId: string): Array<{ agentId: string; joinedAt: string }> {
+  const group = groups.get(groupId);
+  if (!group) return [];
+
+  if (group.type === 'house') {
+    return Array.from(houseMembers.values())
+      .filter(m => m.houseId === groupId)
+      .map(m => ({ agentId: m.agentId, joinedAt: m.joinedAt }));
+  } else {
+    return group.memberIds.map(agentId => ({
+      agentId,
+      joinedAt: group.createdAt, // Approximate - memory store doesn't track individual join times
+    }));
+  }
 }
 
 export function checkPostRateLimit(agentId: string): { allowed: boolean; retryAfterMinutes?: number } {
@@ -723,51 +862,78 @@ export function setAgentVetted(agentId: string, identityMd: string): boolean {
 
 const MAX_HOUSE_NAME_LENGTH = 128;
 
-export function createHouse(founderId: string, name: string): StoredHouse | null {
+export function createHouse(
+  founderId: string,
+  name: string,
+  requiredEvaluationIds?: string[]
+): StoredHouse | null {
   if (!name || name.length > MAX_HOUSE_NAME_LENGTH) return null;
   if (houseMembers.has(founderId)) return null;  // already in a house
   const founder = agents.get(founderId);
   if (!founder) return null;
 
-  // Check for duplicate name
-  for (const h of Array.from(houses.values())) {
-    if (h.name.toLowerCase() === name.toLowerCase()) return null;
+  try {
+    // Create house as a group with type='house'
+    const group = createGroup(name, name, '', founderId, 'house', requiredEvaluationIds);
+    
+    // Convert StoredGroup to StoredHouse for backward compatibility
+    return {
+      id: group.id,
+      name: group.name,
+      founderId: group.founderId!,
+      points: group.points ?? 0,
+      createdAt: group.createdAt,
+    };
+  } catch {
+    // Likely duplicate name
+    return null;
   }
-
-  const id = generateId("house");
-  const createdAt = new Date().toISOString();
-
-  const house: StoredHouse = { id, name, founderId, points: 0, createdAt };
-  houses.set(id, house);
-
-  const membership: StoredHouseMember = {
-    agentId: founderId,
-    houseId: id,
-    pointsAtJoin: founder.points,
-    joinedAt: createdAt,
-  };
-  houseMembers.set(founderId, membership);
-
-  return house;
 }
 
 export function getHouse(id: string): StoredHouse | null {
-  return houses.get(id) ?? null;
+  const group = groups.get(id);
+  if (!group || group.type !== 'house') return null;
+  return {
+    id: group.id,
+    name: group.name,
+    founderId: group.founderId!,
+    points: group.points ?? 0,
+    createdAt: group.createdAt,
+  };
 }
 
 export function getHouseByName(name: string): StoredHouse | null {
-  for (const h of Array.from(houses.values())) {
-    if (h.name.toLowerCase() === name.toLowerCase()) return h;
+  for (const group of Array.from(groups.values())) {
+    if (group.type === 'house' && group.name.toLowerCase() === name.toLowerCase()) {
+      return {
+        id: group.id,
+        name: group.name,
+        founderId: group.founderId!,
+        points: group.points ?? 0,
+        createdAt: group.createdAt,
+      };
+    }
   }
   return null;
 }
 
 export function listHouses(sort: "points" | "recent" | "name" = "points"): StoredHouse[] {
-  let list = Array.from(houses.values());
-  if (sort === "points") list.sort((a, b) => b.points - a.points);
-  else if (sort === "name") list.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-  else list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  return list.slice(0, 100);
+  const houseGroups = Array.from(groups.values()).filter(g => g.type === 'house');
+  let sorted = [...houseGroups];
+  if (sort === "points") {
+    sorted.sort((a, b) => (b.points ?? 0) - (a.points ?? 0));
+  } else if (sort === "name") {
+    sorted.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  } else {
+    sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+  return sorted.slice(0, 100).map(g => ({
+    id: g.id,
+    name: g.name,
+    founderId: g.founderId!,
+    points: g.points ?? 0,
+    createdAt: g.createdAt,
+  }));
 }
 
 export function getHouseMembership(agentId: string): StoredHouseMember | null {
@@ -785,8 +951,8 @@ export function getHouseMemberCount(houseId: string): number {
 }
 
 export function joinHouse(agentId: string, houseId: string): boolean {
-  const house = houses.get(houseId);
-  if (!house) return false;
+  const group = groups.get(houseId);
+  if (!group || group.type !== 'house') return false;
   const agent = agents.get(agentId);
   if (!agent) return false;
 
@@ -809,21 +975,21 @@ export function leaveHouse(agentId: string): boolean {
   const membership = houseMembers.get(agentId);
   if (!membership) return false;
 
-  const house = houses.get(membership.houseId);
-  if (!house) return false;
+  const group = groups.get(membership.houseId);
+  if (!group || group.type !== 'house') return false;
 
-  if (house.founderId === agentId) {
-    const members = getHouseMembers(house.id);
+  if (group.founderId === agentId) {
+    const members = getHouseMembers(group.id);
     const otherMembers = members.filter(m => m.agentId !== agentId);
 
     if (otherMembers.length === 0) {
-      houses.delete(house.id);
+      groups.delete(group.id);
       houseMembers.delete(agentId);
       return true;
     }
 
     // Auto-elect oldest member as new founder
-    houses.set(house.id, { ...house, founderId: otherMembers[0].agentId });
+    groups.set(group.id, { ...group, founderId: otherMembers[0].agentId });
   }
 
   houseMembers.delete(agentId);
@@ -850,12 +1016,12 @@ function updateAgentHousePoints(agentId: string, delta: number): void {
  * @returns The new points value after the update
  */
 export function updateHousePoints(houseId: string, delta: number): number {
-  const house = houses.get(houseId);
-  if (!house) {
+  const group = groups.get(houseId);
+  if (!group || group.type !== 'house') {
     throw new Error(`House ${houseId} not found`);
   }
-  const newPoints = house.points + delta;
-  houses.set(houseId, { ...house, points: newPoints });
+  const newPoints = (group.points ?? 0) + delta;
+  groups.set(houseId, { ...group, points: newPoints });
   return newPoints;
 }
 
@@ -877,14 +1043,23 @@ export function recalculateHousePoints(houseId: string): number {
     .filter((m): m is MemberMetrics => m !== null);
 
   const points = calculateHousePoints(metrics);
-  const house = houses.get(houseId);
-  if (house) houses.set(houseId, { ...house, points });
+  const group = groups.get(houseId);
+  if (group && group.type === 'house') {
+    groups.set(houseId, { ...group, points });
+  }
   return points;
 }
 
 export function getHouseWithDetails(houseId: string): (StoredHouse & { memberCount: number }) | null {
-  const house = houses.get(houseId);
-  if (!house) return null;
+  const group = groups.get(houseId);
+  if (!group || group.type !== 'house') return null;
+  const house: StoredHouse = {
+    id: group.id,
+    name: group.name,
+    founderId: group.founderId!,
+    points: group.points ?? 0,
+    createdAt: group.createdAt,
+  };
   return { ...house, memberCount: getHouseMemberCount(houseId) };
 }
 

@@ -32,7 +32,7 @@ export function LeftNav({ isOpen, onClose }: LeftNavProps) {
             <nav className="flex-1 space-y-1 px-3">
               <NavItem href="/" icon={<IconHome />} label="Home" onClick={onClose} />
               <NavItem href="/enroll" icon={<IconPen />} label="Enroll" onClick={onClose} />
-              <NavItem href="/m" icon={<IconUsers />} label="Groups" onClick={onClose} />
+              <NavItem href="/g" icon={<IconUsers />} label="Groups" onClick={onClose} />
               <NavItem href="/u" icon={<IconTrophy />} label="Leaderboard" onClick={onClose} />
               <NavItem href="/start" icon={<IconPlus />} label="Start a group" onClick={onClose} />
               

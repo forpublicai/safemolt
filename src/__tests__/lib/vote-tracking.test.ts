@@ -46,20 +46,20 @@ describe("Vote Tracking (safemolt-6qc)", () => {
       expect(secondResult).toBe(false);
     });
 
-    it("should only increment karma once on duplicate upvote attempt", () => {
-      const post = createPost(authorAgent.id, "votetest", "Karma Test Post", "Content");
+    it("should only increment points once on duplicate upvote attempt", () => {
+      const post = createPost(authorAgent.id, "votetest", "Points Test Post", "Content");
 
-      // Get initial karma
+      // Get initial points
       const initialAuthor = getAgentById(authorAgent.id);
-      const initialKarma = initialAuthor?.karma ?? 0;
+      const initialPoints = initialAuthor?.points ?? 0;
 
       // Upvote twice
       upvotePost(post.id, voterAgent.id);
       upvotePost(post.id, voterAgent.id);
 
-      // Karma should only have increased by 1
+      // Points should only have increased by 1
       const finalAuthor = getAgentById(authorAgent.id);
-      expect(finalAuthor?.karma).toBe(initialKarma + 1);
+      expect(finalAuthor?.points).toBe(initialPoints + 1);
     });
 
     it("should return false on duplicate comment upvote", () => {
@@ -97,11 +97,11 @@ describe("Vote Tracking (safemolt-6qc)", () => {
       const setupPost = createPost(authorAgent.id, "votetest", "Setup Post", "Setup");
       upvotePost(setupPost.id, voterAgent.id);
 
-      const post = createPost(authorAgent.id, "votetest", "Downvote Karma Test", "Content");
+      const post = createPost(authorAgent.id, "votetest", "Downvote Points Test", "Content");
 
-      // Get karma after initial setup
+      // Get points after initial setup
       const initialAuthor = getAgentById(authorAgent.id);
-      const initialKarma = initialAuthor?.karma ?? 0;
+      const initialPoints = initialAuthor?.points ?? 0;
 
       // Use a different voter for downvote test
       const downvoter = createAgent(`Downvoter_${Date.now()}`, "Downvoting agent");
@@ -110,34 +110,34 @@ describe("Vote Tracking (safemolt-6qc)", () => {
       downvotePost(post.id, downvoter.id);
       downvotePost(post.id, downvoter.id);
 
-      // Karma should only have decreased by 1
+      // Points should only have decreased by 1
       const finalAuthor = getAgentById(authorAgent.id);
-      expect(finalAuthor?.karma).toBe(Math.max(0, initialKarma - 1));
+      expect(finalAuthor?.points).toBe(Math.max(0, initialPoints - 1));
     });
   });
 
-  describe("Karma goes to author not voter", () => {
-    it("should give karma to post author, not the voter", () => {
-      const post = createPost(authorAgent.id, "votetest", "Author Karma Test", "Content");
+  describe("Points go to author not voter", () => {
+    it("should give points to post author, not the voter", () => {
+      const post = createPost(authorAgent.id, "votetest", "Author Points Test", "Content");
 
-      // Get initial karma for both agents
+      // Get initial points for both agents
       const initialAuthor = getAgentById(authorAgent.id);
       const initialVoter = getAgentById(voterAgent.id);
-      const authorKarmaBefore = initialAuthor?.karma ?? 0;
-      const voterKarmaBefore = initialVoter?.karma ?? 0;
+      const authorPointsBefore = initialAuthor?.points ?? 0;
+      const voterPointsBefore = initialVoter?.points ?? 0;
 
       // Voter upvotes author's post
       upvotePost(post.id, voterAgent.id);
 
-      // Check karma after vote
+      // Check points after vote
       const finalAuthor = getAgentById(authorAgent.id);
       const finalVoter = getAgentById(voterAgent.id);
 
-      // Author's karma should increase
-      expect(finalAuthor?.karma).toBe(authorKarmaBefore + 1);
+      // Author's points should increase
+      expect(finalAuthor?.points).toBe(authorPointsBefore + 1);
 
-      // Voter's karma should be unchanged
-      expect(finalVoter?.karma).toBe(voterKarmaBefore);
+      // Voter's points should be unchanged
+      expect(finalVoter?.points).toBe(voterPointsBefore);
     });
 
     it("should take points from post author, not the voter, on downvote", () => {
@@ -147,54 +147,54 @@ describe("Vote Tracking (safemolt-6qc)", () => {
 
       const post = createPost(authorAgent.id, "votetest", "Downvote Author Test", "Content");
 
-      // Get karma before downvote
+      // Get points before downvote
       const authorBefore = getAgentById(authorAgent.id);
       const voterBefore = getAgentById(voterAgent.id);
-      const authorKarmaBefore = authorBefore?.karma ?? 0;
-      const voterKarmaBefore = voterBefore?.karma ?? 0;
+      const authorPointsBefore = authorBefore?.points ?? 0;
+      const voterPointsBefore = voterBefore?.points ?? 0;
 
       // Use a new voter for downvote
       const downvoter = createAgent(`Downvoter2_${Date.now()}`, "Downvoting agent");
       const downvoterBefore = getAgentById(downvoter.id);
-      const downvoterKarmaBefore = downvoterBefore?.karma ?? 0;
+      const downvoterPointsBefore = downvoterBefore?.points ?? 0;
 
       // Downvoter downvotes author's post
       downvotePost(post.id, downvoter.id);
 
-      // Check karma after vote
+      // Check points after vote
       const finalAuthor = getAgentById(authorAgent.id);
       const finalDownvoter = getAgentById(downvoter.id);
 
-      // Author's karma should decrease
-      expect(finalAuthor?.karma).toBe(Math.max(0, authorKarmaBefore - 1));
+      // Author's points should decrease
+      expect(finalAuthor?.points).toBe(Math.max(0, authorPointsBefore - 1));
 
-      // Downvoter's karma should be unchanged
-      expect(finalDownvoter?.karma).toBe(downvoterKarmaBefore);
+      // Downvoter's points should be unchanged
+      expect(finalDownvoter?.points).toBe(downvoterPointsBefore);
     });
 
-    it("should give karma to comment author, not the voter", () => {
-      const post = createPost(authorAgent.id, "votetest", "Comment Karma Test", "Content");
-      const comment = createComment(post.id, authorAgent.id, "Test comment for karma");
+    it("should give points to comment author, not the voter", () => {
+      const post = createPost(authorAgent.id, "votetest", "Comment Points Test", "Content");
+      const comment = createComment(post.id, authorAgent.id, "Test comment for points");
       expect(comment).not.toBeNull();
 
-      // Get initial karma for both
+      // Get initial points for both
       const authorBefore = getAgentById(authorAgent.id);
       const voterBefore = getAgentById(voterAgent.id);
-      const authorKarmaBefore = authorBefore?.karma ?? 0;
-      const voterKarmaBefore = voterBefore?.karma ?? 0;
+      const authorPointsBefore = authorBefore?.points ?? 0;
+      const voterPointsBefore = voterBefore?.points ?? 0;
 
       // Voter upvotes author's comment
       upvoteComment(comment!.id, voterAgent.id);
 
-      // Check karma after vote
+      // Check points after vote
       const authorAfter = getAgentById(authorAgent.id);
       const voterAfter = getAgentById(voterAgent.id);
 
-      // Author's karma should increase
-      expect(authorAfter?.karma).toBe(authorKarmaBefore + 1);
+      // Author's points should increase
+      expect(authorAfter?.points).toBe(authorPointsBefore + 1);
 
-      // Voter's karma should be unchanged
-      expect(voterAfter?.karma).toBe(voterKarmaBefore);
+      // Voter's points should be unchanged
+      expect(voterAfter?.points).toBe(voterPointsBefore);
     });
   });
 

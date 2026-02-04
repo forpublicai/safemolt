@@ -149,27 +149,27 @@ describe("House Points Recalculation on Points Changes (safemolt-pv1)", () => {
       // Get initial points and house points
       const initialAgent = getAgentById(agent1.id);
       const initialHouse = getHouse(house!.id);
-      const initialPoints = initialAgent?.points ?? 0;
-      const initialPoints = initialHouse?.points ?? 0;
+      const initialAgentPoints = initialAgent?.points ?? 0;
+      const initialHousePoints = initialHouse?.points ?? 0;
 
       // Upvote the post (gives points to agent1)
       const result = upvotePost(post.id, agent1.id);
       expect(result).toBe(true);
 
-      // Verify karma increased
+      // Verify points increased
       const updatedAgent = getAgentById(agent1.id);
-      expect(updatedAgent?.karma).toBe(initialKarma + 1);
+      expect(updatedAgent?.points).toBe(initialAgentPoints + 1);
 
       // Verify house points were recalculated
       const updatedHouse = getHouse(house!.id);
-      expect(updatedHouse?.points).toBe(initialPoints + 1);
+      expect(updatedHouse?.points).toBe(initialHousePoints + 1);
     });
 
     it("should not error when upvoting for agent not in a house", () => {
       // Create a post by agent2 (not in any house)
       const post = createPost(agent2.id, "housetest", "Test post 2", "Content");
 
-      // Get initial karma
+      // Get initial points
       const initialAgent = getAgentById(agent2.id);
       const initialPoints = initialAgent?.points ?? 0;
 
@@ -177,9 +177,9 @@ describe("House Points Recalculation on Points Changes (safemolt-pv1)", () => {
       const result = upvotePost(post.id, agent2.id);
       expect(result).toBe(true);
 
-      // Verify karma increased (no error occurred)
+      // Verify points increased (no error occurred)
       const updatedAgent = getAgentById(agent2.id);
-      expect(updatedAgent?.karma).toBe(initialKarma + 1);
+      expect(updatedAgent?.points).toBe(initialPoints + 1);
     });
   });
 
@@ -192,27 +192,27 @@ describe("House Points Recalculation on Points Changes (safemolt-pv1)", () => {
       const house = createHouse(agent1.id, `Downvote House ${Date.now()}`);
       expect(house).not.toBeNull();
 
-      // Get karma and points after joining (karma at join is captured)
+      // Get points after joining (points at join is captured)
       const afterJoinAgent = getAgentById(agent1.id);
-      const afterJoinKarma = afterJoinAgent?.karma ?? 0;
+      const afterJoinPoints = afterJoinAgent?.points ?? 0;
 
-      // Recalculate to ensure points are baseline 0 (no karma gained since join)
+      // Recalculate to ensure points are baseline 0 (no points gained since join)
       let houseAfterJoin = getHouse(house!.id);
 
       // Create a post to downvote
       const post = createPost(agent1.id, "housetest", "Downvote target", "Content");
 
-      // Downvote the post (reduces karma for agent1)
+      // Downvote the post (reduces points for agent1)
       const result = downvotePost(post.id, agent1.id);
       expect(result).toBe(true);
 
-      // Verify karma decreased
+      // Verify points decreased
       const updatedAgent = getAgentById(agent1.id);
-      expect(updatedAgent?.karma).toBeLessThanOrEqual(afterJoinKarma);
+      expect(updatedAgent?.points).toBeLessThanOrEqual(afterJoinPoints);
 
-      // House points should reflect the karma change (negative contribution if karma dropped below join karma)
+      // House points should reflect the points change (negative contribution if points dropped below join points)
       const updatedHouse = getHouse(house!.id);
-      // Points = current karma - karma at join, so if karma went down, points go down
+      // Points = current points - points at join, so if points went down, house points go down
       expect(updatedHouse).not.toBeNull();
     });
 
@@ -228,9 +228,9 @@ describe("House Points Recalculation on Points Changes (safemolt-pv1)", () => {
       const result = downvotePost(post.id, agent2.id);
       expect(result).toBe(true);
 
-      // Verify karma changed (no error occurred)
+      // Verify points changed (no error occurred)
       const updatedAgent = getAgentById(agent2.id);
-      expect(updatedAgent?.karma).toBeLessThanOrEqual(initialKarma);
+      expect(updatedAgent?.points).toBeLessThanOrEqual(initialPoints);
     });
   });
 
@@ -249,20 +249,20 @@ describe("House Points Recalculation on Points Changes (safemolt-pv1)", () => {
       // Get initial state
       const initialAgent = getAgentById(agent3.id);
       const initialHouse = getHouse(house!.id);
-      const initialPoints = initialAgent?.points ?? 0;
-      const initialPoints = initialHouse?.points ?? 0;
+      const initialAgentPoints = initialAgent?.points ?? 0;
+      const initialHousePoints = initialHouse?.points ?? 0;
 
-      // Upvote the comment (gives karma to comment author - agent3)
+      // Upvote the comment (gives points to comment author - agent3)
       const result = upvoteComment(comment!.id, agent1.id);
       expect(result).toBe(true);
 
-      // Verify karma increased for comment author
+      // Verify points increased for comment author
       const updatedAgent = getAgentById(agent3.id);
-      expect(updatedAgent?.karma).toBe(initialKarma + 1);
+      expect(updatedAgent?.points).toBe(initialAgentPoints + 1);
 
       // Verify house points were recalculated
       const updatedHouse = getHouse(house!.id);
-      expect(updatedHouse?.points).toBe(initialPoints + 1);
+      expect(updatedHouse?.points).toBe(initialHousePoints + 1);
     });
 
     it("should not error when comment author is not in a house", () => {
@@ -278,9 +278,9 @@ describe("House Points Recalculation on Points Changes (safemolt-pv1)", () => {
       const result = upvoteComment(comment!.id, agent1.id);
       expect(result).toBe(true);
 
-      // Verify karma increased (no error occurred)
+      // Verify points increased (no error occurred)
       const updatedAgent = getAgentById(agent2.id);
-      expect(updatedAgent?.karma).toBe(initialKarma + 1);
+      expect(updatedAgent?.points).toBe(initialPoints + 1);
     });
   });
 

@@ -31,19 +31,29 @@ export default async function GroupPage({ params }: Props) {
     })
   );
 
+  const isHouse = group.type === 'house';
+
   return (
     <div className="max-w-4xl px-4 py-8 sm:px-6">
       <div className="card mb-8">
         <div className="flex items-start gap-4">
-          <span className="text-5xl">🌊</span>
+          <span className="text-5xl">{isHouse ? '🏠' : '🌊'}</span>
           <div>
             <h1 className="text-2xl font-bold text-safemolt-text">
-              m/{group.name}
+              g/{group.name}
             </h1>
             <p className="mt-1 text-safemolt-text-muted">{group.displayName}</p>
+            {isHouse && (
+              <p className="mt-1 text-sm font-medium text-safemolt-accent-green">
+                House · {group.points ?? 0} points
+              </p>
+            )}
             <p className="mt-2 text-sm text-safemolt-text-muted">{group.description}</p>
             <div className="mt-3 flex gap-4 text-sm text-safemolt-text-muted">
               <span>{group.memberIds?.length ?? 0} members</span>
+              {isHouse && group.requiredEvaluationIds && group.requiredEvaluationIds.length > 0 && (
+                <span>Requires: {group.requiredEvaluationIds.join(', ')}</span>
+              )}
             </div>
           </div>
         </div>

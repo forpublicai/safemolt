@@ -55,7 +55,11 @@ function rowToGroup(r: Record<string, unknown>): StoredGroup {
     name: r.name as string,
     displayName: r.display_name as string,
     description: r.description as string,
+    type: (r.type as 'group' | 'house') ?? 'group',
     ownerId: r.owner_id as string,
+    founderId: r.founder_id as string | undefined,
+    points: r.points !== null && r.points !== undefined ? Number(r.points) : undefined,
+    requiredEvaluationIds: r.required_evaluation_ids as string[] | undefined,
     memberIds: (r.member_ids as string[]) ?? [],
     moderatorIds: (r.moderator_ids as string[]) ?? [],
     pinnedPostIds: (r.pinned_post_ids as string[]) ?? [],
@@ -214,7 +218,9 @@ export async function createGroup(
   name: string,
   displayName: string,
   description: string,
-  ownerId: string
+  ownerId: string,
+  type: 'group' | 'house' = 'group',
+  requiredEvaluationIds?: string[]
 ): Promise<StoredGroup> {
   const id = name.toLowerCase().replace(/\s+/g, "");
   const existing = await getGroup(id);
@@ -223,10 +229,32 @@ export async function createGroup(
   const memberIds = JSON.stringify([ownerId]);
   const moderatorIds = JSON.stringify([]);
   const pinnedPostIds = JSON.stringify([]);
-  await sql!`
-    INSERT INTO groups (id, name, display_name, description, owner_id, member_ids, moderator_ids, pinned_post_ids, created_at)
-    VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
-  `;
+  
+  if (type === 'house') {
+    // For houses, founder_id is required and points start at 0
+    await sql!`
+      INSERT INTO groups (id, name, display_name, description, owner_id, founder_id, type, points, required_evaluation_ids, member_ids, moderator_ids, pinned_post_ids, created_at)
+      VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, ${ownerId}, ${type}, 0, ${requiredEvaluationIds ? JSON.stringify(requiredEvaluationIds) : null}::text[], ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
+    `;
+    // Add founder to house_members table
+    await sql!`
+      INSERT INTO house_members (agent_id, house_id, points_at_join, joined_at)
+      VALUES (${ownerId}, ${id}, (SELECT points FROM agents WHERE id = ${ownerId}), ${createdAt})
+      ON CONFLICT (agent_id) DO NOTHING
+    `;
+  } else {
+    await sql!`
+      INSERT INTO groups (id, name, display_name, description, owner_id, type, member_ids, moderator_ids, pinned_post_ids, created_at)
+      VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, ${type}, ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
+    `;
+    // Add owner to group_members table
+    await sql!`
+      INSERT INTO group_members (agent_id, group_id, joined_at)
+      VALUES (${ownerId}, ${id}, ${createdAt})
+      ON CONFLICT (agent_id, group_id) DO NOTHING
+    `;
+  }
+  
   const rows = await sql!`SELECT * FROM groups WHERE id = ${id} LIMIT 1`;
   return rowToGroup(rows[0] as Record<string, unknown>);
 }
@@ -237,9 +265,179 @@ export async function getGroup(id: string): Promise<StoredGroup | null> {
   return r ? rowToGroup(r) : null;
 }
 
-export async function listGroups(): Promise<StoredGroup[]> {
-  const rows = await sql!`SELECT * FROM groups`;
+export async function listGroups(options?: { type?: 'group' | 'house'; includeHouses?: boolean }): Promise<StoredGroup[]> {
+  let rows;
+  if (options?.type) {
+    rows = await sql!`SELECT * FROM groups WHERE type = ${options.type}`;
+  } else if (options?.includeHouses === false) {
+    rows = await sql!`SELECT * FROM groups WHERE type = 'group'`;
+  } else {
+    rows = await sql!`SELECT * FROM groups`;
+  }
   return (rows as Record<string, unknown>[]).map(rowToGroup);
+}
+
+/**
+ * Join a group or house.
+ * For houses: enforces single membership, checks evaluation requirements, captures points_at_join
+ * For groups: allows multiple memberships
+ */
+export async function joinGroup(agentId: string, groupId: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    // Get the group/house
+    const groupRows = await sql!`SELECT * FROM groups WHERE id = ${groupId} LIMIT 1`;
+    if (groupRows.length === 0) {
+      return { success: false, error: "Group not found" };
+    }
+    const group = rowToGroup(groupRows[0] as Record<string, unknown>);
+
+    // Get agent
+    const agentRows = await sql!`SELECT * FROM agents WHERE id = ${agentId} LIMIT 1`;
+    if (agentRows.length === 0) {
+      return { success: false, error: "Agent not found" };
+    }
+    const agent = rowToAgent(agentRows[0] as Record<string, unknown>);
+
+    if (group.type === 'house') {
+      // House joining logic
+      await sql!`BEGIN`;
+
+      // Check if already in a house
+      const existingHouseMembership = await sql!`SELECT * FROM house_members WHERE agent_id = ${agentId} LIMIT 1`;
+      if (existingHouseMembership.length > 0) {
+        await sql!`ROLLBACK`;
+        return { success: false, error: "You are already in a house. Leave your current house first." };
+      }
+
+      // Check evaluation requirements
+      if (group.requiredEvaluationIds && group.requiredEvaluationIds.length > 0) {
+        // Import getPassedEvaluations - it's defined later in this file
+        const passedEvaluations = await getPassedEvaluations(agentId);
+        const missingEvaluations = group.requiredEvaluationIds.filter(
+          evalId => !passedEvaluations.includes(evalId)
+        );
+        if (missingEvaluations.length > 0) {
+          await sql!`ROLLBACK`;
+          return { 
+            success: false, 
+            error: `Missing required evaluations: ${missingEvaluations.join(', ')}` 
+          };
+        }
+      }
+
+      // Lock the group row
+      await sql!`SELECT * FROM groups WHERE id = ${groupId} FOR UPDATE`;
+
+      // Add to house_members
+      const joinedAt = new Date().toISOString();
+      await sql!`
+        INSERT INTO house_members (agent_id, house_id, points_at_join, joined_at)
+        VALUES (${agentId}, ${groupId}, ${agent.points}, ${joinedAt})
+        ON CONFLICT (agent_id) DO NOTHING
+      `;
+
+      await sql!`COMMIT`;
+      return { success: true };
+    } else {
+      // Regular group joining logic (many-to-many)
+      const joinedAt = new Date().toISOString();
+      try {
+        await sql!`
+          INSERT INTO group_members (agent_id, group_id, joined_at)
+          VALUES (${agentId}, ${groupId}, ${joinedAt})
+          ON CONFLICT (agent_id, group_id) DO NOTHING
+        `;
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: "Failed to join group" };
+      }
+    }
+  } catch (error) {
+    await sql!`ROLLBACK`;
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+/**
+ * Leave a group or house.
+ * For houses: removes from house_members, recalculates house points
+ * For groups: removes from group_members
+ */
+export async function leaveGroup(agentId: string, groupId: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    // Get the group/house
+    const groupRows = await sql!`SELECT * FROM groups WHERE id = ${groupId} LIMIT 1`;
+    if (groupRows.length === 0) {
+      return { success: false, error: "Group not found" };
+    }
+    const group = rowToGroup(groupRows[0] as Record<string, unknown>);
+
+    if (group.type === 'house') {
+      // Use existing leaveHouse logic
+      const success = await leaveHouse(agentId);
+      if (!success) {
+        return { success: false, error: "Not a member of this house" };
+      }
+      return { success: true };
+    } else {
+      // Regular group leaving - check membership first
+      const checkRows = await sql!`
+        SELECT 1 FROM group_members 
+        WHERE agent_id = ${agentId} AND group_id = ${groupId}
+        LIMIT 1
+      `;
+      if (checkRows.length === 0) {
+        return { success: false, error: "Not a member of this group" };
+      }
+      await sql!`
+        DELETE FROM group_members 
+        WHERE agent_id = ${agentId} AND group_id = ${groupId}
+      `;
+      return { success: true };
+    }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+/**
+ * Check if agent is a member of a group or house
+ */
+export async function isGroupMember(agentId: string, groupId: string): Promise<boolean> {
+  const groupRows = await sql!`SELECT type FROM groups WHERE id = ${groupId} LIMIT 1`;
+  if (groupRows.length === 0) return false;
+  const group = rowToGroup(groupRows[0] as Record<string, unknown>);
+
+  if (group.type === 'house') {
+    const rows = await sql!`SELECT * FROM house_members WHERE agent_id = ${agentId} AND house_id = ${groupId} LIMIT 1`;
+    return rows.length > 0;
+  } else {
+    const rows = await sql!`SELECT * FROM group_members WHERE agent_id = ${agentId} AND group_id = ${groupId} LIMIT 1`;
+    return rows.length > 0;
+  }
+}
+
+/**
+ * Get all members of a group (works for both groups and houses)
+ */
+export async function getGroupMembers(groupId: string): Promise<Array<{ agentId: string; joinedAt: string }>> {
+  const groupRows = await sql!`SELECT type FROM groups WHERE id = ${groupId} LIMIT 1`;
+  if (groupRows.length === 0) return [];
+  const group = rowToGroup(groupRows[0] as Record<string, unknown>);
+
+  if (group.type === 'house') {
+    const rows = await sql!`SELECT agent_id, joined_at FROM house_members WHERE house_id = ${groupId}`;
+    return rows.map((r: Record<string, unknown>) => ({
+      agentId: r.agent_id as string,
+      joinedAt: String(r.joined_at),
+    }));
+  } else {
+    const rows = await sql!`SELECT agent_id, joined_at FROM group_members WHERE group_id = ${groupId}`;
+    return rows.map((r: Record<string, unknown>) => ({
+      agentId: r.agent_id as string,
+      joinedAt: String(r.joined_at),
+    }));
+  }
 }
 
 export async function checkPostRateLimit(
@@ -936,10 +1134,12 @@ function rowToHouseMember(r: Record<string, unknown>): StoredHouseMember {
 /**
  * Create a new house. The creator becomes founder and first member.
  * Returns null if agent is already in a house or name is invalid.
+ * Now creates a group with type='house' instead of using separate houses table.
  */
 export async function createHouse(
   founderId: string,
-  name: string
+  name: string,
+  requiredEvaluationIds?: string[]
 ): Promise<StoredHouse | null> {
   // Validate name length
   if (!name || name.length > MAX_HOUSE_NAME_LENGTH) {
@@ -952,61 +1152,78 @@ export async function createHouse(
     return null;
   }
 
-  // Get founder's current karma for snapshot
+  // Get founder's current points for snapshot
   const founder = await getAgentById(founderId);
   if (!founder) return null;
 
-  const id = generateId("house");
-  const createdAt = new Date().toISOString();
-
   try {
-    // Create house
-    await sql!`
-      INSERT INTO houses (id, name, founder_id, points, created_at)
-      VALUES (${id}, ${name}, ${founderId}, 0, ${createdAt})
-    `;
-
-    // Add founder as first member
-    await sql!`
-      INSERT INTO house_members (agent_id, house_id, points_at_join, joined_at)
-      VALUES (${founderId}, ${id}, ${founder.points}, ${createdAt})
-    `;
-
-    const rows = await sql!`SELECT * FROM houses WHERE id = ${id} LIMIT 1`;
-    return rowToHouse(rows[0] as Record<string, unknown>);
+    // Create house as a group with type='house'
+    const group = await createGroup(name, name, '', founderId, 'house', requiredEvaluationIds);
+    
+    // Convert StoredGroup to StoredHouse for backward compatibility
+    return {
+      id: group.id,
+      name: group.name,
+      founderId: group.founderId!,
+      points: group.points ?? 0,
+      createdAt: group.createdAt,
+    };
   } catch {
     // Likely duplicate name
     return null;
   }
 }
 
-/** Get a house by ID */
+/** Get a house by ID (now gets from groups table) */
 export async function getHouse(id: string): Promise<StoredHouse | null> {
-  const rows = await sql!`SELECT * FROM houses WHERE id = ${id} LIMIT 1`;
-  const r = rows[0] as Record<string, unknown> | undefined;
-  return r ? rowToHouse(r) : null;
+  const group = await getGroup(id);
+  if (!group || group.type !== 'house') return null;
+  return {
+    id: group.id,
+    name: group.name,
+    founderId: group.founderId!,
+    points: group.points ?? 0,
+    createdAt: group.createdAt,
+  };
 }
 
-/** Get a house by name (case-insensitive) */
+/** Get a house by name (case-insensitive, now gets from groups table) */
 export async function getHouseByName(name: string): Promise<StoredHouse | null> {
-  const rows = await sql!`SELECT * FROM houses WHERE LOWER(name) = LOWER(${name}) LIMIT 1`;
+  const rows = await sql!`SELECT * FROM groups WHERE LOWER(name) = LOWER(${name}) AND type = 'house' LIMIT 1`;
   const r = rows[0] as Record<string, unknown> | undefined;
-  return r ? rowToHouse(r) : null;
+  if (!r) return null;
+  const group = rowToGroup(r);
+  return {
+    id: group.id,
+    name: group.name,
+    founderId: group.founderId!,
+    points: group.points ?? 0,
+    createdAt: group.createdAt,
+  };
 }
 
-/** List houses, optionally sorted */
+/** List houses, optionally sorted (now gets from groups table) */
 export async function listHouses(
   sort: "points" | "recent" | "name" = "points"
 ): Promise<StoredHouse[]> {
-  let rows: Record<string, unknown>[];
+  const groups = await listGroups({ type: 'house' });
+  let sorted = [...groups];
+  
   if (sort === "points") {
-    rows = await sql!`SELECT * FROM houses ORDER BY points DESC LIMIT 100`;
+    sorted.sort((a, b) => (b.points ?? 0) - (a.points ?? 0));
   } else if (sort === "name") {
-    rows = await sql!`SELECT * FROM houses ORDER BY LOWER(name) ASC LIMIT 100`;
+    sorted.sort((a, b) => a.name.localeCompare(b.name));
   } else {
-    rows = await sql!`SELECT * FROM houses ORDER BY created_at DESC LIMIT 100`;
+    sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
-  return (rows as Record<string, unknown>[]).map(rowToHouse);
+  
+  return sorted.slice(0, 100).map(g => ({
+    id: g.id,
+    name: g.name,
+    founderId: g.founderId!,
+    points: g.points ?? 0,
+    createdAt: g.createdAt,
+  }));
 }
 
 /** Get an agent's current house membership */
@@ -1038,17 +1255,31 @@ export async function joinHouse(agentId: string, houseId: string): Promise<boole
   try {
     await sql!`BEGIN`;
 
-    // Lock the house row to prevent concurrent modifications
+    // Lock the group row (house) to prevent concurrent modifications
     const houseRows = await sql!`
-      SELECT id, name, founder_id, points, created_at
-      FROM houses
-      WHERE id = ${houseId}
+      SELECT id, name, founder_id, points, created_at, required_evaluation_ids
+      FROM groups
+      WHERE id = ${houseId} AND type = 'house'
       FOR UPDATE
     `;
 
     if (houseRows.length === 0) {
       await sql!`ROLLBACK`;
       return false;
+    }
+    
+    const group = rowToGroup(houseRows[0] as Record<string, unknown>);
+    
+    // Check evaluation requirements
+    if (group.requiredEvaluationIds && group.requiredEvaluationIds.length > 0) {
+      const passedEvaluations = await getPassedEvaluations(agentId);
+      const missingEvaluations = group.requiredEvaluationIds.filter(
+        evalId => !passedEvaluations.includes(evalId)
+      );
+      if (missingEvaluations.length > 0) {
+        await sql!`ROLLBACK`;
+        return false;
+      }
     }
 
     const agentRows = await sql!`SELECT * FROM agents WHERE id = ${agentId} LIMIT 1`;
@@ -1112,11 +1343,11 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
   try {
     await sql!`BEGIN`;
 
-    // Lock the house row to prevent concurrent modifications
+    // Lock the group row (house) to prevent concurrent modifications
     const houseRows = await sql!`
       SELECT id, name, founder_id, points, created_at
-      FROM houses
-      WHERE id = ${membership.houseId}
+      FROM groups
+      WHERE id = ${membership.houseId} AND type = 'house'
       FOR UPDATE
     `;
 
@@ -1124,7 +1355,14 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
       await sql!`ROLLBACK`;
       return false;
     }
-    const house = rowToHouse(houseRows[0] as Record<string, unknown>);
+    const group = rowToGroup(houseRows[0] as Record<string, unknown>);
+    const house: StoredHouse = {
+      id: group.id,
+      name: group.name,
+      founderId: group.founderId!,
+      points: group.points ?? 0,
+      createdAt: group.createdAt,
+    };
 
     // Check if leaving agent is founder
     if (house.founderId === agentId) {
@@ -1132,7 +1370,7 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
       const memberRows = await sql!`
         SELECT agent_id, house_id, points_at_join, joined_at
         FROM house_members
-        WHERE house_id = ${house.id}
+        WHERE house_id = ${membership.houseId}
         ORDER BY joined_at ASC
       `;
       const members = memberRows.map(r => rowToHouseMember(r as Record<string, unknown>));
@@ -1222,27 +1460,34 @@ export async function recalculateHousePoints(houseId: string): Promise<number> {
 /**
  * Get house with computed member count.
  * Uses a single JOIN query to avoid N+1 query pattern.
+ * Now queries groups table instead of houses table.
  */
 export async function getHouseWithDetails(houseId: string): Promise<(StoredHouse & { memberCount: number }) | null> {
   const rows = await sql!`
     SELECT
-      h.id,
-      h.name,
-      h.founder_id,
-      h.points,
-      h.created_at,
+      g.id,
+      g.name,
+      g.founder_id,
+      g.points,
+      g.created_at,
       COUNT(hm.agent_id)::int AS member_count
-    FROM houses h
-    LEFT JOIN house_members hm ON hm.house_id = h.id
-    WHERE h.id = ${houseId}
-    GROUP BY h.id, h.name, h.founder_id, h.points, h.created_at
+    FROM groups g
+    LEFT JOIN house_members hm ON hm.house_id = g.id
+    WHERE g.id = ${houseId} AND g.type = 'house'
+    GROUP BY g.id, g.name, g.founder_id, g.points, g.created_at
     LIMIT 1
   `;
 
   const r = rows[0] as Record<string, unknown> | undefined;
   if (!r) return null;
 
-  const house = rowToHouse(r);
+  const house: StoredHouse = {
+    id: r.id as string,
+    name: r.name as string,
+    founderId: r.founder_id as string,
+    points: Number(r.points),
+    createdAt: String(r.created_at),
+  };
   const memberCount = Number(r.member_count);
   return { ...house, memberCount };
 }

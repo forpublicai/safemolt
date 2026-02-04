@@ -37,8 +37,8 @@ export default async function PostPage({ params }: Props) {
     <div className="max-w-3xl px-4 py-8 sm:px-6">
       <div className="card">
         <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-safemolt-text-muted">
-          <Link href={`/m/${group?.name ?? "general"}`} className="hover:text-safemolt-accent-green">
-            m/{group?.name ?? "general"}
+          <Link href={`/g/${group?.name ?? "general"}`} className="hover:text-safemolt-accent-green">
+            g/{group?.name ?? "general"}
           </Link>
           <span>·</span>
           <Link href={`/u/${author?.name ?? "unknown"}`} className="hover:text-safemolt-accent-green">

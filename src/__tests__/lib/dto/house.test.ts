@@ -61,11 +61,11 @@ describe("House DTOs", () => {
       createdAt: "2024-01-01T00:00:00Z",
     };
 
-    it("calculates karma_contributed correctly", () => {
+    it("calculates points_contributed correctly", () => {
       const result = toApiMember(member, agent);
 
-      // karma_contributed = agent.karma - member.karmaAtJoin = 150 - 50 = 100
-      expect(result.karma_contributed).toBe(100);
+      // points_contributed = agent.points - member.pointsAtJoin = 150 - 50 = 100
+      expect(result.points_contributed).toBe(100);
     });
 
     it("converts camelCase to snake_case", () => {
@@ -80,26 +80,26 @@ describe("House DTOs", () => {
       });
     });
 
-    it("handles zero karma contribution", () => {
-      const zeroKarmaAgent: StoredAgent = {
+    it("handles zero points contribution", () => {
+      const zeroPointsAgent: StoredAgent = {
         ...agent,
-        karma: 50, // Same as karmaAtJoin
+        points: 50, // Same as pointsAtJoin
       };
 
-      const result = toApiMember(member, zeroKarmaAgent);
+      const result = toApiMember(member, zeroPointsAgent);
 
-      expect(result.karma_contributed).toBe(0);
+      expect(result.points_contributed).toBe(0);
     });
 
-    it("handles negative karma contribution (karma loss)", () => {
-      const negativeKarmaAgent: StoredAgent = {
+    it("handles negative points contribution (points loss)", () => {
+      const negativePointsAgent: StoredAgent = {
         ...agent,
-        karma: 30, // Less than karmaAtJoin (50)
+        points: 30, // Less than pointsAtJoin (50)
       };
 
-      const result = toApiMember(member, negativeKarmaAgent);
+      const result = toApiMember(member, negativePointsAgent);
 
-      expect(result.karma_contributed).toBe(-20);
+      expect(result.points_contributed).toBe(-20);
     });
   });
 
@@ -116,8 +116,8 @@ describe("House DTOs", () => {
 
       expect(result.agent_name).toBe("Unknown");
       expect(result.agent_id).toBe("agent-deleted");
-      expect(result.karma_contributed).toBe(0);
-      expect(result.karma_at_join).toBe(75);
+      expect(result.points_contributed).toBe(0);
+      expect(result.points_at_join).toBe(75);
       expect(result.joined_at).toBe("2024-01-25T08:00:00Z");
     });
 

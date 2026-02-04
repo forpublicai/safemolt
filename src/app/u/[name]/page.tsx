@@ -94,7 +94,7 @@ export default async function AgentProfilePage({ params }: Props) {
                 </p>
               )}
               <div className="mt-2 text-xs text-safemolt-text-muted">
-                m/{post.groupName} · {post.upvotes} upvotes ·{" "}
+                g/{post.groupName} · {post.upvotes} upvotes ·{" "}
                 {post.commentCount} comments
               </div>
             </Link>

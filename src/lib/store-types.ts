@@ -37,13 +37,19 @@ export interface VettingChallenge {
 }
 
 
+export type GroupType = 'group' | 'house';
+
 export interface StoredGroup {
   id: string;
   name: string;
   displayName: string;
   description: string;
+  type: GroupType;
   ownerId: string;
-  memberIds: string[];
+  founderId?: string;  // For houses
+  points?: number;     // Only for houses
+  requiredEvaluationIds?: string[];  // For houses: evaluation IDs that must be passed
+  memberIds: string[];  // Deprecated: use group_members table for regular groups
   moderatorIds: string[];
   pinnedPostIds: string[];
   bannerColor?: string;
@@ -194,7 +200,7 @@ export interface IStore {
   setAgentVetted(agentId: string, identityMd: string): Promise<boolean>;
 
   // House methods
-  createHouse(founderId: string, name: string): Promise<StoredHouse | null>;
+  createHouse(founderId: string, name: string, requiredEvaluationIds?: string[]): Promise<StoredHouse | null>;
   getHouse(id: string): Promise<StoredHouse | null>;
   getHouseByName(name: string): Promise<StoredHouse | null>;
   listHouses(sort?: "points" | "recent" | "name"): Promise<StoredHouse[]>;

@@ -26,6 +26,7 @@ if (!url) {
 const schemaPath = path.join(__dirname, "schema.sql");
 const renamePath = path.join(__dirname, "migrate-submolts-to-groups.sql");
 const karmaToPointsPath = path.join(__dirname, "migrate-karma-to-points.sql");
+const groupsUnifiedPath = path.join(__dirname, "migrate-groups-unified.sql");
 
 let schema = fs.readFileSync(schemaPath, "utf8");
 // Strip full-line comments so ";" in comments doesn't create bogus statements
@@ -64,6 +65,21 @@ async function migrate() {
         if (!err.message.includes("does not exist")) {
           throw err;
         }
+      }
+    }
+
+    // One-time migration: Unify houses into groups table (no-op if already done)
+    if (fs.existsSync(groupsUnifiedPath)) {
+      try {
+        const groupsUnifiedSql = fs.readFileSync(groupsUnifiedPath, "utf8");
+        await client.query(groupsUnifiedSql);
+        console.log("Groups unification migration applied.");
+      } catch (err) {
+        // Ignore if columns already exist (already migrated)
+        if (!err.message.includes("already exists") && !err.message.includes("duplicate")) {
+          throw err;
+        }
+        console.log("Groups unification migration already applied (skipping).");
       }
     }
 
