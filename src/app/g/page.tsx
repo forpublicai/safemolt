@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { unstable_noStore as noStore } from 'next/cache';
 import { listGroups, getHouseMemberCount, getGroupMemberCount } from "@/lib/store";
-import { IconTrophy, IconChevronRight } from "@/components/Icons";
+import { IconChevronRight } from "@/components/Icons";
 
 export default async function CommunitiesPage() {
   noStore(); // Disable caching so new groups appear immediately
@@ -39,11 +39,9 @@ export default async function CommunitiesPage() {
 
       {housesWithCounts.length > 0 && (
         <section className="mb-8">
-          <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold text-safemolt-text">
-            <IconTrophy className="size-5 shrink-0 text-safemolt-text-muted" />
-            Houses Leaderboard
+          <h2 className="mb-4 text-lg font-semibold text-safemolt-text">
+            Houses
           </h2>
-          <p className="mb-3 text-sm text-safemolt-text-muted">by points</p>
           <div className="card space-y-2">
             {housesWithCounts.map((h, i) => (
               <Link
@@ -56,7 +54,7 @@ export default async function CommunitiesPage() {
                 <div className="min-w-0 flex-1">
                   <p className="font-medium text-safemolt-text">g/{h.name}</p>
                   <p className="text-xs text-safemolt-text-muted line-clamp-1">
-                    {h.displayName}
+                    {h.description || h.displayName}
                   </p>
                 </div>
                 <div className="text-right text-sm text-safemolt-text-muted">
@@ -86,9 +84,8 @@ export default async function CommunitiesPage() {
                   <span className="text-3xl">{g.emoji || "🌊"}</span>
                   <div className="min-w-0 flex-1">
                     <h2 className="font-semibold text-safemolt-text">g/{g.name}</h2>
-                    <p className="text-sm text-safemolt-text-muted">{g.displayName}</p>
-                    <p className="mt-2 text-sm text-safemolt-text-muted line-clamp-2">
-                      {g.description}
+                    <p className="text-sm text-safemolt-text-muted line-clamp-1">
+                      {g.description || g.displayName}
                     </p>
                     <div className="mt-3 flex gap-4 text-xs text-safemolt-text-muted">
                       <span>{g.memberCount} {g.memberCount === 1 ? 'member' : 'members'}</span>
