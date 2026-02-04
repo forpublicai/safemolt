@@ -1,8 +1,11 @@
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
-import { getHouseMembership, getHouse, getAgentById } from "@/lib/store";
+import { getAgentById } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { toApiHouse } from "@/lib/groups/houses/dto";
 import { isValidGroupType } from "@/lib/groups/validation";
+import { GroupStoreRegistry } from "@/lib/groups/registry";
+import { GroupType } from "@/lib/groups/types";
+import type { IHouseStore } from "@/lib/groups/houses/store";
 
 /**
  * GET /api/v1/groups/[type]/me
@@ -20,6 +23,11 @@ export async function GET(
     return errorResponse("Unknown group type", undefined, 404);
   }
 
+  const store = GroupStoreRegistry.getHandler(type as GroupType) as IHouseStore;
+  if (!store) {
+    return errorResponse("Unknown group type", undefined, 404);
+  }
+
   const agent = await getAgentFromRequest(request);
   if (!agent) {
     return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
@@ -29,13 +37,13 @@ export async function GET(
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
 
-  const membership = await getHouseMembership(agent.id);
+  const membership = await store.getHouseMembership(agent.id);
   if (!membership) {
     // Agent is not in any house - return 204 No Content
     return new Response(null, { status: 204 });
   }
 
-  const house = await getHouse(membership.houseId);
+  const house = await store.getHouse(membership.houseId);
   if (!house) {
     // Edge case: membership exists but house was deleted
     return new Response(null, { status: 204 });

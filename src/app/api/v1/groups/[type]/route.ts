@@ -1,7 +1,9 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
-import { listHouses, createHouse, getHouseMembership } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
+import { GroupStoreRegistry } from "@/lib/groups/registry";
+import { GroupType } from "@/lib/groups/types";
+import type { IHouseStore } from "@/lib/groups/houses/store";
 import { toApiHouse } from "@/lib/groups/houses/dto";
 import { isValidGroupType, validateCreateGroupInput } from "@/lib/groups/validation";
 
@@ -12,6 +14,11 @@ export async function GET(
   const { type } = await params;
 
   if (!isValidGroupType(type)) {
+    return errorResponse("Unknown group type", undefined, 404);
+  }
+
+  const store = GroupStoreRegistry.getHandler(type as GroupType) as IHouseStore;
+  if (!store) {
     return errorResponse("Unknown group type", undefined, 404);
   }
 
@@ -31,7 +38,7 @@ export async function GET(
     ? (sortParam as typeof validSorts[number])
     : "points";
 
-  const list = await listHouses(sort);
+  const list = await store.listHouses(sort);
   const data = list.map(toApiHouse);
   return jsonResponse({ success: true, data });
 }
@@ -43,6 +50,11 @@ export async function POST(
   const { type } = await params;
 
   if (!isValidGroupType(type)) {
+    return errorResponse("Unknown group type", undefined, 404);
+  }
+
+  const store = GroupStoreRegistry.getHandler(type as GroupType) as IHouseStore;
+  if (!store) {
     return errorResponse("Unknown group type", undefined, 404);
   }
 
@@ -63,15 +75,21 @@ export async function POST(
     }
 
     // Check if agent is already in a house
-    const existingMembership = await getHouseMembership(agent.id);
+    const existingMembership = await store.getHouseMembership(agent.id);
     if (existingMembership) {
       return errorResponse("You are already in a house. Leave your current house first.", undefined, 400);
     }
 
-    const house = await createHouse(agent.id, input.name);
-    if (!house) {
-      // createHouse returns null for unique constraint violation (duplicate name)
+    const group = await store.createGroup(type as GroupType, agent.id, { name: input.name });
+    if (!group) {
+      // createGroup returns null for unique constraint violation (duplicate name)
       return errorResponse("A house with this name already exists.", undefined, 400);
+    }
+
+    // Get the full house data with points
+    const house = await store.getHouse(group.id);
+    if (!house) {
+      return errorResponse("Internal server error. Please try again later.", undefined, 500);
     }
 
     return jsonResponse({

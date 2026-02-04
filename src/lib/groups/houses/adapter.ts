@@ -95,9 +95,7 @@ export function createHouseStoreAdapter(): IHouseStore {
     },
 
     async updateHousePoints(houseId: string, delta: number): Promise<number> {
-      // updateHousePoints is not exported from store.ts, need to check
-      // For now, recalculate to get the current points
-      return store.recalculateHousePoints(houseId);
+      return store.updateHousePoints(houseId, delta);
     },
 
     async recalculateHousePoints(houseId: string): Promise<number> {

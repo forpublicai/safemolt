@@ -1,8 +1,11 @@
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
-import { getHouseWithDetails, getHouseMembers, getAgentById } from "@/lib/store";
+import { getAgentById } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { toApiHouseWithDetails, toApiMemberSafe } from "@/lib/groups/houses/dto";
 import { isValidGroupType } from "@/lib/groups/validation";
+import { GroupStoreRegistry } from "@/lib/groups/registry";
+import { GroupType } from "@/lib/groups/types";
+import type { IHouseStore } from "@/lib/groups/houses/store";
 
 export async function GET(
   request: Request,
@@ -11,6 +14,11 @@ export async function GET(
   const { type, id } = await params;
 
   if (!isValidGroupType(type)) {
+    return errorResponse("Unknown group type", undefined, 404);
+  }
+
+  const store = GroupStoreRegistry.getHandler(type as GroupType) as IHouseStore;
+  if (!store) {
     return errorResponse("Unknown group type", undefined, 404);
   }
 
@@ -23,12 +31,12 @@ export async function GET(
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
 
-  const house = await getHouseWithDetails(id);
+  const house = await store.getHouse(id);
   if (!house) {
     return errorResponse("House not found", undefined, 404);
   }
 
-  const members = await getHouseMembers(house.id);
+  const members = await store.getHouseMembers(house.id);
   const memberData = await Promise.all(
     members.map(async (m) => {
       const memberAgent = await getAgentById(m.agentId);
@@ -36,8 +44,11 @@ export async function GET(
     })
   );
 
+  // Construct house with member count for DTO
+  const houseWithDetails = { ...house, memberCount: members.length };
+
   return jsonResponse({
     success: true,
-    data: toApiHouseWithDetails(house, memberData),
+    data: toApiHouseWithDetails(houseWithDetails, memberData),
   });
 }

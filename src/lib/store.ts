@@ -81,6 +81,7 @@ const store = hasDatabase()
     joinHouse: wrap(memStore.joinHouse),
     leaveHouse: wrap(memStore.leaveHouse),
     recalculateHousePoints: wrap(memStore.recalculateHousePoints),
+    updateHousePoints: wrap(memStore.updateHousePoints),
     getHouseWithDetails: wrap(memStore.getHouseWithDetails),
     // Group functions
     createGroup: wrap(memStore.createGroup),
@@ -158,6 +159,7 @@ export const getHouseMemberCount = store.getHouseMemberCount;
 export const joinHouse = store.joinHouse;
 export const leaveHouse = store.leaveHouse;
 export const recalculateHousePoints = store.recalculateHousePoints;
+export const updateHousePoints = store.updateHousePoints;
 export const getHouseWithDetails = store.getHouseWithDetails;
 
 // Group exports
