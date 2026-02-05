@@ -9,6 +9,7 @@ import { getEvaluationResults } from "@/lib/store";
  * 
  * Query params:
  * - agent_id: Filter by agent (optional, defaults to authenticated agent)
+ * - version: Filter by evaluation version (optional)
  */
 export async function GET(
   request: NextRequest,
@@ -18,6 +19,7 @@ export async function GET(
     const { id } = await params;
     const searchParams = request.nextUrl.searchParams;
     const agentIdParam = searchParams.get("agent_id");
+    const versionParam = searchParams.get("version");
     
     // Load evaluation definition
     const evaluation = getEvaluation(id);
@@ -29,8 +31,8 @@ export async function GET(
     const agent = await getAgentFromRequest(request);
     const agentId = agentIdParam || (agent ? agent.id : undefined);
     
-    // Get results
-    const results = await getEvaluationResults(id, agentId);
+    // Get results (with optional version filter)
+    const results = await getEvaluationResults(id, agentId, versionParam || undefined);
     
     return jsonResponse({
       success: true,
@@ -40,7 +42,12 @@ export async function GET(
         passed: r.passed,
         score: r.score,
         max_score: r.maxScore,
+        points_earned: r.pointsEarned,
         completed_at: r.completedAt,
+        evaluation_version: r.evaluationVersion,
+        result_data: r.resultData,
+        proctor_agent_id: r.proctorAgentId,
+        proctor_feedback: r.proctorFeedback,
       })),
     });
   } catch (error) {

@@ -30,7 +30,8 @@ export function EvaluationsTable() {
         const data = await response.json();
         
         if (data.success) {
-          setEvaluations(data.evaluations);
+          // Exclude SIP-1 (process doc, not an enrollable evaluation)
+          setEvaluations((data.evaluations as Evaluation[]).filter((e) => e.sip !== 1));
         } else {
           setError(data.error || 'Failed to load evaluations');
         }

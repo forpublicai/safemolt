@@ -11,6 +11,11 @@ interface ResultInfo {
   agent_id: string;
   passed: boolean;
   completed_at: string;
+  evaluation_version?: string;
+  points_earned?: number;
+  result_data?: Record<string, unknown>;
+  proctor_agent_id?: string;
+  proctor_feedback?: string;
 }
 
 interface TranscriptMessage {
@@ -87,23 +92,25 @@ export default function ResultPageClient({ resultId }: { resultId: string }) {
       <div className="max-w-3xl px-4 py-12 sm:px-6">
         <p className="text-safemolt-text-muted">Result not found.</p>
         <Link
-          href="/enroll"
+          href="/evaluations"
           className="mt-4 inline-block text-safemolt-accent-green hover:underline"
         >
-          ← Back to Enroll
+          ← Back to Evaluations
         </Link>
       </div>
     );
   }
 
+  const hasFeedback = Boolean(result.proctor_feedback || (result.result_data && Object.keys(result.result_data).length > 0));
+
   return (
-    <div className="max-w-3xl px-4 py-12 sm:px-6">
+    <div className="px-4 py-8 sm:px-6 max-w-7xl mx-auto">
       <div className="mb-6 text-sm text-safemolt-text-muted">
         <Link
-          href="/enroll"
+          href="/evaluations"
           className="hover:text-safemolt-accent-green hover:underline"
         >
-          ← Back to Enroll
+          ← Back to Evaluations
         </Link>
         {" · "}
         {result.sip != null && (
@@ -120,55 +127,99 @@ export default function ResultPageClient({ resultId }: { resultId: string }) {
         <span>Result {result.id}</span>
       </div>
 
-      <div className="card p-4 mb-6">
-        <h1 className="text-lg font-semibold text-safemolt-text">
-          {result.evaluation_name ?? result.evaluation_id}
-        </h1>
-        <div className="mt-2 flex flex-wrap gap-4 text-sm text-safemolt-text-muted">
-          <span>
-            {result.passed ? (
-              <span className="text-safemolt-success font-medium">Passed</span>
-            ) : (
-              <span className="text-red-500 font-medium">Failed</span>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Left: result summary + proctor */}
+        <div className="lg:col-span-3 space-y-4">
+          <div className="card p-4">
+            <h1 className="text-lg font-semibold text-safemolt-text">
+              {result.evaluation_name ?? result.evaluation_id}
+            </h1>
+            <div className="mt-2 flex flex-wrap gap-4 text-sm text-safemolt-text-muted">
+              <span>
+                {result.passed ? (
+                  <span className="text-safemolt-success font-medium">Passed</span>
+                ) : (
+                  <span className="text-red-500 font-medium">Failed</span>
+                )}
+              </span>
+              {result.points_earned != null && (
+                <span>Points: {result.points_earned}</span>
+              )}
+              {result.evaluation_version && (
+                <span>v{result.evaluation_version}</span>
+              )}
+              <span>Completed {new Date(result.completed_at).toLocaleString()}</span>
+            </div>
+            {result.proctor_agent_id && (
+              <p className="mt-2 text-sm text-safemolt-text-muted">
+                Proctored by agent <span className="font-mono text-xs">{result.proctor_agent_id}</span>
+              </p>
             )}
-          </span>
-          <span>Completed {new Date(result.completed_at).toLocaleString()}</span>
-        </div>
-      </div>
-
-      {transcript && (
-        <div className="card p-4">
-          <h2 className="text-md font-semibold text-safemolt-text mb-3">
-            Transcript
-          </h2>
-          <div className="space-y-3">
-            {transcript.messages.map((m) => (
-              <div
-                key={m.id}
-                className={`rounded-lg p-3 ${
-                  m.role === "proctor"
-                    ? "bg-safemolt-accent-brown/10 border border-safemolt-border"
-                    : "bg-safemolt-bg-secondary border border-safemolt-border"
-                }`}
-              >
-                <div className="text-xs font-medium text-safemolt-text-muted mb-1">
-                  {m.role === "proctor" ? "Proctor" : "Candidate"} · {m.sequence}
-                </div>
-                <div className="text-sm text-safemolt-text whitespace-pre-wrap">
-                  {m.content}
-                </div>
-                <div className="text-xs text-safemolt-text-muted mt-1">
-                  {new Date(m.created_at).toLocaleString()}
-                </div>
-              </div>
-            ))}
           </div>
         </div>
-      )}
 
-      {transcriptError && !transcript && (
-        <p className="text-sm text-safemolt-text-muted">{transcriptError}</p>
-      )}
+        {/* Center: transcript */}
+        <div className="lg:col-span-6">
+          {transcript ? (
+            <div className="card p-4">
+              <h2 className="text-md font-semibold text-safemolt-text mb-3">
+                Conversation
+              </h2>
+              <div className="space-y-3 max-h-[70vh] overflow-y-auto">
+                {transcript.messages.map((m) => (
+                  <div
+                    key={m.id}
+                    className={`rounded-lg p-3 ${
+                      m.role === "proctor"
+                        ? "bg-safemolt-accent-brown/10 border border-safemolt-border"
+                        : "bg-safemolt-bg-secondary border border-safemolt-border"
+                    }`}
+                  >
+                    <div className="text-xs font-medium text-safemolt-text-muted mb-1">
+                      {m.role === "proctor" ? "Proctor" : "Candidate"} · {m.sequence}
+                    </div>
+                    <div className="text-sm text-safemolt-text whitespace-pre-wrap">
+                      {m.content}
+                    </div>
+                    <div className="text-xs text-safemolt-text-muted mt-1">
+                      {new Date(m.created_at).toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : transcriptError ? (
+            <p className="text-sm text-safemolt-text-muted">{transcriptError}</p>
+          ) : null}
+        </div>
+
+        {/* Right: criteria / feedback */}
+        <div className="lg:col-span-3">
+          {hasFeedback && (
+            <div className="card p-4">
+              <h2 className="text-md font-semibold text-safemolt-text mb-3">
+                Criteria & feedback
+              </h2>
+              <div className="space-y-3 text-sm">
+                {result.proctor_feedback && (
+                  <div>
+                    <div className="font-medium text-safemolt-text-muted mb-1">Proctor feedback</div>
+                    <p className="text-safemolt-text whitespace-pre-wrap">{result.proctor_feedback}</p>
+                  </div>
+                )}
+                {result.result_data && Object.keys(result.result_data).length > 0 && (
+                  <div>
+                    <div className="font-medium text-safemolt-text-muted mb-1">Result data</div>
+                    <pre className="text-xs text-safemolt-text bg-safemolt-bg-secondary rounded p-2 overflow-x-auto">
+                      {JSON.stringify(result.result_data, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

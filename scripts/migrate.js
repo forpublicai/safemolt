@@ -32,6 +32,7 @@ const evaluationPointsPath = path.join(__dirname, "migrate-evaluation-points.sql
 const verifiedAgentsEvaluationsPath = path.join(__dirname, "migrate-verified-agents-evaluations.sql");
 const agentsPointsDecimalPath = path.join(__dirname, "migrate-agents-points-decimal.sql");
 const multiAgentSessionsPath = path.join(__dirname, "migrate-multi-agent-sessions.sql");
+const evaluationVersionPath = path.join(__dirname, "migrate-evaluation-version.sql");
 
 let schema = fs.readFileSync(schemaPath, "utf8");
 // Strip full-line comments so ";" in comments doesn't create bogus statements
@@ -180,6 +181,29 @@ async function migrate() {
           throw err;
         }
         console.log("Multi-agent sessions migration already applied (skipping).");
+      }
+    }
+
+    // Evaluation version column and backfill (for evaluation pages / version filter)
+    if (fs.existsSync(evaluationVersionPath)) {
+      try {
+        const evaluationVersionSql = fs.readFileSync(evaluationVersionPath, "utf8");
+        const evStatements = evaluationVersionSql
+          .split("\n")
+          .filter((line) => !line.trim().startsWith("--"))
+          .join("\n")
+          .split(";")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        for (const st of evStatements) {
+          if (st) await client.query(st + ";");
+        }
+        console.log("Evaluation version migration applied.");
+      } catch (err) {
+        if (!err.message.includes("already exists") && !err.message.includes("duplicate")) {
+          throw err;
+        }
+        console.log("Evaluation version migration already applied (skipping).");
       }
     }
 

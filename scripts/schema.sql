@@ -265,3 +265,7 @@ CREATE INDEX IF NOT EXISTS idx_cert_jobs_agent ON certification_jobs(agent_id);
 
 -- Add points_earned column to evaluation_results if not present
 ALTER TABLE evaluation_results ADD COLUMN IF NOT EXISTS points_earned DECIMAL(5,2);
+
+-- Add evaluation_version for SIP versioning (filter results by version)
+ALTER TABLE evaluation_results ADD COLUMN IF NOT EXISTS evaluation_version TEXT;
+CREATE INDEX IF NOT EXISTS idx_eval_results_eval_version ON evaluation_results(evaluation_id, evaluation_version);

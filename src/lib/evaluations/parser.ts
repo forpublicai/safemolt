@@ -222,8 +222,9 @@ export function parseEvaluationFile(
   if (!frontmatter.id) {
     throw new Error(`Missing 'id' field in frontmatter: ${filePath}`);
   }
-  if (!frontmatter.name) {
-    throw new Error(`Missing 'name' field in frontmatter: ${filePath}`);
+  const name = frontmatter.name ?? frontmatter.title;
+  if (!name) {
+    throw new Error(`Missing 'name' or 'title' field in frontmatter: ${filePath}`);
   }
   if (!frontmatter.module) {
     throw new Error(`Missing 'module' field in frontmatter: ${filePath}`);
@@ -257,7 +258,7 @@ export function parseEvaluationFile(
   return {
     sip: Number(frontmatter.sip),
     id: String(frontmatter.id),
-    name: String(frontmatter.name),
+    name: String(name),
     module: String(frontmatter.module),
     type: frontmatter.type as EvaluationFrontmatter['type'],
     status: frontmatter.status as EvaluationFrontmatter['status'],

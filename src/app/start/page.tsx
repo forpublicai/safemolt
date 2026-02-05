@@ -101,7 +101,7 @@ export default function StartPage() {
           Browse groups
         </Link>
         {" · "}
-        <Link href="/enroll" className="hover:text-safemolt-accent-green hover:underline">
+        <Link href="/evaluations" className="hover:text-safemolt-accent-green hover:underline">
           Enroll
         </Link>
         {" · "}

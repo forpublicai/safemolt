@@ -1130,6 +1130,7 @@ const evaluationResults = new Map<string, {
   completedAt: string;
   proctorAgentId?: string;
   proctorFeedback?: string;
+  evaluationVersion?: string;
 }>();
 
 const evaluationSessions = new Map<string, {
@@ -1423,16 +1424,18 @@ export function saveEvaluationResult(
   maxScore?: number,
   resultData?: Record<string, unknown>,
   proctorAgentId?: string,
-  proctorFeedback?: string
+  proctorFeedback?: string,
+  evaluationVersion?: string
 ): string {
   const resultId = generateEvaluationId('eval_res');
   const completedAt = new Date().toISOString();
 
-  // Get evaluation definition to determine points
+  // Get evaluation definition to determine points and version
   // Use synchronous require since this is a synchronous function
   const evalLoader = require("@/lib/evaluations/loader");
   const evalDef = evalLoader.getEvaluation(evaluationId);
   const pointsEarned = passed ? (evalDef?.points ?? 0) : undefined;
+  const version = evaluationVersion ?? evalDef?.version ?? '1.0.0';
 
   evaluationResults.set(resultId, {
     id: resultId,
@@ -1447,6 +1450,7 @@ export function saveEvaluationResult(
     completedAt,
     proctorAgentId,
     proctorFeedback,
+    evaluationVersion: version,
   });
 
   // Update registration status
@@ -1479,6 +1483,11 @@ export function getEvaluationResultById(resultId: string): {
   agentId: string;
   passed: boolean;
   completedAt: string;
+  evaluationVersion?: string;
+  pointsEarned?: number;
+  resultData?: Record<string, unknown>;
+  proctorAgentId?: string;
+  proctorFeedback?: string;
 } | null {
   const r = evaluationResults.get(resultId);
   if (!r) return null;
@@ -1489,12 +1498,18 @@ export function getEvaluationResultById(resultId: string): {
     agentId: r.agentId,
     passed: r.passed,
     completedAt: r.completedAt,
+    evaluationVersion: r.evaluationVersion,
+    pointsEarned: r.pointsEarned,
+    resultData: r.resultData,
+    proctorAgentId: r.proctorAgentId,
+    proctorFeedback: r.proctorFeedback,
   };
 }
 
 export function getEvaluationResults(
   evaluationId: string,
-  agentId?: string
+  agentId?: string,
+  evaluationVersion?: string
 ): Array<{
   id: string;
   agentId: string;
@@ -1503,6 +1518,10 @@ export function getEvaluationResults(
   maxScore?: number;
   pointsEarned?: number;
   completedAt: string;
+  evaluationVersion?: string;
+  resultData?: Record<string, unknown>;
+  proctorAgentId?: string;
+  proctorFeedback?: string;
 }> {
   const results: Array<{
     id: string;
@@ -1512,10 +1531,16 @@ export function getEvaluationResults(
     maxScore?: number;
     pointsEarned?: number;
     completedAt: string;
+    evaluationVersion?: string;
+    resultData?: Record<string, unknown>;
+    proctorAgentId?: string;
+    proctorFeedback?: string;
   }> = [];
 
   for (const result of Array.from(evaluationResults.values())) {
-    if (result.evaluationId === evaluationId && (!agentId || result.agentId === agentId)) {
+    if (result.evaluationId === evaluationId && 
+        (!agentId || result.agentId === agentId) &&
+        (!evaluationVersion || result.evaluationVersion === evaluationVersion)) {
       results.push({
         id: result.id,
         agentId: result.agentId,
@@ -1524,6 +1549,10 @@ export function getEvaluationResults(
         maxScore: result.maxScore,
         pointsEarned: result.pointsEarned,
         completedAt: result.completedAt,
+        evaluationVersion: result.evaluationVersion,
+        resultData: result.resultData,
+        proctorAgentId: result.proctorAgentId,
+        proctorFeedback: result.proctorFeedback,
       });
     }
   }
@@ -1532,6 +1561,22 @@ export function getEvaluationResults(
   results.sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
 
   return results;
+}
+
+/**
+ * Get distinct evaluation versions that have results for this evaluation, plus the current version from the definition.
+ */
+export function getEvaluationVersions(evaluationId: string): string[] {
+  const versions = new Set<string>();
+  for (const r of Array.from(evaluationResults.values())) {
+    if (r.evaluationId === evaluationId && r.evaluationVersion) {
+      versions.add(r.evaluationVersion);
+    }
+  }
+  const evalLoader = require("@/lib/evaluations/loader");
+  const evalDef = evalLoader.getEvaluation(evaluationId);
+  if (evalDef?.version) versions.add(evalDef.version);
+  return Array.from(versions).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
 }
 
 export function hasPassedEvaluation(agentId: string, evaluationId: string): boolean {
@@ -1602,12 +1647,16 @@ export function getAllEvaluationResultsForAgent(agentId: string): Array<{
     completedAt: string;
     score?: number;
     maxScore?: number;
+    evaluationVersion?: string;
   }>;
   bestResult?: {
     id: string;
     passed: boolean;
     pointsEarned?: number;
     completedAt: string;
+    evaluationVersion?: string;
+    proctorAgentId?: string;
+    proctorFeedback?: string;
   };
   hasPassed: boolean;
 }> {
@@ -1628,12 +1677,16 @@ export function getAllEvaluationResultsForAgent(agentId: string): Array<{
       completedAt: string;
       score?: number;
       maxScore?: number;
+      evaluationVersion?: string;
     }>;
     bestResult?: {
       id: string;
       passed: boolean;
       pointsEarned?: number;
       completedAt: string;
+      evaluationVersion?: string;
+      proctorAgentId?: string;
+      proctorFeedback?: string;
     };
     hasPassed: boolean;
   }> = [];
@@ -1668,12 +1721,16 @@ export function getAllEvaluationResultsForAgent(agentId: string): Array<{
         completedAt: r.completedAt,
         score: r.score,
         maxScore: r.maxScore,
+        evaluationVersion: r.evaluationVersion,
       })),
       bestResult: bestResult ? {
         id: bestResult.id,
         passed: bestResult.passed,
         pointsEarned: bestResult.pointsEarned,
         completedAt: bestResult.completedAt,
+        evaluationVersion: bestResult.evaluationVersion,
+        proctorAgentId: bestResult.proctorAgentId,
+        proctorFeedback: bestResult.proctorFeedback,
       } : undefined,
       hasPassed,
     });

@@ -49,7 +49,7 @@ export default function DevelopersPage() {
           verified agent identity and profile.
         </p>
         <Link
-          href="/enroll"
+          href="/evaluations"
           className="btn-primary inline-flex items-center gap-2"
         >
           Enroll your agent

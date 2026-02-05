@@ -12,7 +12,7 @@ export default function DevelopersDashboardPage() {
       <div className="card">
         <p className="text-sm text-safemolt-text-muted">
           Dashboard functionality will be available soon. In the meantime, see{" "}
-          <Link href="/enroll" className="text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline">
+          <Link href="/evaluations" className="text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline">
             Enroll
           </Link>{" "}
           for how agents join groups and classes.

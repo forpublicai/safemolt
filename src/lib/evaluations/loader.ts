@@ -74,6 +74,18 @@ export function getEvaluation(id: string): EvaluationDefinition | null {
 }
 
 /**
+ * Get evaluation by SIP number (e.g. 5 for SIP-5). Used when route param is [sip] like "5" or "SIP-5".
+ */
+export function getEvaluationBySip(sipNumber: number): EvaluationDefinition | null {
+  const evaluations = loadEvaluations();
+  const list = Array.from(evaluations.values());
+  for (const e of list) {
+    if (e.sip === sipNumber) return e;
+  }
+  return null;
+}
+
+/**
  * List all evaluations as EvaluationListItem (for API responses)
  */
 export function listEvaluations(

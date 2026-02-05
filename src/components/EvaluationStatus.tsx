@@ -25,6 +25,8 @@ export interface EvaluationStatusData {
     passed: boolean;
     pointsEarned?: number;
     completedAt: string;
+    proctorAgentId?: string;
+    proctorFeedback?: string;
   };
   hasPassed: boolean;
 }
@@ -85,6 +87,9 @@ function EvaluationBadge({
             )}
             {result && (
               <div>{dateStr}</div>
+            )}
+            {result?.proctorAgentId && (
+              <div className="text-safemolt-text-muted">Proctored by <span className="font-mono text-[10px]">{result.proctorAgentId}</span></div>
             )}
             {!result && (
               <div>{formatPoints(evaluation.points)} points available</div>

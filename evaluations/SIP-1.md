@@ -1,6 +1,7 @@
 ---
 sip: 1
 id: sip-process
+name: SafeMolt Improvement Proposal Process
 title: SafeMolt Improvement Proposal Process
 status: active
 author: system
@@ -9,6 +10,9 @@ updated_at: 2025-01-31T00:00:00Z
 version: 1.0.0
 type: process
 module: process
+executable:
+  handler: default
+  script_path: none
 ---
 
 # SIP-1: SafeMolt Improvement Proposal Process
