@@ -1132,6 +1132,34 @@ const evaluationResults = new Map<string, {
   proctorFeedback?: string;
 }>();
 
+const evaluationSessions = new Map<string, {
+  id: string;
+  evaluationId: string;
+  kind: string;
+  registrationId?: string;
+  status: string;
+  startedAt: string;
+  endedAt?: string;
+}>();
+
+const evaluationSessionParticipants = new Map<string, {
+  id: string;
+  sessionId: string;
+  agentId: string;
+  role: string;
+  joinedAt: string;
+}>();
+
+const evaluationMessages = new Map<string, {
+  id: string;
+  sessionId: string;
+  senderAgentId: string;
+  role: string;
+  content: string;
+  createdAt: string;
+  sequence: number;
+}>();
+
 function generateEvaluationId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -1218,6 +1246,166 @@ export function getPendingProctorRegistrations(
   return pending;
 }
 
+// ==================== Multi-Agent Evaluation Sessions (base) ====================
+
+export type SessionKind = 'proctored' | 'live_class_work';
+
+export function createSession(
+  evaluationId: string,
+  kind: SessionKind,
+  registrationId?: string
+): string {
+  const id = generateEvaluationId('eval_sess');
+  const startedAt = new Date().toISOString();
+  evaluationSessions.set(id, {
+    id,
+    evaluationId,
+    kind,
+    registrationId,
+    status: 'active',
+    startedAt,
+  });
+  return id;
+}
+
+export function getSession(sessionId: string): {
+  id: string;
+  evaluationId: string;
+  kind: string;
+  registrationId?: string;
+  status: string;
+  startedAt: string;
+  endedAt?: string;
+} | null {
+  const s = evaluationSessions.get(sessionId);
+  if (!s) return null;
+  return {
+    id: s.id,
+    evaluationId: s.evaluationId,
+    kind: s.kind,
+    registrationId: s.registrationId,
+    status: s.status,
+    startedAt: s.startedAt,
+    endedAt: s.endedAt,
+  };
+}
+
+export function getSessionByRegistrationId(registrationId: string): {
+  id: string;
+  evaluationId: string;
+  kind: string;
+  registrationId?: string;
+  status: string;
+  startedAt: string;
+  endedAt?: string;
+} | null {
+  for (const s of Array.from(evaluationSessions.values())) {
+    if (s.registrationId === registrationId) {
+      return {
+        id: s.id,
+        evaluationId: s.evaluationId,
+        kind: s.kind,
+        registrationId: s.registrationId,
+        status: s.status,
+        startedAt: s.startedAt,
+        endedAt: s.endedAt,
+      };
+    }
+  }
+  return null;
+}
+
+export function addParticipant(sessionId: string, agentId: string, role: string): string {
+  const id = generateEvaluationId('eval_part');
+  const joinedAt = new Date().toISOString();
+  for (const p of Array.from(evaluationSessionParticipants.values())) {
+    if (p.sessionId === sessionId && p.agentId === agentId) return id;
+  }
+  evaluationSessionParticipants.set(id, {
+    id,
+    sessionId,
+    agentId,
+    role,
+    joinedAt,
+  });
+  return id;
+}
+
+export function getParticipants(sessionId: string): Array<{ agentId: string; role: string }> {
+  const out: Array<{ agentId: string; role: string; joinedAt: string }> = [];
+  for (const p of Array.from(evaluationSessionParticipants.values())) {
+    if (p.sessionId === sessionId) out.push({ agentId: p.agentId, role: p.role, joinedAt: p.joinedAt });
+  }
+  out.sort((a, b) => a.joinedAt.localeCompare(b.joinedAt));
+  return out.map(({ agentId, role }) => ({ agentId, role }));
+}
+
+export function addSessionMessage(
+  sessionId: string,
+  senderAgentId: string,
+  role: string,
+  content: string
+): { id: string; sequence: number; createdAt: string } {
+  const id = generateEvaluationId('eval_msg');
+  const createdAt = new Date().toISOString();
+  let maxSeq = 0;
+  for (const m of Array.from(evaluationMessages.values())) {
+    if (m.sessionId === sessionId && m.sequence > maxSeq) maxSeq = m.sequence;
+  }
+  const sequence = maxSeq + 1;
+  evaluationMessages.set(id, {
+    id,
+    sessionId,
+    senderAgentId,
+    role,
+    content,
+    createdAt,
+    sequence,
+  });
+  return { id, sequence, createdAt };
+}
+
+export function getSessionMessages(sessionId: string): Array<{
+  id: string;
+  senderAgentId: string;
+  role: string;
+  content: string;
+  createdAt: string;
+  sequence: number;
+}> {
+  const out = Array.from(evaluationMessages.values()).filter((m) => m.sessionId === sessionId);
+  out.sort((a, b) => a.sequence - b.sequence);
+  return out.map((m) => ({
+    id: m.id,
+    senderAgentId: m.senderAgentId,
+    role: m.role,
+    content: m.content,
+    createdAt: m.createdAt,
+    sequence: m.sequence,
+  }));
+}
+
+export function endSession(sessionId: string): void {
+  const s = evaluationSessions.get(sessionId);
+  if (s) {
+    s.status = 'ended';
+    s.endedAt = new Date().toISOString();
+  }
+}
+
+export function claimProctorSession(registrationId: string, proctorAgentId: string): string {
+  const registration = getEvaluationRegistrationById(registrationId);
+  if (!registration) throw new Error('Registration not found');
+  const existing = getSessionByRegistrationId(registrationId);
+  if (existing) throw new Error('Session already exists for this registration');
+  const sessionId = createSession(registration.evaluationId, 'proctored', registrationId);
+  addParticipant(sessionId, proctorAgentId, 'proctor');
+  addParticipant(sessionId, registration.agentId, 'candidate');
+  return sessionId;
+}
+
+// ==================== Evaluation (continued) ====================
+
 export function startEvaluation(registrationId: string): void {
   const reg = evaluationRegistrations.get(registrationId);
   if (reg) {
@@ -1282,6 +1470,26 @@ export function hasEvaluationResultForRegistration(registrationId: string): bool
     if (r.registrationId === registrationId) return true;
   }
   return false;
+}
+
+export function getEvaluationResultById(resultId: string): {
+  id: string;
+  registrationId: string;
+  evaluationId: string;
+  agentId: string;
+  passed: boolean;
+  completedAt: string;
+} | null {
+  const r = evaluationResults.get(resultId);
+  if (!r) return null;
+  return {
+    id: r.id,
+    registrationId: r.registrationId,
+    evaluationId: r.evaluationId,
+    agentId: r.agentId,
+    passed: r.passed,
+    completedAt: r.completedAt,
+  };
 }
 
 export function getEvaluationResults(

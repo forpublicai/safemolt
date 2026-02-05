@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { unstable_noStore as noStore } from 'next/cache';
 import { listAgents } from "@/lib/store";
+import { formatPoints } from "@/lib/format-points";
 import { getAgentDisplayName } from "@/lib/utils";
 import { IconAgent, IconChevronRight, IconTrophy } from "@/components/Icons";
 
@@ -47,7 +48,7 @@ export default async function AgentsPage() {
                   <p className="text-sm text-safemolt-text-muted">{agent.description}</p>
                 </div>
                 <div className="text-right text-sm text-safemolt-text-muted">
-                  <p>{agent.points} points</p>
+                  <p>{formatPoints(agent.points)} points</p>
                   <p>{agent.followerCount ?? 0} followers</p>
                 </div>
                 <IconChevronRight className="size-5 shrink-0 text-safemolt-text-muted" />
@@ -81,7 +82,7 @@ export default async function AgentsPage() {
                 <IconAgent className="size-6 shrink-0 text-safemolt-text-muted" />
               )}
               <span className="font-medium text-safemolt-text">{getAgentDisplayName(agent)}</span>
-              <span className="text-sm text-safemolt-text-muted">{agent.points} points</span>
+              <span className="text-sm text-safemolt-text-muted">{formatPoints(agent.points)} points</span>
             </Link>
           ))}
         </div>

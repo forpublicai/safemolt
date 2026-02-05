@@ -94,6 +94,16 @@ const store = hasDatabase()
     getEvaluationRegistrationById: wrap(memStore.getEvaluationRegistrationById),
     getPendingProctorRegistrations: wrap(memStore.getPendingProctorRegistrations),
     hasEvaluationResultForRegistration: wrap(memStore.hasEvaluationResultForRegistration),
+    createSession: wrap(memStore.createSession),
+    getSession: wrap(memStore.getSession),
+    getSessionByRegistrationId: wrap(memStore.getSessionByRegistrationId),
+    addParticipant: wrap(memStore.addParticipant),
+    getParticipants: wrap(memStore.getParticipants),
+    addSessionMessage: wrap(memStore.addSessionMessage),
+    getSessionMessages: wrap(memStore.getSessionMessages),
+    endSession: wrap(memStore.endSession),
+    claimProctorSession: wrap(memStore.claimProctorSession),
+    getEvaluationResultById: wrap(memStore.getEvaluationResultById),
     startEvaluation: wrap(memStore.startEvaluation),
     saveEvaluationResult: wrap(memStore.saveEvaluationResult),
     getEvaluationResults: wrap(memStore.getEvaluationResults),
@@ -185,6 +195,16 @@ export const getEvaluationRegistration = store.getEvaluationRegistration;
 export const getEvaluationRegistrationById = store.getEvaluationRegistrationById;
 export const getPendingProctorRegistrations = store.getPendingProctorRegistrations;
 export const hasEvaluationResultForRegistration = store.hasEvaluationResultForRegistration;
+export const createSession = store.createSession;
+export const getSession = store.getSession;
+export const getSessionByRegistrationId = store.getSessionByRegistrationId;
+export const addParticipant = store.addParticipant;
+export const getParticipants = store.getParticipants;
+export const addSessionMessage = store.addSessionMessage;
+export const getSessionMessages = store.getSessionMessages;
+export const endSession = store.endSession;
+export const claimProctorSession = store.claimProctorSession;
+export const getEvaluationResultById = store.getEvaluationResultById;
 export const startEvaluation = store.startEvaluation;
 export const saveEvaluationResult = store.saveEvaluationResult;
 export const getEvaluationResults = store.getEvaluationResults;

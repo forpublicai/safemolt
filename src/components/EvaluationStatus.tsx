@@ -4,6 +4,7 @@
  */
 
 import Link from "next/link";
+import { formatPoints } from "@/lib/format-points";
 import { getEvaluationIcon, formatEvaluationDate } from "@/lib/evaluations/utils";
 
 export interface EvaluationStatusData {
@@ -47,49 +48,62 @@ function EvaluationBadge({
   const dateStr = result ? formatEvaluationDate(result.completedAt) : null;
   
   return (
-    <Link href={`/evaluations/${evaluation.sip}`}>
-      <div className={`
-        card p-4 transition hover:border-safemolt-accent-brown cursor-pointer
+    <div
+      className={`
+        card p-4 transition hover:border-safemolt-accent-brown
         ${status === 'passed' ? 'border-safemolt-success bg-safemolt-success/10' : ''}
         ${status === 'failed' ? 'border-red-500 bg-red-500/10' : ''}
         ${status === 'not_attempted' ? 'border-safemolt-border bg-safemolt-card' : ''}
-      `}>
-        <div className="flex items-start gap-3">
-          <span className="text-2xl shrink-0">{icon}</span>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <span className="text-xs font-mono text-safemolt-text-muted">
-                SIP-{evaluation.sip}
-              </span>
-              <span className={`
-                text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide
-                ${status === 'passed' ? 'bg-safemolt-success/20 text-safemolt-success' : ''}
-                ${status === 'failed' ? 'bg-red-500/20 text-red-500' : ''}
-                ${status === 'not_attempted' ? 'bg-safemolt-border/50 text-safemolt-text-muted' : ''}
-              `}>
-                {status === 'passed' ? 'Passed' : status === 'failed' ? 'Failed' : 'Not attempted'}
-              </span>
-            </div>
-            <h3 className="text-sm font-medium text-safemolt-text mb-1">
+      `}
+    >
+      <div className="flex items-start gap-3">
+        <span className="text-2xl shrink-0">{icon}</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span className="text-xs font-mono text-safemolt-text-muted">
+              SIP-{evaluation.sip}
+            </span>
+            <span className={`
+              text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide
+              ${status === 'passed' ? 'bg-safemolt-success/20 text-safemolt-success' : ''}
+              ${status === 'failed' ? 'bg-red-500/20 text-red-500' : ''}
+              ${status === 'not_attempted' ? 'bg-safemolt-border/50 text-safemolt-text-muted' : ''}
+            `}>
+              {status === 'passed' ? 'Passed' : status === 'failed' ? 'Failed' : 'Not attempted'}
+            </span>
+          </div>
+          <h3 className="text-sm font-medium text-safemolt-text mb-1">
+            <Link href={`/evaluations/${evaluation.sip}`} className="hover:text-safemolt-accent-green hover:underline">
               {evaluation.evaluationName}
-            </h3>
-            <div className="text-xs text-safemolt-text-muted space-y-0.5">
-              {result?.passed && result.pointsEarned !== undefined && (
-                <div>
-                  <span className="font-medium">{result.pointsEarned}</span> points earned
-                </div>
-              )}
-              {result && (
-                <div>{dateStr}</div>
-              )}
-              {!result && (
-                <div>{evaluation.points} points available</div>
-              )}
-            </div>
+            </Link>
+          </h3>
+          <div className="text-xs text-safemolt-text-muted space-y-0.5">
+            {result?.passed && result.pointsEarned !== undefined && (
+              <div>
+                <span className="font-medium">{result.pointsEarned}</span> points earned
+              </div>
+            )}
+            {result && (
+              <div>{dateStr}</div>
+            )}
+            {!result && (
+              <div>{formatPoints(evaluation.points)} points available</div>
+            )}
+            {result && (
+              <div className="mt-1">
+                <Link
+                  href={`/evaluations/result/${result.id}`}
+                  className="text-safemolt-accent-green hover:underline"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  View result & transcript
+                </Link>
+              </div>
+            )}
           </div>
         </div>
       </div>
-    </Link>
+    </div>
   );
 }
 

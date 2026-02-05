@@ -1578,16 +1578,18 @@ export async function registerForEvaluation(
 ): Promise<{ id: string; registeredAt: string }> {
   const id = generateEvaluationId('eval_reg');
   const registeredAt = new Date().toISOString();
-  
-  await sql!`
+  // Use (agent_id, evaluation_id) only; partial unique index is inferred by PostgreSQL.
+  const rows = await sql!`
     INSERT INTO evaluation_registrations (id, agent_id, evaluation_id, registered_at, status)
     VALUES (${id}, ${agentId}, ${evaluationId}, ${registeredAt}, 'registered')
-    ON CONFLICT (agent_id, evaluation_id) WHERE status IN ('registered', 'in_progress')
+    ON CONFLICT (agent_id, evaluation_id)
     DO UPDATE SET registered_at = ${registeredAt}
     RETURNING id, registered_at
   `;
-  
-  return { id, registeredAt };
+  const r = (rows as Array<Record<string, unknown>>)[0];
+  const actualId = (r?.id as string) ?? id;
+  const actualRegisteredAt = r?.registered_at != null ? String(r.registered_at) : registeredAt;
+  return { id: actualId, registeredAt: actualRegisteredAt };
 }
 
 export async function getEvaluationRegistration(
@@ -1660,6 +1662,164 @@ export async function getPendingProctorRegistrations(
   }));
 }
 
+// ==================== Multi-Agent Evaluation Sessions (base) ====================
+
+export type SessionKind = 'proctored' | 'live_class_work';
+
+export async function createSession(
+  evaluationId: string,
+  kind: SessionKind,
+  registrationId?: string
+): Promise<string> {
+  const id = generateEvaluationId('eval_sess');
+  const startedAt = new Date().toISOString();
+  await sql!`
+    INSERT INTO evaluation_sessions (id, evaluation_id, kind, registration_id, status, started_at)
+    VALUES (${id}, ${evaluationId}, ${kind}, ${registrationId ?? null}, 'active', ${startedAt})
+  `;
+  return id;
+}
+
+export async function getSession(sessionId: string): Promise<{
+  id: string;
+  evaluationId: string;
+  kind: string;
+  registrationId?: string;
+  status: string;
+  startedAt: string;
+  endedAt?: string;
+} | null> {
+  const rows = await sql!`
+    SELECT id, evaluation_id, kind, registration_id, status, started_at, ended_at
+    FROM evaluation_sessions WHERE id = ${sessionId} LIMIT 1
+  `;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  if (!r) return null;
+  return {
+    id: r.id as string,
+    evaluationId: r.evaluation_id as string,
+    kind: r.kind as string,
+    registrationId: r.registration_id as string | undefined,
+    status: r.status as string,
+    startedAt: String(r.started_at),
+    endedAt: r.ended_at ? String(r.ended_at) : undefined,
+  };
+}
+
+export async function getSessionByRegistrationId(registrationId: string): Promise<{
+  id: string;
+  evaluationId: string;
+  kind: string;
+  registrationId?: string;
+  status: string;
+  startedAt: string;
+  endedAt?: string;
+} | null> {
+  const rows = await sql!`
+    SELECT id, evaluation_id, kind, registration_id, status, started_at, ended_at
+    FROM evaluation_sessions WHERE registration_id = ${registrationId} LIMIT 1
+  `;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  if (!r) return null;
+  return {
+    id: r.id as string,
+    evaluationId: r.evaluation_id as string,
+    kind: r.kind as string,
+    registrationId: r.registration_id as string | undefined,
+    status: r.status as string,
+    startedAt: String(r.started_at),
+    endedAt: r.ended_at ? String(r.ended_at) : undefined,
+  };
+}
+
+export async function addParticipant(sessionId: string, agentId: string, role: string): Promise<string> {
+  const id = generateEvaluationId('eval_part');
+  const joinedAt = new Date().toISOString();
+  await sql!`
+    INSERT INTO evaluation_session_participants (id, session_id, agent_id, role, joined_at)
+    VALUES (${id}, ${sessionId}, ${agentId}, ${role}, ${joinedAt})
+    ON CONFLICT (session_id, agent_id) DO NOTHING
+  `;
+  return id;
+}
+
+export async function getParticipants(sessionId: string): Promise<Array<{ agentId: string; role: string }>> {
+  const rows = await sql!`
+    SELECT agent_id, role FROM evaluation_session_participants
+    WHERE session_id = ${sessionId}
+    ORDER BY joined_at ASC
+  `;
+  return (rows as Array<Record<string, unknown>>).map((r) => ({
+    agentId: r.agent_id as string,
+    role: r.role as string,
+  }));
+}
+
+export async function addSessionMessage(
+  sessionId: string,
+  senderAgentId: string,
+  role: string,
+  content: string
+): Promise<{ id: string; sequence: number; createdAt: string }> {
+  const id = generateEvaluationId('eval_msg');
+  const createdAt = new Date().toISOString();
+  const seqResult = await sql!`
+    INSERT INTO evaluation_messages (id, session_id, sender_agent_id, role, content, created_at, sequence)
+    SELECT ${id}, ${sessionId}, ${senderAgentId}, ${role}, ${content}, ${createdAt},
+      COALESCE((SELECT MAX(sequence) + 1 FROM evaluation_messages WHERE session_id = ${sessionId}), 1)
+    RETURNING sequence, created_at
+  `;
+  const row = (seqResult as Array<Record<string, unknown>>)[0];
+  return {
+    id,
+    sequence: Number(row?.sequence ?? 1),
+    createdAt: row?.created_at ? String(row.created_at) : createdAt,
+  };
+}
+
+export async function getSessionMessages(sessionId: string): Promise<Array<{
+  id: string;
+  senderAgentId: string;
+  role: string;
+  content: string;
+  createdAt: string;
+  sequence: number;
+}>> {
+  const rows = await sql!`
+    SELECT id, sender_agent_id, role, content, created_at, sequence
+    FROM evaluation_messages WHERE session_id = ${sessionId}
+    ORDER BY sequence ASC
+  `;
+  return (rows as Array<Record<string, unknown>>).map((r) => ({
+    id: r.id as string,
+    senderAgentId: r.sender_agent_id as string,
+    role: r.role as string,
+    content: r.content as string,
+    createdAt: String(r.created_at),
+    sequence: Number(r.sequence),
+  }));
+}
+
+export async function endSession(sessionId: string): Promise<void> {
+  const endedAt = new Date().toISOString();
+  await sql!`
+    UPDATE evaluation_sessions SET status = 'ended', ended_at = ${endedAt} WHERE id = ${sessionId}
+  `;
+}
+
+export async function claimProctorSession(registrationId: string, proctorAgentId: string): Promise<string> {
+  const registration = await getEvaluationRegistrationById(registrationId);
+  if (!registration) throw new Error('Registration not found');
+  const existing = await getSessionByRegistrationId(registrationId);
+  if (existing) throw new Error('Session already exists for this registration');
+  const sessionId = await createSession(registration.evaluationId, 'proctored', registrationId);
+  await addParticipant(sessionId, proctorAgentId, 'proctor');
+  await addParticipant(sessionId, registration.agentId, 'candidate');
+  return sessionId;
+}
+
+// ==================== Evaluation (continued) ====================
+
 export async function startEvaluation(registrationId: string): Promise<void> {
   await sql!`
     UPDATE evaluation_registrations
@@ -1719,6 +1879,30 @@ export async function hasEvaluationResultForRegistration(registrationId: string)
     SELECT 1 FROM evaluation_results WHERE registration_id = ${registrationId} LIMIT 1
   `;
   return Array.isArray(rows) && rows.length > 0;
+}
+
+export async function getEvaluationResultById(resultId: string): Promise<{
+  id: string;
+  registrationId: string;
+  evaluationId: string;
+  agentId: string;
+  passed: boolean;
+  completedAt: string;
+} | null> {
+  const rows = await sql!`
+    SELECT id, registration_id, evaluation_id, agent_id, passed, completed_at
+    FROM evaluation_results WHERE id = ${resultId} LIMIT 1
+  `;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  if (!r) return null;
+  return {
+    id: r.id as string,
+    registrationId: r.registration_id as string,
+    evaluationId: r.evaluation_id as string,
+    agentId: r.agent_id as string,
+    passed: Boolean(r.passed),
+    completedAt: String(r.completed_at),
+  };
 }
 
 export async function getEvaluationResults(

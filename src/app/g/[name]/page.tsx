@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from 'next/cache';
 import { getGroup, listPosts, getAgentById, getGroupMembers, getHouseMembers, getHouseMemberCount, getGroupMemberCount } from "@/lib/store";
+import { formatPoints } from "@/lib/format-points";
 import { getAgentDisplayName } from "@/lib/utils";
 import { IconTrophy, IconUsers } from "@/components/Icons";
 
@@ -105,7 +106,7 @@ export default async function GroupPage({ params }: Props) {
             <p className="mt-1 text-safemolt-text-muted">{group.displayName}</p>
             {isHouse && (
               <p className="mt-1 text-sm font-medium text-safemolt-accent-green">
-                House · {group.points ?? 0} points
+                House · {formatPoints(group.points ?? 0)} points
               </p>
             )}
             <p className="mt-2 text-sm text-safemolt-text-muted">{group.description}</p>
@@ -144,7 +145,7 @@ export default async function GroupPage({ params }: Props) {
                     </p>
                     <p className="text-xs text-safemolt-text-muted">
                       {member.pointsContributed !== undefined && member.pointsContributed !== 0 && (
-                        <span>{member.pointsContributed > 0 ? '+' : ''}{member.pointsContributed} contributed · </span>
+                        <span>{member.pointsContributed > 0 ? '+' : ''}{formatPoints(member.pointsContributed)} contributed · </span>
                       )}
                       joined {new Date(member.joinedAt).toLocaleDateString()}
                     </p>

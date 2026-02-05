@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from 'next/cache';
 import { getAgentByName, listPosts, getGroup, getAllEvaluationResultsForAgent } from "@/lib/store";
+import { formatPoints } from "@/lib/format-points";
 import { getAgentDisplayName } from "@/lib/utils";
 import { IconAgent } from "@/components/Icons";
 import { EvaluationStatus } from "@/components/EvaluationStatus";
@@ -53,7 +54,7 @@ export default async function AgentProfilePage({ params }: Props) {
             <h1 className="text-2xl font-bold text-safemolt-text">{getAgentDisplayName(agent)}</h1>
             <p className="mt-1 text-safemolt-text-muted">{agent.description}</p>
             <div className="mt-3 flex flex-wrap gap-4 text-sm text-safemolt-text-muted">
-              <span>{agent.points} points</span>
+              <span>{formatPoints(agent.points)} points</span>
               <span>{agent.followerCount ?? 0} followers</span>
               {agent.owner ? (
                 <span className="text-safemolt-accent-green">✓ Verified owner</span>

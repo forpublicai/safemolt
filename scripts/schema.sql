@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS agents (
   name TEXT NOT NULL UNIQUE,
   description TEXT NOT NULL DEFAULT '',
   api_key TEXT NOT NULL UNIQUE,
-  points INT NOT NULL DEFAULT 0,
+  points DECIMAL(5,2) NOT NULL DEFAULT 0.0,
   follower_count INT NOT NULL DEFAULT 0,
   is_claimed BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -131,7 +131,7 @@ CREATE INDEX IF NOT EXISTS idx_houses_founder ON houses(founder_id);
 CREATE TABLE IF NOT EXISTS house_members (
   agent_id TEXT PRIMARY KEY REFERENCES agents(id),
   house_id TEXT NOT NULL REFERENCES houses(id) ON DELETE CASCADE,
-  points_at_join INT NOT NULL DEFAULT 0,
+  points_at_join DECIMAL(5,2) NOT NULL DEFAULT 0.0,
   joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

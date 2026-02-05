@@ -3,17 +3,15 @@ import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { getEvaluation } from "@/lib/evaluations/loader";
 import {
   getEvaluationRegistrationById,
-  hasEvaluationResultForRegistration,
-  saveEvaluationResult,
   getSessionByRegistrationId,
-  endSession,
+  hasEvaluationResultForRegistration,
+  claimProctorSession,
+  getAgentById,
 } from "@/lib/store";
-import { getExecutor } from "@/lib/evaluations/executor-registry";
 
 /**
- * POST /api/v1/evaluations/{id}/proctor/submit
- * Proctor submits pass/fail and optional feedback for a candidate's registration.
- * Auth: proctor API key. Proctor must not be the candidate.
+ * POST /api/v1/evaluations/{id}/proctor/claim
+ * Proctor claims a pending registration; creates a session and adds proctor + candidate as participants.
  */
 export async function POST(
   request: NextRequest,
@@ -39,7 +37,7 @@ export async function POST(
       );
     }
 
-    let body: { registration_id?: string; passed?: boolean; proctor_feedback?: string };
+    let body: { registration_id?: string };
     try {
       body = await request.json();
     } catch {
@@ -79,7 +77,7 @@ export async function POST(
     if (proctor.id === registration.agentId) {
       return errorResponse(
         "Forbidden",
-        "Proctor cannot submit a result for their own registration",
+        "Proctor cannot claim their own registration",
         403
       );
     }
@@ -93,52 +91,27 @@ export async function POST(
       );
     }
 
-    const handler = getExecutor(evaluation.executable.handler);
-    const result = await handler({
-      agentId: registration.agentId,
-      evaluationId,
-      registrationId,
-      input: body,
-      config: evaluation.config,
-    });
-
-    if (result.error) {
-      return errorResponse("Validation failed", result.error, 400);
+    const existingSession = await getSessionByRegistrationId(registrationId);
+    if (existingSession) {
+      return errorResponse(
+        "Already claimed",
+        "A session already exists for this registration",
+        400
+      );
     }
 
-    const resultId = await saveEvaluationResult(
-      registrationId,
-      registration.agentId,
-      evaluationId,
-      result.passed,
-      result.score,
-      result.maxScore,
-      result.resultData,
-      proctor.id,
-      typeof body.proctor_feedback === "string" ? body.proctor_feedback : undefined
-    );
-
-    const session = await getSessionByRegistrationId(registrationId);
-    if (session && session.kind === "proctored") {
-      await endSession(session.id);
-    }
+    const sessionId = await claimProctorSession(registrationId, proctor.id);
+    const candidate = await getAgentById(registration.agentId);
 
     return jsonResponse({
       success: true,
-      result: {
-        id: resultId,
-        passed: result.passed,
-        score: result.score,
-        max_score: result.maxScore,
-        completed_at: new Date().toISOString(),
-        proctor_agent_id: proctor.id,
-      },
+      session_id: sessionId,
+      registration_id: registrationId,
+      candidate_agent_id: registration.agentId,
+      candidate_name: candidate?.name ?? registration.agentId,
     });
   } catch (error) {
-    console.error("[evaluations/proctor/submit] Error:", error);
-    if (error instanceof Error && error.message.includes("Executor handler not found")) {
-      return errorResponse("Evaluation handler not found", error.message, 500);
-    }
-    return errorResponse("Failed to submit proctor result", undefined, 500);
+    console.error("[evaluations/proctor/claim] Error:", error);
+    return errorResponse("Failed to claim registration", undefined, 500);
   }
 }

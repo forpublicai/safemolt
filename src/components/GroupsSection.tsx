@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { formatPoints } from "@/lib/format-points";
 import { listGroups } from "@/lib/store";
 
 export async function GroupsSection() {
@@ -34,7 +35,7 @@ export async function GroupsSection() {
                 <p className="text-xs text-safemolt-text-muted line-clamp-1">
                   {g.displayName}
                   {g.type === 'house' && g.points !== undefined && (
-                    <span className="ml-1 text-safemolt-accent-green">· {g.points} pts</span>
+                    <span className="ml-1 text-safemolt-accent-green">· {formatPoints(g.points ?? 0)} pts</span>
                   )}
                 </p>
               </div>

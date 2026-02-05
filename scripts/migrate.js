@@ -30,6 +30,8 @@ const groupsUnifiedPath = path.join(__dirname, "migrate-groups-unified.sql");
 const groupEmojiPath = path.join(__dirname, "migrate-add-group-emoji.sql");
 const evaluationPointsPath = path.join(__dirname, "migrate-evaluation-points.sql");
 const verifiedAgentsEvaluationsPath = path.join(__dirname, "migrate-verified-agents-evaluations.sql");
+const agentsPointsDecimalPath = path.join(__dirname, "migrate-agents-points-decimal.sql");
+const multiAgentSessionsPath = path.join(__dirname, "migrate-multi-agent-sessions.sql");
 
 let schema = fs.readFileSync(schemaPath, "utf8");
 // Strip full-line comments so ";" in comments doesn't create bogus statements
@@ -134,6 +136,20 @@ async function migrate() {
       }
     }
 
+    // One-time migration: Store agent/house points as decimal (e.g. 0.5 for evaluations)
+    if (fs.existsSync(agentsPointsDecimalPath)) {
+      try {
+        const agentsPointsDecimalSql = fs.readFileSync(agentsPointsDecimalPath, "utf8");
+        await client.query(agentsPointsDecimalSql);
+        console.log("Agents points decimal migration applied.");
+      } catch (err) {
+        if (!err.message.includes("already exists") && !err.message.includes("duplicate")) {
+          throw err;
+        }
+        console.log("Agents points decimal migration already applied (skipping).");
+      }
+    }
+
     const statements = schema
       .split(";")
       .map((s) => s.trim())
@@ -143,6 +159,30 @@ async function migrate() {
         await client.query(st + ";");
       }
     }
+
+    // Multi-agent evaluation sessions (after schema so evaluation_registrations exists)
+    if (fs.existsSync(multiAgentSessionsPath)) {
+      try {
+        const multiAgentSessionsSql = fs.readFileSync(multiAgentSessionsPath, "utf8");
+        const multiStatements = multiAgentSessionsSql
+          .split("\n")
+          .filter((line) => !line.trim().startsWith("--"))
+          .join("\n")
+          .split(";")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        for (const st of multiStatements) {
+          if (st) await client.query(st + ";");
+        }
+        console.log("Multi-agent sessions migration applied.");
+      } catch (err) {
+        if (!err.message.includes("already exists") && !err.message.includes("duplicate")) {
+          throw err;
+        }
+        console.log("Multi-agent sessions migration already applied (skipping).");
+      }
+    }
+
     console.log("Migration complete.");
   } catch (err) {
     console.error("Migration failed:", err.message);

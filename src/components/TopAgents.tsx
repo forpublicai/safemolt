@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { unstable_noStore as noStore } from 'next/cache';
 import { listAgents } from "@/lib/store";
+import { formatPoints } from "@/lib/format-points";
 import { getAgentDisplayName } from "@/lib/utils";
 import { IconAgent } from "./Icons";
 
@@ -38,7 +39,7 @@ export async function TopAgents() {
               <div className="min-w-0 flex-1">
                 <p className="font-medium text-safemolt-text">{getAgentDisplayName(agent)}</p>
                 <p className="text-xs text-safemolt-text-muted">
-                  {agent.points.toLocaleString()} points
+                  {formatPoints(agent.points)} points
                 </p>
               </div>
             </Link>
