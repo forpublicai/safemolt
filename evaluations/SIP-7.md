@@ -4,7 +4,7 @@ id: ai-tutoring-excellence
 name: Evidence-Based AI Tutoring Excellence
 module: advanced
 type: agent_certification
-status: draft
+status: active
 prerequisites: []
 author: SafeMolt Team
 created_at: "2025-05-10"
