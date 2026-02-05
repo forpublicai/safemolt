@@ -7,133 +7,202 @@ import type { EvaluationDefinition, EvaluationFrontmatter } from './types';
 /**
  * Simple YAML frontmatter parser
  */
+/**
+ * Improved simple YAML parser for frontmatter
+ * Supports nested objects and arrays
+ */
+class SimpleYamlParser {
+  private lines: string[];
+  private current = 0;
+
+  constructor(content: string) {
+    this.lines = content.split('\n');
+  }
+
+  parse(): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    while (this.current < this.lines.length) {
+      const line = this.lines[this.current];
+      if (!line.trim() || line.trim().startsWith('#')) {
+        this.current++;
+        continue;
+      }
+
+      const indent = this.getIndent(line);
+      if (indent > 0) {
+        // Should not happen at top level usually, unless bad formatting
+        this.current++;
+        continue;
+      }
+
+      const { key, value } = this.parseLine(line);
+      if (key) {
+        this.current++;
+        if (value === '' || value === null || value === undefined) {
+          result[key] = this.parseBlock(indent + 1); // Expect children
+        } else {
+          result[key] = value;
+        }
+      } else {
+        this.current++;
+      }
+    }
+    return result;
+  }
+
+  private parseBlock(minIndent: number): unknown {
+    if (this.current >= this.lines.length) return {};
+
+    // Check if next line is array item or object key
+    const firstLine = this.lines[this.current];
+    const firstIndent = this.getIndent(firstLine);
+
+    if (firstIndent < minIndent) return {}; // End of block
+
+    const isArray = firstLine.trim().startsWith('-');
+
+    if (isArray) {
+      const list: unknown[] = [];
+      while (this.current < this.lines.length) {
+        const line = this.lines[this.current];
+        if (!line.trim() || line.trim().startsWith('#')) {
+          this.current++;
+          continue;
+        }
+
+        const indent = this.getIndent(line);
+        if (indent < minIndent) break;
+
+        if (line.trim().startsWith('-')) {
+          // New array item
+          const content = line.trim().slice(1).trim();
+          this.current++;
+
+          if (content) {
+            // Formatting like "- value" or "- key: value"
+            if (content.includes(': ') && !content.startsWith('"') && !content.startsWith("'")) {
+              // It's likely beginning of an object: "- id: foo"
+              // We need to parse this line as key-value, then subsequent lines as rest of object
+              const { key, value } = this.parseLine(content, true); // Treat as valid line content
+              // Create object for this item
+              const obj: Record<string, unknown> = {};
+              if (key) obj[key] = value;
+
+              // Helper: merge subsequent indented lines into this object
+              // The indentation for the rest of object must match the key's effective indent?
+              // Actually, usually in YAML:
+              // - id: foo
+              //   bar: baz
+              // The 'bar' is indented relative to '-' (2 spaces) or same level?
+              // Usually aligned with 'id'.
+
+              // Let's rely on parseObjectBlock but we need to pass current indentation context
+              const itemObj = this.parseObjectBlock(indent + 2); // approximate indent
+              Object.assign(obj, itemObj);
+              list.push(obj);
+            } else {
+              // Scalar or simple item
+              list.push(this.parseValue(content));
+            }
+          } else {
+            // Item starts on next line? "- \n  value"
+            // Or object starting on next line
+            const item = this.parseBlock(indent + 1);
+            list.push(item);
+          }
+        } else {
+          // Continuation of previous item? Unhandled for now
+          this.current++;
+        }
+      }
+      return list;
+    } else {
+      return this.parseObjectBlock(minIndent);
+    }
+  }
+
+  private parseObjectBlock(minIndent: number): Record<string, unknown> {
+    const obj: Record<string, unknown> = {};
+    while (this.current < this.lines.length) {
+      const line = this.lines[this.current];
+      if (!line.trim() || line.trim().startsWith('#')) {
+        this.current++;
+        continue;
+      }
+
+      const indent = this.getIndent(line);
+      if (indent < minIndent) break;
+
+      const { key, value } = this.parseLine(line);
+      this.current++;
+
+      if (key) {
+        if (value === '' || value === null) {
+          const nextIndent = this.getIndent(this.lines[this.current] || '');
+          if (nextIndent > indent) {
+            obj[key] = this.parseBlock(nextIndent);
+          } else {
+            obj[key] = null;
+          }
+        } else {
+          obj[key] = value;
+        }
+      }
+    }
+    return obj;
+  }
+
+  private getIndent(line: string): number {
+    return line.search(/\S/);
+  }
+
+  private parseLine(line: string, isContent = false): { key?: string, value?: unknown } {
+    const content = isContent ? line : line.trim();
+    const colonIndex = content.indexOf(':');
+    if (colonIndex === -1) return { value: content }; // Just a value?
+
+    const key = content.slice(0, colonIndex).trim();
+    const valString = content.slice(colonIndex + 1).trim();
+
+    return { key, value: this.parseValue(valString) };
+  }
+
+  private parseValue(val: string): unknown {
+    if (!val) return null;
+    if (val === '[]') return [];
+    if (val === '{}') return {};
+
+    // Quotes
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      return val.slice(1, -1);
+    }
+
+    // Booleans
+    if (val === 'true') return true;
+    if (val === 'false') return false;
+
+    // Numbers
+    const num = Number(val);
+    if (!isNaN(num) && val.trim() !== '') return num;
+
+    return val;
+  }
+}
+
 function parseFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
   const frontmatterRegex = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
   const match = content.match(frontmatterRegex);
-  
+
   if (!match) {
     throw new Error('No frontmatter found. File must start with ---');
   }
-  
+
   const yamlContent = match[1];
   const body = match[2];
-  
-  // Simple YAML parser for basic key-value pairs
-  const frontmatter: Record<string, unknown> = {};
-  const lines = yamlContent.split('\n');
-  
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    
-    const colonIndex = trimmed.indexOf(':');
-    if (colonIndex === -1) continue;
-    
-    const key = trimmed.slice(0, colonIndex).trim();
-    let value: unknown = trimmed.slice(colonIndex + 1).trim();
-    
-    // Remove quotes if present
-    if (typeof value === 'string') {
-      if ((value.startsWith('"') && value.endsWith('"')) || 
-          (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
-      }
-    }
-    
-    // Parse nested objects (simple support for executable: handler:)
-    if (key.includes('.')) {
-      const parts = key.split('.');
-      let current: Record<string, unknown> = frontmatter;
-      for (let i = 0; i < parts.length - 1; i++) {
-        if (!current[parts[i]]) {
-          current[parts[i]] = {};
-        }
-        current = current[parts[i]] as Record<string, unknown>;
-      }
-      current[parts[parts.length - 1]] = value;
-    } else {
-      frontmatter[key] = value;
-    }
-    
-    // Parse arrays (prerequisites:)
-    if (key === 'prerequisites') {
-      // Handle empty array: prerequisites: []
-      if (value === '[]' || (typeof value === 'string' && value.trim() === '[]')) {
-        frontmatter[key] = [];
-      } else {
-        // Look for lines after prerequisites: that start with -
-        const prereqStartIndex = lines.findIndex((l, idx) => {
-          const trimmed = l.trim();
-          return trimmed.startsWith('prerequisites:') && 
-                 (trimmed === 'prerequisites:' || trimmed === 'prerequisites: []');
-        });
-        
-        if (prereqStartIndex !== -1) {
-          const arrayItems: string[] = [];
-          // Check if it's empty array on same line
-          const prereqLine = lines[prereqStartIndex].trim();
-          if (prereqLine === 'prerequisites: []') {
-            frontmatter[key] = [];
-          } else {
-            // Look for array items on following lines
-            for (let i = prereqStartIndex + 1; i < lines.length; i++) {
-              const line = lines[i].trim();
-              if (line.startsWith('-')) {
-                const item = line.slice(1).trim();
-                if (item) arrayItems.push(item);
-              } else if (line && !line.startsWith(' ') && !line.startsWith('-') && line !== '') {
-                break; // End of array
-              }
-            }
-            frontmatter[key] = arrayItems.length > 0 ? arrayItems : [];
-          }
-        } else {
-          // No prerequisites found, default to empty array
-          frontmatter[key] = [];
-        }
-      }
-    }
-  }
-  
-  // Handle executable nested object
-  if (frontmatter.executable && typeof frontmatter.executable === 'object') {
-    // Already parsed above
-  } else {
-    // Try to parse executable from separate lines
-    const executableLines: string[] = [];
-    let inExecutable = false;
-    for (const line of lines) {
-      if (line.trim().startsWith('executable:')) {
-        inExecutable = true;
-        continue;
-      }
-      if (inExecutable) {
-        if (line.trim().startsWith('-') || (!line.startsWith(' ') && line.trim())) {
-          break;
-        }
-        executableLines.push(line);
-      }
-    }
-    if (executableLines.length > 0) {
-      const executable: Record<string, unknown> = {};
-      for (const line of executableLines) {
-        const colonIndex = line.indexOf(':');
-        if (colonIndex !== -1) {
-          const key = line.slice(0, colonIndex).trim();
-          let val = line.slice(colonIndex + 1).trim();
-          if ((val.startsWith('"') && val.endsWith('"')) || 
-              (val.startsWith("'") && val.endsWith("'"))) {
-            val = val.slice(1, -1);
-          }
-          executable[key] = val;
-        }
-      }
-      if (Object.keys(executable).length > 0) {
-        frontmatter.executable = executable;
-      }
-    }
-  }
-  
+
+  const parser = new SimpleYamlParser(yamlContent);
+  const frontmatter = parser.parse();
+
   return { frontmatter, body };
 }
 
@@ -145,7 +214,7 @@ export function parseEvaluationFile(
   filePath: string
 ): EvaluationDefinition {
   const { frontmatter, body } = parseFrontmatter(content);
-  
+
   // Validate required frontmatter fields
   if (!frontmatter.sip) {
     throw new Error(`Missing 'sip' field in frontmatter: ${filePath}`);
@@ -175,16 +244,16 @@ export function parseEvaluationFile(
   if (!executable.script_path) {
     throw new Error(`Missing 'executable.script_path' field in frontmatter: ${filePath}`);
   }
-  
+
   // Parse points, defaulting to 0 if not specified
   let points = 0;
   if (frontmatter.points !== undefined) {
-    const parsedPoints = typeof frontmatter.points === 'string' 
-      ? parseFloat(frontmatter.points) 
+    const parsedPoints = typeof frontmatter.points === 'string'
+      ? parseFloat(frontmatter.points)
       : Number(frontmatter.points);
     points = isNaN(parsedPoints) ? 0 : parsedPoints;
   }
-  
+
   return {
     sip: Number(frontmatter.sip),
     id: String(frontmatter.id),
@@ -192,9 +261,9 @@ export function parseEvaluationFile(
     module: String(frontmatter.module),
     type: frontmatter.type as EvaluationFrontmatter['type'],
     status: frontmatter.status as EvaluationFrontmatter['status'],
-    prerequisites: Array.isArray(frontmatter.prerequisites) 
+    prerequisites: Array.isArray(frontmatter.prerequisites)
       ? frontmatter.prerequisites.map(String).filter(p => p && p.trim().length > 0)
-      : frontmatter.prerequisites 
+      : frontmatter.prerequisites
         ? [String(frontmatter.prerequisites)].filter(p => p && p.trim().length > 0)
         : [],
     author: String(frontmatter.author || 'unknown'),
@@ -220,7 +289,7 @@ export function extractDescription(content: string): string {
   const lines = content.split('\n');
   let description = '';
   let foundHeading = false;
-  
+
   for (const line of lines) {
     if (line.startsWith('#') && !foundHeading) {
       foundHeading = true;
@@ -231,7 +300,7 @@ export function extractDescription(content: string): string {
       break;
     }
   }
-  
+
   // Fallback: use first non-empty line
   if (!description) {
     for (const line of lines) {
@@ -241,6 +310,6 @@ export function extractDescription(content: string): string {
       }
     }
   }
-  
+
   return description || 'No description available';
 }
