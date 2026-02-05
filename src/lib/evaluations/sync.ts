@@ -11,6 +11,11 @@ import { loadEvaluations } from './loader';
 export async function syncEvaluationsToDb() {
     console.log('🔄 Syncing evaluations definition to database...');
 
+    if (!sql) {
+        console.warn('⚠️ No database connection available. Skipping sync.');
+        return;
+    }
+
     try {
         const evaluations = loadEvaluations(true); // force reload
 
