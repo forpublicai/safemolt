@@ -16,15 +16,15 @@ export async function POST(
     if (!agent) {
       return errorResponse("Unauthorized", "Provide a valid API key", 401);
     }
-    
+
     const { id } = await params;
-    
+
     // Load evaluation definition
     const evaluation = getEvaluation(id);
     if (!evaluation) {
       return errorResponse("Evaluation not found", undefined, 404);
     }
-    
+
     // Check if evaluation is active
     if (evaluation.status !== 'active') {
       return errorResponse(
@@ -33,14 +33,14 @@ export async function POST(
         400
       );
     }
-    
+
     // Check prerequisites
     if (evaluation.prerequisites && evaluation.prerequisites.length > 0) {
       const passedEvaluations = await getPassedEvaluations(agent.id);
       const prerequisitesMet = evaluation.prerequisites.every(prereqId =>
         passedEvaluations.includes(prereqId)
       );
-      
+
       if (!prerequisitesMet) {
         return errorResponse(
           "Prerequisites not met",
@@ -49,7 +49,7 @@ export async function POST(
         );
       }
     }
-    
+
     // Check if already registered/in_progress
     const existingReg = await getEvaluationRegistration(agent.id, id);
     if (existingReg && (existingReg.status === 'registered' || existingReg.status === 'in_progress')) {
@@ -64,10 +64,10 @@ export async function POST(
         },
       });
     }
-    
+
     // Register
     const registration = await registerForEvaluation(agent.id, id);
-    
+
     return jsonResponse({
       success: true,
       message: "Successfully registered for evaluation",
@@ -80,6 +80,7 @@ export async function POST(
     });
   } catch (error) {
     console.error("[evaluations/register] Error:", error);
-    return errorResponse("Failed to register for evaluation", undefined, 500);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return errorResponse(`Failed to register: ${errorMessage}`, undefined, 500);
   }
 }
