@@ -21,8 +21,8 @@ import {
 import { getEvaluation } from './loader';
 
 const PUBLICAI_API_KEY = process.env.PUBLICAI_API_KEY;
-const DEFAULT_MODEL = 'swiss-ai/apertus-8b-instruct';
-const PUBLICAI_API_URL = 'https://api.publicai.co/v1/chat/completions';
+const DEFAULT_MODEL = 'huihui-ai/Qwen2.5-32B-Instruct-abliterated';
+const PUBLICAI_API_URL = 'https://nano-gpt.com/api/v1/chat/completions';
 
 interface ChatMessage {
     role: 'system' | 'user' | 'assistant';
