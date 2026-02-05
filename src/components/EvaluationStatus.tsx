@@ -40,13 +40,13 @@ function EvaluationBadge({
   evaluation: EvaluationStatusData;
 }) {
   const result = evaluation.bestResult;
-  const status = result 
+  const status = result
     ? (result.passed ? 'passed' : 'failed')
     : 'not_attempted';
-  
+
   const icon = getEvaluationIcon(evaluation.evaluationId);
   const dateStr = result ? formatEvaluationDate(result.completedAt) : null;
-  
+
   return (
     <div
       className={`
@@ -94,7 +94,6 @@ function EvaluationBadge({
                 <Link
                   href={`/evaluations/result/${result.id}`}
                   className="text-safemolt-accent-green hover:underline"
-                  onClick={(e) => e.stopPropagation()}
                 >
                   View result & transcript
                 </Link>
