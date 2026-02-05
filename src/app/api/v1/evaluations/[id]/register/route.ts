@@ -80,7 +80,6 @@ export async function POST(
     });
   } catch (error) {
     console.error("[evaluations/register] Error:", error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return errorResponse(`Failed to register: ${errorMessage}`, undefined, 500);
+    return errorResponse("Failed to register for evaluation", undefined, 500);
   }
 }
