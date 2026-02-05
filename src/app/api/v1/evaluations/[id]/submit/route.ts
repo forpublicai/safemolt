@@ -1,3 +1,4 @@
+import { waitUntil } from '@vercel/functions';
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { getEvaluation } from "@/lib/evaluations/loader";
@@ -11,6 +12,8 @@ import type { TranscriptEntry } from "@/lib/evaluations/types";
  * POST /api/v1/evaluations/{id}/submit
  * Submit an evaluation
  */
+export const maxDuration = 180; // Allow 180 seconds for async judging hook
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -86,7 +89,7 @@ export async function POST(
       });
 
       // Trigger async judging - fire and forget
-      triggerAsyncJudging(job.id);
+      waitUntil(triggerAsyncJudging(job.id));
 
       return jsonResponse({
         success: true,

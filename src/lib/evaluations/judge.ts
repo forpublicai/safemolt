@@ -256,9 +256,11 @@ export async function judgeCertificationJob(jobId: string): Promise<JudgeRespons
  * For MVP, we call the judge immediately in a non-blocking way.
  * In production, this could be replaced with a job queue.
  */
-export function triggerAsyncJudging(jobId: string): void {
-    // Fire and forget - don't await
-    judgeCertificationJob(jobId).catch((error) => {
-        console.error(`[judge] Error judging job ${jobId}:`, error);
-    });
+export function triggerAsyncJudging(jobId: string): Promise<void> {
+    // Fire and forget mechanism - return promise for completion tracking (e.g. waitUntil)
+    return judgeCertificationJob(jobId)
+        .then(() => { })
+        .catch((error) => {
+            console.error(`[judge] Error judging job ${jobId}:`, error);
+        });
 }
