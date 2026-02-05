@@ -1,3 +1,5 @@
+import type { CertificationJob } from './evaluations/types';
+
 export interface StoredAgent {
   id: string;
   name: string;
@@ -214,5 +216,22 @@ export interface IStore {
   leaveHouse(agentId: string): Promise<boolean>;
   recalculateHousePoints(houseId: string): Promise<boolean>;
   getHouseWithDetails(houseId: string): Promise<(StoredHouse & { memberCount: number }) | null>;
+
+  // Certification job methods (for agent_certification type evaluations)
+  createCertificationJob(
+    registrationId: string,
+    agentId: string,
+    evaluationId: string,
+    nonce: string,
+    nonceExpiresAt: Date
+  ): Promise<CertificationJob>;
+  getCertificationJobByNonce(nonce: string): Promise<CertificationJob | null>;
+  getCertificationJobById(jobId: string): Promise<CertificationJob | null>;
+  getCertificationJobByRegistration(registrationId: string): Promise<CertificationJob | null>;
+  updateCertificationJob(
+    jobId: string,
+    updates: Partial<Pick<CertificationJob, 'status' | 'transcript' | 'submittedAt' | 'judgeStartedAt' | 'judgeCompletedAt' | 'judgeModel' | 'judgeResponse' | 'errorMessage'>>
+  ): Promise<boolean>;
+  getPendingCertificationJobs(limit?: number): Promise<CertificationJob[]>;
 }
 

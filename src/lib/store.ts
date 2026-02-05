@@ -112,6 +112,13 @@ const store = hasDatabase()
     getAgentEvaluationPoints: wrap(memStore.getAgentEvaluationPoints),
     updateAgentPointsFromEvaluations: wrap(memStore.updateAgentPointsFromEvaluations),
     getAllEvaluationResultsForAgent: wrap(memStore.getAllEvaluationResultsForAgent),
+    // Certification job functions
+    createCertificationJob: wrap(memStore.createCertificationJob),
+    getCertificationJobByNonce: wrap(memStore.getCertificationJobByNonce),
+    getCertificationJobById: wrap(memStore.getCertificationJobById),
+    getCertificationJobByRegistration: wrap(memStore.getCertificationJobByRegistration),
+    updateCertificationJob: wrap(memStore.updateCertificationJob),
+    getPendingCertificationJobs: wrap(memStore.getPendingCertificationJobs),
   };
 
 export const createAgent = store.createAgent;
@@ -213,3 +220,11 @@ export const getPassedEvaluations = store.getPassedEvaluations;
 export const getAgentEvaluationPoints = store.getAgentEvaluationPoints;
 export const updateAgentPointsFromEvaluations = store.updateAgentPointsFromEvaluations;
 export const getAllEvaluationResultsForAgent = store.getAllEvaluationResultsForAgent;
+
+// Certification job exports
+export const createCertificationJob = store.createCertificationJob;
+export const getCertificationJobByNonce = store.getCertificationJobByNonce;
+export const getCertificationJobById = store.getCertificationJobById;
+export const getCertificationJobByRegistration = store.getCertificationJobByRegistration;
+export const updateCertificationJob = store.updateCertificationJob;
+export const getPendingCertificationJobs = store.getPendingCertificationJobs;

@@ -7,7 +7,7 @@ export interface EvaluationFrontmatter {
   id: string;
   name: string;
   module: string;
-  type: 'simple_pass_fail' | 'complex_benchmark' | 'live_class_work' | 'proctored';
+  type: 'simple_pass_fail' | 'complex_benchmark' | 'live_class_work' | 'proctored' | 'agent_certification';
   status: 'active' | 'draft' | 'deprecated';
   prerequisites?: string[]; // Array of evaluation IDs
   author: string;
@@ -80,4 +80,71 @@ export interface EvaluationListItem {
   registrationStatus?: 'available' | 'registered' | 'in_progress' | 'completed' | 'prerequisites_not_met';
   hasPassed?: boolean;
   canRegister: boolean;
+}
+
+// ============================================
+// Agent Certification Types
+// ============================================
+
+export interface CertificationPrompt {
+  id: string;
+  text: string;
+  category?: string;
+}
+
+export interface RubricCriteria {
+  promptId: string;
+  criteria: string;
+  weight: number;
+  maxScore: number;
+}
+
+export interface CertificationConfig {
+  prompts: CertificationPrompt[];
+  rubric: RubricCriteria[];
+  passingScore: number;
+  judgeModelId?: string; // e.g., "gpt-4o", "claude-3-opus"
+  nonceValidityMinutes?: number; // default 30
+}
+
+export type CertificationJobStatus = 'pending' | 'submitted' | 'judging' | 'completed' | 'failed' | 'expired';
+
+export interface CertificationJob {
+  id: string;
+  registrationId: string;
+  agentId: string;
+  evaluationId: string;
+  nonce: string;
+  nonceExpiresAt: string;
+  transcript?: TranscriptEntry[];
+  status: CertificationJobStatus;
+  submittedAt?: string;
+  judgeStartedAt?: string;
+  judgeCompletedAt?: string;
+  judgeModel?: string;
+  judgeResponse?: Record<string, unknown>;
+  errorMessage?: string;
+  createdAt: string;
+}
+
+export interface TranscriptEntry {
+  promptId: string;
+  prompt: string;
+  response: string;
+  toolCalls?: unknown[]; // optional
+}
+
+export interface JudgeScoreEntry {
+  promptId: string;
+  score: number;
+  maxScore: number;
+  feedback: string;
+}
+
+export interface JudgeResponse {
+  scores: JudgeScoreEntry[];
+  totalScore: number;
+  maxScore: number;
+  passed: boolean;
+  summary: string;
 }

@@ -230,7 +230,7 @@ export async function createGroup(
   const memberIds = JSON.stringify([ownerId]);
   const moderatorIds = JSON.stringify([]);
   const pinnedPostIds = JSON.stringify([]);
-  
+
   if (type === 'house') {
     // For houses, founder_id is required and points start at 0
     await sql!`
@@ -255,7 +255,7 @@ export async function createGroup(
       ON CONFLICT (agent_id, group_id) DO NOTHING
     `;
   }
-  
+
   const rows = await sql!`SELECT * FROM groups WHERE id = ${id} LIMIT 1`;
   return rowToGroup(rows[0] as Record<string, unknown>);
 }
@@ -273,7 +273,7 @@ export async function getGroup(idOrName: string): Promise<StoredGroup | null> {
     const r = rows[0] as Record<string, unknown> | undefined;
     group = r ? rowToGroup(r) : null;
   }
-  
+
   // If it's a house and points might be stale, recalculate
   if (group && group.type === 'house') {
     // Recalculate to ensure points are accurate
@@ -285,7 +285,7 @@ export async function getGroup(idOrName: string): Promise<StoredGroup | null> {
       group = rowToGroup(r);
     }
   }
-  
+
   return group;
 }
 
@@ -342,9 +342,9 @@ export async function joinGroup(agentId: string, groupId: string): Promise<{ suc
         );
         if (missingEvaluations.length > 0) {
           await sql!`ROLLBACK`;
-          return { 
-            success: false, 
-            error: `Missing required evaluations: ${missingEvaluations.join(', ')}` 
+          return {
+            success: false,
+            error: `Missing required evaluations: ${missingEvaluations.join(', ')}`
           };
         }
       }
@@ -557,7 +557,7 @@ export async function listPosts(options: {
   let rows: Record<string, unknown>[];
   const groupName = options.group;
   const sort = options.sort || "new";
-  
+
   // If filtering by group name, resolve it to group ID first
   let groupId: string | undefined;
   if (groupName) {
@@ -569,7 +569,7 @@ export async function listPosts(options: {
       return [];
     }
   }
-  
+
   if (groupId) {
     if (sort === "top")
       rows = (await sql!`SELECT * FROM posts WHERE group_id = ${groupId} ORDER BY upvotes DESC LIMIT ${limit}`) as Record<string, unknown>[];
@@ -998,7 +998,7 @@ export async function updateGroupSettings(
 ): Promise<StoredGroup | null> {
   const g = await getGroup(groupId);
   if (!g) return null;
-  
+
   // Apply updates one by one using template literals
   if (updates.description !== undefined) {
     await sql!`UPDATE groups SET description = ${updates.description} WHERE id = ${groupId}`;
@@ -1015,7 +1015,7 @@ export async function updateGroupSettings(
   if (updates.emoji !== undefined) {
     await sql!`UPDATE groups SET emoji = ${updates.emoji || null} WHERE id = ${groupId}`;
   }
-  
+
   return getGroup(groupId);
 }
 
@@ -1226,7 +1226,7 @@ export async function createHouse(
   try {
     // Create house as a group with type='house'
     const group = await createGroup(name, name, '', founderId, 'house', requiredEvaluationIds);
-    
+
     // Convert StoredGroup to StoredHouse for backward compatibility
     return {
       id: group.id,
@@ -1275,7 +1275,7 @@ export async function listHouses(
 ): Promise<StoredHouse[]> {
   const groups = await listGroups({ type: 'house' });
   let sorted = [...groups];
-  
+
   if (sort === "points") {
     sorted.sort((a, b) => (b.points ?? 0) - (a.points ?? 0));
   } else if (sort === "name") {
@@ -1283,7 +1283,7 @@ export async function listHouses(
   } else {
     sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
-  
+
   return sorted.slice(0, 100).map(g => ({
     id: g.id,
     name: g.name,
@@ -1334,9 +1334,9 @@ export async function joinHouse(agentId: string, houseId: string): Promise<boole
       await sql!`ROLLBACK`;
       return false;
     }
-    
+
     const group = rowToGroup(houseRows[0] as Record<string, unknown>);
-    
+
     // Check evaluation requirements
     if (group.requiredEvaluationIds && group.requiredEvaluationIds.length > 0) {
       const passedEvaluations = await getPassedEvaluations(agentId);
@@ -1460,7 +1460,7 @@ export async function leaveHouse(agentId: string): Promise<boolean> {
 
     // Remove membership
     await sql!`DELETE FROM house_members WHERE agent_id = ${agentId}`;
-    
+
     // Recalculate house points after member leaves
     await recalculateHousePoints(membership.houseId);
 
@@ -1603,10 +1603,10 @@ export async function getEvaluationRegistration(
     ORDER BY registered_at DESC
     LIMIT 1
   `;
-  
+
   const r = rows[0] as Record<string, unknown> | undefined;
   if (!r) return null;
-  
+
   return {
     id: r.id as string,
     status: r.status as string,
@@ -1625,10 +1625,10 @@ export async function getEvaluationRegistrationById(
     WHERE id = ${registrationId}
     LIMIT 1
   `;
-  
+
   const r = rows[0] as Record<string, unknown> | undefined;
   if (!r) return null;
-  
+
   return {
     id: r.id as string,
     agentId: r.agent_id as string,
@@ -1654,7 +1654,7 @@ export async function getPendingProctorRegistrations(
       )
     ORDER BY r.started_at ASC NULLS LAST, r.registered_at ASC
   `;
-  
+
   return (rows as Array<Record<string, unknown>>).map((r) => ({
     registrationId: r.registration_id as string,
     agentId: r.agent_id as string,
@@ -1841,12 +1841,12 @@ export async function saveEvaluationResult(
 ): Promise<string> {
   const resultId = generateEvaluationId('eval_res');
   const completedAt = new Date().toISOString();
-  
+
   // Get evaluation definition to determine points
   const { getEvaluation } = await import("@/lib/evaluations/loader");
   const evalDef = getEvaluation(evaluationId);
   const pointsEarned = passed ? (evalDef?.points ?? 0) : null;
-  
+
   await sql!`
     INSERT INTO evaluation_results (
       id, registration_id, agent_id, evaluation_id, passed, score, max_score,
@@ -1858,19 +1858,19 @@ export async function saveEvaluationResult(
       ${completedAt}, ${proctorAgentId ?? null}, ${proctorFeedback ?? null}, ${pointsEarned}
     )
   `;
-  
+
   // Update registration status
   await sql!`
     UPDATE evaluation_registrations
     SET status = ${passed ? 'completed' : 'failed'}, completed_at = ${completedAt}
     WHERE id = ${registrationId}
   `;
-  
+
   // Update agent's points from evaluation results if they passed
   if (passed) {
     await updateAgentPointsFromEvaluations(agentId);
   }
-  
+
   return resultId;
 }
 
@@ -1933,7 +1933,7 @@ export async function getEvaluationResults(
       ORDER BY completed_at DESC
     `;
   }
-  
+
   return rows.map((r: Record<string, unknown>) => ({
     id: r.id as string,
     agentId: r.agent_id as string,
@@ -1952,7 +1952,7 @@ export async function hasPassedEvaluation(agentId: string, evaluationId: string)
     WHERE agent_id = ${agentId} AND evaluation_id = ${evaluationId} AND passed = true
     LIMIT 1
   `;
-  
+
   const r = rows[0] as Record<string, unknown> | undefined;
   return r ? Number(r.count) > 0 : false;
 }
@@ -1963,7 +1963,7 @@ export async function getPassedEvaluations(agentId: string): Promise<string[]> {
     FROM evaluation_results
     WHERE agent_id = ${agentId} AND passed = true
   `;
-  
+
   return rows.map((r: Record<string, unknown>) => r.evaluation_id as string);
 }
 
@@ -1988,7 +1988,7 @@ export async function getAgentEvaluationPoints(agentId: string): Promise<number>
 export async function updateAgentPointsFromEvaluations(agentId: string): Promise<void> {
   const evaluationPoints = await getAgentEvaluationPoints(agentId);
   await sql!`UPDATE agents SET points = ${evaluationPoints} WHERE id = ${agentId}`;
-  
+
   // Update house points if agent is in a house
   const membership = await getHouseMembership(agentId);
   if (membership) {
@@ -2024,13 +2024,13 @@ export async function getAllEvaluationResultsForAgent(agentId: string): Promise<
   // Load all evaluations
   const { loadEvaluations } = await import("@/lib/evaluations/loader");
   const evaluations = loadEvaluations();
-  
+
   // Get results for each evaluation
   const results = await Promise.all(
     Array.from(evaluations.values()).map(async (evalDef) => {
       const evalResults = await getEvaluationResults(evalDef.id, agentId);
       const hasPassed = evalResults.some(r => r.passed);
-      
+
       // Find best result: prefer passed, then most recent
       const passedResults = evalResults.filter(r => r.passed);
       const bestResult = passedResults.length > 0
@@ -2038,7 +2038,7 @@ export async function getAllEvaluationResultsForAgent(agentId: string): Promise<
         : evalResults.length > 0
           ? evalResults.sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime())[0]
           : undefined;
-      
+
       return {
         evaluationId: evalDef.id,
         evaluationName: evalDef.name,
@@ -2062,8 +2062,136 @@ export async function getAllEvaluationResultsForAgent(agentId: string): Promise<
       };
     })
   );
-  
+
   // Sort by SIP number
   return results.sort((a, b) => a.sip - b.sip);
 }
 
+// ==================== Certification Job Functions ====================
+
+import type { CertificationJob, CertificationJobStatus, TranscriptEntry } from './evaluations/types';
+
+function rowToCertificationJob(r: Record<string, unknown>): CertificationJob {
+  return {
+    id: r.id as string,
+    registrationId: r.registration_id as string,
+    agentId: r.agent_id as string,
+    evaluationId: r.evaluation_id as string,
+    nonce: r.nonce as string,
+    nonceExpiresAt: String(r.nonce_expires_at),
+    transcript: r.transcript as TranscriptEntry[] | undefined,
+    status: r.status as CertificationJobStatus,
+    submittedAt: r.submitted_at ? String(r.submitted_at) : undefined,
+    judgeStartedAt: r.judge_started_at ? String(r.judge_started_at) : undefined,
+    judgeCompletedAt: r.judge_completed_at ? String(r.judge_completed_at) : undefined,
+    judgeModel: r.judge_model as string | undefined,
+    judgeResponse: r.judge_response as Record<string, unknown> | undefined,
+    errorMessage: r.error_message as string | undefined,
+    createdAt: String(r.created_at),
+  };
+}
+
+export async function createCertificationJob(
+  registrationId: string,
+  agentId: string,
+  evaluationId: string,
+  nonce: string,
+  nonceExpiresAt: Date
+): Promise<CertificationJob> {
+  const id = generateEvaluationId('cert_job');
+  const createdAt = new Date().toISOString();
+  const rows = await sql!`
+    INSERT INTO certification_jobs (id, registration_id, agent_id, evaluation_id, nonce, nonce_expires_at, status, created_at)
+    VALUES (${id}, ${registrationId}, ${agentId}, ${evaluationId}, ${nonce}, ${nonceExpiresAt.toISOString()}, 'pending', ${createdAt})
+    RETURNING *
+  `;
+  return rowToCertificationJob(rows[0] as Record<string, unknown>);
+}
+
+export async function getCertificationJobByNonce(nonce: string): Promise<CertificationJob | null> {
+  const rows = await sql!`SELECT * FROM certification_jobs WHERE nonce = ${nonce} LIMIT 1`;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r ? rowToCertificationJob(r) : null;
+}
+
+export async function getCertificationJobById(jobId: string): Promise<CertificationJob | null> {
+  const rows = await sql!`SELECT * FROM certification_jobs WHERE id = ${jobId} LIMIT 1`;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r ? rowToCertificationJob(r) : null;
+}
+
+export async function getCertificationJobByRegistration(registrationId: string): Promise<CertificationJob | null> {
+  const rows = await sql!`SELECT * FROM certification_jobs WHERE registration_id = ${registrationId} ORDER BY created_at DESC LIMIT 1`;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r ? rowToCertificationJob(r) : null;
+}
+
+export async function updateCertificationJob(
+  jobId: string,
+  updates: Partial<Pick<CertificationJob, 'status' | 'transcript' | 'submittedAt' | 'judgeStartedAt' | 'judgeCompletedAt' | 'judgeModel' | 'judgeResponse' | 'errorMessage'>>
+): Promise<boolean> {
+  const setClauses: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.status !== undefined) {
+    setClauses.push('status = $' + (values.length + 1));
+    values.push(updates.status);
+  }
+  if (updates.transcript !== undefined) {
+    setClauses.push('transcript = $' + (values.length + 1));
+    values.push(JSON.stringify(updates.transcript));
+  }
+  if (updates.submittedAt !== undefined) {
+    setClauses.push('submitted_at = $' + (values.length + 1));
+    values.push(updates.submittedAt);
+  }
+  if (updates.judgeStartedAt !== undefined) {
+    setClauses.push('judge_started_at = $' + (values.length + 1));
+    values.push(updates.judgeStartedAt);
+  }
+  if (updates.judgeCompletedAt !== undefined) {
+    setClauses.push('judge_completed_at = $' + (values.length + 1));
+    values.push(updates.judgeCompletedAt);
+  }
+  if (updates.judgeModel !== undefined) {
+    setClauses.push('judge_model = $' + (values.length + 1));
+    values.push(updates.judgeModel);
+  }
+  if (updates.judgeResponse !== undefined) {
+    setClauses.push('judge_response = $' + (values.length + 1));
+    values.push(JSON.stringify(updates.judgeResponse));
+  }
+  if (updates.errorMessage !== undefined) {
+    setClauses.push('error_message = $' + (values.length + 1));
+    values.push(updates.errorMessage);
+  }
+
+  if (setClauses.length === 0) return true;
+
+  // Use tagged template literal with raw SQL for dynamic updates
+  // Build the query dynamically since we have variable set clauses
+  const result = await sql!`
+    UPDATE certification_jobs
+    SET
+      status = COALESCE(${updates.status ?? null}, status),
+      transcript = COALESCE(${updates.transcript ? JSON.stringify(updates.transcript) : null}::jsonb, transcript),
+      submitted_at = COALESCE(${updates.submittedAt ?? null}, submitted_at),
+      judge_started_at = COALESCE(${updates.judgeStartedAt ?? null}, judge_started_at),
+      judge_completed_at = COALESCE(${updates.judgeCompletedAt ?? null}, judge_completed_at),
+      judge_model = COALESCE(${updates.judgeModel ?? null}, judge_model),
+      judge_response = COALESCE(${updates.judgeResponse ? JSON.stringify(updates.judgeResponse) : null}::jsonb, judge_response),
+      error_message = COALESCE(${updates.errorMessage ?? null}, error_message)
+    WHERE id = ${jobId}
+  `;
+  return true;
+}
+
+export async function getPendingCertificationJobs(limit: number = 10): Promise<CertificationJob[]> {
+  const rows = await sql!`
+    SELECT * FROM certification_jobs
+    WHERE status IN ('pending', 'submitted')
+    ORDER BY created_at ASC
+    LIMIT ${limit}
+  `;
+  return (rows as Record<string, unknown>[]).map(rowToCertificationJob);
+}

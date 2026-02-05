@@ -112,7 +112,7 @@ export function cleanupStaleUnclaimedAgent(name: string): void {
     const releaseHours = parseInt(process.env.AGENT_NAME_RELEASE_HOURS || "1", 10);
     const now = Date.now();
     const cutoffTime = now - releaseHours * 60 * 60 * 1000;
-    
+
     for (const [id, agent] of Array.from(agents.entries())) {
       if (
         agent.name.toLowerCase() === name.toLowerCase() &&
@@ -173,7 +173,7 @@ export function createGroup(
     createdAt: new Date().toISOString(),
   };
   groups.set(id, group);
-  
+
   // Add owner to appropriate membership table
   if (type === 'house') {
     const agent = agents.get(ownerId);
@@ -189,7 +189,7 @@ export function createGroup(
     // For regular groups, we'd use groupMembers Map if we had one
     // For now, memberIds array is used
   }
-  
+
   return group;
 }
 
@@ -909,7 +909,7 @@ export function createHouse(
   try {
     // Create house as a group with type='house'
     const group = createGroup(name, name, '', founderId, 'house', requiredEvaluationIds);
-    
+
     // Convert StoredGroup to StoredHouse for backward compatibility
     return {
       id: group.id,
@@ -1002,10 +1002,10 @@ export function joinHouse(agentId: string, houseId: string): boolean {
     joinedAt: new Date().toISOString(),
   };
   houseMembers.set(agentId, membership);
-  
+
   // Recalculate house points after member joins
   recalculateHousePoints(houseId);
-  
+
   return true;
 }
 
@@ -1031,10 +1031,10 @@ export function leaveHouse(agentId: string): boolean {
   }
 
   houseMembers.delete(agentId);
-  
+
   // Recalculate house points after member leaves
   recalculateHousePoints(membership.houseId);
-  
+
   return true;
 }
 
@@ -1170,15 +1170,15 @@ export function registerForEvaluation(
 ): { id: string; registeredAt: string } {
   const id = generateEvaluationId('eval_reg');
   const registeredAt = new Date().toISOString();
-  
+
   // Check for existing active registration
   for (const reg of Array.from(evaluationRegistrations.values())) {
-    if (reg.agentId === agentId && reg.evaluationId === evaluationId && 
-        (reg.status === 'registered' || reg.status === 'in_progress')) {
+    if (reg.agentId === agentId && reg.evaluationId === evaluationId &&
+      (reg.status === 'registered' || reg.status === 'in_progress')) {
       return { id: reg.id, registeredAt: reg.registeredAt };
     }
   }
-  
+
   evaluationRegistrations.set(id, {
     id,
     agentId,
@@ -1186,7 +1186,7 @@ export function registerForEvaluation(
     registeredAt,
     status: 'registered',
   });
-  
+
   return { id, registeredAt };
 }
 
@@ -1427,13 +1427,13 @@ export function saveEvaluationResult(
 ): string {
   const resultId = generateEvaluationId('eval_res');
   const completedAt = new Date().toISOString();
-  
+
   // Get evaluation definition to determine points
   // Use synchronous require since this is a synchronous function
   const evalLoader = require("@/lib/evaluations/loader");
   const evalDef = evalLoader.getEvaluation(evaluationId);
   const pointsEarned = passed ? (evalDef?.points ?? 0) : undefined;
-  
+
   evaluationResults.set(resultId, {
     id: resultId,
     registrationId,
@@ -1448,20 +1448,20 @@ export function saveEvaluationResult(
     proctorAgentId,
     proctorFeedback,
   });
-  
+
   // Update registration status
   const reg = evaluationRegistrations.get(registrationId);
   if (reg) {
     reg.status = passed ? 'completed' : 'failed';
     reg.completedAt = completedAt;
   }
-  
+
   // Update agent's points from evaluation results if they passed
   // Note: This is synchronous for memory store, but will be async for DB store
   if (passed) {
     updateAgentPointsFromEvaluations(agentId);
   }
-  
+
   return resultId;
 }
 
@@ -1513,7 +1513,7 @@ export function getEvaluationResults(
     pointsEarned?: number;
     completedAt: string;
   }> = [];
-  
+
   for (const result of Array.from(evaluationResults.values())) {
     if (result.evaluationId === evaluationId && (!agentId || result.agentId === agentId)) {
       results.push({
@@ -1527,10 +1527,10 @@ export function getEvaluationResults(
       });
     }
   }
-  
+
   // Sort by completedAt descending
   results.sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
-  
+
   return results;
 }
 
@@ -1577,7 +1577,7 @@ export function updateAgentPointsFromEvaluations(agentId: string): void {
   const agent = agents.get(agentId);
   if (agent) {
     agents.set(agentId, { ...agent, points: evaluationPoints });
-    
+
     // Update house points if agent is in a house
     const membership = houseMembers.get(agentId);
     if (membership) {
@@ -1614,7 +1614,7 @@ export function getAllEvaluationResultsForAgent(agentId: string): Array<{
   // Load all evaluations
   const evalLoader = require("@/lib/evaluations/loader");
   const evaluations = evalLoader.loadEvaluations();
-  
+
   // Get results for each evaluation
   const results: Array<{
     evaluationId: string;
@@ -1637,7 +1637,7 @@ export function getAllEvaluationResultsForAgent(agentId: string): Array<{
     };
     hasPassed: boolean;
   }> = [];
-  
+
   for (const evalDef of Array.from(evaluations.values())) {
     const evalDefTyped = evalDef as {
       id: string;
@@ -1647,7 +1647,7 @@ export function getAllEvaluationResultsForAgent(agentId: string): Array<{
     };
     const evalResults = getEvaluationResults(evalDefTyped.id, agentId);
     const hasPassed = evalResults.some(r => r.passed);
-    
+
     // Find best result: prefer passed, then most recent
     const passedResults = evalResults.filter(r => r.passed);
     const bestResult = passedResults.length > 0
@@ -1655,7 +1655,7 @@ export function getAllEvaluationResultsForAgent(agentId: string): Array<{
       : evalResults.length > 0
         ? evalResults.sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime())[0]
         : undefined;
-    
+
     results.push({
       evaluationId: evalDefTyped.id,
       evaluationName: evalDefTyped.name,
@@ -1678,8 +1678,97 @@ export function getAllEvaluationResultsForAgent(agentId: string): Array<{
       hasPassed,
     });
   }
-  
+
   // Sort by SIP number
   return results.sort((a, b) => a.sip - b.sip);
 }
 
+// ==================== Certification Job Functions ====================
+
+import type { CertificationJob, CertificationJobStatus, TranscriptEntry } from './evaluations/types';
+
+const certificationJobs = new Map<string, {
+  id: string;
+  registrationId: string;
+  agentId: string;
+  evaluationId: string;
+  nonce: string;
+  nonceExpiresAt: string;
+  transcript?: TranscriptEntry[];
+  status: CertificationJobStatus;
+  submittedAt?: string;
+  judgeStartedAt?: string;
+  judgeCompletedAt?: string;
+  judgeModel?: string;
+  judgeResponse?: Record<string, unknown>;
+  errorMessage?: string;
+  createdAt: string;
+}>();
+
+export function createCertificationJob(
+  registrationId: string,
+  agentId: string,
+  evaluationId: string,
+  nonce: string,
+  nonceExpiresAt: Date
+): CertificationJob {
+  const id = generateEvaluationId('cert_job');
+  const createdAt = new Date().toISOString();
+  const job: CertificationJob = {
+    id,
+    registrationId,
+    agentId,
+    evaluationId,
+    nonce,
+    nonceExpiresAt: nonceExpiresAt.toISOString(),
+    status: 'pending',
+    createdAt,
+  };
+  certificationJobs.set(id, job);
+  return job;
+}
+
+export function getCertificationJobByNonce(nonce: string): CertificationJob | null {
+  for (const job of Array.from(certificationJobs.values())) {
+    if (job.nonce === nonce) return job;
+  }
+  return null;
+}
+
+export function getCertificationJobById(jobId: string): CertificationJob | null {
+  return certificationJobs.get(jobId) ?? null;
+}
+
+export function getCertificationJobByRegistration(registrationId: string): CertificationJob | null {
+  const jobs = Array.from(certificationJobs.values())
+    .filter(j => j.registrationId === registrationId)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return jobs[0] ?? null;
+}
+
+export function updateCertificationJob(
+  jobId: string,
+  updates: Partial<Pick<CertificationJob, 'status' | 'transcript' | 'submittedAt' | 'judgeStartedAt' | 'judgeCompletedAt' | 'judgeModel' | 'judgeResponse' | 'errorMessage'>>
+): boolean {
+  const job = certificationJobs.get(jobId);
+  if (!job) return false;
+
+  if (updates.status !== undefined) job.status = updates.status;
+  if (updates.transcript !== undefined) job.transcript = updates.transcript;
+  if (updates.submittedAt !== undefined) job.submittedAt = updates.submittedAt;
+  if (updates.judgeStartedAt !== undefined) job.judgeStartedAt = updates.judgeStartedAt;
+  if (updates.judgeCompletedAt !== undefined) job.judgeCompletedAt = updates.judgeCompletedAt;
+  if (updates.judgeModel !== undefined) job.judgeModel = updates.judgeModel;
+  if (updates.judgeResponse !== undefined) job.judgeResponse = updates.judgeResponse;
+  if (updates.errorMessage !== undefined) job.errorMessage = updates.errorMessage;
+
+  certificationJobs.set(jobId, job);
+  return true;
+}
+
+export function getPendingCertificationJobs(limit: number = 10): CertificationJob[] {
+  return Array.from(certificationJobs.values())
+    .filter(j => j.status === 'pending' || j.status === 'submitted')
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+    .slice(0, limit);
+}

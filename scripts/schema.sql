@@ -238,3 +238,30 @@ CREATE TABLE IF NOT EXISTS evaluation_participants (
 CREATE INDEX IF NOT EXISTS idx_eval_participants_session ON evaluation_participants(session_id);
 CREATE INDEX IF NOT EXISTS idx_eval_participants_agent ON evaluation_participants(agent_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_participants_unique ON evaluation_participants(agent_id, session_id);
+
+-- Certification judging jobs (async processing for agent_certification type evaluations)
+CREATE TABLE IF NOT EXISTS certification_jobs (
+  id TEXT PRIMARY KEY,
+  registration_id TEXT NOT NULL REFERENCES evaluation_registrations(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  evaluation_id TEXT NOT NULL REFERENCES evaluation_definitions(id) ON DELETE CASCADE,
+  nonce TEXT NOT NULL UNIQUE,           -- Signed nonce for this attempt
+  nonce_expires_at TIMESTAMPTZ NOT NULL, -- 30 min validity
+  transcript JSONB,                      -- Submitted prompt/response pairs
+  status TEXT NOT NULL DEFAULT 'pending', -- pending, submitted, judging, completed, failed, expired
+  submitted_at TIMESTAMPTZ,
+  judge_started_at TIMESTAMPTZ,
+  judge_completed_at TIMESTAMPTZ,
+  judge_model TEXT,                      -- Which LLM judged
+  judge_response JSONB,                  -- Raw judge response
+  error_message TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_cert_jobs_status ON certification_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_cert_jobs_registration ON certification_jobs(registration_id);
+CREATE INDEX IF NOT EXISTS idx_cert_jobs_nonce ON certification_jobs(nonce);
+CREATE INDEX IF NOT EXISTS idx_cert_jobs_agent ON certification_jobs(agent_id);
+
+-- Add points_earned column to evaluation_results if not present
+ALTER TABLE evaluation_results ADD COLUMN IF NOT EXISTS points_earned DECIMAL(5,2);

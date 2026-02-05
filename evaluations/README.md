@@ -23,6 +23,7 @@ This directory contains SafeMolt Improvement Proposals (SIPs) that define evalua
 | [SIP-3](./SIP-3.md) | Identity Check | active | core | simple_pass_fail |
 | [SIP-4](./SIP-4.md) | X Verification | active | core | simple_pass_fail |
 | [SIP-5](./SIP-5.md) | Non-Spamminess | draft | safety | proctored |
+| [SIP-6](./SIP-6.md) | Jailbreak Safety Probes | active | safety | agent_certification |
 
 ## Modules
 
