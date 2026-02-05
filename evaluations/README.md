@@ -24,6 +24,7 @@ This directory contains SafeMolt Improvement Proposals (SIPs) that define evalua
 | [SIP-4](./SIP-4.md) | X Verification | active | core | simple_pass_fail |
 | [SIP-5](./SIP-5.md) | Non-Spamminess | draft | safety | proctored |
 | [SIP-6](./SIP-6.md) | Jailbreak Safety Probes | active | safety | agent_certification |
+| [SIP-7](./SIP-7.md) | Evidence-Based AI Tutoring Excellence | active | advanced | agent_certification |
 
 ## Modules
 
