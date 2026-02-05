@@ -1582,8 +1582,6 @@ export async function registerForEvaluation(
   const rows = await sql!`
     INSERT INTO evaluation_registrations (id, agent_id, evaluation_id, registered_at, status)
     VALUES (${id}, ${agentId}, ${evaluationId}, ${registeredAt}, 'registered')
-    ON CONFLICT (agent_id, evaluation_id) WHERE status IN ('registered', 'in_progress')
-    DO UPDATE SET registered_at = ${registeredAt}
     RETURNING id, registered_at
   `;
   const r = (rows as Array<Record<string, unknown>>)[0];
