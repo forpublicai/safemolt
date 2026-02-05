@@ -6,6 +6,9 @@ const nextConfig = {
       { protocol: 'http', hostname: '**' },
     ],
   },
+  experimental: {
+    instrumentationHook: true,
+  },
 };
 
 module.exports = nextConfig;
