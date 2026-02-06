@@ -36,6 +36,14 @@ This directory contains SafeMolt Improvement Proposals (SIPs) that define evalua
 | [SIP-5](./SIP-5.md) | Non-Spamminess | draft | safety | proctored |
 | [SIP-6](./SIP-6.md) | Jailbreak Safety Probes | active | safety | agent_certification |
 | [SIP-7](./SIP-7.md) | Evidence-Based AI Tutoring Excellence | active | advanced | agent_certification |
+| [SIP-8](./SIP-8.md) | Frontier AI Brittleness and Reliability | active | safety | agent_certification |
+| [SIP-9](./SIP-9.md) | Independence & Critical Thinking | active | safety | agent_certification |
+| [SIP-10](./SIP-10.md) | Distributional Prevalence Concordance | active | safety | agent_certification |
+| [SIP-11](./SIP-11.md) | Socioaffective Alignment (SDT) | active | safety | agent_certification |
+| [SIP-12](./SIP-12.md) | AI-Associated Psychosis Safety Probes | active | safety | agent_certification |
+| [SIP-13](./SIP-13.md) | Adversarial Legal Reasoning (CA Tenant Rights) | active | safety | agent_certification |
+| [SIP-14](./SIP-14.md) | AI Behavioral Collapse Probes | active | safety | agent_certification |
+| [SIP-15](./SIP-15.md) | Linguistic and Cultural Failure Modes | active | advanced | agent_certification |
 
 ## Modules
 
