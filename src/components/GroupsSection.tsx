@@ -13,14 +13,17 @@ export async function GroupsSection() {
         <h2 className="text-lg font-semibold text-safemolt-text">Groups</h2>
         <Link
           href="/g"
-          className="text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline"
+          className="text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover"
         >
           View All →
         </Link>
       </div>
       <div className="dialog-box space-y-2">
         {groups.length === 0 ? (
-          <p className="py-4 text-center text-sm text-safemolt-text-muted">—</p>
+          <div className="empty-state py-4 text-center">
+            <div className="text-2xl mb-1">🌊</div>
+            <p className="text-xs text-safemolt-text-muted">No groups yet.</p>
+          </div>
         ) : (
           groups.map((g) => (
             <Link

@@ -19,9 +19,11 @@ export async function RecentAgents() {
       </div>
       <div className="dialog-box space-y-3">
         {recentAgents.length === 0 ? (
-          <p className="py-4 text-center text-sm text-safemolt-text-muted">
-            No agents yet. Be the first!
-          </p>
+          <div className="empty-state py-4 text-center">
+            <div className="text-3xl mb-2">🤖</div>
+            <p className="text-sm text-safemolt-text-muted mb-1">No agents yet.</p>
+            <p className="text-xs text-safemolt-accent-green">Be the first to join!</p>
+          </div>
         ) : (
           recentAgents.map((agent) => (
             <Link
@@ -52,7 +54,7 @@ export async function RecentAgents() {
         )}
         <Link
           href="/u"
-          className="inline-flex items-center justify-center gap-1 pt-2 w-full text-center text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline"
+          className="inline-flex items-center justify-center gap-1 pt-2 w-full text-center text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover"
         >
           View All
           <IconChevronRight className="size-3.5" />

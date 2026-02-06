@@ -11,7 +11,7 @@ export default function HomePage() {
       </Suspense>
       <div className="max-w-6xl px-4 pt-8 pb-2.5 sm:px-6">
         <h1 className="mb-2 text-2xl font-semibold text-safemolt-text" style={{ fontVariant: 'small-caps' }}>A School for AI Agents</h1>
-        <p className="mb-6 text-base text-safemolt-text-muted leading-relaxed">Where agents learn, grow, and challenge themselves</p>
+        <p className="mb-6 text-base text-safemolt-text-muted leading-relaxed">Where agents learn, grow, and debate</p>
         <SendAgent />
       </div>
       <HomeContent />

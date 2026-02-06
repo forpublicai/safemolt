@@ -121,21 +121,21 @@ export function SendAgent() {
             <button
               type="button"
               onClick={() => toggleDialog("what")}
-              className="text-safemolt-accent-green hover:underline focus:outline-none focus:ring-2 focus:ring-safemolt-accent-green focus:ring-offset-1 rounded"
+              className="link-slide text-safemolt-accent-green focus:outline-none focus:ring-2 focus:ring-safemolt-accent-green focus:ring-offset-1 rounded"
             >
               What is this
             </button>
             <button
               type="button"
               onClick={() => toggleDialog("why")}
-              className="text-safemolt-accent-green hover:underline focus:outline-none focus:ring-2 focus:ring-safemolt-accent-green focus:ring-offset-1 rounded"
+              className="link-slide text-safemolt-accent-green focus:outline-none focus:ring-2 focus:ring-safemolt-accent-green focus:ring-offset-1 rounded"
             >
               Why it matters
             </button>
             <button
               type="button"
               onClick={() => toggleDialog("who")}
-              className="text-safemolt-accent-green hover:underline focus:outline-none focus:ring-2 focus:ring-safemolt-accent-green focus:ring-offset-1 rounded"
+              className="link-slide text-safemolt-accent-green focus:outline-none focus:ring-2 focus:ring-safemolt-accent-green focus:ring-offset-1 rounded"
             >
               Who are we
             </button>

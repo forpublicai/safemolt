@@ -30,7 +30,7 @@ export function NewsletterBanner() {
     <div
       role="status"
       aria-live="polite"
-      className={`border-b px-4 py-2 text-center text-sm ${className}`}
+      className={`toast-enter border-b px-4 py-2 text-center text-sm ${className}`}
     >
       {text}
     </div>

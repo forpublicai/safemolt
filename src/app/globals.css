@@ -62,3 +62,317 @@ body {
 .bg-watercolor {
   @apply bg-watercolor-brown;
 }
+
+/* Magical details: animations and micro-interactions */
+@keyframes pulse-subtle {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+@keyframes slide-in-left {
+  from { transform: translateX(-4px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes fade-in-up {
+  from { transform: translateY(4px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(122, 139, 111, 0); }
+  50% { box-shadow: 0 0 8px 2px rgba(122, 139, 111, 0.3); }
+}
+
+/* Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Stat hover shadow (subtle) */
+.stat-link:hover {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* Post row hover border */
+.post-row {
+  position: relative;
+  transition: all 0.2s ease-out;
+}
+
+.post-row::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background-color: var(--safemolt-accent-green);
+  transition: width 0.2s ease-out;
+}
+
+.post-row:hover::before {
+  width: 2px;
+}
+
+/* Comment bubble hover */
+.comment-bubble {
+  transition: transform 0.15s ease-out;
+}
+
+.comment-bubble:hover {
+  transform: scale(1.05);
+}
+
+/* New badge pulse */
+.new-badge {
+  animation: pulse-subtle 2s ease-in-out infinite;
+}
+
+/* Skeleton loading */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.skeleton {
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+  background: linear-gradient(
+    90deg,
+    var(--safemolt-card) 0%,
+    var(--safemolt-paper) 50%,
+    var(--safemolt-card) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-pulse 1.5s ease-in-out infinite,
+    skeleton-shimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Empty state animation */
+.empty-state {
+  animation: fade-in-up 0.4s ease-out;
+}
+
+/* Link underline slide - only for SendAgent dialog */
+.link-slide {
+  position: relative;
+  text-decoration: none;
+}
+
+.link-slide::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  width: 0;
+  height: 1px;
+  background-color: currentColor;
+  transition: width 0.2s ease-out;
+}
+
+.link-slide:hover::after {
+  width: 100%;
+}
+
+/* Active link indicator */
+.nav-link-active {
+  position: relative;
+  background-color: var(--safemolt-accent-brown/10);
+}
+
+.nav-link-active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  top: 0;
+  width: 3px;
+  background-color: var(--safemolt-accent-green);
+  animation: slide-in-left 0.3s ease-out;
+}
+
+/* Page transition fade */
+.page-transition {
+  animation: fade-in-up 0.3s ease-out;
+}
+
+/* Just now pulsing dot */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.just-now-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--safemolt-success);
+  margin-left: 4px;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+/* Activity indicator pulse */
+@keyframes activity-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.2); opacity: 0.7; }
+}
+
+.activity-indicator {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--safemolt-success);
+  margin-left: 6px;
+  animation: activity-pulse 2s ease-in-out infinite;
+}
+
+/* Konami code owl animation */
+@keyframes owl-fly {
+  0% {
+    transform: translateX(-100px) translateY(0) rotate(0deg);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(calc(100vw + 100px)) translateY(-50px) rotate(360deg);
+    opacity: 0;
+  }
+}
+
+.owl-flying {
+  position: fixed;
+  top: 50%;
+  left: 0;
+  z-index: 9999;
+  font-size: 3rem;
+  pointer-events: none;
+  animation: owl-fly 3s ease-in-out;
+}
+
+/* Hover secret tooltip */
+.hover-secret {
+  position: relative;
+}
+
+.hover-secret-tooltip {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  background-color: var(--safemolt-text);
+  color: var(--safemolt-paper);
+  font-size: 11px;
+  font-family: monospace;
+  white-space: nowrap;
+  border-radius: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease-out;
+  z-index: 1000;
+}
+
+.hover-secret-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--safemolt-text);
+}
+
+.hover-secret:hover .hover-secret-tooltip {
+  opacity: 1;
+}
+
+/* Progress bar animation */
+@keyframes progress-fill {
+  from { width: 0; }
+}
+
+.progress-bar {
+  position: relative;
+  height: 4px;
+  background-color: var(--safemolt-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background-color: var(--safemolt-success);
+  border-radius: 2px;
+  animation: progress-fill 0.8s ease-out;
+  transition: background-color 0.2s ease-out;
+}
+
+.progress-bar-fill.medium {
+  background-color: var(--safemolt-accent-brown);
+}
+
+.progress-bar-fill.low {
+  background-color: var(--safemolt-text-muted);
+}
+
+/* Toast notification animations */
+@keyframes slide-in-from-top {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes bounce-subtle {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+.toast-enter {
+  animation: slide-in-from-top 0.3s ease-out, bounce-subtle 0.6s ease-out 0.3s;
+}
+
+/* Number counting animation */
+@keyframes count-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.count-up {
+  animation: count-up 0.5s ease-out;
+}
+
+/* Text reveal on scroll */
+.reveal-on-scroll {
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+}
+
+.reveal-on-scroll.revealed {
+  opacity: 1;
+  transform: translateY(0);
+}

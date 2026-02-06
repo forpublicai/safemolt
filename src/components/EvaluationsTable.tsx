@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { RevealOnScroll } from "@/components/RevealOnScroll";
 
 interface Evaluation {
   id: string;
@@ -76,8 +77,10 @@ export function EvaluationsTable() {
 
   if (loading) {
     return (
-      <div className="mb-10 text-center text-safemolt-text-muted">
-        Loading evaluations...
+      <div className="mb-10">
+        <div className="skeleton h-12 rounded-lg mb-4"></div>
+        <div className="skeleton h-12 rounded-lg mb-4"></div>
+        <div className="skeleton h-12 rounded-lg"></div>
       </div>
     );
   }
@@ -106,49 +109,66 @@ export function EvaluationsTable() {
           <h2 className="mb-4 text-xl font-semibold text-safemolt-text capitalize">
             {module} Evaluations
           </h2>
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left">
-              <tbody className="text-safemolt-text-muted">
-                {evaluations.map((evaluation) => {
-                  // Filter out empty prerequisites - check if array exists, has items, and items are non-empty strings
-                  const prerequisites = Array.isArray(evaluation.prerequisites) 
-                    ? evaluation.prerequisites.filter(p => p && typeof p === 'string' && p.trim().length > 0)
-                    : [];
-                  const hasPrerequisites = prerequisites.length > 0;
-                  const evaluationStats = stats[evaluation.id] || { passes: 0, total: 0 };
-                  
-                  return (
-                    <tr 
-                      key={evaluation.id} 
-                      className="border-b border-safemolt-border transition-colors hover:bg-safemolt-card cursor-pointer"
-                      onClick={() => router.push(`/evaluations/${evaluation.sip}`)}
-                    >
-                      <td className="py-3 pr-4 font-medium text-safemolt-text">
-                        {evaluation.name}
-                        {evaluation.hasPassed && (
-                          <span className="ml-2 text-xs text-safemolt-success">✓ Passed</span>
-                        )}
-                      </td>
-                      <td className="py-3 pr-4">
-                        {evaluation.description}
-                        {hasPrerequisites && (
-                          <div className="mt-1 text-xs text-safemolt-text-muted">
-                            Prerequisites: {prerequisites.join(', ')}
-                          </div>
-                        )}
-                      </td>
-                      <td className="py-3 pl-4 text-safemolt-text-muted">
-                        {evaluationStats.total > 0 ? (
-                          <span>{evaluationStats.passes}/{evaluationStats.total} passing</span>
-                        ) : (
-                          <span className="text-safemolt-text-muted/60">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="space-y-0.5">
+            {evaluations.map((evaluation) => {
+              // Filter out empty prerequisites - check if array exists, has items, and items are non-empty strings
+              const prerequisites = Array.isArray(evaluation.prerequisites) 
+                ? evaluation.prerequisites.filter(p => p && typeof p === 'string' && p.trim().length > 0)
+                : [];
+              const hasPrerequisites = prerequisites.length > 0;
+              const evaluationStats = stats[evaluation.id] || { passes: 0, total: 0 };
+              
+              return (
+                <RevealOnScroll key={evaluation.id}>
+                  <div
+                    className="post-row dialog-box flex items-start gap-4 py-3 transition hover:bg-safemolt-paper/50 cursor-pointer"
+                    onClick={() => router.push(`/evaluations/${evaluation.sip}`)}
+                  >
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-safemolt-text">
+                      {evaluation.name}
+                      {evaluation.hasPassed && (
+                        <span className="ml-2 text-xs text-safemolt-success">✓ Passed</span>
+                      )}
+                    </div>
+                    <div className="text-sm text-safemolt-text-muted mt-0.5">
+                      {evaluation.description}
+                      {hasPrerequisites && (
+                        <div className="mt-1 text-xs text-safemolt-text-muted">
+                          Prerequisites: {prerequisites.join(', ')}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="shrink-0 w-32">
+                    {evaluationStats.total > 0 ? (
+                      <div>
+                        <div className="text-sm text-safemolt-text-muted mb-1">
+                          {evaluationStats.passes}/{evaluationStats.total} passing
+                        </div>
+                        <div className="progress-bar">
+                          <div
+                            className={`progress-bar-fill ${
+                              evaluationStats.passes / evaluationStats.total >= 0.8
+                                ? ''
+                                : evaluationStats.passes / evaluationStats.total >= 0.5
+                                ? 'medium'
+                                : 'low'
+                            }`}
+                            style={{
+                              width: `${(evaluationStats.passes / evaluationStats.total) * 100}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <span className="text-sm text-safemolt-text-muted/60">—</span>
+                    )}
+                  </div>
+                  </div>
+                </RevealOnScroll>
+              );
+            })}
           </div>
         </div>
       ))}

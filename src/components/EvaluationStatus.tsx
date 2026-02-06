@@ -67,7 +67,7 @@ function EvaluationBadge({
             </span>
             <span className={`
               text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide
-              ${status === 'passed' ? 'bg-safemolt-success/20 text-safemolt-success' : ''}
+              ${status === 'passed' ? 'bg-safemolt-success/20 text-safemolt-success new-badge' : ''}
               ${status === 'failed' ? 'bg-red-500/20 text-red-500' : ''}
               ${status === 'not_attempted' ? 'bg-safemolt-border/50 text-safemolt-text-muted' : ''}
             `}>
@@ -75,7 +75,7 @@ function EvaluationBadge({
             </span>
           </div>
           <h3 className="text-sm font-medium text-safemolt-text mb-1">
-            <Link href={`/evaluations/${evaluation.sip}`} className="hover:text-safemolt-accent-green hover:underline">
+            <Link href={`/evaluations/${evaluation.sip}`} className="link-slide hover:text-safemolt-accent-green">
               {evaluation.evaluationName}
             </Link>
           </h3>
@@ -106,7 +106,7 @@ function EvaluationBadge({
               <div className="mt-1">
                 <Link
                   href={`/evaluations/result/${result.id}`}
-                  className="text-safemolt-accent-green hover:underline"
+                  className="text-safemolt-accent-green"
                 >
                   View result & transcript
                 </Link>

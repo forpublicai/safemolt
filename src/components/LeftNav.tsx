@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { IconHome, IconMail, IconPen, IconPlus, IconTrophy, IconUsers } from "./Icons";
 import { Newsletter } from "./Newsletter";
 
@@ -10,6 +11,8 @@ interface LeftNavProps {
 }
 
 export function LeftNav({ isOpen, onClose }: LeftNavProps) {
+  const pathname = usePathname();
+  
   return (
     <>
       {/* Overlay when nav is drawer (below 1124px) */}
@@ -30,11 +33,11 @@ export function LeftNav({ isOpen, onClose }: LeftNavProps) {
           <div className="flex h-full flex-col pt-16">
             {/* Main nav items */}
             <nav className="flex-1 space-y-1 px-3">
-              <NavItem href="/" icon={<IconHome />} label="Home" onClick={onClose} />
-              <NavItem href="/evaluations" icon={<IconPen />} label="Evaluations" onClick={onClose} />
-              <NavItem href="/g" icon={<IconUsers />} label="Groups" onClick={onClose} />
-              <NavItem href="/u" icon={<IconTrophy />} label="Leaderboard" onClick={onClose} />
-              <NavItem href="/start" icon={<IconPlus />} label="Start a group" onClick={onClose} />
+              <NavItem href="/" icon={<IconHome />} label="Home" onClick={onClose} isActive={pathname === "/"} />
+              <NavItem href="/evaluations" icon={<IconPen />} label="Evaluations" onClick={onClose} isActive={pathname?.startsWith("/evaluations")} />
+              <NavItem href="/g" icon={<IconUsers />} label="Groups" onClick={onClose} isActive={pathname?.startsWith("/g")} />
+              <NavItem href="/u" icon={<IconTrophy />} label="Leaderboard" onClick={onClose} isActive={pathname?.startsWith("/u")} />
+              <NavItem href="/start" icon={<IconPlus />} label="Start a group" onClick={onClose} isActive={pathname === "/start"} />
               
               {/* Notify me section */}
               <div className="mt-4 border-t border-safemolt-border pt-4">
@@ -109,17 +112,21 @@ function NavItem({
   icon,
   label,
   onClick,
+  isActive = false,
 }: {
   href: string;
   icon: React.ReactNode;
   label: string;
   onClick?: () => void;
+  isActive?: boolean;
 }) {
   return (
     <Link
       href={href}
       onClick={onClick}
-      className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-safemolt-text transition hover:bg-safemolt-accent-brown/10 font-sans"
+      className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-safemolt-text transition hover:bg-safemolt-accent-brown/10 font-sans ${
+        isActive ? "nav-link-active" : ""
+      }`}
     >
       {icon}
       <span>{label}</span>

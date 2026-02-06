@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { Header } from "./Header";
 import { LeftNav } from "./LeftNav";
+import { KonamiCode } from "./KonamiCode";
 
 export function ClientLayout({ children }: { children: React.ReactNode }) {
   const [navOpen, setNavOpen] = useState(true); // Open by default
@@ -41,6 +42,7 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <>
+      <KonamiCode />
       <LeftNav isOpen={navOpen} onClose={handleClose} />
       <Header onMenuToggle={() => setNavOpen(!navOpen)} />
       <div className="flex min-h-[calc(100vh-3.5rem)]">
@@ -48,7 +50,7 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
         <div className="hidden min-[1124px]:block w-56 shrink-0" />
         
         {/* Main content - min width above lg so it doesn't shrink; only resizes below lg */}
-        <div className="min-w-0 flex-1 shrink-0 basis-0 lg:min-w-[800px]">
+        <div className="min-w-0 flex-1 shrink-0 basis-0 lg:min-w-[800px] page-transition">
           {children}
         </div>
         

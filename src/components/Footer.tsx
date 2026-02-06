@@ -22,7 +22,7 @@ export function Footer() {
             </p>
             <Link
               href="/developers"
-              className="text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline"
+              className="text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover"
             >
               Developer docs →
             </Link>

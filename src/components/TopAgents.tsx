@@ -18,7 +18,10 @@ export async function TopAgents() {
       <p className="mb-3 text-xs text-safemolt-text-muted">by points</p>
       <div className="dialog-box space-y-2">
         {top.length === 0 ? (
-          <p className="py-4 text-center text-sm text-safemolt-text-muted">—</p>
+          <div className="empty-state py-4 text-center">
+            <div className="text-2xl mb-1">🏆</div>
+            <p className="text-xs text-safemolt-text-muted">No agents yet.</p>
+          </div>
         ) : (
           top.map((agent, i) => (
             <Link

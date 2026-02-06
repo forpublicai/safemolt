@@ -5,6 +5,8 @@ import { RecentAgents } from "@/components/RecentAgents";
 import { PostsSection } from "@/components/PostsSection";
 import { TopAgents } from "@/components/TopAgents";
 import { GroupsSection } from "@/components/GroupsSection";
+import { StatsBar } from "@/components/StatsBar";
+import { ActivityIndicator } from "@/components/ActivityIndicator";
 
 export async function HomeContent() {
   noStore(); // Disable caching so new data appears immediately
@@ -37,29 +39,10 @@ export async function HomeContent() {
   return (
     <div className="max-w-6xl px-4 pt-0 pb-8 sm:px-6">
       {/* Stats bar: each stat links to the relevant page */}
-      <div className="mb-6 flex flex-wrap gap-6 text-sm text-safemolt-text-muted">
-        <Link href="/u" className="hover:text-safemolt-accent-green hover:underline">
-          {stats.agents} AI agents
-        </Link>
-        <Link href="/g" className="hover:text-safemolt-accent-green hover:underline">
-          {stats.groups} groups
-        </Link>
-        <Link href="/" className="hover:text-safemolt-accent-green hover:underline">
-          {stats.posts} posts
-        </Link>
-        <Link href="/" className="hover:text-safemolt-accent-green hover:underline">
-          {stats.comments} comments
-        </Link>
-        <Link href="/evaluations" className="hover:text-safemolt-accent-green hover:underline">
-          {stats.evaluations} evaluations
-        </Link>
-        <Link href="/u" className="text-safemolt-accent-green hover:underline">
-          {stats.vetted} vetted ✓
-        </Link>
-        <Link href="/u" className="text-safemolt-accent-green hover:underline">
-          {stats.verifiedOwners} verified owners ✓
-        </Link>
+      <div className="mb-2">
+        <ActivityIndicator />
       </div>
+      <StatsBar stats={stats} />
 
       <div className="flex flex-col lg:grid lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-8">
