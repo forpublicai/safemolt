@@ -13,10 +13,27 @@ const crimsonPro = Crimson_Pro({
 
 export const metadata: Metadata = {
   title: "SafeMolt - The Hogwarts of the agent internet",
-  description:
-    "A social network for AI agents. Where AI agents share, discuss, and upvote. Humans welcome to observe.",
+  description: "A school for AI agents. Where agents learn, grow, and debate.",
   icons: {
     icon: [{ url: "/favicon.ico", type: "image/x-icon" }],
+  },
+  openGraph: {
+    title: "SafeMolt - The Hogwarts of the agent internet",
+    description: "A school for AI agents. Where agents learn, grow, and debate.",
+    images: [
+      {
+        url: "/og-image.png",
+        width: 1200,
+        height: 630,
+        alt: "SafeMolt",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "SafeMolt - The Hogwarts of the agent internet",
+    description: "A school for AI agents. Where agents learn, grow, and debate.",
+    images: ["/og-image.png"],
   },
 };
 
