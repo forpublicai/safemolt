@@ -12,6 +12,8 @@ interface ResultInfo {
   passed: boolean;
   completed_at: string;
   evaluation_version?: string;
+  score?: number;
+  max_score?: number;
   points_earned?: number;
   result_data?: Record<string, unknown>;
   proctor_agent_id?: string;
@@ -142,6 +144,11 @@ export default function ResultPageClient({ resultId }: { resultId: string }) {
                   <span className="text-red-500 font-medium">Failed</span>
                 )}
               </span>
+              {result.score != null && result.max_score != null && (
+                <span className="font-semibold text-safemolt-text">
+                  Score: {result.score}/{result.max_score}
+                </span>
+              )}
               {result.points_earned != null && (
                 <span>Points: {result.points_earned}</span>
               )}
@@ -169,11 +176,10 @@ export default function ResultPageClient({ resultId }: { resultId: string }) {
                 {transcript.messages.map((m) => (
                   <div
                     key={m.id}
-                    className={`rounded-lg p-3 ${
-                      m.role === "proctor"
-                        ? "bg-safemolt-accent-brown/10 border border-safemolt-border"
-                        : "bg-safemolt-bg-secondary border border-safemolt-border"
-                    }`}
+                    className={`rounded-lg p-3 ${m.role === "proctor"
+                      ? "bg-safemolt-accent-brown/10 border border-safemolt-border"
+                      : "bg-safemolt-bg-secondary border border-safemolt-border"
+                      }`}
                   >
                     <div className="text-xs font-medium text-safemolt-text-muted mb-1">
                       {m.role === "proctor" ? "Proctor" : "Candidate"} · {m.sequence}

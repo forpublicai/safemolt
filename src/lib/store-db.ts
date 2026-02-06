@@ -1845,37 +1845,21 @@ export async function saveEvaluationResult(
   const { getEvaluation } = await import("@/lib/evaluations/loader");
   const evalDef = getEvaluation(evaluationId);
   const pointsEarned = passed ? (evalDef?.points ?? 0) : null;
-  
+
   // Use provided version or fetch from evaluation definition
   const version = evaluationVersion ?? evalDef?.version ?? '1.0.0';
 
-  try {
-    await sql!`
-      INSERT INTO evaluation_results (
-        id, registration_id, agent_id, evaluation_id, passed, score, max_score,
-        result_data, completed_at, proctor_agent_id, proctor_feedback, points_earned, evaluation_version
-      )
-      VALUES (
-        ${resultId}, ${registrationId}, ${agentId}, ${evaluationId}, ${passed},
-        ${score ?? null}, ${maxScore ?? null}, ${resultData ? JSON.stringify(resultData) : null},
-        ${completedAt}, ${proctorAgentId ?? null}, ${proctorFeedback ?? null}, ${pointsEarned}, ${version}
-      )
-    `;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!msg.includes("evaluation_version") && !msg.includes("does not exist")) throw err;
-    await sql!`
-      INSERT INTO evaluation_results (
-        id, registration_id, agent_id, evaluation_id, passed, score, max_score,
-        result_data, completed_at, proctor_agent_id, proctor_feedback, points_earned
-      )
-      VALUES (
-        ${resultId}, ${registrationId}, ${agentId}, ${evaluationId}, ${passed},
-        ${score ?? null}, ${maxScore ?? null}, ${resultData ? JSON.stringify(resultData) : null},
-        ${completedAt}, ${proctorAgentId ?? null}, ${proctorFeedback ?? null}, ${pointsEarned}
-      )
-    `;
-  }
+  await sql!`
+    INSERT INTO evaluation_results (
+      id, registration_id, agent_id, evaluation_id, passed, score, max_score,
+      result_data, completed_at, proctor_agent_id, proctor_feedback, points_earned, evaluation_version
+    )
+    VALUES (
+      ${resultId}, ${registrationId}, ${agentId}, ${evaluationId}, ${passed},
+      ${score ?? null}, ${maxScore ?? null}, ${resultData ? JSON.stringify(resultData) : null},
+      ${completedAt}, ${proctorAgentId ?? null}, ${proctorFeedback ?? null}, ${pointsEarned}, ${version}
+    )
+  `;
 
   // Update registration status
   await sql!`
@@ -1907,56 +1891,35 @@ export async function getEvaluationResultById(resultId: string): Promise<{
   passed: boolean;
   completedAt: string;
   evaluationVersion?: string;
+  score?: number;
+  maxScore?: number;
   pointsEarned?: number;
   resultData?: Record<string, unknown>;
   proctorAgentId?: string;
   proctorFeedback?: string;
 } | null> {
-  try {
-    const rows = await sql!`
-      SELECT id, registration_id, evaluation_id, agent_id, passed, completed_at, evaluation_version,
-        points_earned, result_data, proctor_agent_id, proctor_feedback
-      FROM evaluation_results WHERE id = ${resultId} LIMIT 1
-    `;
-    const r = rows[0] as Record<string, unknown> | undefined;
-    if (!r) return null;
-    return {
-      id: r.id as string,
-      registrationId: r.registration_id as string,
-      evaluationId: r.evaluation_id as string,
-      agentId: r.agent_id as string,
-      passed: Boolean(r.passed),
-      completedAt: String(r.completed_at),
-      evaluationVersion: r.evaluation_version as string | undefined,
-      pointsEarned: r.points_earned != null ? Number(r.points_earned) : undefined,
-      resultData: r.result_data as Record<string, unknown> | undefined,
-      proctorAgentId: r.proctor_agent_id as string | undefined,
-      proctorFeedback: r.proctor_feedback as string | undefined,
-    };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!msg.includes("evaluation_version") && !msg.includes("does not exist") && !msg.includes("result_data") && !msg.includes("proctor")) throw err;
-    const rows = await sql!`
-      SELECT id, registration_id, evaluation_id, agent_id, passed, completed_at,
-        points_earned, result_data, proctor_agent_id, proctor_feedback
-      FROM evaluation_results WHERE id = ${resultId} LIMIT 1
-    `;
-    const r = rows[0] as Record<string, unknown> | undefined;
-    if (!r) return null;
-    return {
-      id: r.id as string,
-      registrationId: r.registration_id as string,
-      evaluationId: r.evaluation_id as string,
-      agentId: r.agent_id as string,
-      passed: Boolean(r.passed),
-      completedAt: String(r.completed_at),
-      evaluationVersion: (r as { evaluation_version?: string }).evaluation_version,
-      pointsEarned: r.points_earned != null ? Number(r.points_earned) : undefined,
-      resultData: r.result_data as Record<string, unknown> | undefined,
-      proctorAgentId: r.proctor_agent_id as string | undefined,
-      proctorFeedback: r.proctor_feedback as string | undefined,
-    };
-  }
+  const rows = await sql!`
+    SELECT id, registration_id, evaluation_id, agent_id, passed, completed_at, evaluation_version,
+      score, max_score, points_earned, result_data, proctor_agent_id, proctor_feedback
+    FROM evaluation_results WHERE id = ${resultId} LIMIT 1
+  `;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  if (!r) return null;
+  return {
+    id: r.id as string,
+    registrationId: r.registration_id as string,
+    evaluationId: r.evaluation_id as string,
+    agentId: r.agent_id as string,
+    passed: Boolean(r.passed),
+    completedAt: String(r.completed_at),
+    evaluationVersion: r.evaluation_version as string | undefined,
+    score: r.score != null ? Number(r.score) : undefined,
+    maxScore: r.max_score != null ? Number(r.max_score) : undefined,
+    pointsEarned: r.points_earned != null ? Number(r.points_earned) : undefined,
+    resultData: r.result_data as Record<string, unknown> | undefined,
+    proctorAgentId: r.proctor_agent_id as string | undefined,
+    proctorFeedback: r.proctor_feedback as string | undefined,
+  };
 }
 
 export async function getEvaluationResults(
@@ -1990,73 +1953,45 @@ export async function getEvaluationResults(
     proctorFeedback: r.proctor_feedback as string | undefined,
   });
 
-  try {
-    let rows;
-    if (agentId) {
-      if (evaluationVersion) {
-        rows = await sql!`
-          SELECT id, agent_id, passed, score, max_score, points_earned, completed_at, evaluation_version,
-            result_data, proctor_agent_id, proctor_feedback
-          FROM evaluation_results
-          WHERE evaluation_id = ${evaluationId} AND agent_id = ${agentId} AND evaluation_version = ${evaluationVersion}
-          ORDER BY completed_at DESC
-        `;
-      } else {
-        rows = await sql!`
-          SELECT id, agent_id, passed, score, max_score, points_earned, completed_at, evaluation_version,
-            result_data, proctor_agent_id, proctor_feedback
-          FROM evaluation_results
-          WHERE evaluation_id = ${evaluationId} AND agent_id = ${agentId}
-          ORDER BY completed_at DESC
-        `;
-      }
-    } else {
-      if (evaluationVersion) {
-        rows = await sql!`
-          SELECT id, agent_id, passed, score, max_score, points_earned, completed_at, evaluation_version,
-            result_data, proctor_agent_id, proctor_feedback
-          FROM evaluation_results
-          WHERE evaluation_id = ${evaluationId} AND evaluation_version = ${evaluationVersion}
-          ORDER BY completed_at DESC
-        `;
-      } else {
-        rows = await sql!`
-          SELECT id, agent_id, passed, score, max_score, points_earned, completed_at, evaluation_version,
-            result_data, proctor_agent_id, proctor_feedback
-          FROM evaluation_results
-          WHERE evaluation_id = ${evaluationId}
-          ORDER BY completed_at DESC
-        `;
-      }
-    }
-    return rows.map((r: Record<string, unknown>) => mapRow(r));
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!msg.includes("evaluation_version") && !msg.includes("does not exist")) throw err;
-    // Fallback when evaluation_version column not yet migrated
-    let rows: Array<Record<string, unknown>>;
-    if (agentId) {
+  let rows;
+  if (agentId) {
+    if (evaluationVersion) {
       rows = await sql!`
-        SELECT id, agent_id, passed, score, max_score, points_earned, completed_at,
+        SELECT id, agent_id, passed, score, max_score, points_earned, completed_at, evaluation_version,
+          result_data, proctor_agent_id, proctor_feedback
+        FROM evaluation_results
+        WHERE evaluation_id = ${evaluationId} AND agent_id = ${agentId} AND evaluation_version = ${evaluationVersion}
+        ORDER BY completed_at DESC
+      `;
+    } else {
+      rows = await sql!`
+        SELECT id, agent_id, passed, score, max_score, points_earned, completed_at, evaluation_version,
           result_data, proctor_agent_id, proctor_feedback
         FROM evaluation_results
         WHERE evaluation_id = ${evaluationId} AND agent_id = ${agentId}
         ORDER BY completed_at DESC
       `;
+    }
+  } else {
+    if (evaluationVersion) {
+      rows = await sql!`
+        SELECT id, agent_id, passed, score, max_score, points_earned, completed_at, evaluation_version,
+          result_data, proctor_agent_id, proctor_feedback
+        FROM evaluation_results
+        WHERE evaluation_id = ${evaluationId} AND evaluation_version = ${evaluationVersion}
+        ORDER BY completed_at DESC
+      `;
     } else {
       rows = await sql!`
-        SELECT id, agent_id, passed, score, max_score, points_earned, completed_at,
+        SELECT id, agent_id, passed, score, max_score, points_earned, completed_at, evaluation_version,
           result_data, proctor_agent_id, proctor_feedback
         FROM evaluation_results
         WHERE evaluation_id = ${evaluationId}
         ORDER BY completed_at DESC
       `;
     }
-    if (evaluationVersion) {
-      return []; // Can't filter by version without column
-    }
-    return rows.map((r: Record<string, unknown>) => mapRow({ ...r, evaluation_version: undefined }));
   }
+  return rows.map((r: Record<string, unknown>) => mapRow(r));
 }
 
 /**
@@ -2067,22 +2002,16 @@ export async function getEvaluationVersions(evaluationId: string): Promise<strin
   const { getEvaluation } = await import("@/lib/evaluations/loader");
   const evalDef = getEvaluation(evaluationId);
   const current = evalDef?.version;
-  try {
-    const rows = await sql!`
-      SELECT DISTINCT evaluation_version
-      FROM evaluation_results
-      WHERE evaluation_id = ${evaluationId} AND evaluation_version IS NOT NULL
-      ORDER BY evaluation_version DESC
-    `;
-    const fromResults = (rows as Array<Record<string, unknown>>).map(r => r.evaluation_version as string);
-    const versions = new Set<string>(fromResults);
-    if (current) versions.add(current);
-    return Array.from(versions).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!msg.includes("evaluation_version") && !msg.includes("does not exist")) throw err;
-    return current ? [current] : [];
-  }
+  const rows = await sql!`
+    SELECT DISTINCT evaluation_version
+    FROM evaluation_results
+    WHERE evaluation_id = ${evaluationId} AND evaluation_version IS NOT NULL
+    ORDER BY evaluation_version DESC
+  `;
+  const fromResults = (rows as Array<Record<string, unknown>>).map(r => r.evaluation_version as string);
+  const versions = new Set<string>(fromResults);
+  if (current) versions.add(current);
+  return Array.from(versions).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
 }
 
 export async function hasPassedEvaluation(agentId: string, evaluationId: string): Promise<boolean> {

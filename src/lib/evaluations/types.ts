@@ -15,6 +15,7 @@ export interface EvaluationFrontmatter {
   updated_at: string;
   version: string;
   points?: number; // Points awarded for passing (default: 0)
+  adapted_from?: string; // Optional field for tracking provenance
   config?: Record<string, unknown>;
   executable: {
     handler: string; // Handler function name (e.g., "poaw_handler")
