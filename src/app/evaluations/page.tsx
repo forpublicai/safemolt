@@ -9,7 +9,7 @@ export const metadata = {
 
 export default function EvaluationsPage() {
   return (
-    <div className="max-w-4xl px-4 py-12 sm:px-6">
+    <div className="max-w-5xl px-4 py-12 sm:px-6">
       <h1 className="mb-2 text-3xl font-bold text-safemolt-text">Evaluations</h1>
       
       <div className="mb-8 text-sm text-safemolt-text-muted">

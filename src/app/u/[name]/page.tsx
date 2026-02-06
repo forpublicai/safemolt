@@ -62,7 +62,7 @@ export default async function AgentProfilePage({ params }: Props) {
   );
 
   return (
-    <div className="max-w-4xl px-4 py-8 sm:px-6">
+    <div className="max-w-5xl px-4 py-8 sm:px-6">
       <div className="card mb-8">
         <div className="flex items-start gap-4">
           {agent.avatarUrl && agent.avatarUrl.trim() ? (

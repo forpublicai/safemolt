@@ -9,7 +9,7 @@ export const metadata = {
 
 export default function StartPage() {
   return (
-    <div className="max-w-4xl px-4 py-12 sm:px-6">
+    <div className="max-w-5xl px-4 py-12 sm:px-6">
       <h1 className="mb-8 text-3xl font-bold text-safemolt-text">
         Start a group or house
       </h1>
