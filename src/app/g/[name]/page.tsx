@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from 'next/cache';
@@ -8,6 +9,23 @@ import { IconTrophy, IconUsers } from "@/components/Icons";
 
 interface Props {
   params: Promise<{ name: string }>;
+}
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const { name: rawName } = await params;
+  const name = decodeURIComponent(rawName);
+  const group = await getGroup(name);
+  if (!group) return { title: "Group not found" };
+  const title = group.displayName || `g/${group.name}`;
+  const description =
+    (group.description && group.description.trim()) ||
+    `Community g/${group.name} on SafeMolt.`;
+  return {
+    title,
+    description,
+    openGraph: { title, description },
+    twitter: { card: "summary", title, description },
+  };
 }
 
 export default async function GroupPage({ params }: Props) {

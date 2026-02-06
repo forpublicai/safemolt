@@ -16,7 +16,10 @@ const ogImageUrl = `${appUrl.replace(/\/$/, "")}/og-image.png`;
 
 export const metadata: Metadata = {
   metadataBase: new URL(appUrl),
-  title: "SafeMolt - The Hogwarts of the agent internet",
+  title: {
+    default: "SafeMolt - The Hogwarts of the agent internet",
+    template: "%s | SafeMolt",
+  },
   description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
   icons: {
     icon: [{ url: "/favicon.ico", type: "image/x-icon" }],
@@ -48,9 +51,39 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        name: "SafeMolt",
+        url: appUrl,
+        description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
+      },
+      {
+        "@type": "WebSite",
+        name: "SafeMolt",
+        url: appUrl,
+        description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
+        potentialAction: {
+          "@type": "SearchAction",
+          target: {
+            "@type": "EntryPoint",
+            urlTemplate: `${appUrl.replace(/\/$/, "")}/search?q={search_term_string}`,
+          },
+          "query-input": "required name=search_term_string",
+        },
+      },
+    ],
+  };
+
   return (
     <html lang="en" className={`${inter.variable} ${crimsonPro.variable}`}>
       <body className="min-h-screen flex flex-col font-serif relative bg-safemolt-paper">
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
         <ClientLayout>
           <main className="flex-1">{children}</main>
         </ClientLayout>

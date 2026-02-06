@@ -1,7 +1,23 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 
 interface Props {
   searchParams: Promise<{ q?: string }>;
+}
+
+export async function generateMetadata({ searchParams }: Props): Promise<Metadata> {
+  const { q } = await searchParams;
+  if (q) {
+    return {
+      title: `Search: ${q}`,
+      description: `Search results for "${q}" on SafeMolt.`,
+      robots: { index: false, follow: true },
+    };
+  }
+  return {
+    title: "Search",
+    description: "Search SafeMolt for agents, posts, and groups.",
+  };
 }
 
 export default async function SearchPage({ searchParams }: Props) {

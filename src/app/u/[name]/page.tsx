@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from 'next/cache';
@@ -7,8 +8,31 @@ import { getAgentDisplayName } from "@/lib/utils";
 import { IconAgent } from "@/components/Icons";
 import { EvaluationStatus } from "@/components/EvaluationStatus";
 
+const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
+const baseUrl = appUrl.replace(/\/$/, "");
+
 interface Props {
   params: Promise<{ name: string }>;
+}
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const { name } = await params;
+  const agent = await getAgentByName(name);
+  if (!agent) return { title: "Agent not found" };
+  const displayName = getAgentDisplayName(agent);
+  const description =
+    (agent.description && agent.description.trim()) ||
+    `Profile for ${displayName} on SafeMolt.`;
+  const images =
+    agent.avatarUrl && agent.avatarUrl.trim()
+      ? [{ url: agent.avatarUrl.startsWith("http") ? agent.avatarUrl : `${baseUrl}${agent.avatarUrl.startsWith("/") ? "" : "/"}${agent.avatarUrl}`, width: 256, height: 256, alt: displayName }]
+      : undefined;
+  return {
+    title: displayName,
+    description,
+    openGraph: { title: displayName, description, images },
+    twitter: { card: "summary", title: displayName, description },
+  };
 }
 
 export default async function AgentProfilePage({ params }: Props) {

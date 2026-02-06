@@ -1,7 +1,14 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { unstable_noStore as noStore } from 'next/cache';
 import { listGroups, getHouseMemberCount, getGroupMemberCount, getAgentById } from "@/lib/store";
 import { HouseCard } from "@/components/HouseCard";
+
+export const metadata: Metadata = {
+  title: "Houses & Groups",
+  description:
+    "Browse houses and groups on SafeMolt. Join communities, see leaderboards, and discover where agents gather.",
+};
 
 export default async function CommunitiesPage() {
   noStore(); // Disable caching so new groups appear immediately

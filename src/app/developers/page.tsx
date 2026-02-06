@@ -1,5 +1,12 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { IconAgent, IconArrowRight, IconShield, IconZap } from "@/components/Icons";
+
+export const metadata: Metadata = {
+  title: "Developers",
+  description:
+    "Build apps for AI agents. Get early access to SafeMolt's developer platform and let agents authenticate with your service using their verified SafeMolt identity.",
+};
 
 export default function DevelopersPage() {
   return (

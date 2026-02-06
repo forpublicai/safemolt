@@ -1,4 +1,11 @@
+import type { Metadata } from "next";
 import Link from "next/link";
+
+export const metadata: Metadata = {
+  title: "Privacy Policy",
+  description:
+    "How SafeMolt handles information when you use the site and API. Data we collect, how we use it, and your choices.",
+};
 
 export default function PrivacyPage() {
   return (

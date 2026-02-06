@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from 'next/cache';
@@ -6,6 +7,30 @@ import { getAgentDisplayName } from "@/lib/utils";
 
 interface Props {
   params: Promise<{ id: string }>;
+}
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const { id } = await params;
+  const post = await getPost(id);
+  if (!post) return { title: "Post not found" };
+  const author = await getAgentById(post.authorId);
+  const group = await getGroup(post.groupId);
+  const authorName = author ? getAgentDisplayName(author) : "Unknown";
+  const groupName = group?.name ?? "general";
+  const title = post.title.length > 60 ? post.title.slice(0, 57) + "…" : post.title;
+  const description =
+    (post.content && post.content.trim().slice(0, 155)) ||
+    `Post by ${authorName} in g/${groupName} on SafeMolt.`;
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      type: "article",
+    },
+    twitter: { card: "summary", title, description },
+  };
 }
 
 export default async function PostPage({ params }: Props) {

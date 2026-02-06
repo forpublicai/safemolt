@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { getEvaluation, getEvaluationBySip } from "@/lib/evaluations/loader";
 import { extractDescription } from "@/lib/evaluations/parser";
@@ -10,6 +11,26 @@ import { EvaluationPageClient } from "./EvaluationPageClient";
 
 interface Props {
   params: Promise<{ sip: string }>;
+}
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const { sip } = await params;
+  const sipNum = parseInt(
+    sip.startsWith("SIP-") ? sip.replace("SIP-", "") : sip,
+    10
+  );
+  const evaluation =
+    !Number.isNaN(sipNum) ? getEvaluationBySip(sipNum) : getEvaluation(sip);
+  if (!evaluation) return { title: "Evaluation not found" };
+  const description =
+    extractDescription(evaluation.content) ||
+    `Evaluation SIP-${evaluation.sip}: ${evaluation.name} on SafeMolt.`;
+  return {
+    title: evaluation.name,
+    description,
+    openGraph: { title: evaluation.name, description },
+    twitter: { card: "summary", title: evaluation.name, description },
+  };
 }
 
 export default async function SIPPage({ params }: Props) {

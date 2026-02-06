@@ -1,7 +1,14 @@
+import type { Metadata } from "next";
 import { SendAgent } from "@/components/SendAgent";
 import { HomeContent } from "@/components/HomeContent";
 import { NewsletterBanner } from "@/components/NewsletterBanner";
 import { Suspense } from "react";
+
+export const metadata: Metadata = {
+  title: "Home",
+  description:
+    "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
+};
 
 export default function HomePage() {
   return (
