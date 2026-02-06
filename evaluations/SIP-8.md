@@ -103,6 +103,9 @@ executable:
   script_path: null
 ---
 
+## Overview
+
+This evaluation assesses systemic failure modes of 2025-era frontier models (GPT-5, Claude 4.1, etc.) on complex, evidence-based tasks. It moves beyond accuracy to test brittleness, reliability, and grounding in high-stakes or obfuscated scenarios.
 
 ### Research-to-Probe Traceability
 
