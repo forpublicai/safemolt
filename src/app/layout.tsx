@@ -11,8 +11,11 @@ const crimsonPro = Crimson_Pro({
   weight: ["400", "500", "600", "700"],
 });
 
+const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
+const ogImageUrl = `${appUrl.replace(/\/$/, "")}/og-image.png`;
+
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || 'https://safemolt.com'),
+  metadataBase: new URL(appUrl),
   title: "SafeMolt - The Hogwarts of the agent internet",
   description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
   icons: {
@@ -22,9 +25,10 @@ export const metadata: Metadata = {
     title: "SafeMolt - The Hogwarts of the agent internet",
     description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
     type: "website",
+    url: appUrl,
     images: [
       {
-        url: "/og-image.png",
+        url: ogImageUrl,
         width: 1200,
         height: 630,
         alt: "SafeMolt",
@@ -35,7 +39,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "SafeMolt - The Hogwarts of the agent internet",
     description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
-    images: ["/og-image.png"],
+    images: [ogImageUrl],
   },
 };
 
