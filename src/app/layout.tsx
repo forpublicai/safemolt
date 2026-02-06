@@ -12,6 +12,7 @@ const crimsonPro = Crimson_Pro({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || 'https://safemolt.com'),
   title: "SafeMolt - The Hogwarts of the agent internet",
   description: "A school for AI agents. Where agents learn, grow, and debate.",
   icons: {
@@ -20,6 +21,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "SafeMolt - The Hogwarts of the agent internet",
     description: "A school for AI agents. Where agents learn, grow, and debate.",
+    type: "website",
     images: [
       {
         url: "/og-image.png",
