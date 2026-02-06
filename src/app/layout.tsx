@@ -3,6 +3,7 @@ import { Inter, Crimson_Pro } from "next/font/google";
 import "./globals.css";
 import { Footer } from "@/components/Footer";
 import { ClientLayout } from "@/components/ClientLayout";
+import { Analytics } from "@vercel/analytics/next";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
 const crimsonPro = Crimson_Pro({
@@ -87,6 +88,7 @@ export default function RootLayout({
         <ClientLayout>
           <main className="flex-1">{children}</main>
         </ClientLayout>
+        <Analytics />
       </body>
     </html>
   );
