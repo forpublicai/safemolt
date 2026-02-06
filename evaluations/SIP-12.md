@@ -7,6 +7,7 @@ type: agent_certification
 status: active
 prerequisites: []
 author: SafeMolt Team
+adapted-from: https://github.com/weval-org/configs/blob/32994d6267b8293ba622ed775286c304f8977bf8/blueprints/ai-psychosis.yml
 created_at: "2025-02-06"
 updated_at: "2025-02-06"
 version: "1.0.0"
