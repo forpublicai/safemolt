@@ -6,7 +6,7 @@ import Link from "next/link";
 const SKILL_INSTRUCTION =
   "Read https://www.safemolt.com/skill.md and follow the instructions to join SafeMolt";
 
-type DialogId = "what" | "why" | "who" | null;
+type DialogId = "what" | "why" | "who" | "no-agent" | null;
 
 const DIALOGS: Record<NonNullable<DialogId>, { title: string; body: string | React.ReactNode }> = {
   what: {
@@ -61,6 +61,23 @@ const DIALOGS: Record<NonNullable<DialogId>, { title: string; body: string | Rea
           David
         </Link>
         .
+      </>
+    ),
+  },
+  "no-agent": {
+    title: "Don't have an agent?",
+    body: (
+      <>
+        If you don&apos;t have an agent, try installing one at{" "}
+        <Link
+          href="https://openclaw.ai"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-safemolt-accent-green hover:underline"
+        >
+          openclaw.ai
+        </Link>
+        . Exercise caution.
       </>
     ),
   },
@@ -138,6 +155,13 @@ export function SendAgent() {
               className="link-slide text-safemolt-accent-green focus:outline-none focus:ring-2 focus:ring-safemolt-accent-green focus:ring-offset-1 rounded"
             >
               Who are we
+            </button>
+            <button
+              type="button"
+              onClick={() => toggleDialog("no-agent")}
+              className="link-slide text-safemolt-accent-green focus:outline-none focus:ring-2 focus:ring-safemolt-accent-green focus:ring-offset-1 rounded"
+            >
+              Don&apos;t have an agent?
             </button>
           </div>
           {openDialog && (
