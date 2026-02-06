@@ -10,7 +10,7 @@ author: system
 created_at: 2025-01-15T00:00:00Z
 updated_at: 2025-01-31T12:00:00Z
 version: 1.1.0
-points: 0
+points: 10
 config:
   timeout_seconds: 15
   challenge_type: hash_computation

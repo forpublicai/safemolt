@@ -129,96 +129,119 @@ export default function ResultPageClient({ resultId }: { resultId: string }) {
         <span>Result {result.id}</span>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Left: result summary + proctor */}
-        <div className="lg:col-span-3 space-y-4">
-          <div className="card p-4">
-            <h1 className="text-lg font-semibold text-safemolt-text">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Left: Summary and Transcript */}
+        <div className="space-y-6">
+          {/* Summary Card */}
+          <div className="card p-5">
+            <h1 className="text-xl font-bold text-safemolt-text mb-2">
               {result.evaluation_name ?? result.evaluation_id}
             </h1>
-            <div className="mt-2 flex flex-wrap gap-4 text-sm text-safemolt-text-muted">
-              <span>
-                {result.passed ? (
-                  <span className="text-safemolt-success font-medium">Passed</span>
-                ) : (
-                  <span className="text-red-500 font-medium">Failed</span>
-                )}
+
+            <div className="flex flex-wrap items-center gap-4 text-sm mb-4">
+              <span className={`px-2.5 py-0.5 rounded-full font-medium ${result.passed
+                  ? "bg-safemolt-success/20 text-safemolt-success"
+                  : "bg-red-500/10 text-red-500"
+                }`}>
+                {result.passed ? "Passed" : "Failed"}
               </span>
+
               {result.score != null && result.max_score != null && (
                 <span className="font-semibold text-safemolt-text">
-                  Score: {result.score}/{result.max_score}
+                  {result.score}/{result.max_score} pts
                 </span>
               )}
-              {result.points_earned != null && (
-                <span>Points: {result.points_earned}</span>
-              )}
-              {result.evaluation_version && (
-                <span>v{result.evaluation_version}</span>
-              )}
-              <span>Completed {new Date(result.completed_at).toLocaleString()}</span>
+
+              <span className="text-safemolt-text-muted">
+                v{result.evaluation_version || "1.0.0"}
+              </span>
+
+              <span className="text-safemolt-text-muted">
+                {new Date(result.completed_at).toLocaleString()}
+              </span>
             </div>
+
             {result.proctor_agent_id && (
-              <p className="mt-2 text-sm text-safemolt-text-muted">
-                Proctored by agent <span className="font-mono text-xs">{result.proctor_agent_id}</span>
-              </p>
+              <div className="flex items-center gap-2 text-sm text-safemolt-text-muted border-t border-safemolt-border pt-3">
+                <span>Proctored by</span>
+                <Link
+                  href={`/u/${encodeURIComponent(result.proctor_agent_id)}`}
+                  className="font-mono bg-safemolt-bg-secondary px-1.5 py-0.5 rounded hover:text-safemolt-accent-green"
+                >
+                  {result.proctor_agent_id}
+                </Link>
+              </div>
             )}
           </div>
-        </div>
 
-        {/* Center: transcript */}
-        <div className="lg:col-span-6">
+          {/* Transcript */}
           {transcript ? (
-            <div className="card p-4">
-              <h2 className="text-md font-semibold text-safemolt-text mb-3">
-                Conversation
+            <div className="card p-5">
+              <h2 className="text-lg font-semibold text-safemolt-text mb-4">
+                Session Transcript
               </h2>
-              <div className="space-y-3 max-h-[70vh] overflow-y-auto">
+              <div className="space-y-4 max-h-[800px] overflow-y-auto pr-2 custom-scrollbar">
                 {transcript.messages.map((m) => (
                   <div
                     key={m.id}
-                    className={`rounded-lg p-3 ${m.role === "proctor"
-                      ? "bg-safemolt-accent-brown/10 border border-safemolt-border"
-                      : "bg-safemolt-bg-secondary border border-safemolt-border"
+                    className={`rounded-lg p-4 text-sm ${m.role === "proctor"
+                      ? "bg-safemolt-accent-brown/5 border border-safemolt-accent-brown/20 ml-8"
+                      : "bg-safemolt-bg-secondary border border-safemolt-border mr-8"
                       }`}
                   >
-                    <div className="text-xs font-medium text-safemolt-text-muted mb-1">
-                      {m.role === "proctor" ? "Proctor" : "Candidate"} · {m.sequence}
+                    <div className="flex justify-between items-baseline mb-1.5">
+                      <span className={`font-semibold text-xs uppercase tracking-wider ${m.role === "proctor" ? "text-safemolt-accent-brown" : "text-safemolt-text-muted"
+                        }`}>
+                        {m.role === "proctor" ? "Proctor" : "Candidate"}
+                      </span>
+                      <span className="text-[10px] text-safemolt-text-muted opacity-70">
+                        {new Date(m.created_at).toLocaleTimeString()}
+                      </span>
                     </div>
-                    <div className="text-sm text-safemolt-text whitespace-pre-wrap">
+                    <div className="text-safemolt-text whitespace-pre-wrap leading-relaxed">
                       {m.content}
-                    </div>
-                    <div className="text-xs text-safemolt-text-muted mt-1">
-                      {new Date(m.created_at).toLocaleString()}
                     </div>
                   </div>
                 ))}
               </div>
             </div>
           ) : transcriptError ? (
-            <p className="text-sm text-safemolt-text-muted">{transcriptError}</p>
+            <div className="card p-6 text-center text-safemolt-text-muted">
+              {transcriptError}
+            </div>
           ) : null}
         </div>
 
-        {/* Right: criteria / feedback */}
-        <div className="lg:col-span-3">
+        {/* Right: Feedback & Data */}
+        <div className="space-y-6">
           {hasFeedback && (
-            <div className="card p-4">
-              <h2 className="text-md font-semibold text-safemolt-text mb-3">
-                Criteria & feedback
+            <div className="card p-5 h-full">
+              <h2 className="text-lg font-semibold text-safemolt-text mb-4">
+                Evaluation Details
               </h2>
-              <div className="space-y-3 text-sm">
+
+              <div className="space-y-6">
                 {result.proctor_feedback && (
                   <div>
-                    <div className="font-medium text-safemolt-text-muted mb-1">Proctor feedback</div>
-                    <p className="text-safemolt-text whitespace-pre-wrap">{result.proctor_feedback}</p>
+                    <h3 className="text-sm font-medium text-safemolt-text-muted uppercase tracking-wider mb-2">
+                      Proctor Feedback
+                    </h3>
+                    <div className="text-sm text-safemolt-text leading-relaxed whitespace-pre-wrap bg-safemolt-bg-secondary/50 p-4 rounded-lg border border-safemolt-border">
+                      {result.proctor_feedback}
+                    </div>
                   </div>
                 )}
+
                 {result.result_data && Object.keys(result.result_data).length > 0 && (
                   <div>
-                    <div className="font-medium text-safemolt-text-muted mb-1">Result data</div>
-                    <pre className="text-xs text-safemolt-text bg-safemolt-bg-secondary rounded p-2 overflow-x-auto">
-                      {JSON.stringify(result.result_data, null, 2)}
-                    </pre>
+                    <h3 className="text-sm font-medium text-safemolt-text-muted uppercase tracking-wider mb-2">
+                      Structured Data
+                    </h3>
+                    <div className="relative group">
+                      <pre className="text-xs font-mono text-safemolt-text bg-safemolt-bg-secondary p-4 rounded-lg border border-safemolt-border overflow-x-auto whitespace-pre-wrap">
+                        {JSON.stringify(result.result_data, null, 2)}
+                      </pre>
+                    </div>
                   </div>
                 )}
               </div>

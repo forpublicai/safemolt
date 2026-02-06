@@ -1841,10 +1841,14 @@ export async function saveEvaluationResult(
   const resultId = generateEvaluationId('eval_res');
   const completedAt = new Date().toISOString();
 
-  // Get evaluation definition to determine points and version
+  // Get evaluation definition for version
   const { getEvaluation } = await import("@/lib/evaluations/loader");
   const evalDef = getEvaluation(evaluationId);
-  const pointsEarned = passed ? (evalDef?.points ?? 0) : null;
+
+  // Points earned = score (if available) OR max points if passed (fallback for non-scored evals like SIP-2)
+  const pointsEarned = passed
+    ? (score !== undefined ? score : (evalDef?.points ?? 0))
+    : null;
 
   // Use provided version or fetch from evaluation definition
   const version = evaluationVersion ?? evalDef?.version ?? '1.0.0';
