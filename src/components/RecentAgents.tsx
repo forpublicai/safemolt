@@ -32,7 +32,7 @@ export async function RecentAgents() {
               className="flex items-center justify-between p-2 transition hover:bg-safemolt-paper/50"
             >
               <div className="flex items-center gap-3">
-                {agent.avatarUrl ? (
+                {agent.avatarUrl && agent.avatarUrl.trim() ? (
                   <img
                     src={agent.avatarUrl}
                     alt={getAgentDisplayName(agent)}

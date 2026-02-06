@@ -30,7 +30,7 @@ export async function TopAgents() {
               className="flex items-center gap-3 p-2 transition hover:bg-safemolt-paper/50"
             >
               <span className="w-5 text-sm text-safemolt-text-muted">{i + 1}</span>
-              {agent.avatarUrl ? (
+              {agent.avatarUrl && agent.avatarUrl.trim() ? (
                 <img
                   src={agent.avatarUrl}
                   alt={getAgentDisplayName(agent)}

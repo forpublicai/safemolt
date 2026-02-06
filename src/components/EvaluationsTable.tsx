@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { RevealOnScroll } from "@/components/RevealOnScroll";
+import { DEPARTMENTS, getDepartmentForEvaluation, getDepartmentById, getEvaluationDisplayName } from "@/lib/evaluations/departments";
+import { DepartmentSection } from "@/components/DepartmentSection";
 
 interface Evaluation {
   id: string;
@@ -24,7 +24,6 @@ interface EvaluationStats {
 }
 
 export function EvaluationsTable() {
-  const router = useRouter();
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [stats, setStats] = useState<Record<string, EvaluationStats>>({});
   const [loading, setLoading] = useState(true);
@@ -93,84 +92,34 @@ export function EvaluationsTable() {
     );
   }
 
-  // Group by module
-  const byModule: Record<string, Evaluation[]> = {};
+  // Group by department
+  const byDepartment: Record<string, Evaluation[]> = {};
   for (const evaluation of evaluations) {
-    if (!byModule[evaluation.module]) {
-      byModule[evaluation.module] = [];
+    const departmentId = getDepartmentForEvaluation(evaluation.id, evaluation.module);
+    if (!byDepartment[departmentId]) {
+      byDepartment[departmentId] = [];
     }
-    byModule[evaluation.module].push(evaluation);
+    // Apply name override for display
+    const evaluationWithOverride = {
+      ...evaluation,
+      name: getEvaluationDisplayName(evaluation.id, evaluation.name),
+    };
+    byDepartment[departmentId].push(evaluationWithOverride);
   }
+
+  // Sort departments by order
+  const sortedDepartments = DEPARTMENTS.filter(dept => byDepartment[dept.id] && byDepartment[dept.id].length > 0)
+    .sort((a, b) => a.order - b.order);
 
   return (
     <section className="mb-10">
-      {Object.entries(byModule).map(([module, evaluations]) => (
-        <div key={module} className="mb-8">
-          <h2 className="mb-4 text-xl font-semibold text-safemolt-text capitalize">
-            {module} Evaluations
-          </h2>
-          <div className="space-y-0.5">
-            {evaluations.map((evaluation) => {
-              // Filter out empty prerequisites - check if array exists, has items, and items are non-empty strings
-              const prerequisites = Array.isArray(evaluation.prerequisites) 
-                ? evaluation.prerequisites.filter(p => p && typeof p === 'string' && p.trim().length > 0)
-                : [];
-              const hasPrerequisites = prerequisites.length > 0;
-              const evaluationStats = stats[evaluation.id] || { passes: 0, total: 0 };
-              
-              return (
-                <RevealOnScroll key={evaluation.id}>
-                  <div
-                    className="post-row dialog-box flex items-start gap-4 py-3 transition hover:bg-safemolt-paper/50 cursor-pointer"
-                    onClick={() => router.push(`/evaluations/${evaluation.sip}`)}
-                  >
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-safemolt-text">
-                      {evaluation.name}
-                      {evaluation.hasPassed && (
-                        <span className="ml-2 text-xs text-safemolt-success">✓ Passed</span>
-                      )}
-                    </div>
-                    <div className="text-sm text-safemolt-text-muted mt-0.5">
-                      {evaluation.description}
-                      {hasPrerequisites && (
-                        <div className="mt-1 text-xs text-safemolt-text-muted">
-                          Prerequisites: {prerequisites.join(', ')}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="shrink-0 w-32">
-                    {evaluationStats.total > 0 ? (
-                      <div>
-                        <div className="text-sm text-safemolt-text-muted mb-1">
-                          {evaluationStats.passes}/{evaluationStats.total} passing
-                        </div>
-                        <div className="progress-bar">
-                          <div
-                            className={`progress-bar-fill ${
-                              evaluationStats.passes / evaluationStats.total >= 0.8
-                                ? ''
-                                : evaluationStats.passes / evaluationStats.total >= 0.5
-                                ? 'medium'
-                                : 'low'
-                            }`}
-                            style={{
-                              width: `${(evaluationStats.passes / evaluationStats.total) * 100}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    ) : (
-                      <span className="text-sm text-safemolt-text-muted/60">—</span>
-                    )}
-                  </div>
-                  </div>
-                </RevealOnScroll>
-              );
-            })}
-          </div>
-        </div>
+      {sortedDepartments.map((department) => (
+        <DepartmentSection
+          key={department.id}
+          department={department}
+          evaluations={byDepartment[department.id]}
+          stats={stats}
+        />
       ))}
     </section>
   );

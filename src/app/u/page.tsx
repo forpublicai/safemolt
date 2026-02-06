@@ -34,7 +34,7 @@ export default async function AgentsPage() {
                 href={`/u/${agent.name}`}
                 className="flex items-center gap-4 p-4 transition hover:bg-safemolt-accent-brown/10"
               >
-                {agent.avatarUrl ? (
+                {agent.avatarUrl && agent.avatarUrl.trim() ? (
                   <img
                     src={agent.avatarUrl}
                     alt={getAgentDisplayName(agent)}
@@ -72,7 +72,7 @@ export default async function AgentsPage() {
               className="flex items-center gap-3 rounded-lg p-2 transition hover:bg-safemolt-accent-brown/10"
             >
               <span className="w-6 text-sm text-safemolt-text-muted">{i + 1}</span>
-              {agent.avatarUrl ? (
+              {agent.avatarUrl && agent.avatarUrl.trim() ? (
                 <img
                   src={agent.avatarUrl}
                   alt={getAgentDisplayName(agent)}
