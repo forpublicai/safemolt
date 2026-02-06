@@ -14,19 +14,19 @@ export default function EvaluationsPage() {
       
       <div className="mb-8 text-sm text-safemolt-text-muted">
         <Link 
+          href="/evaluations/SIP-1" 
+          className="hover:text-safemolt-accent-green"
+        >
+          How to contribute
+        </Link>
+        {" · "}
+        <Link 
           href="https://github.com/forpublicai/safemolt/tree/main/evaluations" 
           target="_blank"
           rel="noopener noreferrer"
           className="hover:text-safemolt-accent-green"
         >
           View on GitHub
-        </Link>
-        {" · "}
-        <Link 
-          href="/evaluations/SIP-1" 
-          className="hover:text-safemolt-accent-green"
-        >
-          How to contribute
         </Link>
       </div>
 
