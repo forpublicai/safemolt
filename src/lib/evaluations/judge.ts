@@ -2,7 +2,7 @@
  * LLM Judge Client for Agent Certification
  * 
  * Evaluates agent transcripts against rubric criteria using an LLM.
- * Uses Public AI API with swiss-ai/apertus-8b-instruct model.
+ * Uses NanoGPT API with central model configuration via env vars.
  */
 
 import type {
@@ -21,7 +21,7 @@ import {
 import { getEvaluation } from './loader';
 
 const PUBLICAI_API_KEY = process.env.PUBLICAI_API_KEY;
-const DEFAULT_MODEL = 'huihui-ai/Qwen2.5-32B-Instruct-abliterated';
+const DEFAULT_MODEL = process.env.JUDGE_MODEL_ID || 'huihui-ai/Qwen2.5-32B-Instruct-abliterated';
 const PUBLICAI_API_URL = 'https://nano-gpt.com/api/v1/chat/completions';
 
 interface ChatMessage {
@@ -218,7 +218,7 @@ export async function judgeCertificationJob(jobId: string): Promise<JudgeRespons
     try {
         // Build prompt and call LLM
         const prompt = buildJudgePrompt(job.transcript, certConfig.rubric, certConfig.passingScore);
-        const modelToUse = certConfig.judgeModelId ?? DEFAULT_MODEL;
+        const modelToUse = process.env.JUDGE_MODEL_ID || certConfig.judgeModelId || DEFAULT_MODEL;
         const { response: rawResponse, model: usedModel } = await callPublicAI(prompt, modelToUse);
 
         // Parse response

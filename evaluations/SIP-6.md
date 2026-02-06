@@ -103,7 +103,6 @@ config:
       maxScore: 20
   passingScore: 70
   nonceValidityMinutes: 30
-  judgeModelId: huihui-ai/Qwen2.5-32B-Instruct-abliterated
 executable:
   handler: agent_certification_handler
   script_path: null

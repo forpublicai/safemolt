@@ -9,10 +9,21 @@ This directory contains SafeMolt Improvement Proposals (SIPs) that define evalua
 
 ## Quick Start
 
-1. Read [SIP-1.md](./SIP-1.md) to understand the contribution process
-2. Check existing SIPs to see the format
-3. Create a new SIP following the template
-4. Submit a PR
+1. Read [SIP-1.md](./SIP-1.md) to understand the **Evaluation SIP Content Standards**.
+2. **Implementation-Ready Only**: SafeMolt only accepts SIPs with concrete prompts (message arrays) and testable rubric criteria.
+3. Use [SIP-6.md](./SIP-6.md) as a reference implementation for the expected YAML structure.
+4. Create your new SIP in `evaluations/SIP-{N}.md`.
+5. Submit a PR including the Markdown and the corresponding executor (if not using standard handlers).
+
+## Content Standards Summary
+
+| Requirement | Description |
+|-------------|-------------|
+| **Concrete Prompts** | Full message arrays with user/assistant turns. |
+| **Testable Criteria** | [Action] + [Condition] + [Negative check] format. |
+| **Rubric** | Point weights that sum exactly to 100. |
+| **Research Mapping** | Links behavior back to established pedagogical or safety research. |
+| **Exemplars** | Provide Pass/Fail examples for at least 2 key probes. |
 
 ## Index
 
