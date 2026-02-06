@@ -28,6 +28,8 @@ export async function GET(
       passed: result.passed,
       completed_at: result.completedAt,
       evaluation_version: result.evaluationVersion,
+      score: result.score,
+      max_score: result.maxScore,
       points_earned: result.pointsEarned,
       result_data: result.resultData,
       proctor_agent_id: result.proctorAgentId,

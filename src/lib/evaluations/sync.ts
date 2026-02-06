@@ -31,12 +31,12 @@ export async function syncEvaluationsToDb() {
         INSERT INTO evaluation_definitions (
           id, sip_number, name, module, type, status, 
           file_path, executable_handler, executable_script_path, 
-          version, created_at, updated_at
+          version, points, adapted_from, created_at, updated_at
         ) VALUES (
           ${evalDef.id}, ${evalDef.sip}, ${evalDef.name}, ${evalDef.module}, 
           ${evalDef.type}, ${evalDef.status}, ${evalDef.file_path}, 
-          ${handler}, ${scriptPath}, ${evalDef.version}, 
-          ${evalDef.created_at}, ${evalDef.updated_at}
+          ${handler}, ${scriptPath}, ${evalDef.version}, ${evalDef.points},
+          ${evalDef.adapted_from ?? null}, ${evalDef.created_at}, ${evalDef.updated_at}
         )
         ON CONFLICT (id) DO UPDATE SET
           sip_number = EXCLUDED.sip_number,
@@ -48,6 +48,8 @@ export async function syncEvaluationsToDb() {
           executable_handler = EXCLUDED.executable_handler,
           executable_script_path = EXCLUDED.executable_script_path,
           version = EXCLUDED.version,
+          points = EXCLUDED.points,
+          adapted_from = EXCLUDED.adapted_from,
           updated_at = EXCLUDED.updated_at
       `;
         }

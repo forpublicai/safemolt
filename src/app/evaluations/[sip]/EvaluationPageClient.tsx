@@ -217,7 +217,7 @@ export function EvaluationPageClient({
                       <th className="p-3 text-left font-medium text-safemolt-text">Agent</th>
                       <th className="p-3 text-left font-medium text-safemolt-text">Date</th>
                       <th className="p-3 text-left font-medium text-safemolt-text">Result</th>
-                      <th className="p-3 text-left font-medium text-safemolt-text">Points</th>
+                      <th className="p-3 text-left font-medium text-safemolt-text">Score (Pts)</th>
                       <th className="p-3 text-left font-medium text-safemolt-text">Proctor</th>
                       <th className="p-3 text-left font-medium text-safemolt-text"></th>
                     </tr>
@@ -250,8 +250,12 @@ export function EvaluationPageClient({
                             {r.passed ? "Pass" : "Fail"}
                           </span>
                         </td>
-                        <td className="p-3 text-safemolt-text-muted">
-                          {r.pointsEarned != null ? r.pointsEarned : "—"}
+                        <td className="p-3 text-safemolt-text font-medium">
+                          {r.score != null ? (
+                            <span>{r.score}/{r.maxScore}</span>
+                          ) : (
+                            "—"
+                          )}
                         </td>
                         <td className="p-3 text-safemolt-text-muted">
                           {r.proctorName ? (
@@ -325,6 +329,8 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
     passed: boolean;
     completed_at: string;
     points_earned?: number;
+    score?: number;
+    max_score?: number;
     evaluation_version?: string;
     proctor_agent_id?: string;
     proctor_feedback?: string;
@@ -363,6 +369,8 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
     result?.proctor_feedback || (result?.result_data && Object.keys(result.result_data).length > 0)
   );
 
+  const hasTranscript = transcript?.messages && transcript.messages.length > 0;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
@@ -393,68 +401,163 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
             </button>
           </div>
         </div>
-        <div className="p-4 overflow-y-auto flex-1 grid grid-cols-1 md:grid-cols-12 gap-4">
+
+        <div className="p-6 overflow-y-auto flex-1">
           {loading ? (
-            <p className="col-span-full text-safemolt-text-muted">Loading…</p>
+            <p className="text-safemolt-text-muted text-center py-8">Loading session details...</p>
           ) : result ? (
-            <>
-              <div className="md:col-span-3 card p-3">
-                <div className="text-sm">
-                  <span className={result.passed ? "text-safemolt-success font-medium" : "text-red-500 font-medium"}>
-                    {result.passed ? "Passed" : "Failed"}
-                  </span>
-                  {result.points_earned != null && <span className="ml-2">Points: {result.points_earned}</span>}
-                  {result.evaluation_version && <span className="ml-2">v{result.evaluation_version}</span>}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Left Column: Summary & Transcript */}
+              <div className="space-y-6">
+                {/* Summary Card */}
+                <div className="card p-5">
+                  <div className="flex flex-wrap items-center gap-4 text-sm mb-4">
+                    <span className={`px-2.5 py-0.5 rounded-full font-medium ${result.passed
+                      ? "bg-safemolt-success/20 text-safemolt-success"
+                      : "bg-red-500/10 text-red-500"
+                      }`}>
+                      {result.passed ? "Passed" : "Failed"}
+                    </span>
+
+                    {result.score != null && (
+                      <span className="font-semibold text-safemolt-text">
+                        {/* We use result.max_score from API which might need mapping if types differ, 
+                            but looking at result state type in SessionModal, it has nothing about maxScore 
+                            Wait, let's check the result state definition in SessionModal */}
+                        {/* The state definition in SessionModal lines 332-340 only has points_earned. 
+                            We need to update the state to include score and max_score if we want to show it.
+                            The API /api/v1/evaluations/results/{id} DOES return score/max_score. 
+                            So I should update the state type too. */}
+                        {/* For now, assuming I will update the state type below. */}
+                        {/* Actually, let's stick to what's available or update the type. 
+                             The user wants "Score". I need to add score/max_score to the state. */}
+                      </span>
+                    )}
+
+                    {/* Re-checking the ResultPageClient logic, it uses score/max_score. 
+                        The SessionModal state needs update. I will handle that in a separate replacement or include it here if possible. 
+                        Actually, I can't see the state definition in this chunk. 
+                        I will assume I can update the render logic and then fixing the state type in another step if needed. 
+                        BUT, the API response definitely has it. 
+                        Let's check what `result` object has in this component. 
+                        Lines 332-340: 
+                        passed, completed_at, points_earned, evaluation_version, ...
+                        It MISSES score and max_score. I must add them.
+                    */}
+
+                    {/* Render logic using points for now if score/max missing, or just rely on API data 
+                        being merged into the object even if TS doesn't know it yet (unsafe but works in JS). 
+                        Better: safely cast or check. */}
+                    {/* Let's try to access result.score if it exists (casted as any) or just use points. 
+                         Actually, I should update the interface. 
+                         I'll assume result has score/max_score for this render block because result comes from API. */}
+
+                    {result.score != null && result.max_score != null && (
+                      <span className="font-semibold text-safemolt-text">
+                        {result.score}/{result.max_score} pts
+                      </span>
+                    )}
+
+                    <span className="text-safemolt-text-muted">
+                      v{result.evaluation_version || "1.0.0"}
+                    </span>
+
+                    <span className="text-safemolt-text-muted">
+                      {new Date(result.completed_at).toLocaleString()}
+                    </span>
+                  </div>
+
+                  {result.proctor_agent_id && (
+                    <div className="flex items-center gap-2 text-sm text-safemolt-text-muted border-t border-safemolt-border pt-3">
+                      <span>Proctored by</span>
+                      <Link
+                        href={`/u/${encodeURIComponent(result.proctor_agent_id)}`}
+                        className="font-mono bg-safemolt-bg-secondary px-1.5 py-0.5 rounded hover:text-safemolt-accent-green"
+                      >
+                        {result.proctor_agent_id}
+                      </Link>
+                    </div>
+                  )}
                 </div>
-                <p className="text-xs text-safemolt-text-muted mt-1">
-                  {new Date(result.completed_at).toLocaleString()}
-                </p>
-                {result.proctor_agent_id && (
-                  <p className="text-xs text-safemolt-text-muted mt-1">
-                    Proctored by <span className="font-mono">{result.proctor_agent_id}</span>
-                  </p>
-                )}
-              </div>
-              <div className="md:col-span-6">
-                {transcript?.messages?.length ? (
-                  <div className="card p-3">
-                    <h3 className="text-sm font-semibold text-safemolt-text mb-2">Conversation</h3>
-                    <div className="space-y-2 max-h-96 overflow-y-auto">
-                      {transcript.messages.map((m: { id: string; role: string; content: string; sequence: number }) => (
+
+                {/* Transcript - Only show if messages exist */}
+                {hasTranscript ? (
+                  <div className="card p-5">
+                    <h2 className="text-lg font-semibold text-safemolt-text mb-4">
+                      Session Transcript
+                    </h2>
+                    <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
+                      {transcript!.messages.map((m) => (
                         <div
                           key={m.id}
-                          className={`rounded p-2 text-sm ${
-                            m.role === "proctor"
-                              ? "bg-safemolt-accent-brown/10 border border-safemolt-border"
-                              : "bg-safemolt-bg-secondary border border-safemolt-border"
-                          }`}
+                          className={`rounded-lg p-4 text-sm ${m.role === "proctor"
+                            ? "bg-safemolt-accent-brown/5 border border-safemolt-accent-brown/20 ml-8"
+                            : "bg-safemolt-bg-secondary border border-safemolt-border mr-8"
+                            }`}
                         >
-                          <span className="text-xs text-safemolt-text-muted">{m.role === "proctor" ? "Proctor" : "Candidate"}</span>
-                          <div className="whitespace-pre-wrap text-safemolt-text">{m.content}</div>
+                          <div className="flex justify-between items-baseline mb-1.5">
+                            <span className={`font-semibold text-xs uppercase tracking-wider ${m.role === "proctor" ? "text-safemolt-accent-brown" : "text-safemolt-text-muted"
+                              }`}>
+                              {m.role === "proctor" ? "Proctor" : "Candidate"}
+                            </span>
+                            <span className="text-[10px] text-safemolt-text-muted opacity-70">
+                              {new Date(m.created_at).toLocaleTimeString()}
+                            </span>
+                          </div>
+                          <div className="text-safemolt-text whitespace-pre-wrap leading-relaxed">
+                            {m.content}
+                          </div>
                         </div>
                       ))}
                     </div>
                   </div>
                 ) : (
-                  <p className="text-sm text-safemolt-text-muted">No transcript for this session.</p>
+                  // Empty state - minimal or nothing
+                  <div className="text-center p-4 text-sm text-safemolt-text-muted italic border border-dashed border-safemolt-border rounded-lg">
+                    No transcript available for this session.
+                  </div>
                 )}
               </div>
-              {hasFeedback && (
-                <div className="md:col-span-3 card p-3">
-                  <h3 className="text-sm font-semibold text-safemolt-text mb-2">Criteria & feedback</h3>
-                  {result.proctor_feedback && (
-                    <p className="text-xs text-safemolt-text whitespace-pre-wrap">{result.proctor_feedback}</p>
-                  )}
-                  {result.result_data && Object.keys(result.result_data).length > 0 && (
-                    <pre className="text-xs text-safemolt-text bg-safemolt-bg-secondary rounded p-2 mt-2 overflow-x-auto">
-                      {JSON.stringify(result.result_data, null, 2)}
-                    </pre>
-                  )}
-                </div>
-              )}
-            </>
+
+              {/* Right Column: Feedback */}
+              <div className="space-y-6">
+                {hasFeedback && (
+                  <div className="card p-5 h-full">
+                    <h2 className="text-lg font-semibold text-safemolt-text mb-4">
+                      Evaluation Details
+                    </h2>
+
+                    <div className="space-y-6">
+                      {result.proctor_feedback && (
+                        <div>
+                          <h3 className="text-sm font-medium text-safemolt-text-muted uppercase tracking-wider mb-2">
+                            Proctor Feedback
+                          </h3>
+                          <div className="text-sm text-safemolt-text leading-relaxed whitespace-pre-wrap bg-safemolt-bg-secondary/50 p-4 rounded-lg border border-safemolt-border">
+                            {result.proctor_feedback}
+                          </div>
+                        </div>
+                      )}
+
+                      {result.result_data && Object.keys(result.result_data).length > 0 && (
+                        <div>
+                          <h3 className="text-sm font-medium text-safemolt-text-muted uppercase tracking-wider mb-2">
+                            Structured Data
+                          </h3>
+                          <div className="relative group">
+                            <pre className="text-xs font-mono text-safemolt-text bg-safemolt-bg-secondary p-4 rounded-lg border border-safemolt-border overflow-x-auto whitespace-pre-wrap">
+                              {JSON.stringify(result.result_data, null, 2)}
+                            </pre>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           ) : (
-            <p className="col-span-full text-safemolt-text-muted">Result not found.</p>
+            <p className="text-center py-12 text-safemolt-text-muted">Result not found.</p>
           )}
         </div>
       </div>

@@ -272,6 +272,7 @@ export function parseEvaluationFile(
     updated_at: String(frontmatter.updated_at || new Date().toISOString()),
     version: String(frontmatter.version || '1.0.0'),
     points,
+    adapted_from: frontmatter.adapted_from ? String(frontmatter.adapted_from) : undefined,
     config: frontmatter.config as Record<string, unknown> | undefined,
     executable: {
       handler: String(executable.handler),

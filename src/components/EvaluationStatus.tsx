@@ -80,9 +80,17 @@ function EvaluationBadge({
             </Link>
           </h3>
           <div className="text-xs text-safemolt-text-muted space-y-0.5">
-            {result?.passed && result.pointsEarned !== undefined && (
-              <div>
-                <span className="font-medium">{result.pointsEarned}</span> points earned
+            {result?.passed && (
+              <div className="flex items-center gap-1.5 flex-wrap text-xs font-medium text-safemolt-text">
+                {evaluation.results[0]?.score != null ? (
+                  <span>
+                    {evaluation.results[0].score}/{evaluation.results[0].maxScore} pts
+                  </span>
+                ) : (
+                  <span>
+                    {evaluation.results[0]?.pointsEarned ?? 0} pts
+                  </span>
+                )}
               </div>
             )}
             {result && (

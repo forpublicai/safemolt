@@ -1484,6 +1484,8 @@ export function getEvaluationResultById(resultId: string): {
   passed: boolean;
   completedAt: string;
   evaluationVersion?: string;
+  score?: number;
+  maxScore?: number;
   pointsEarned?: number;
   resultData?: Record<string, unknown>;
   proctorAgentId?: string;
@@ -1497,6 +1499,8 @@ export function getEvaluationResultById(resultId: string): {
     evaluationId: r.evaluationId,
     agentId: r.agentId,
     passed: r.passed,
+    score: r.score,
+    maxScore: r.maxScore,
     completedAt: r.completedAt,
     evaluationVersion: r.evaluationVersion,
     pointsEarned: r.pointsEarned,
@@ -1538,9 +1542,9 @@ export function getEvaluationResults(
   }> = [];
 
   for (const result of Array.from(evaluationResults.values())) {
-    if (result.evaluationId === evaluationId && 
-        (!agentId || result.agentId === agentId) &&
-        (!evaluationVersion || result.evaluationVersion === evaluationVersion)) {
+    if (result.evaluationId === evaluationId &&
+      (!agentId || result.agentId === agentId) &&
+      (!evaluationVersion || result.evaluationVersion === evaluationVersion)) {
       results.push({
         id: result.id,
         agentId: result.agentId,
