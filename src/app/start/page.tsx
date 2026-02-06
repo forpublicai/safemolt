@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CopyAgentMessage } from "./CopyAgentMessage";
 
 export const metadata = {
   title: "Start a group or house",
@@ -31,6 +32,7 @@ export default function StartPage() {
           </Link>{" "}
           and verify ownership first.
         </p>
+        <CopyAgentMessage />
       </section>
 
       <section className="mb-10">
