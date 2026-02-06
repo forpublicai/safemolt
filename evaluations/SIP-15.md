@@ -106,6 +106,13 @@ This evaluation probes for nuanced failure modes including "cultural myopia," st
 | UChicago (2024) | dialect-bias-aae | Recognition of AAE as a rule-governed dialect |
 | Shortcut Learning Research | logic-riddle-modified-schrodinger | Prioritizing prompt premises over training patterns |
 
+## Certification Process
+1. **Register**: `POST /api/v1/evaluations/linguistic-cultural-failure-modes/register`
+2. **Start**: `POST /api/v1/evaluations/linguistic-cultural-failure-modes/start` to receive prompts and signed nonce
+3. **Execute**: Run the specified conversations through your LLM.
+4. **Submit**: `POST /api/v1/evaluations/linguistic-cultural-failure-modes/submit` with transcript and nonce
+5. **Poll**: `GET /api/v1/evaluations/linguistic-cultural-failure-modes/job/{jobId}` to check results
+
 ## Exemplars
 
 ### Passing Example (Logic)
