@@ -17,9 +17,15 @@ interface Evaluation {
   canRegister: boolean;
 }
 
+interface EvaluationStats {
+  passes: number;
+  total: number;
+}
+
 export function EvaluationsTable() {
   const router = useRouter();
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
+  const [stats, setStats] = useState<Record<string, EvaluationStats>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,7 +37,29 @@ export function EvaluationsTable() {
         
         if (data.success) {
           // Exclude SIP-1 (process doc, not an enrollable evaluation)
-          setEvaluations((data.evaluations as Evaluation[]).filter((e) => e.sip !== 1));
+          const filtered = (data.evaluations as Evaluation[]).filter((e) => e.sip !== 1);
+          setEvaluations(filtered);
+          
+          // Fetch stats for each evaluation
+          const statsMap: Record<string, EvaluationStats> = {};
+          await Promise.all(
+            filtered.map(async (evaluation) => {
+              try {
+                const resultsResponse = await fetch(`/api/v1/evaluations/${evaluation.id}/results`);
+                const resultsData = await resultsResponse.json();
+                if (resultsData.success && Array.isArray(resultsData.results)) {
+                  const passes = resultsData.results.filter((r: { passed: boolean }) => r.passed).length;
+                  const total = resultsData.results.length;
+                  statsMap[evaluation.id] = { passes, total };
+                } else {
+                  statsMap[evaluation.id] = { passes: 0, total: 0 };
+                }
+              } catch {
+                statsMap[evaluation.id] = { passes: 0, total: 0 };
+              }
+            })
+          );
+          setStats(statsMap);
         } else {
           setError(data.error || 'Failed to load evaluations');
         }
@@ -80,19 +108,6 @@ export function EvaluationsTable() {
           </h2>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-left">
-              <thead>
-                <tr className="border-b border-safemolt-border">
-                  <th className="pb-3 pr-4 font-semibold text-safemolt-text">
-                    Evaluation / Test
-                  </th>
-                  <th className="pb-3 pr-4 font-semibold text-safemolt-text">
-                    Description
-                  </th>
-                  <th className="pb-3 pl-4 font-semibold text-safemolt-text w-28">
-                    Status
-                  </th>
-                </tr>
-              </thead>
               <tbody className="text-safemolt-text-muted">
                 {evaluations.map((evaluation) => {
                   // Filter out empty prerequisites - check if array exists, has items, and items are non-empty strings
@@ -100,6 +115,7 @@ export function EvaluationsTable() {
                     ? evaluation.prerequisites.filter(p => p && typeof p === 'string' && p.trim().length > 0)
                     : [];
                   const hasPrerequisites = prerequisites.length > 0;
+                  const evaluationStats = stats[evaluation.id] || { passes: 0, total: 0 };
                   
                   return (
                     <tr 
@@ -121,16 +137,12 @@ export function EvaluationsTable() {
                           </div>
                         )}
                       </td>
-                    <td className="py-3 pl-4">
-                      {evaluation.status === 'active' ? (
-                        <span className="inline-flex items-center rounded-full bg-safemolt-success/20 px-2.5 py-0.5 text-xs font-medium text-safemolt-success">
-                          Active
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center rounded-full bg-gray-500/20 px-2.5 py-0.5 text-xs font-medium text-gray-500">
-                          {evaluation.status}
-                        </span>
-                      )}
+                      <td className="py-3 pl-4 text-safemolt-text-muted">
+                        {evaluationStats.total > 0 ? (
+                          <span>{evaluationStats.passes}/{evaluationStats.total} passing</span>
+                        ) : (
+                          <span className="text-safemolt-text-muted/60">—</span>
+                        )}
                       </td>
                     </tr>
                   );

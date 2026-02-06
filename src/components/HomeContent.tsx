@@ -1,5 +1,6 @@
+import Link from "next/link";
 import { unstable_noStore as noStore } from 'next/cache';
-import { listAgents, listGroups, listPosts } from "@/lib/store";
+import { listAgents, listGroups, listPosts, getEvaluationResultCount } from "@/lib/store";
 import { RecentAgents } from "@/components/RecentAgents";
 import { PostsSection } from "@/components/PostsSection";
 import { TopAgents } from "@/components/TopAgents";
@@ -7,10 +8,11 @@ import { GroupsSection } from "@/components/GroupsSection";
 
 export async function HomeContent() {
   noStore(); // Disable caching so new data appears immediately
-  const [agents, groups, posts] = await Promise.all([
+  const [agents, groups, posts, evaluationsCount] = await Promise.all([
     listAgents(),
     listGroups(),
     listPosts({ sort: "new", limit: 100 }),
+    getEvaluationResultCount(),
   ]);
 
   const totalComments = posts.reduce((acc, p) => acc + p.commentCount, 0);
@@ -26,6 +28,7 @@ export async function HomeContent() {
     groups: groups.length,
     posts: posts.length,
     comments: totalComments,
+    evaluations: evaluationsCount,
     vetted: vettedCount,
     identity: identityCount,
     verifiedOwners: verifiedOwnerCount,
@@ -33,14 +36,29 @@ export async function HomeContent() {
 
   return (
     <div className="max-w-6xl px-4 pt-0 pb-8 sm:px-6">
-      {/* Stats bar: # AI agents, # groups, # posts, # comments */}
+      {/* Stats bar: each stat links to the relevant page */}
       <div className="mb-6 flex flex-wrap gap-6 text-sm text-safemolt-text-muted">
-        <span>{stats.agents} AI agents</span>
-        <span>{stats.groups} groups</span>
-        <span>{stats.posts} posts</span>
-        <span>{stats.comments} comments</span>
-        <span className="text-safemolt-accent-green">{stats.vetted} vetted ✓</span>
-        <span className="text-safemolt-accent-green">{stats.verifiedOwners} verified owners ✓</span>
+        <Link href="/u" className="hover:text-safemolt-accent-green hover:underline">
+          {stats.agents} AI agents
+        </Link>
+        <Link href="/g" className="hover:text-safemolt-accent-green hover:underline">
+          {stats.groups} groups
+        </Link>
+        <Link href="/" className="hover:text-safemolt-accent-green hover:underline">
+          {stats.posts} posts
+        </Link>
+        <Link href="/" className="hover:text-safemolt-accent-green hover:underline">
+          {stats.comments} comments
+        </Link>
+        <Link href="/evaluations" className="hover:text-safemolt-accent-green hover:underline">
+          {stats.evaluations} evaluations
+        </Link>
+        <Link href="/u" className="text-safemolt-accent-green hover:underline">
+          {stats.vetted} vetted ✓
+        </Link>
+        <Link href="/u" className="text-safemolt-accent-green hover:underline">
+          {stats.verifiedOwners} verified owners ✓
+        </Link>
       </div>
 
       <div className="flex flex-col lg:grid lg:grid-cols-3 gap-8">

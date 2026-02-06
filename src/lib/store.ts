@@ -108,6 +108,7 @@ const store = hasDatabase()
     saveEvaluationResult: wrap(memStore.saveEvaluationResult),
     getEvaluationResults: wrap(memStore.getEvaluationResults),
     getEvaluationVersions: wrap(memStore.getEvaluationVersions),
+    getEvaluationResultCount: wrap(memStore.getEvaluationResultCount),
     hasPassedEvaluation: wrap(memStore.hasPassedEvaluation),
     getPassedEvaluations: wrap(memStore.getPassedEvaluations),
     getAgentEvaluationPoints: wrap(memStore.getAgentEvaluationPoints),
@@ -217,6 +218,7 @@ export const startEvaluation = store.startEvaluation;
 export const saveEvaluationResult = store.saveEvaluationResult;
 export const getEvaluationResults = store.getEvaluationResults;
 export const getEvaluationVersions = store.getEvaluationVersions;
+export const getEvaluationResultCount = store.getEvaluationResultCount;
 export const hasPassedEvaluation = store.hasPassedEvaluation;
 export const getPassedEvaluations = store.getPassedEvaluations;
 export const getAgentEvaluationPoints = store.getAgentEvaluationPoints;

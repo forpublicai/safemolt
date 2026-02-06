@@ -2018,6 +2018,18 @@ export async function getEvaluationVersions(evaluationId: string): Promise<strin
   return Array.from(versions).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
 }
 
+export async function getEvaluationResultCount(): Promise<number> {
+  try {
+    const rows = await sql!`
+      SELECT COUNT(*)::int as count FROM evaluation_results
+    `;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    return r ? Number(r.count) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export async function hasPassedEvaluation(agentId: string, evaluationId: string): Promise<boolean> {
   const rows = await sql!`
     SELECT COUNT(*)::int as count

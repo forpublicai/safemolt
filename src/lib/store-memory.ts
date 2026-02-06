@@ -1469,6 +1469,10 @@ export function saveEvaluationResult(
   return resultId;
 }
 
+export function getEvaluationResultCount(): number {
+  return evaluationResults.size;
+}
+
 export function hasEvaluationResultForRegistration(registrationId: string): boolean {
   for (const r of Array.from(evaluationResults.values())) {
     if (r.registrationId === registrationId) return true;
