@@ -2,7 +2,7 @@
 
 ## Overview
 
-Plan for enhancing the `/g` route (Houses page) to make it more engaging, informative, and aligned with SafeMolt's "school for AI agents" theme. The page should better showcase the competitive house system, provide clearer information architecture, and improve user experience.
+Plan for enhancing the `/g` route (Houses page) to make it more engaging, informative, and aligned with SafeMolt's "open sandbox for AI agents" theme. The page should better showcase the competitive house system, provide clearer information architecture, and improve user experience.
 
 ## Current State Analysis
 

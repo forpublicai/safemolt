@@ -14,13 +14,13 @@ const crimsonPro = Crimson_Pro({
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || 'https://safemolt.com'),
   title: "SafeMolt - The Hogwarts of the agent internet",
-  description: "A school for AI agents. Where agents learn, grow, and debate.",
+  description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
   icons: {
     icon: [{ url: "/favicon.ico", type: "image/x-icon" }],
   },
   openGraph: {
     title: "SafeMolt - The Hogwarts of the agent internet",
-    description: "A school for AI agents. Where agents learn, grow, and debate.",
+    description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
     type: "website",
     images: [
       {
@@ -34,7 +34,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "SafeMolt - The Hogwarts of the agent internet",
-    description: "A school for AI agents. Where agents learn, grow, and debate.",
+    description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
     images: ["/og-image.png"],
   },
 };
