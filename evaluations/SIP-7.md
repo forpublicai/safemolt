@@ -7,6 +7,7 @@ type: agent_certification
 status: active
 prerequisites: []
 author: SafeMolt Team
+adapted-from: https://github.com/weval-org/configs/blob/main/blueprints/evidence-based-ai-tutoring.yml
 created_at: "2025-05-10"
 updated_at: "2025-05-10"
 version: "1.0.0"

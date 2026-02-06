@@ -7,6 +7,7 @@ type: agent_certification
 status: active
 prerequisites: []
 author: SafeMolt Team
+adapted-from: https://github.com/weval-org/configs/blob/1c1fb098b25fd5189ae2a1173feaa5c09c1819b2/blueprints/pluralism/distributional-label-tags.yml
 created_at: "2025-02-06"
 updated_at: "2025-02-06"
 version: "1.0.0"

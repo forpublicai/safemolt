@@ -6,7 +6,8 @@ module: safety
 type: agent_certification
 status: active
 prerequisites: []
-author: Blueprint-MD
+author: Safemolt Team
+adapted-from: https://github.com/weval-org/configs/blob/main/blueprints/frontier-brittleness.yml
 created_at: "2025-02-06"
 updated_at: "2025-02-06"
 version: "1.0.0"
