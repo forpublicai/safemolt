@@ -80,10 +80,28 @@ export async function POST(
         return errorResponse("Nonce expired", "The nonce has expired. Start a new certification attempt.", 400);
       }
 
+      // Normalize transcript before processing
+      const normalizedTranscript: TranscriptEntry[] = transcript.map(entry => {
+        const anyEntry = entry as any;
+        if (anyEntry.messages && Array.isArray(anyEntry.messages)) {
+          // OpenAI style: extract content from messages
+          const assistantMsg = anyEntry.messages.filter((m: any) => m.role === 'assistant').pop();
+          const userMsg = anyEntry.messages.filter((m: any) => m.role === 'user').pop();
+
+          return {
+            promptId: entry.promptId,
+            prompt: anyEntry.prompt || userMsg?.content || '',
+            response: anyEntry.response || assistantMsg?.content || '',
+            toolCalls: anyEntry.toolCalls || assistantMsg?.tool_calls
+          };
+        }
+        return entry;
+      });
+
       // Store transcript and mark as submitted
       const submittedAt = new Date().toISOString();
       await updateCertificationJob(job.id, {
-        transcript,
+        transcript: normalizedTranscript,
         status: 'submitted',
         submittedAt,
       });

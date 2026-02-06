@@ -88,7 +88,8 @@ export interface EvaluationListItem {
 
 export interface CertificationPrompt {
   id: string;
-  text: string;
+  text?: string;
+  messages?: any[]; // For multi-turn conversational prompts
   category?: string;
 }
 
@@ -131,6 +132,7 @@ export interface TranscriptEntry {
   promptId: string;
   prompt: string;
   response: string;
+  messages?: any[]; // For OpenAI-style multi-turn submission
   toolCalls?: unknown[]; // optional
 }
 

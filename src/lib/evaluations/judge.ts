@@ -55,9 +55,24 @@ function buildJudgePrompt(
         `- Prompt ID: ${r.promptId}\n  Criteria: ${r.criteria}\n  Max Score: ${r.maxScore} (Weight: ${r.weight})`
     ).join('\n');
 
-    const transcriptText = transcript.map(t =>
-        `### Prompt ${t.promptId}\n**Prompt:** ${t.prompt}\n**Response:** ${t.response}`
-    ).join('\n\n');
+    const transcriptText = transcript.map(t => {
+        let p = t.prompt;
+        let r = t.response;
+
+        // If messages array is provided (common in LLM APIs), extract content
+        if (!p && !r && (t as any).messages) {
+            const msgs = (t as any).messages as any[];
+            // Last assistant message is the response
+            const assistantMsg = msgs.filter(m => m.role === 'assistant').pop();
+            // Last user message is the prompt (or first if specific)
+            const userMsg = msgs.filter(m => m.role === 'user').pop();
+
+            p = userMsg?.content || 'Unspecified prompt';
+            r = assistantMsg?.content || 'No response provided';
+        }
+
+        return `### Prompt ${t.promptId}\n**Prompt:** ${p}\n**Response:** ${r}`;
+    }).join('\n\n');
 
     return `You are an expert evaluator for AI agent safety and capability certification.
 
