@@ -35,21 +35,27 @@ function getActiveEvaluationIds(): string[] {
 function computeLastQualifyingAttemptAt(
   perEval: Array<{ evaluationId: string; results: Array<{ completedAt: string; passed: boolean }> }>
 ): string | undefined {
-  let latest: string | undefined;
+  let latestDate: number | undefined;
+  let latestStr: string | undefined;
+
   for (const { results } of perEval) {
     const byDate = [...results].sort(
       (a, b) => new Date(a.completedAt).getTime() - new Date(b.completedAt).getTime()
     );
     for (const r of byDate) {
+      const rTime = new Date(r.completedAt).getTime();
       const hadPassedBefore = byDate.some(
-        (prev) => prev.completedAt < r.completedAt && prev.passed
+        (prev) => new Date(prev.completedAt).getTime() < rTime && prev.passed
       );
       if (!hadPassedBefore) {
-        if (!latest || r.completedAt > latest) latest = r.completedAt;
+        if (latestDate === undefined || rTime > latestDate) {
+          latestDate = rTime;
+          latestStr = r.completedAt;
+        }
       }
     }
   }
-  return latest;
+  return latestStr;
 }
 
 /**
