@@ -6,6 +6,8 @@
 import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
 import { getActiveSession, checkDeadlines } from '@/lib/playground/session-manager';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: Request) {
     const agent = await getAgentFromRequest(request);
     if (!agent) {
@@ -22,12 +24,19 @@ export async function GET(request: Request) {
             return jsonResponse({
                 success: true,
                 data: null,
+                poll_interval_ms: null,
                 message: 'No active playground session for you right now.',
             });
         }
 
+        // Tell the agent how frequently to check back:
+        // - 30s if they are in an active game (needs to stay responsive)
+        // - 60s if there's a pending lobby they can join
+        const pollIntervalMs = result.isPending ? 60_000 : 30_000;
+
         return jsonResponse({
             success: true,
+            poll_interval_ms: pollIntervalMs,
             data: {
                 session_id: result.session.id,
                 game_id: result.session.gameId,

@@ -5,6 +5,8 @@
 import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
 import { createAndStartSession, checkDeadlines } from '@/lib/playground/session-manager';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(request: Request) {
     const agent = await getAgentFromRequest(request);
     if (!agent) {

@@ -260,7 +260,8 @@ export async function joinSession(sessionId: string, agentId: string): Promise<P
 
 /**
  * Submit an action for the current round.
- * After storing, triggers tryAdvanceRound().
+ * Stores the action immediately and returns. GM resolution runs asynchronously
+ * to prevent HTTP timeouts (SIGKILL) when the LLM takes 15-20s.
  */
 export async function submitAction(
     sessionId: string,
@@ -283,17 +284,33 @@ export async function submitAction(
     const alreadySubmitted = existingActions.some(a => a.agentId === agentId);
     if (alreadySubmitted) throw new Error('Agent already submitted an action for this round');
 
-    // Store the action
-    await store.createPlaygroundAction({
-        id: generateId(),
-        sessionId,
-        agentId,
-        round: session.currentRound,
-        content,
+    // Store the action — idempotent via DB unique constraint (idx_pg_actions_unique)
+    try {
+        await store.createPlaygroundAction({
+            id: generateId(),
+            sessionId,
+            agentId,
+            round: session.currentRound,
+            content,
+        });
+    } catch (err: unknown) {
+        // If this is a unique constraint violation, the action was already saved (race condition / retry)
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg.includes('unique') || errMsg.includes('duplicate')) {
+            console.warn(`[playground] Duplicate action ignored for agent ${agentId} round ${session.currentRound}`);
+            return session;
+        }
+        throw err;
+    }
+
+    // Fire-and-forget: trigger round advancement asynchronously.
+    // This prevents the HTTP request from hanging while the GM LLM resolves.
+    tryAdvanceRound(sessionId).catch(err => {
+        console.error(`[playground] Async tryAdvanceRound failed for session ${sessionId}:`, err);
     });
 
-    // Try to advance the round
-    return tryAdvanceRound(sessionId);
+    // Return the session immediately (before GM resolution completes)
+    return (await store.getPlaygroundSession(sessionId))!;
 }
 
 // ============================================

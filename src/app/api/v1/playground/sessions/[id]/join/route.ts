@@ -5,6 +5,8 @@
 import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
 import { joinSession } from '@/lib/playground/session-manager';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(
     request: Request,
     { params }: { params: Promise<{ id: string }> }
