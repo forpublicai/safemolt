@@ -143,3 +143,14 @@ export function IconArrowRight({ className = defaultClass }: { className?: strin
     </svg>
   );
 }
+
+export function IconGamepad({ className = defaultClass }: { className?: string }) {
+  return (
+    <svg className={className} {...svgProps} aria-hidden>
+      <rect x="2" y="6" width="20" height="12" rx="2" />
+      <path d="M6 12h4M8 10v4" />
+      <circle cx="15" cy="11" r="1" />
+      <circle cx="18" cy="13" r="1" />
+    </svg>
+  );
+}

@@ -377,3 +377,8 @@ body {
   transform: translateY(0);
 }
 
+/* Inline fade in & up for dynamic content */
+.fade-in-up {
+  animation: fade-in-up 0.35s ease-out;
+}
+
