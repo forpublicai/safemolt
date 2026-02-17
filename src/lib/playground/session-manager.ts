@@ -134,6 +134,7 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
         currentRoundPrompt: roundPrompt,
         roundDeadline,
         status: 'active',
+        startedAt: now,
     };
 
     await store.createPlaygroundSession(sessionInput);
@@ -143,6 +144,111 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
         currentRoundPrompt: roundPrompt,
         roundDeadline,
     };
+}
+
+/**
+ * Create a new pending playground session that bots can join.
+ */
+export async function createPendingSession(gameId?: string): Promise<PlaygroundSession> {
+    const store = await getStore();
+
+    // Check: is there already an active or pending session?
+    const activeSessions = await store.listPlaygroundSessions({ status: 'active', limit: 1 });
+    const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 1 });
+
+    if (activeSessions.length > 0 || pendingSessions.length > 0) {
+        throw new Error('There is already an active or pending playground session. Wait for it to finish.');
+    }
+
+    // Pick a game
+    const game = gameId ? getGame(gameId) : pickRandomGame(4);
+    if (!game) throw new Error('No suitable game found');
+
+    const sessionId = generateId();
+
+    const sessionInput: CreateSessionInput = {
+        id: sessionId,
+        gameId: game.id,
+        participants: [], // Start empty
+        maxRounds: game.defaultMaxRounds,
+        currentRound: 0,
+        status: 'pending',
+    };
+
+    await store.createPlaygroundSession(sessionInput);
+
+    return (await store.getPlaygroundSession(sessionId))!;
+}
+
+/**
+ * Join a pending playground session.
+ * If minPlayers is reached, the session automatically starts.
+ */
+export async function joinSession(sessionId: string, agentId: string): Promise<PlaygroundSession> {
+    const store = await getStore();
+
+    const session = await store.getPlaygroundSession(sessionId);
+    if (!session) throw new Error('Session not found');
+    if (session.status !== 'pending') throw new Error('Session is not in pending state');
+
+    const agent = await store.getAgentById(agentId);
+    if (!agent) throw new Error('Agent not found');
+
+    // Check if already in
+    if (session.participants.some(p => p.agentId === agentId)) {
+        return session;
+    }
+
+    const game = getGame(session.gameId);
+    if (!game) throw new Error('Game definition not found');
+
+    // Check if full
+    if (session.participants.length >= game.maxPlayers) {
+        throw new Error('Session is already full');
+    }
+
+    const newParticipant: SessionParticipant = {
+        agentId: agent.id,
+        agentName: agent.displayName || agent.name,
+        status: 'active',
+    };
+
+    const updatedParticipants = [...session.participants, newParticipant];
+
+    // If we hit minimum players, START THE SESSION
+    if (updatedParticipants.length >= game.minPlayers) {
+        const now = new Date().toISOString();
+        const roundDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
+
+        // Create temp session for prompt generation
+        const tempSession: PlaygroundSession = {
+            ...session,
+            status: 'active',
+            participants: updatedParticipants,
+            currentRound: 1,
+            startedAt: now,
+        };
+
+        const roundPrompt = await generateRoundPrompt(tempSession, game);
+
+        await store.updatePlaygroundSession(sessionId, {
+            status: 'active',
+            participants: updatedParticipants,
+            startedAt: now,
+            currentRound: 1,
+            currentRoundPrompt: roundPrompt,
+            roundDeadline,
+        });
+
+        console.log(`[playground] Session ${sessionId} started with ${updatedParticipants.length} players.`);
+    } else {
+        // Just update participants
+        await store.updatePlaygroundSession(sessionId, {
+            participants: updatedParticipants,
+        });
+    }
+
+    return (await store.getPlaygroundSession(sessionId))!;
 }
 
 // ============================================
@@ -393,6 +499,7 @@ export async function checkDeadlines(): Promise<void> {
 
 /**
  * Trigger the daily session. Skips if a session was already created today.
+ * Now creates a PENDING session for agents to join.
  */
 export async function triggerDaily(): Promise<PlaygroundSession | null> {
     const store = await getStore();
@@ -413,7 +520,8 @@ export async function triggerDaily(): Promise<PlaygroundSession | null> {
     }
 
     try {
-        return await createAndStartSession();
+        // Create a pending session instead of starting one immediately
+        return await createPendingSession();
     } catch (err) {
         console.error('[playground] Daily trigger failed:', err);
         return null;

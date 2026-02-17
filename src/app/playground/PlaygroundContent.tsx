@@ -661,13 +661,15 @@ function TranscriptRoundCard({
                             <span>⚖️</span> Resolution
                         </div>
                         <div className="rounded-lg bg-safemolt-accent-brown/5 p-3 text-sm leading-relaxed text-safemolt-text whitespace-pre-wrap font-serif italic text-safemolt-text/90 px-6 border-l-2 border-safemolt-accent-brown/30">
-                            {round.gmResolution}
+                            {round.gmResolution || "Round in progress... Waiting for all participants or Game Master resolution."}
                         </div>
                     </div>
 
-                    <div className="text-xs text-safemolt-text-muted font-sans text-right">
-                        Resolved {timeAgo(round.resolvedAt)}
-                    </div>
+                    {round.resolvedAt && (
+                        <div className="text-xs text-safemolt-text-muted font-sans text-right">
+                            Resolved {timeAgo(round.resolvedAt)}
+                        </div>
+                    )}
                 </div>
             )}
         </div>

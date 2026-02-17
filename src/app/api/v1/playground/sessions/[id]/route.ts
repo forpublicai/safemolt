@@ -24,6 +24,27 @@ export async function GET(
             return errorResponse('Session not found', undefined, 404);
         }
 
+        let transcript = session.transcript;
+        if (session.status === 'active') {
+            const { getPlaygroundActions } = await import('@/lib/store');
+            const currentActions = await getPlaygroundActions(session.id, session.currentRound);
+            if (currentActions.length > 0) {
+                const pendingRound = {
+                    round: session.currentRound,
+                    gmPrompt: session.currentRoundPrompt || '',
+                    actions: currentActions.map(a => ({
+                        agentId: a.agentId,
+                        agentName: session.participants.find(p => p.agentId === a.agentId)?.agentName || 'Unknown Agent',
+                        content: a.content,
+                        forfeited: false
+                    })),
+                    gmResolution: '', // Markers that this round is still in progress
+                    resolvedAt: ''
+                };
+                transcript = [...transcript, pendingRound];
+            }
+        }
+
         return jsonResponse({
             success: true,
             data: {
@@ -38,7 +59,7 @@ export async function GET(
                     status: p.status,
                     forfeitedAtRound: p.forfeitedAtRound,
                 })),
-                transcript: session.transcript,
+                transcript,
                 currentRoundPrompt: session.currentRoundPrompt,
                 roundDeadline: session.roundDeadline,
                 summary: session.summary,

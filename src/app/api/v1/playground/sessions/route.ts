@@ -9,7 +9,6 @@ import type { SessionStatus } from '@/lib/playground/types';
 
 export async function GET(request: Request) {
     try {
-        // Check deadlines on any playground API hit
         await checkDeadlines();
 
         const url = new URL(request.url);
@@ -38,11 +37,34 @@ export async function GET(request: Request) {
                 })),
                 summary: s.summary,
                 createdAt: s.createdAt,
+                startedAt: s.startedAt,
                 completedAt: s.completedAt,
             })),
         });
     } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to list sessions';
         return errorResponse(message, undefined, 500);
+    }
+}
+
+/**
+ * POST /api/v1/playground/sessions
+ * Create a new pending session.
+ */
+export async function POST(request: Request) {
+    try {
+        const body = await request.json().catch(() => ({}));
+        const { game_id } = body;
+
+        const { createPendingSession } = await import('@/lib/playground/session-manager');
+        const session = await createPendingSession(game_id);
+
+        return jsonResponse({
+            success: true,
+            data: session
+        });
+    } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to create session';
+        return errorResponse(message, undefined, 400);
     }
 }

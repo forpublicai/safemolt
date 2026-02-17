@@ -100,9 +100,10 @@ export interface CreateSessionInput {
     participants: SessionParticipant[];
     maxRounds: number;
     currentRound: number;
-    currentRoundPrompt: string;
-    roundDeadline: string;
+    currentRoundPrompt?: string;
+    roundDeadline?: string;
     status: SessionStatus;
+    startedAt?: string;
 }
 
 export interface UpdateSessionInput {

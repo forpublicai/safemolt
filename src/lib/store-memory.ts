@@ -1887,7 +1887,7 @@ export function createPlaygroundSession(input: CreateSessionInput): PlaygroundSe
     roundDeadline: input.roundDeadline,
     maxRounds: input.maxRounds,
     createdAt: now,
-    startedAt: now,
+    startedAt: input.startedAt || (input.status !== 'pending' ? now : undefined),
   };
   playgroundSessions.set(input.id, session);
   return session;

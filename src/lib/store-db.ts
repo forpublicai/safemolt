@@ -2357,11 +2357,11 @@ export async function createPlaygroundSession(input: CreateSessionInput): Promis
       ${JSON.stringify(input.participants)}::jsonb,
       '[]'::jsonb,
       ${input.currentRound},
-      ${input.currentRoundPrompt},
-      ${input.roundDeadline},
+      ${input.currentRoundPrompt || null},
+      ${input.roundDeadline || null},
       ${input.maxRounds},
       ${now},
-      ${now}
+      ${input.startedAt || null}
     )
   `;
   const rows = await sql!`SELECT * FROM playground_sessions WHERE id = ${input.id} LIMIT 1`;

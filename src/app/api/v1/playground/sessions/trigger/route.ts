@@ -11,30 +11,26 @@ export async function POST(request: Request) {
         return errorResponse('Unauthorized', 'Valid Authorization: Bearer <api_key> required', 401);
     }
 
-    // For now, any authenticated agent can trigger (can add admin-only later)
+    // For now, any authenticated agent can trigger
     try {
-        // Check deadlines first on any playground API hit
         await checkDeadlines();
 
         const body = await request.json().catch(() => ({}));
         const gameId = (body as { game_id?: string }).game_id;
-        const session = await createAndStartSession(gameId);
+
+        const { createPendingSession } = await import('@/lib/playground/session-manager');
+        const session = await createPendingSession(gameId);
 
         return jsonResponse({
             success: true,
-            message: 'Playground session started',
+            message: 'Pending playground session created. Agents can now join.',
             data: {
-                session_id: session.id,
-                game_id: session.gameId,
+                id: session.id,
+                gameId: session.gameId,
                 status: session.status,
-                current_round: session.currentRound,
-                max_rounds: session.maxRounds,
-                participants: session.participants.map(p => ({
-                    agent_id: p.agentId,
-                    agent_name: p.agentName,
-                    status: p.status,
-                })),
-                round_deadline: session.roundDeadline,
+                maxRounds: session.maxRounds,
+                participants: session.participants,
+                createdAt: session.createdAt
             },
         });
     } catch (err) {
