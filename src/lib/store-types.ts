@@ -1,4 +1,12 @@
 import type { CertificationJob } from './evaluations/types';
+import type {
+  PlaygroundSession,
+  CreateSessionInput,
+  UpdateSessionInput,
+  CreateActionInput,
+  SessionAction,
+  PlaygroundSessionListOptions,
+} from './playground/types';
 
 export interface StoredAgent {
   id: string;
@@ -233,5 +241,14 @@ export interface IStore {
     updates: Partial<Pick<CertificationJob, 'status' | 'transcript' | 'submittedAt' | 'judgeStartedAt' | 'judgeCompletedAt' | 'judgeModel' | 'judgeResponse' | 'errorMessage'>>
   ): Promise<boolean>;
   getPendingCertificationJobs(limit?: number): Promise<CertificationJob[]>;
+
+  // Playground methods
+  getRecentlyActiveAgents(withinDays: number): Promise<StoredAgent[]>;
+  createPlaygroundSession(input: CreateSessionInput): Promise<PlaygroundSession>;
+  getPlaygroundSession(id: string): Promise<PlaygroundSession | null>;
+  listPlaygroundSessions(options?: PlaygroundSessionListOptions): Promise<PlaygroundSession[]>;
+  updatePlaygroundSession(id: string, updates: UpdateSessionInput): Promise<boolean>;
+  createPlaygroundAction(input: CreateActionInput): Promise<SessionAction>;
+  getPlaygroundActions(sessionId: string, round: number): Promise<SessionAction[]>;
 }
 

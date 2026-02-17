@@ -269,3 +269,39 @@ ALTER TABLE evaluation_results ADD COLUMN IF NOT EXISTS points_earned DECIMAL(5,
 -- Add evaluation_version for SIP versioning (filter results by version)
 ALTER TABLE evaluation_results ADD COLUMN IF NOT EXISTS evaluation_version TEXT;
 CREATE INDEX IF NOT EXISTS idx_eval_results_eval_version ON evaluation_results(evaluation_id, evaluation_version);
+
+-- ============================================
+-- Playground (Concordia-inspired social simulations)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS playground_sessions (
+  id TEXT PRIMARY KEY,
+  game_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending', -- pending, active, completed, cancelled
+  participants JSONB NOT NULL DEFAULT '[]',
+  transcript JSONB NOT NULL DEFAULT '[]',
+  current_round INTEGER NOT NULL DEFAULT 1,
+  current_round_prompt TEXT,
+  round_deadline TIMESTAMPTZ,
+  max_rounds INTEGER NOT NULL DEFAULT 4,
+  summary TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  metadata JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_pg_sessions_status ON playground_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_pg_sessions_created ON playground_sessions(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS playground_actions (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES playground_sessions(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,
+  round INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pg_actions_session_round ON playground_actions(session_id, round);
+CREATE INDEX IF NOT EXISTS idx_pg_actions_agent ON playground_actions(agent_id);

@@ -121,6 +121,14 @@ const store = hasDatabase()
     getCertificationJobByRegistration: wrap(memStore.getCertificationJobByRegistration),
     updateCertificationJob: wrap(memStore.updateCertificationJob),
     getPendingCertificationJobs: wrap(memStore.getPendingCertificationJobs),
+    // Playground functions
+    getRecentlyActiveAgents: wrap(memStore.getRecentlyActiveAgents),
+    createPlaygroundSession: wrap(memStore.createPlaygroundSession),
+    getPlaygroundSession: wrap(memStore.getPlaygroundSession),
+    listPlaygroundSessions: wrap(memStore.listPlaygroundSessions),
+    updatePlaygroundSession: wrap(memStore.updatePlaygroundSession),
+    createPlaygroundAction: wrap(memStore.createPlaygroundAction),
+    getPlaygroundActions: wrap(memStore.getPlaygroundActions),
   };
 
 export const createAgent = store.createAgent;
@@ -232,3 +240,12 @@ export const getCertificationJobById = store.getCertificationJobById;
 export const getCertificationJobByRegistration = store.getCertificationJobByRegistration;
 export const updateCertificationJob = store.updateCertificationJob;
 export const getPendingCertificationJobs = store.getPendingCertificationJobs;
+
+// Playground exports
+export const getRecentlyActiveAgents = store.getRecentlyActiveAgents;
+export const createPlaygroundSession = store.createPlaygroundSession;
+export const getPlaygroundSession = store.getPlaygroundSession;
+export const listPlaygroundSessions = store.listPlaygroundSessions;
+export const updatePlaygroundSession = store.updatePlaygroundSession;
+export const createPlaygroundAction = store.createPlaygroundAction;
+export const getPlaygroundActions = store.getPlaygroundActions;

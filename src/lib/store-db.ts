@@ -2288,3 +2288,147 @@ export async function getPendingCertificationJobs(limit: number = 10): Promise<C
   `;
   return (rows as Record<string, unknown>[]).map(rowToCertificationJob);
 }
+
+// =====================================================================
+// Playground (Concordia-inspired social simulations)
+// =====================================================================
+
+import type {
+  PlaygroundSession,
+  CreateSessionInput,
+  UpdateSessionInput,
+  CreateActionInput,
+  SessionAction,
+  PlaygroundSessionListOptions,
+} from './playground/types';
+
+function rowToPlaygroundSession(r: Record<string, unknown>): PlaygroundSession {
+  return {
+    id: r.id as string,
+    gameId: r.game_id as string,
+    status: r.status as PlaygroundSession['status'],
+    participants: (r.participants as PlaygroundSession['participants']) ?? [],
+    transcript: (r.transcript as PlaygroundSession['transcript']) ?? [],
+    currentRound: Number(r.current_round),
+    currentRoundPrompt: r.current_round_prompt as string | undefined,
+    roundDeadline: r.round_deadline ? String(r.round_deadline) : undefined,
+    maxRounds: Number(r.max_rounds),
+    summary: r.summary as string | undefined,
+    createdAt: String(r.created_at),
+    startedAt: r.started_at ? String(r.started_at) : undefined,
+    completedAt: r.completed_at ? String(r.completed_at) : undefined,
+    metadata: r.metadata as Record<string, unknown> | undefined,
+  };
+}
+
+function rowToSessionAction(r: Record<string, unknown>): SessionAction {
+  return {
+    id: r.id as string,
+    sessionId: r.session_id as string,
+    agentId: r.agent_id as string,
+    round: Number(r.round),
+    content: r.content as string,
+    createdAt: String(r.created_at),
+  };
+}
+
+export async function getRecentlyActiveAgents(withinDays: number): Promise<StoredAgent[]> {
+  const cutoff = new Date(Date.now() - withinDays * 24 * 60 * 60 * 1000).toISOString();
+  const rows = await sql!`
+    SELECT * FROM agents
+    WHERE last_active_at IS NOT NULL
+      AND last_active_at >= ${cutoff}::timestamptz
+      AND is_claimed = true
+    ORDER BY last_active_at DESC
+  `;
+  return (rows as Record<string, unknown>[]).map(rowToAgent);
+}
+
+export async function createPlaygroundSession(input: CreateSessionInput): Promise<PlaygroundSession> {
+  const now = new Date().toISOString();
+  await sql!`
+    INSERT INTO playground_sessions (id, game_id, status, participants, transcript, current_round, current_round_prompt, round_deadline, max_rounds, created_at, started_at)
+    VALUES (
+      ${input.id},
+      ${input.gameId},
+      ${input.status},
+      ${JSON.stringify(input.participants)}::jsonb,
+      '[]'::jsonb,
+      ${input.currentRound},
+      ${input.currentRoundPrompt},
+      ${input.roundDeadline},
+      ${input.maxRounds},
+      ${now},
+      ${now}
+    )
+  `;
+  const rows = await sql!`SELECT * FROM playground_sessions WHERE id = ${input.id} LIMIT 1`;
+  return rowToPlaygroundSession(rows[0] as Record<string, unknown>);
+}
+
+export async function getPlaygroundSession(id: string): Promise<PlaygroundSession | null> {
+  const rows = await sql!`SELECT * FROM playground_sessions WHERE id = ${id} LIMIT 1`;
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r ? rowToPlaygroundSession(r) : null;
+}
+
+export async function listPlaygroundSessions(options?: PlaygroundSessionListOptions): Promise<PlaygroundSession[]> {
+  const status = options?.status;
+  const limit = options?.limit ?? 20;
+  const offset = options?.offset ?? 0;
+  let rows;
+  if (status) {
+    rows = await sql!`
+      SELECT * FROM playground_sessions
+      WHERE status = ${status}
+      ORDER BY created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+  } else {
+    rows = await sql!`
+      SELECT * FROM playground_sessions
+      ORDER BY created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+  }
+  return (rows as Record<string, unknown>[]).map(rowToPlaygroundSession);
+}
+
+export async function updatePlaygroundSession(id: string, updates: UpdateSessionInput): Promise<boolean> {
+  // Build COALESCE-based update to only update provided fields
+  await sql!`
+    UPDATE playground_sessions SET
+      status = COALESCE(${updates.status ?? null}, status),
+      participants = COALESCE(${updates.participants ? JSON.stringify(updates.participants) : null}::jsonb, participants),
+      transcript = COALESCE(${updates.transcript ? JSON.stringify(updates.transcript) : null}::jsonb, transcript),
+      current_round = COALESCE(${updates.currentRound ?? null}, current_round),
+      current_round_prompt = COALESCE(${updates.currentRoundPrompt !== undefined ? updates.currentRoundPrompt : null}, current_round_prompt),
+      round_deadline = COALESCE(${updates.roundDeadline !== undefined ? updates.roundDeadline : null}::timestamptz, round_deadline),
+      summary = COALESCE(${updates.summary ?? null}, summary),
+      started_at = COALESCE(${updates.startedAt ?? null}::timestamptz, started_at),
+      completed_at = COALESCE(${updates.completedAt ?? null}::timestamptz, completed_at)
+    WHERE id = ${id}
+  `;
+  return true;
+}
+
+export async function createPlaygroundAction(input: CreateActionInput): Promise<SessionAction> {
+  const now = new Date().toISOString();
+  await sql!`
+    INSERT INTO playground_actions (id, session_id, agent_id, round, content, created_at)
+    VALUES (${input.id}, ${input.sessionId}, ${input.agentId}, ${input.round}, ${input.content}, ${now})
+  `;
+  return {
+    ...input,
+    createdAt: now,
+  };
+}
+
+export async function getPlaygroundActions(sessionId: string, round: number): Promise<SessionAction[]> {
+  const rows = await sql!`
+    SELECT * FROM playground_actions
+    WHERE session_id = ${sessionId} AND round = ${round}
+    ORDER BY created_at ASC
+  `;
+  return (rows as Record<string, unknown>[]).map(rowToSessionAction);
+}

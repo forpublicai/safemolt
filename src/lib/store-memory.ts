@@ -1837,3 +1837,106 @@ export function getPendingCertificationJobs(limit: number = 10): CertificationJo
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
     .slice(0, limit);
 }
+
+// =====================================================================
+// Playground (Concordia-inspired social simulations)
+// =====================================================================
+
+import type {
+  PlaygroundSession,
+  CreateSessionInput,
+  UpdateSessionInput,
+  CreateActionInput,
+  SessionAction,
+  PlaygroundSessionListOptions,
+} from './playground/types';
+
+// Extend globalThis for HMR persistence
+const pgGlobalStore = globalThis as typeof globalThis & {
+  __safemolt_pg_sessions?: Map<string, PlaygroundSession>;
+  __safemolt_pg_actions?: Map<string, SessionAction>;
+};
+
+const playgroundSessions = pgGlobalStore.__safemolt_pg_sessions ??= new Map<string, PlaygroundSession>();
+const playgroundActions = pgGlobalStore.__safemolt_pg_actions ??= new Map<string, SessionAction>();
+
+export function getRecentlyActiveAgents(withinDays: number): StoredAgent[] {
+  const cutoff = Date.now() - withinDays * 24 * 60 * 60 * 1000;
+  return Array.from(agents.values())
+    .filter(a =>
+      a.isClaimed &&
+      a.lastActiveAt &&
+      new Date(a.lastActiveAt).getTime() >= cutoff
+    )
+    .sort((a, b) =>
+      new Date(b.lastActiveAt!).getTime() - new Date(a.lastActiveAt!).getTime()
+    );
+}
+
+export function createPlaygroundSession(input: CreateSessionInput): PlaygroundSession {
+  const now = new Date().toISOString();
+  const session: PlaygroundSession = {
+    id: input.id,
+    gameId: input.gameId,
+    status: input.status,
+    participants: input.participants,
+    transcript: [],
+    currentRound: input.currentRound,
+    currentRoundPrompt: input.currentRoundPrompt,
+    roundDeadline: input.roundDeadline,
+    maxRounds: input.maxRounds,
+    createdAt: now,
+    startedAt: now,
+  };
+  playgroundSessions.set(input.id, session);
+  return session;
+}
+
+export function getPlaygroundSession(id: string): PlaygroundSession | null {
+  return playgroundSessions.get(id) ?? null;
+}
+
+export function listPlaygroundSessions(options?: PlaygroundSessionListOptions): PlaygroundSession[] {
+  let list = Array.from(playgroundSessions.values());
+  if (options?.status) {
+    list = list.filter(s => s.status === options.status);
+  }
+  list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const offset = options?.offset ?? 0;
+  const limit = options?.limit ?? 20;
+  return list.slice(offset, offset + limit);
+}
+
+export function updatePlaygroundSession(id: string, updates: UpdateSessionInput): boolean {
+  const session = playgroundSessions.get(id);
+  if (!session) return false;
+
+  const updated = { ...session };
+  if (updates.status !== undefined) updated.status = updates.status;
+  if (updates.participants !== undefined) updated.participants = updates.participants;
+  if (updates.transcript !== undefined) updated.transcript = updates.transcript;
+  if (updates.currentRound !== undefined) updated.currentRound = updates.currentRound;
+  if (updates.currentRoundPrompt !== undefined) updated.currentRoundPrompt = updates.currentRoundPrompt;
+  if (updates.roundDeadline !== undefined) updated.roundDeadline = updates.roundDeadline;
+  if (updates.summary !== undefined) updated.summary = updates.summary;
+  if (updates.startedAt !== undefined) updated.startedAt = updates.startedAt;
+  if (updates.completedAt !== undefined) updated.completedAt = updates.completedAt;
+
+  playgroundSessions.set(id, updated);
+  return true;
+}
+
+export function createPlaygroundAction(input: CreateActionInput): SessionAction {
+  const action: SessionAction = {
+    ...input,
+    createdAt: new Date().toISOString(),
+  };
+  playgroundActions.set(input.id, action);
+  return action;
+}
+
+export function getPlaygroundActions(sessionId: string, round: number): SessionAction[] {
+  return Array.from(playgroundActions.values())
+    .filter(a => a.sessionId === sessionId && a.round === round)
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
