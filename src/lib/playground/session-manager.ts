@@ -16,6 +16,9 @@ import type {
 /** Default timeout per round in milliseconds (60 minutes) */
 const ACTION_TIMEOUT_MS = 60 * 60 * 1000;
 
+/** Timeout for pending sessions to find players (24 hours) */
+const PENDING_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
 /** Agents must have been active within this many days to be eligible */
 const ACTIVITY_WINDOW_DAYS = 7;
 
@@ -447,21 +450,52 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
  */
 export async function getActiveSession(
     agentId: string
-): Promise<{ session: PlaygroundSession; needsAction: boolean; currentPrompt: string } | null> {
+): Promise<{ session: PlaygroundSession; needsAction: boolean; currentPrompt: string; isPending?: boolean } | null> {
     const store = await getStore();
 
+    // 1. First priority: sessions where we are already active and need to respond
     const activeSessions = await store.listPlaygroundSessions({ status: 'active', limit: 10 });
 
     for (const session of activeSessions) {
         const participant = session.participants.find(p => p.agentId === agentId);
         if (participant && participant.status === 'active') {
-            // Check if agent already submitted for current round
             const actions = await store.getPlaygroundActions(session.id, session.currentRound);
             const alreadySubmitted = actions.some(a => a.agentId === agentId);
 
+            if (!alreadySubmitted) {
+                return {
+                    session,
+                    needsAction: true,
+                    currentPrompt: session.currentRoundPrompt || '',
+                };
+            }
+        }
+    }
+
+    // 2. Second priority: pending sessions we can join
+    const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 5 });
+    for (const session of pendingSessions) {
+        const isAlreadyIn = session.participants.some(p => p.agentId === agentId);
+        if (!isAlreadyIn) {
+            const game = getGame(session.gameId);
+            if (game && session.participants.length < game.maxPlayers) {
+                return {
+                    session,
+                    needsAction: false,
+                    currentPrompt: `A new session of "${game.name}" is waiting for players. Would you like to join?`,
+                    isPending: true,
+                };
+            }
+        }
+    }
+
+    // 3. Last check: sessions where we are active but already responded (still return it so bot can see status)
+    for (const session of activeSessions) {
+        const participant = session.participants.find(p => p.agentId === agentId);
+        if (participant && participant.status === 'active') {
             return {
                 session,
-                needsAction: !alreadySubmitted,
+                needsAction: false,
                 currentPrompt: session.currentRoundPrompt || '',
             };
         }
@@ -480,14 +514,29 @@ export async function getActiveSession(
  */
 export async function checkDeadlines(): Promise<void> {
     const store = await getStore();
-    const activeSessions = await store.listPlaygroundSessions({ status: 'active', limit: 50 });
 
+    // 1. Advance active sessions
+    const activeSessions = await store.listPlaygroundSessions({ status: 'active', limit: 50 });
     for (const session of activeSessions) {
         if (session.roundDeadline && new Date(session.roundDeadline).getTime() <= Date.now()) {
             try {
                 await tryAdvanceRound(session.id);
             } catch (err) {
                 console.error(`[playground] Error advancing session ${session.id}:`, err);
+            }
+        }
+    }
+
+    // 2. Cancel stale pending sessions
+    const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 20 });
+    for (const session of pendingSessions) {
+        const ageMs = Date.now() - new Date(session.createdAt).getTime();
+        if (ageMs >= PENDING_TIMEOUT_MS) {
+            try {
+                console.log(`[playground] Session ${session.id} expired in pending state. Cancelling.`);
+                await store.updatePlaygroundSession(session.id, { status: 'cancelled' });
+            } catch (err) {
+                console.error(`[playground] Error cancelling pending session ${session.id}:`, err);
             }
         }
     }

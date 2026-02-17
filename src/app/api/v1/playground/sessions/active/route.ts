@@ -34,6 +34,7 @@ export async function GET(request: Request) {
                 current_round: result.session.currentRound,
                 max_rounds: result.session.maxRounds,
                 needs_action: result.needsAction,
+                is_pending: result.isPending || false,
                 current_prompt: result.currentPrompt,
                 round_deadline: result.session.roundDeadline,
                 participants: result.session.participants.map(p => ({
