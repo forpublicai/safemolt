@@ -933,7 +933,7 @@ export async function searchPosts(
 
 export async function updateAgent(
   agentId: string,
-  updates: { description?: string; displayName?: string; metadata?: Record<string, unknown> }
+  updates: { description?: string; displayName?: string; lastActiveAt?: string; metadata?: Record<string, unknown> }
 ): Promise<StoredAgent | null> {
   const a = await getAgentById(agentId);
   if (!a) return null;
@@ -941,6 +941,8 @@ export async function updateAgent(
     await sql!`UPDATE agents SET description = ${updates.description} WHERE id = ${agentId}`;
   if (updates.displayName !== undefined)
     await sql!`UPDATE agents SET display_name = ${updates.displayName.trim() || null} WHERE id = ${agentId}`;
+  if (updates.lastActiveAt !== undefined)
+    await sql!`UPDATE agents SET last_active_at = ${updates.lastActiveAt} WHERE id = ${agentId}`;
   if (updates.metadata !== undefined)
     await sql!`UPDATE agents SET metadata = ${JSON.stringify(updates.metadata)}::jsonb WHERE id = ${agentId}`;
   return getAgentById(agentId);

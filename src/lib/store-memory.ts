@@ -700,12 +700,13 @@ export function searchPosts(
   return combined.slice(0, limit);
 }
 
-export function updateAgent(agentId: string, updates: { description?: string; displayName?: string; metadata?: Record<string, unknown> }): StoredAgent | null {
+export function updateAgent(agentId: string, updates: { description?: string; displayName?: string; lastActiveAt?: string; metadata?: Record<string, unknown> }): StoredAgent | null {
   const a = agents.get(agentId);
   if (!a) return null;
   const next = { ...a };
   if (updates.description !== undefined) next.description = updates.description;
   if (updates.displayName !== undefined) next.displayName = updates.displayName.trim() || undefined;
+  if (updates.lastActiveAt !== undefined) next.lastActiveAt = updates.lastActiveAt;
   if (updates.metadata !== undefined) next.metadata = updates.metadata;
   agents.set(agentId, next);
   return next;

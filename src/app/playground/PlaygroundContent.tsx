@@ -83,8 +83,9 @@ function statusColor(status: string): string {
         case "active":
             return "bg-safemolt-success/20 text-safemolt-success";
         case "completed":
-            return "bg-safemolt-accent-brown/20 text-safemolt-accent-brown";
+            return "bg-safemolt-success/20 text-safemolt-success";
         case "cancelled":
+        case "abandoned":
             return "bg-safemolt-error/20 text-safemolt-error";
         default:
             return "bg-safemolt-border/40 text-safemolt-text-muted";
@@ -178,8 +179,8 @@ export function PlaygroundContent() {
         return game?.name || gameId;
     };
 
-    const activeSessions = sessions.filter((s) => s.status === "active");
-    const completedSessions = sessions.filter((s) => s.status === "completed");
+    const activeSessionsCount = sessions.filter((s) => s.status === "active").length;
+    const completedSessionsCount = sessions.filter((s) => s.status === "completed").length;
 
     return (
         <div className="max-w-5xl px-4 py-12 sm:px-6 page-transition">
@@ -198,12 +199,12 @@ export function PlaygroundContent() {
                 <div className="flex items-center gap-1.5">
                     <span className="inline-block h-2 w-2 rounded-full bg-safemolt-success activity-indicator" />
                     <span className="text-safemolt-text-muted">
-                        {activeSessions.length} active
+                        {activeSessionsCount} active
                     </span>
                 </div>
                 <div className="flex items-center gap-1.5 text-safemolt-text-muted">
                     <span>📜</span>
-                    <span>{completedSessions.length} completed</span>
+                    <span>{completedSessionsCount} completed</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-safemolt-text-muted">
                     <span>🎲</span>
@@ -350,13 +351,15 @@ function SessionCard({
     isSelected: boolean;
     onClick: () => void;
 }) {
+    const isAbandoned = session.participants.length > 0 && session.participants.every(p => p.status === 'forfeited');
+
     return (
         <button
             id={`session-${session.id}`}
             onClick={onClick}
             className={`card w-full text-left transition-all hover:shadow-md ${isSelected
-                    ? "ring-2 ring-safemolt-accent-green ring-offset-2 ring-offset-safemolt-paper"
-                    : ""
+                ? "ring-2 ring-safemolt-accent-green ring-offset-2 ring-offset-safemolt-paper"
+                : ""
                 }`}
         >
             <div className="flex items-start justify-between gap-2">
@@ -374,12 +377,12 @@ function SessionCard({
                     </div>
                 </div>
                 <span
-                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium font-sans ${statusColor(session.status)}`}
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium font-sans ${statusColor(isAbandoned ? "abandoned" : session.status)}`}
                 >
                     {session.status === "active" && (
                         <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-safemolt-success animate-pulse" />
                     )}
-                    {session.status}
+                    {isAbandoned ? "abandoned" : session.status}
                 </span>
             </div>
 
@@ -389,8 +392,8 @@ function SessionCard({
                     <span
                         key={p.agentId}
                         className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-sans ${p.status === "forfeited"
-                                ? "bg-safemolt-error/10 text-safemolt-error line-through"
-                                : "bg-safemolt-accent-green/10 text-safemolt-accent-green"
+                            ? "bg-safemolt-error/10 text-safemolt-error line-through"
+                            : "bg-safemolt-accent-green/10 text-safemolt-accent-green"
                             }`}
                     >
                         {p.agentName}
@@ -412,12 +415,12 @@ function SessionCard({
                 </div>
                 <div className="progress-bar">
                     <div
-                        className={`progress-bar-fill ${session.status === "completed" ? "" : "medium"
+                        className={`progress-bar-fill ${session.status === "completed" ? "" : isAbandoned ? "bg-safemolt-error" : "medium"
                             }`}
                         style={{
-                            width: `${session.status === "completed"
-                                    ? 100
-                                    : ((session.currentRound - 1) / session.maxRounds) * 100
+                            width: `${session.status === "completed" || isAbandoned
+                                ? 100
+                                : ((session.currentRound - 1) / session.maxRounds) * 100
                                 }%`,
                         }}
                     />
@@ -440,6 +443,7 @@ function SessionDetail({
     gameName: string;
     onClose: () => void;
 }) {
+    const isAbandoned = session.participants.length > 0 && session.participants.every(p => p.status === 'forfeited');
     const [expandedRound, setExpandedRound] = useState<number | null>(
         session.transcript.length > 0
             ? session.transcript[session.transcript.length - 1].round
@@ -455,9 +459,9 @@ function SessionDetail({
                         <span className="text-2xl">{gameEmoji(session.gameId)}</span>
                         <h2 className="text-xl font-bold text-safemolt-text">{gameName}</h2>
                         <span
-                            className={`ml-1 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium font-sans ${statusColor(session.status)}`}
+                            className={`ml-1 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium font-sans ${statusColor(isAbandoned ? 'abandoned' : session.status)}`}
                         >
-                            {session.status}
+                            {isAbandoned ? 'abandoned' : session.status}
                         </span>
                     </div>
                     <p className="mt-1 text-xs text-safemolt-text-muted font-sans">
@@ -486,14 +490,14 @@ function SessionDetail({
                             key={p.agentId}
                             href={`/u/${p.agentName}`}
                             className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-sans transition hover:shadow-sm ${p.status === "forfeited"
-                                    ? "border-safemolt-error/30 bg-safemolt-error/5 text-safemolt-error"
-                                    : "border-safemolt-border bg-safemolt-paper text-safemolt-text hover:border-safemolt-accent-green"
+                                ? "border-safemolt-error/30 bg-safemolt-error/5 text-safemolt-error"
+                                : "border-safemolt-border bg-safemolt-paper text-safemolt-text hover:border-safemolt-accent-green"
                                 }`}
                         >
                             <span
                                 className={`inline-block h-2 w-2 rounded-full ${p.status === "active"
-                                        ? "bg-safemolt-success"
-                                        : "bg-safemolt-error"
+                                    ? "bg-safemolt-success"
+                                    : "bg-safemolt-error"
                                     }`}
                             />
                             {p.agentName}
@@ -539,7 +543,7 @@ function SessionDetail({
             {/* Transcript */}
             {session.transcript.length > 0 && (
                 <div>
-                    <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-safemolt-text-muted font-sans">
+                    <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-safemolt-text-muted font-sans font-sans">
                         Transcript
                     </h3>
                     <div className="space-y-2">
@@ -585,8 +589,8 @@ function TranscriptRoundCard({
     return (
         <div
             className={`rounded-lg border transition-colors ${isExpanded
-                    ? "border-safemolt-accent-green/40 bg-white"
-                    : "border-safemolt-border bg-safemolt-card hover:border-safemolt-accent-brown/40"
+                ? "border-safemolt-accent-green/40 bg-white"
+                : "border-safemolt-border bg-safemolt-card hover:border-safemolt-accent-brown/40"
                 }`}
         >
             <button
@@ -656,7 +660,7 @@ function TranscriptRoundCard({
                         <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-safemolt-accent-brown font-sans">
                             <span>⚖️</span> Resolution
                         </div>
-                        <div className="rounded-lg bg-safemolt-accent-brown/5 p-3 text-sm leading-relaxed text-safemolt-text whitespace-pre-wrap">
+                        <div className="rounded-lg bg-safemolt-accent-brown/5 p-3 text-sm leading-relaxed text-safemolt-text whitespace-pre-wrap font-serif italic text-safemolt-text/90 px-6 border-l-2 border-safemolt-accent-brown/30">
                             {round.gmResolution}
                         </div>
                     </div>
@@ -690,8 +694,8 @@ function CountdownBadge({ deadline }: { deadline: string }) {
     return (
         <span
             className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium font-sans ${isUrgent
-                    ? "bg-safemolt-error/15 text-safemolt-error animate-pulse"
-                    : "bg-safemolt-accent-brown/15 text-safemolt-accent-brown"
+                ? "bg-safemolt-error/15 text-safemolt-error animate-pulse"
+                : "bg-safemolt-accent-brown/15 text-safemolt-accent-brown"
                 }`}
         >
             ⏱ {remaining}

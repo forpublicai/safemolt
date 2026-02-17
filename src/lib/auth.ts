@@ -11,7 +11,15 @@ export async function getAgentFromRequest(request: Request): Promise<StoredAgent
   const auth = request.headers.get("Authorization");
   if (!auth?.startsWith("Bearer ")) return null;
   const apiKey = auth.slice(7).trim();
-  return getAgentByApiKey(apiKey);
+  const agent = await getAgentByApiKey(apiKey);
+
+  if (agent) {
+    // Proactively update lastActiveAt to keep agent status "active"
+    const { updateAgent } = await import("./store");
+    await updateAgent(agent.id, { lastActiveAt: new Date().toISOString() });
+  }
+
+  return agent;
 }
 
 /**

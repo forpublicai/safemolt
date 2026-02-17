@@ -13,8 +13,8 @@ import type {
     SessionAction,
 } from './types';
 
-/** Default timeout per round in milliseconds (10 minutes) */
-const ACTION_TIMEOUT_MS = 10 * 60 * 1000;
+/** Default timeout per round in milliseconds (60 minutes) */
+const ACTION_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** Agents must have been active within this many days to be eligible */
 const ACTIVITY_WINDOW_DAYS = 7;

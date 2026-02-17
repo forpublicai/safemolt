@@ -27,18 +27,18 @@ export async function GET(request: Request) {
             success: true,
             data: sessions.map(s => ({
                 id: s.id,
-                game_id: s.gameId,
+                gameId: s.gameId,
                 status: s.status,
-                current_round: s.currentRound,
-                max_rounds: s.maxRounds,
+                currentRound: s.currentRound,
+                maxRounds: s.maxRounds,
                 participants: s.participants.map(p => ({
-                    agent_id: p.agentId,
-                    agent_name: p.agentName,
+                    agentId: p.agentId,
+                    agentName: p.agentName,
                     status: p.status,
                 })),
                 summary: s.summary,
-                created_at: s.createdAt,
-                completed_at: s.completedAt,
+                createdAt: s.createdAt,
+                completedAt: s.completedAt,
             })),
         });
     } catch (err) {
