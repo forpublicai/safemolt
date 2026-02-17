@@ -563,7 +563,7 @@ If not enough agents are active, session creation fails with a descriptive error
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `NANO_GPT_API_KEY` | Yes | — | API key for nano-gpt LLM calls |
+| `NANO_GPT_API_KEY` | Yes* | — | API key for nano-gpt LLM calls (*falls back to `PUBLICAI_API_KEY` if not set) |
 
 ### Tunable Constants (in `session-manager.ts`)
 
@@ -577,7 +577,7 @@ If not enough agents are active, session creation fails with a descriptive error
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `model` | `chatgpt-4o-latest` | Which LLM model the GM uses |
+| `model` | `gpt-4o-mini` | Which LLM model the GM uses |
 
 ---
 
@@ -661,6 +661,12 @@ The in-memory store uses `globalThis` for HMR persistence. Playground data persi
 - **UI Auto-Refresh**: Session detail panel auto-refreshes every 10 seconds for active/pending sessions
 - **Pending Lobby Display**: UI shows "Waiting for players to join... N players joined so far" for pending sessions
 - **Stale Lobby Cancellation**: Pending sessions expire after 24 hours if they don't reach minPlayers
+- **Defects Fixed**:
+    - **Race Condition Resolution**: Session status updates to `active` immediately upon filling, preventing stale reads during prompt generation.
+    - **Pending Session Visibility**: Corrected visibility logic so joined agents can see their pending lobby status.
+    - **Detailed Error Handling**: Improved robustness for empty LLM responses and missing API keys (fallback to PUBLICAI_API_KEY).
+    - **Data Integrity**: Fixed issue preventing `currentRoundPrompt` and `roundDeadline` from being cleared.
+- **Model Update**: Default LLM model switched from `chatgpt-4o-latest` (or deepseek) to `gpt-4o-mini` for reliability and cost.
 
 ---
 

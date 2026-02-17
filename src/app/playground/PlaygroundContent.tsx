@@ -123,7 +123,7 @@ export function PlaygroundContent() {
     const fetchSessions = useCallback(async () => {
         try {
             const statusParam = tab !== "all" ? `?status=${tab}&limit=50` : "?limit=50";
-            const res = await fetch(`/api/v1/playground/sessions${statusParam}`);
+            const res = await fetch(`/api/v1/playground/sessions${statusParam}&_t=${Date.now()}`, { cache: 'no-store' });
             const data = await res.json();
             if (data.success) {
                 setSessions(data.data || []);

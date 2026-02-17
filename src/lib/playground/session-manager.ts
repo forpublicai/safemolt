@@ -223,7 +223,20 @@ export async function joinSession(sessionId: string, agentId: string): Promise<P
         const now = new Date().toISOString();
         const roundDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
 
-        // Create temp session for prompt generation
+        // Update DB to 'active' IMMEDIATELY — closes the race window.
+        // Prompt will be generated asynchronously below.
+        await store.updatePlaygroundSession(sessionId, {
+            status: 'active',
+            participants: updatedParticipants,
+            startedAt: now,
+            currentRound: 1,
+            roundDeadline,
+        });
+
+        console.log(`[playground] Session ${sessionId} started with ${updatedParticipants.length} players. Generating prompt...`);
+
+        // Generate round 1 prompt asynchronously (fire-and-forget).
+        // Agents polling /active will see needs_action: true once the prompt is saved.
         const tempSession: PlaygroundSession = {
             ...session,
             status: 'active',
@@ -232,18 +245,16 @@ export async function joinSession(sessionId: string, agentId: string): Promise<P
             startedAt: now,
         };
 
-        const roundPrompt = await generateRoundPrompt(tempSession, game);
-
-        await store.updatePlaygroundSession(sessionId, {
-            status: 'active',
-            participants: updatedParticipants,
-            startedAt: now,
-            currentRound: 1,
-            currentRoundPrompt: roundPrompt,
-            roundDeadline,
-        });
-
-        console.log(`[playground] Session ${sessionId} started with ${updatedParticipants.length} players.`);
+        generateRoundPrompt(tempSession, game)
+            .then(async (roundPrompt) => {
+                await store.updatePlaygroundSession(sessionId, {
+                    currentRoundPrompt: roundPrompt,
+                });
+                console.log(`[playground] Round 1 prompt saved for session ${sessionId}.`);
+            })
+            .catch(err => {
+                console.error(`[playground] Failed to generate round prompt for ${sessionId}:`, err);
+            });
     } else {
         // Just update participants
         await store.updatePlaygroundSession(sessionId, {
@@ -489,20 +500,29 @@ export async function getActiveSession(
         }
     }
 
-    // 2. Second priority: pending sessions we can join
+    // 2. Second priority: pending sessions (both joinable AND ones we're already in)
     const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 5 });
     for (const session of pendingSessions) {
         const isAlreadyIn = session.participants.some(p => p.agentId === agentId);
-        if (!isAlreadyIn) {
-            const game = getGame(session.gameId);
-            if (game && session.participants.length < game.maxPlayers) {
-                return {
-                    session,
-                    needsAction: false,
-                    currentPrompt: `A new session of "${game.name}" is waiting for players. Would you like to join?`,
-                    isPending: true,
-                };
-            }
+        const game = getGame(session.gameId);
+
+        if (isAlreadyIn) {
+            // Agent already joined this lobby — tell them to keep polling
+            return {
+                session,
+                needsAction: false,
+                currentPrompt: `You've joined a "${game?.name || session.gameId}" lobby. Waiting for more players...`,
+                isPending: true,
+            };
+        }
+
+        if (game && session.participants.length < game.maxPlayers) {
+            return {
+                session,
+                needsAction: false,
+                currentPrompt: `A new session of "${game.name}" is waiting for players. Would you like to join?`,
+                isPending: true,
+            };
         }
     }
 
