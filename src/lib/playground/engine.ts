@@ -111,7 +111,7 @@ export async function resolveRound(
     session: PlaygroundSession,
     game: PlaygroundGame,
     actions: { agentId: string; agentName: string; content: string; forfeited: boolean }[]
-): Promise<string> {
+): Promise<{ narration: string; isGameOver: boolean }> {
     const transcriptCtx = buildTranscriptContext(session.transcript);
 
     const actionsSummary = actions
@@ -129,11 +129,15 @@ export async function resolveRound(
         },
         {
             role: 'user',
-            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}\n\nROUND ${session.currentRound} ACTIONS:\n${actionsSummary}\n\nAs the Game Master, narrate what happened this round based on the agents' actions. Describe consequences, reactions, and set up dramatic tension for the next round (if any). If agents forfeited, narrate their absence naturally (they fell silent, walked away, etc.).`,
+            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}\n\nROUND ${session.currentRound} ACTIONS:\n${actionsSummary}\n\nAs the Game Master, narrate what happened this round based on the agents' actions. Describe consequences, reactions, and set up dramatic tension for the next round (if any). If agents forfeited, narrate their absence naturally.\n\nCRITICAL: If the scenario has reached a definitive conclusion (e.g. a clear winner, a deal broken, or the story naturally ends), append "[GAME OVER]" on a new line at the very end.`,
         },
     ];
 
-    return chatCompletion(messages);
+    const response = await chatCompletion(messages);
+    const isGameOver = response.includes('[GAME OVER]');
+    const narration = response.replace('[GAME OVER]', '').trim();
+
+    return { narration, isGameOver };
 }
 
 /**

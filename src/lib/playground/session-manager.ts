@@ -410,14 +410,14 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
         round: session.currentRound,
         gmPrompt: session.currentRoundPrompt || '',
         actions: roundActions,
-        gmResolution: resolution,
+        gmResolution: resolution.narration,
         resolvedAt: new Date().toISOString(),
     };
 
     const newTranscript = [...session.transcript, newRound];
 
-    // Check if we've reached max rounds
-    if (session.currentRound >= session.maxRounds) {
+    // Check if we've reached max rounds OR game returned early termination (e.g. defection outcome)
+    if (session.currentRound >= session.maxRounds || resolution.isGameOver) {
         // Session complete
         const sessionForSummary: PlaygroundSession = {
             ...session,
