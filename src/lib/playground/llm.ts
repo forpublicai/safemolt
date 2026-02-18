@@ -25,7 +25,8 @@ export async function chatCompletion(
     messages: ChatMessage[],
     model: string = DEFAULT_MODEL
 ): Promise<string> {
-    const apiKey = process.env.NANO_GPT_API_KEY;
+
+    const apiKey = process.env.NANO_GPT_API_KEY || process.env.PUBLICAI_API_KEY;
     if (!apiKey) {
         throw new Error('NANO_GPT_API_KEY or PUBLICAI_API_KEY environment variable is not set');
     }
@@ -53,8 +54,9 @@ export async function chatCompletion(
             throw new Error(`nano-gpt API error (${response.status}): ${errorText}`);
         }
 
+
         const data = (await response.json()) as any;
-        console.log('[llm] Raw response:', JSON.stringify(data, null, 2));
+        // console.log('[llm] Raw response:', JSON.stringify(data, null, 2));
 
         let content = data.choices?.[0]?.message?.content;
         if (!content && data.choices?.[0]?.text) {
