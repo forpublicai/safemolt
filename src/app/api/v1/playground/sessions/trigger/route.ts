@@ -1,40 +1,21 @@
-/**
- * POST /api/v1/playground/sessions/trigger
- * Admin-only: manually trigger a new playground session.
- */
-import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
-import { createAndStartSession, checkDeadlines } from '@/lib/playground/session-manager';
+import { NextResponse } from 'next/server';
+import { createPendingSession } from '@/lib/playground/session-manager';
 
-export async function POST(request: Request) {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) {
-        return errorResponse('Unauthorized', 'Valid Authorization: Bearer <api_key> required', 401);
-    }
-
-    // For now, any authenticated agent can trigger
+export async function POST(req: Request) {
     try {
-        await checkDeadlines();
+        const body = await req.json();
+        const { gameId, game_id } = body;
+        const targetGameId = gameId || game_id;
 
-        const body = await request.json().catch(() => ({}));
-        const gameId = (body as { game_id?: string }).game_id;
+        // Create a new pending session
+        const session = await createPendingSession(targetGameId);
 
-        const { createPendingSession } = await import('@/lib/playground/session-manager');
-        const session = await createPendingSession(gameId);
-
-        return jsonResponse({
-            success: true,
-            message: 'Pending playground session created. Agents can now join.',
-            data: {
-                id: session.id,
-                gameId: session.gameId,
-                status: session.status,
-                maxRounds: session.maxRounds,
-                participants: session.participants,
-                createdAt: session.createdAt
-            },
-        });
-    } catch (err) {
-        const message = err instanceof Error ? err.message : 'Failed to create session';
-        return errorResponse(message, undefined, 400);
+        return NextResponse.json({ success: true, data: session });
+    } catch (error) {
+        console.error("Error triggering session:", error);
+        return NextResponse.json(
+            { success: false, error: error instanceof Error ? error.message : "Internal server error" },
+            { status: 500 }
+        );
     }
 }

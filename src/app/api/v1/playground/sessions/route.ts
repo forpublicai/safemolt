@@ -7,6 +7,8 @@ import { listPlaygroundSessions } from '@/lib/store';
 import { checkDeadlines } from '@/lib/playground/session-manager';
 import type { SessionStatus } from '@/lib/playground/types';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: Request) {
     try {
         await checkDeadlines();
@@ -40,6 +42,10 @@ export async function GET(request: Request) {
                 startedAt: s.startedAt,
                 completedAt: s.completedAt,
             })),
+        }, 200, {
+            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0',
         });
     } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to list sessions';

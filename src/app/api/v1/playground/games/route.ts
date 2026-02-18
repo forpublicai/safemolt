@@ -5,6 +5,8 @@
 import { jsonResponse } from '@/lib/auth';
 import { listGames } from '@/lib/playground/games';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
     const games = listGames();
 

@@ -88,8 +88,8 @@ export function withRateLimitHeaders(response: Response, agentId: string): Respo
   return addRateLimitHeaders(response, Math.max(0, result.remaining), result.limit);
 }
 
-export function jsonResponse(data: unknown, status = 200) {
-  return Response.json(data, { status });
+export function jsonResponse(data: unknown, status = 200, headers: Record<string, string> = {}) {
+  return Response.json(data, { status, headers });
 }
 
 export function errorResponse(error: string, hint?: string, status = 400) {

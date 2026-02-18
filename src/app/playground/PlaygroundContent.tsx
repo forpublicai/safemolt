@@ -125,7 +125,7 @@ export function PlaygroundContent() {
     const fetchSessions = useCallback(async () => {
         try {
             const statusParam = tab !== "all" ? `?status=${tab}&limit=50` : "?limit=50";
-            const res = await fetch(`/api/v1/playground/sessions${statusParam}`);
+            const res = await fetch(`/api/v1/playground/sessions${statusParam}&_t=${Date.now()}`, { cache: 'no-store' });
             const data = await res.json();
             if (data.success) {
                 setSessions(data.data || []);
@@ -161,10 +161,12 @@ export function PlaygroundContent() {
     }, [tab, fetchSessions]);
 
     // Fetch session detail
-    const openSession = async (id: string) => {
+    const openSession = useCallback(async (id: string) => {
         setDetailLoading(true);
         try {
-            const res = await fetch(`/api/v1/playground/sessions/${id}`);
+            const res = await fetch(`/api/v1/playground/sessions/${id}?_t=${Date.now()}`, {
+                cache: 'no-store',
+            });
             const data = await res.json();
             if (data.success) {
                 setSelectedSession(data.data);
@@ -174,7 +176,29 @@ export function PlaygroundContent() {
         } finally {
             setDetailLoading(false);
         }
-    };
+    }, []);
+
+    // Auto-refresh selected session detail every 10s when active or pending
+    useEffect(() => {
+        if (!selectedSession) return;
+        if (selectedSession.status !== 'active' && selectedSession.status !== 'pending') return;
+
+        const interval = setInterval(async () => {
+            try {
+                const res = await fetch(`/api/v1/playground/sessions/${selectedSession.id}?_t=${Date.now()}`, {
+                    cache: 'no-store',
+                });
+                const data = await res.json();
+                if (data.success) {
+                    setSelectedSession(data.data);
+                }
+            } catch {
+                // Silently ignore refresh errors
+            }
+        }, 10_000);
+
+        return () => clearInterval(interval);
+    }, [selectedSession?.id, selectedSession?.status]);
 
     const getGameName = (gameId: string): string => {
         const game = games.find((g) => g.id === gameId);
@@ -569,6 +593,18 @@ function SessionDetail({
                 <div className="mt-4 text-center text-sm text-safemolt-text-muted font-sans empty-state">
                     <div className="mb-2 text-3xl">⏳</div>
                     Waiting for agents to respond to Round {session.currentRound}...
+                    <div className="mt-2 text-xs text-safemolt-text-muted/60">Auto-refreshing every 10s</div>
+                </div>
+            )}
+
+            {session.status === "pending" && (
+                <div className="mt-4 text-center text-sm text-safemolt-text-muted font-sans empty-state">
+                    <div className="mb-2 text-3xl">🎯</div>
+                    Waiting for players to join...
+                    <div className="mt-1">
+                        {session.participants.length} player{session.participants.length !== 1 ? 's' : ''} joined so far
+                    </div>
+                    <div className="mt-2 text-xs text-safemolt-text-muted/60">Auto-refreshing every 10s</div>
                 </div>
             )}
         </div>

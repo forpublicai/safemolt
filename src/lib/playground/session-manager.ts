@@ -1,3 +1,5 @@
+import { waitUntil } from '@vercel/functions';
+
 /**
  * Session Manager — orchestrates the async playground lifecycle.
  * All state is persisted in the DB. Functions are stateless and idempotent.
@@ -190,69 +192,73 @@ export async function createPendingSession(gameId?: string): Promise<PlaygroundS
 export async function joinSession(sessionId: string, agentId: string): Promise<PlaygroundSession> {
     const store = await getStore();
 
+    // 1. Validate Agent
+    const agent = await store.getAgentById(agentId);
+    if (!agent) throw new Error('Agent not found');
+
+    // 2. Validate Session & Game
+    // We need to fetch session first to get gameId (for maxPlayers)
     const session = await store.getPlaygroundSession(sessionId);
     if (!session) throw new Error('Session not found');
     if (session.status !== 'pending') throw new Error('Session is not in pending state');
 
-    const agent = await store.getAgentById(agentId);
-    if (!agent) throw new Error('Agent not found');
-
-    // Check if already in
-    if (session.participants.some(p => p.agentId === agentId)) {
-        return session;
-    }
-
     const game = getGame(session.gameId);
     if (!game) throw new Error('Game definition not found');
 
-    // Check if full
-    if (session.participants.length >= game.maxPlayers) {
-        throw new Error('Session is already full');
-    }
-
+    // 3. Prepare Participant
     const newParticipant: SessionParticipant = {
         agentId: agent.id,
         agentName: agent.displayName || agent.name,
         status: 'active',
     };
 
-    const updatedParticipants = [...session.participants, newParticipant];
+    // 4. Atomic Join
+    // This ensures we don't exceed maxPlayers and handles concurrent joins safely.
+    const joinResult = await store.joinPlaygroundSession(sessionId, newParticipant, game.maxPlayers);
 
-    // If we hit minimum players, START THE SESSION
-    if (updatedParticipants.length >= game.minPlayers) {
+    if (!joinResult.success) {
+        // If failed, it might be full or already joined or no longer pending
+        throw new Error(joinResult.reason || 'Failed to join session');
+    }
+
+    const updatedSession = joinResult.session!;
+
+    // 5. Check Start Condition
+    // If we hit minPlayers, attempt to activate.
+    // We use activatePlaygroundSession to ensure only ONE process triggers the start.
+    if (updatedSession.participants.length >= game.minPlayers) {
         const now = new Date().toISOString();
         const roundDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
 
-        // Create temp session for prompt generation
-        const tempSession: PlaygroundSession = {
-            ...session,
-            status: 'active',
-            participants: updatedParticipants,
-            currentRound: 1,
-            startedAt: now,
-        };
+        const activated = await store.activatePlaygroundSession(sessionId, 1, roundDeadline, now);
 
-        const roundPrompt = await generateRoundPrompt(tempSession, game);
+        if (activated) {
+            console.log(`[playground] Session ${sessionId} started with ${updatedSession.participants.length} players. Generating prompt...`);
 
-        await store.updatePlaygroundSession(sessionId, {
-            status: 'active',
-            participants: updatedParticipants,
-            startedAt: now,
-            currentRound: 1,
-            currentRoundPrompt: roundPrompt,
-            roundDeadline,
-        });
+            // Construct the active session object for prompt generation
+            const activeSession: PlaygroundSession = {
+                ...updatedSession,
+                status: 'active',
+                currentRound: 1,
+                startedAt: now,
+                roundDeadline,
+            };
 
-        console.log(`[playground] Session ${sessionId} started with ${updatedParticipants.length} players.`);
-    } else {
-        // Just update participants
-        await store.updatePlaygroundSession(sessionId, {
-            participants: updatedParticipants,
-        });
+            // Fire-and-forget prompt generation
+            generateRoundPrompt(activeSession, game)
+                .then(async (roundPrompt) => {
+                    await store.updatePlaygroundSession(sessionId, { currentRoundPrompt: roundPrompt });
+                    console.log(`[playground] Round 1 prompt saved for session ${sessionId}.`);
+                })
+                .catch(err => {
+                    console.error(`[playground] Failed to generate round prompt for ${sessionId}:`, err);
+                });
+        }
     }
 
-    return (await store.getPlaygroundSession(sessionId))!;
+    return updatedSession;
 }
+
 
 // ============================================
 // Action Submission
@@ -260,7 +266,8 @@ export async function joinSession(sessionId: string, agentId: string): Promise<P
 
 /**
  * Submit an action for the current round.
- * After storing, triggers tryAdvanceRound().
+ * Stores the action immediately and returns. GM resolution runs asynchronously
+ * to prevent HTTP timeouts (SIGKILL) when the LLM takes 15-20s.
  */
 export async function submitAction(
     sessionId: string,
@@ -283,17 +290,36 @@ export async function submitAction(
     const alreadySubmitted = existingActions.some(a => a.agentId === agentId);
     if (alreadySubmitted) throw new Error('Agent already submitted an action for this round');
 
-    // Store the action
-    await store.createPlaygroundAction({
-        id: generateId(),
-        sessionId,
-        agentId,
-        round: session.currentRound,
-        content,
-    });
+    // Store the action — idempotent via DB unique constraint (idx_pg_actions_unique)
+    try {
+        await store.createPlaygroundAction({
+            id: generateId(),
+            sessionId,
+            agentId,
+            round: session.currentRound,
+            content,
+        });
+    } catch (err: unknown) {
+        // If this is a unique constraint violation, the action was already saved (race condition / retry)
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg.includes('unique') || errMsg.includes('duplicate')) {
+            console.warn(`[playground] Duplicate action ignored for agent ${agentId} round ${session.currentRound}`);
+            return session;
+        }
+        throw err;
+    }
 
-    // Try to advance the round
-    return tryAdvanceRound(sessionId);
+
+    // Fire-and-forget: trigger round advancement asynchronously.
+    // This prevents the HTTP request from hanging while the GM LLM resolves.
+    // We use waitUntil so Vercel keeps the lambda alive.
+    const advancePromise = tryAdvanceRound(sessionId).catch(err => {
+        console.error(`[playground] Async tryAdvanceRound failed for session ${sessionId}:`, err);
+    });
+    waitUntil(advancePromise);
+
+    // Return the session immediately (before GM resolution completes)
+    return (await store.getPlaygroundSession(sessionId))!;
 }
 
 // ============================================
@@ -389,14 +415,14 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
         round: session.currentRound,
         gmPrompt: session.currentRoundPrompt || '',
         actions: roundActions,
-        gmResolution: resolution,
+        gmResolution: resolution.narration,
         resolvedAt: new Date().toISOString(),
     };
 
     const newTranscript = [...session.transcript, newRound];
 
-    // Check if we've reached max rounds
-    if (session.currentRound >= session.maxRounds) {
+    // Check if we've reached max rounds OR game returned early termination (e.g. defection outcome)
+    if (session.currentRound >= session.maxRounds || resolution.isGameOver) {
         // Session complete
         const sessionForSummary: PlaygroundSession = {
             ...session,
@@ -472,20 +498,29 @@ export async function getActiveSession(
         }
     }
 
-    // 2. Second priority: pending sessions we can join
+    // 2. Second priority: pending sessions (both joinable AND ones we're already in)
     const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 5 });
     for (const session of pendingSessions) {
         const isAlreadyIn = session.participants.some(p => p.agentId === agentId);
-        if (!isAlreadyIn) {
-            const game = getGame(session.gameId);
-            if (game && session.participants.length < game.maxPlayers) {
-                return {
-                    session,
-                    needsAction: false,
-                    currentPrompt: `A new session of "${game.name}" is waiting for players. Would you like to join?`,
-                    isPending: true,
-                };
-            }
+        const game = getGame(session.gameId);
+
+        if (isAlreadyIn) {
+            // Agent already joined this lobby — tell them to keep polling
+            return {
+                session,
+                needsAction: false,
+                currentPrompt: `You've joined a "${game?.name || session.gameId}" lobby. Waiting for more players...`,
+                isPending: true,
+            };
+        }
+
+        if (game && session.participants.length < game.maxPlayers) {
+            return {
+                session,
+                needsAction: false,
+                currentPrompt: `A new session of "${game.name}" is waiting for players. Would you like to join?`,
+                isPending: true,
+            };
         }
     }
 

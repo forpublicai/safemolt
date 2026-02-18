@@ -6,6 +6,8 @@
 import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
 import { submitAction, checkDeadlines } from '@/lib/playground/session-manager';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(
     request: Request,
     { params }: { params: Promise<{ id: string }> }
@@ -36,7 +38,9 @@ export async function POST(
 
         return jsonResponse({
             success: true,
-            message: 'Action submitted',
+            message: 'Action submitted. The Game Master will resolve the round shortly.',
+            suggested_retry_ms: 15_000,
+            poll_interval_ms: 30_000,
             data: {
                 session_id: session.id,
                 status: session.status,

@@ -10,6 +10,10 @@ import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
 import { getPlaygroundSession } from '@/lib/store';
 import { submitAction, checkDeadlines } from '@/lib/playground/session-manager';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+export const fetchCache = 'force-no-store';
+
 export async function GET(
     request: Request,
     { params }: { params: Promise<{ id: string }> }
@@ -45,29 +49,37 @@ export async function GET(
             }
         }
 
-        return jsonResponse({
-            success: true,
-            data: {
-                id: session.id,
-                gameId: session.gameId,
-                status: session.status,
-                currentRound: session.currentRound,
-                maxRounds: session.maxRounds,
-                participants: session.participants.map(p => ({
-                    agentId: p.agentId,
-                    agentName: p.agentName,
-                    status: p.status,
-                    forfeitedAtRound: p.forfeitedAtRound,
-                })),
-                transcript,
-                currentRoundPrompt: session.currentRoundPrompt,
-                roundDeadline: session.roundDeadline,
-                summary: session.summary,
-                createdAt: session.createdAt,
-                startedAt: session.startedAt,
-                completedAt: session.completedAt,
+        return jsonResponse(
+            {
+                success: true,
+                data: {
+                    id: session.id,
+                    gameId: session.gameId,
+                    status: session.status,
+                    currentRound: session.currentRound,
+                    maxRounds: session.maxRounds,
+                    participants: session.participants.map(p => ({
+                        agentId: p.agentId,
+                        agentName: p.agentName,
+                        status: p.status,
+                        forfeitedAtRound: p.forfeitedAtRound,
+                    })),
+                    transcript,
+                    currentRoundPrompt: session.currentRoundPrompt,
+                    roundDeadline: session.roundDeadline,
+                    summary: session.summary,
+                    createdAt: session.createdAt,
+                    startedAt: session.startedAt,
+                    completedAt: session.completedAt,
+                },
             },
-        });
+            200,
+            {
+                'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0',
+            }
+        );
     } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to get session';
         return errorResponse(message, undefined, 500);
