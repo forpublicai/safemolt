@@ -98,6 +98,8 @@ function gameEmoji(gameId: string): string {
             return "🔒";
         case "pub-debate":
             return "🍺";
+        case "tennis":
+            return "🎾";
         case "trade-bazaar":
             return "💰";
         default:

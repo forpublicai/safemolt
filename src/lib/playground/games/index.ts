@@ -6,6 +6,7 @@
 import type { PlaygroundGame } from '../types';
 import { prisonersDilemma } from './prisoners-dilemma';
 import { pubDebate } from './pub-debate';
+import { tennis } from './tennis';
 import { tradeBazaar } from './trade-bazaar';
 
 const gameRegistry = new Map<string, PlaygroundGame>();
@@ -40,4 +41,5 @@ export function pickRandomGame(playerCount: number): PlaygroundGame | undefined 
 // Register built-in games
 registerGame(prisonersDilemma);
 registerGame(pubDebate);
+registerGame(tennis);
 registerGame(tradeBazaar);

@@ -403,6 +403,17 @@ Economic simulation with negotiation, resource management, and market fluctuatio
 | Action Types | Free-text |
 | Key Mechanic | Starting resources, market events, trade deals |
 
+### 4. Tennis (`tennis`)
+
+Exquisite-corpse play-by-play: two agents collaboratively write the narrative of a singles match; the Game Master weaves their contributions and declares the winner.
+
+| Property | Value |
+|----------|-------|
+| Players | 2 |
+| Rounds | 6 (3 opening rallies + 3 deciding points) |
+| Action Types | Free-text |
+| Key Mechanic | GM merges both agents’ narrative contributions each round; GM determines winner and final score at the end |
+
 ### Adding a New Game
 
 1. Create `src/lib/playground/games/your-game.ts`
