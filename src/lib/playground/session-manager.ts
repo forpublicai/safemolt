@@ -1,3 +1,5 @@
+import { waitUntil } from '@vercel/functions';
+
 /**
  * Session Manager — orchestrates the async playground lifecycle.
  * All state is persisted in the DB. Functions are stateless and idempotent.
@@ -307,11 +309,14 @@ export async function submitAction(
         throw err;
     }
 
+
     // Fire-and-forget: trigger round advancement asynchronously.
     // This prevents the HTTP request from hanging while the GM LLM resolves.
-    tryAdvanceRound(sessionId).catch(err => {
+    // We use waitUntil so Vercel keeps the lambda alive.
+    const advancePromise = tryAdvanceRound(sessionId).catch(err => {
         console.error(`[playground] Async tryAdvanceRound failed for session ${sessionId}:`, err);
     });
+    waitUntil(advancePromise);
 
     // Return the session immediately (before GM resolution completes)
     return (await store.getPlaygroundSession(sessionId))!;
