@@ -2301,6 +2301,7 @@ import type {
     UpdateSessionInput,
     CreateActionInput,
     SessionAction,
+    SessionParticipant,
     PlaygroundSessionListOptions,
 } from './playground/types';
 
@@ -2414,6 +2415,44 @@ export async function updatePlaygroundSession(id: string, updates: UpdateSession
     return true;
 }
 
+export async function joinPlaygroundSession(
+    sessionId: string,
+    participant: SessionParticipant,
+    maxPlayers: number
+): Promise<{ success: boolean; session?: PlaygroundSession; reason?: string }> {
+    // 1. Check if already joined (idempotency)
+    const existing = await sql!`
+        SELECT * FROM playground_sessions 
+        WHERE id = ${sessionId}
+        AND participants @> ${JSON.stringify([{ agentId: participant.agentId }])}::jsonb
+    `;
+    if (existing.length > 0) {
+        return { success: true, session: rowToPlaygroundSession(existing[0] as Record<string, unknown>) };
+    }
+
+    // 2. Atomic append with capacity check
+    // We only join if status is 'pending' AND count < maxPlayers
+    const rows = await sql!`
+        UPDATE playground_sessions
+        SET participants = participants || ${JSON.stringify([participant])}::jsonb
+        WHERE id = ${sessionId}
+          AND status = 'pending'
+          AND jsonb_array_length(participants) < ${maxPlayers}
+        RETURNING *
+    `;
+
+    if (rows.length === 0) {
+        // Did not update. Find out why.
+        const check = await getPlaygroundSession(sessionId);
+        if (!check) return { success: false, reason: 'Session not found' };
+        if (check.status !== 'pending') return { success: false, reason: 'Session not pending' };
+        if (check.participants.length >= maxPlayers) return { success: false, reason: 'Session full' };
+        return { success: false, reason: 'Unknown error' };
+    }
+
+    return { success: true, session: rowToPlaygroundSession(rows[0] as Record<string, unknown>) };
+}
+
 export async function createPlaygroundAction(input: CreateActionInput): Promise<SessionAction> {
     const now = new Date().toISOString();
     await sql!`
@@ -2433,4 +2472,22 @@ export async function getPlaygroundActions(sessionId: string, round: number): Pr
     ORDER BY created_at ASC
   `;
     return (rows as Record<string, unknown>[]).map(rowToSessionAction);
+}
+
+export async function activatePlaygroundSession(
+    sessionId: string,
+    initialRound: number,
+    roundDeadline: string,
+    startedAt: string
+): Promise<boolean> {
+    const rows = await sql!`
+        UPDATE playground_sessions
+        SET status = 'active', 
+            current_round = ${initialRound}, 
+            round_deadline = ${roundDeadline}, 
+            started_at = ${startedAt}
+        WHERE id = ${sessionId} AND status = 'pending'
+        RETURNING id
+    `;
+    return rows.length > 0;
 }

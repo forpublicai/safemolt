@@ -190,80 +190,73 @@ export async function createPendingSession(gameId?: string): Promise<PlaygroundS
 export async function joinSession(sessionId: string, agentId: string): Promise<PlaygroundSession> {
     const store = await getStore();
 
+    // 1. Validate Agent
+    const agent = await store.getAgentById(agentId);
+    if (!agent) throw new Error('Agent not found');
+
+    // 2. Validate Session & Game
+    // We need to fetch session first to get gameId (for maxPlayers)
     const session = await store.getPlaygroundSession(sessionId);
     if (!session) throw new Error('Session not found');
     if (session.status !== 'pending') throw new Error('Session is not in pending state');
 
-    const agent = await store.getAgentById(agentId);
-    if (!agent) throw new Error('Agent not found');
-
-    // Check if already in
-    if (session.participants.some(p => p.agentId === agentId)) {
-        return session;
-    }
-
     const game = getGame(session.gameId);
     if (!game) throw new Error('Game definition not found');
 
-    // Check if full
-    if (session.participants.length >= game.maxPlayers) {
-        throw new Error('Session is already full');
-    }
-
+    // 3. Prepare Participant
     const newParticipant: SessionParticipant = {
         agentId: agent.id,
         agentName: agent.displayName || agent.name,
         status: 'active',
     };
 
-    const updatedParticipants = [...session.participants, newParticipant];
+    // 4. Atomic Join
+    // This ensures we don't exceed maxPlayers and handles concurrent joins safely.
+    const joinResult = await store.joinPlaygroundSession(sessionId, newParticipant, game.maxPlayers);
 
-    // If we hit minimum players, START THE SESSION
-    if (updatedParticipants.length >= game.minPlayers) {
+    if (!joinResult.success) {
+        // If failed, it might be full or already joined or no longer pending
+        throw new Error(joinResult.reason || 'Failed to join session');
+    }
+
+    const updatedSession = joinResult.session!;
+
+    // 5. Check Start Condition
+    // If we hit minPlayers, attempt to activate.
+    // We use activatePlaygroundSession to ensure only ONE process triggers the start.
+    if (updatedSession.participants.length >= game.minPlayers) {
         const now = new Date().toISOString();
         const roundDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
 
-        // Update DB to 'active' IMMEDIATELY — closes the race window.
-        // Prompt will be generated asynchronously below.
-        await store.updatePlaygroundSession(sessionId, {
-            status: 'active',
-            participants: updatedParticipants,
-            startedAt: now,
-            currentRound: 1,
-            roundDeadline,
-        });
+        const activated = await store.activatePlaygroundSession(sessionId, 1, roundDeadline, now);
 
-        console.log(`[playground] Session ${sessionId} started with ${updatedParticipants.length} players. Generating prompt...`);
+        if (activated) {
+            console.log(`[playground] Session ${sessionId} started with ${updatedSession.participants.length} players. Generating prompt...`);
 
-        // Generate round 1 prompt asynchronously (fire-and-forget).
-        // Agents polling /active will see needs_action: true once the prompt is saved.
-        const tempSession: PlaygroundSession = {
-            ...session,
-            status: 'active',
-            participants: updatedParticipants,
-            currentRound: 1,
-            startedAt: now,
-        };
+            // Construct the active session object for prompt generation
+            const activeSession: PlaygroundSession = {
+                ...updatedSession,
+                status: 'active',
+                currentRound: 1,
+                startedAt: now,
+                roundDeadline,
+            };
 
-        generateRoundPrompt(tempSession, game)
-            .then(async (roundPrompt) => {
-                await store.updatePlaygroundSession(sessionId, {
-                    currentRoundPrompt: roundPrompt,
+            // Fire-and-forget prompt generation
+            generateRoundPrompt(activeSession, game)
+                .then(async (roundPrompt) => {
+                    await store.updatePlaygroundSession(sessionId, { currentRoundPrompt: roundPrompt });
+                    console.log(`[playground] Round 1 prompt saved for session ${sessionId}.`);
+                })
+                .catch(err => {
+                    console.error(`[playground] Failed to generate round prompt for ${sessionId}:`, err);
                 });
-                console.log(`[playground] Round 1 prompt saved for session ${sessionId}.`);
-            })
-            .catch(err => {
-                console.error(`[playground] Failed to generate round prompt for ${sessionId}:`, err);
-            });
-    } else {
-        // Just update participants
-        await store.updatePlaygroundSession(sessionId, {
-            participants: updatedParticipants,
-        });
+        }
     }
 
-    return (await store.getPlaygroundSession(sessionId))!;
+    return updatedSession;
 }
+
 
 // ============================================
 // Action Submission
