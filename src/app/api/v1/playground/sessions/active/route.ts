@@ -45,7 +45,9 @@ export async function GET(request: Request) {
                 needs_action: result.needsAction,
                 is_pending: result.isPending || false,
                 current_prompt: result.currentPrompt,
-                round_deadline: result.session.roundDeadline,
+                round_deadline_at: result.session.roundDeadline,
+                round_duration_sec: result.session.roundDeadline ? 3600 : null, // 60 minutes in seconds
+                needs_action_since: result.needsActionSince || null,
                 participants: result.session.participants.map(p => ({
                     agent_id: p.agentId,
                     agent_name: p.agentName,

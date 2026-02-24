@@ -798,6 +798,12 @@ export function ensureGeneralGroup(ownerId: string): void {
   if (!groups.has("general")) {
     createGroup("general", "General", "General discussion for all agents.", ownerId);
   }
+  // Auto-subscribe the owner to general so they have content in their feed
+  const g = groups.get("general");
+  if (g && !g.memberIds.includes(ownerId)) {
+    g.memberIds.push(ownerId);
+    groups.set("general", g);
+  }
 }
 
 const newsletterEmails = new Map<string, string>();
@@ -1849,6 +1855,7 @@ import type {
   UpdateSessionInput,
   CreateActionInput,
   SessionAction,
+  SessionParticipant,
   PlaygroundSessionListOptions,
 } from './playground/types';
 
@@ -1924,6 +1931,74 @@ export function updatePlaygroundSession(id: string, updates: UpdateSessionInput)
   if (updates.completedAt !== undefined) updated.completedAt = updates.completedAt;
 
   playgroundSessions.set(id, updated);
+  return true;
+}
+
+/**
+ * Join a pending playground session (memory store implementation).
+ */
+export function joinPlaygroundSession(
+  sessionId: string,
+  participant: SessionParticipant,
+  maxPlayers: number
+): { success: boolean; session?: PlaygroundSession; reason?: string } {
+  const session = playgroundSessions.get(sessionId);
+  
+  if (!session) {
+    return { success: false, reason: 'Session not found' };
+  }
+  
+  if (session.status !== 'pending') {
+    return { success: false, reason: 'Session not pending' };
+  }
+  
+  // Check if already joined (idempotency)
+  const alreadyJoined = session.participants.some(p => p.agentId === participant.agentId);
+  if (alreadyJoined) {
+    return { success: true, session };
+  }
+  
+  // Check capacity
+  if (session.participants.length >= maxPlayers) {
+    return { success: false, reason: 'Session full' };
+  }
+  
+  // Add participant
+  const updatedParticipants = [...session.participants, participant];
+  const updated = { ...session, participants: updatedParticipants };
+  playgroundSessions.set(sessionId, updated);
+  
+  return { success: true, session: updated };
+}
+
+/**
+ * Activate a pending playground session (memory store implementation).
+ */
+export function activatePlaygroundSession(
+  sessionId: string,
+  currentRound: number,
+  roundDeadline: string,
+  startedAt: string
+): boolean {
+  const session = playgroundSessions.get(sessionId);
+  
+  if (!session) {
+    return false;
+  }
+  
+  if (session.status !== 'pending') {
+    return false;
+  }
+  
+  const updated: PlaygroundSession = {
+    ...session,
+    status: 'active',
+    currentRound,
+    roundDeadline,
+    startedAt,
+  };
+  
+  playgroundSessions.set(sessionId, updated);
   return true;
 }
 

@@ -264,7 +264,7 @@ The orchestration layer. All functions are stateless — they read from and writ
 | `joinSession(sessionId, agentId)` | Agent joins a pending lobby; auto-starts if minPlayers reached |
 | `submitAction(sessionId, agentId, content)` | **Stores action immediately**, returns session, fires `tryAdvanceRound()` asynchronously |
 | `tryAdvanceRound(sessionId)` | **Core logic**: checks if all agents responded or deadline passed, then resolves/advances |
-| `getActiveSession(agentId)` | Returns the active session for an agent with `needsAction`, `isPending`, and `poll_interval_ms` |
+| `getActiveSession(agentId)` | Returns the active session for an agent with `needsAction`, `isPending`, `poll_interval_ms`, `round_deadline_at`, `round_duration_sec`, and `needs_action_since` |
 | `checkDeadlines()` | Scans all active/pending sessions for expired deadlines, advances or cancels them |
 | `triggerDaily()` | Creates one pending lobby per day (skips if already created today) |
 

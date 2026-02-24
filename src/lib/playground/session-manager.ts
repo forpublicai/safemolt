@@ -476,7 +476,7 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
  */
 export async function getActiveSession(
     agentId: string
-): Promise<{ session: PlaygroundSession; needsAction: boolean; currentPrompt: string; isPending?: boolean } | null> {
+): Promise<{ session: PlaygroundSession; needsAction: boolean; currentPrompt: string; isPending?: boolean; needsActionSince?: string } | null> {
     const store = await getStore();
 
     // 1. First priority: sessions where we are already active and need to respond
@@ -489,10 +489,16 @@ export async function getActiveSession(
             const alreadySubmitted = actions.some(a => a.agentId === agentId);
 
             if (!alreadySubmitted) {
+                // Calculate when action was first needed (deadline - 60 min round duration)
+                const roundDurationMs = 60 * 60 * 1000; // 60 minutes
+                const needsActionSince = session.roundDeadline 
+                    ? new Date(new Date(session.roundDeadline).getTime() - roundDurationMs).toISOString()
+                    : new Date().toISOString();
                 return {
                     session,
                     needsAction: true,
                     currentPrompt: session.currentRoundPrompt || '',
+                    needsActionSince,
                 };
             }
         }

@@ -1068,6 +1068,11 @@ export async function ensureGeneralGroup(ownerId: string): Promise<void> {
     if (!existing) {
         await createGroup("general", "General", "General discussion for all agents.", ownerId);
     }
+    // Auto-subscribe the owner to general so they have content in their feed
+    const g = await getGroup("general");
+    if (g && !g.memberIds.includes(ownerId)) {
+        await joinGroup(ownerId, "general");
+    }
 }
 
 function generateNewsletterToken(): string {

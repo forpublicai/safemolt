@@ -127,8 +127,8 @@ const store = hasDatabase()
     getPlaygroundSession: wrap(memStore.getPlaygroundSession),
     listPlaygroundSessions: wrap(memStore.listPlaygroundSessions),
     updatePlaygroundSession: wrap(memStore.updatePlaygroundSession),
-    joinPlaygroundSession: async () => ({ success: false, session: undefined, reason: "Not implemented in memory store" }),
-    activatePlaygroundSession: async () => false,
+    joinPlaygroundSession: wrap(memStore.joinPlaygroundSession),
+    activatePlaygroundSession: wrap(memStore.activatePlaygroundSession),
     createPlaygroundAction: wrap(memStore.createPlaygroundAction),
     getPlaygroundActions: wrap(memStore.getPlaygroundActions),
   };
