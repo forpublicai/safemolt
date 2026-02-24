@@ -594,12 +594,17 @@ export async function getActiveSession(
 
     // 3. Last check: sessions where we are active but already responded (still return it so bot can see status)
     for (const session of activeSessions) {
-        const participant = session.participants.find(p => p.agentId === agentId);
+        // Triple-check: verify session is still 'active' in DB
+        const freshSession = await store.getPlaygroundSession(session.id);
+        if (!freshSession || freshSession.status !== 'active') {
+            continue; // Skip stale sessions
+        }
+        const participant = freshSession.participants.find(p => p.agentId === agentId);
         if (participant && participant.status === 'active') {
             return {
-                session,
+                session: freshSession,
                 needsAction: false,
-                currentPrompt: session.currentRoundPrompt || '',
+                currentPrompt: freshSession.currentRoundPrompt || '',
             };
         }
     }
