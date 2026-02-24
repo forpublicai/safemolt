@@ -15,6 +15,7 @@ import { getMemoriesForAgent, retrieveMemories } from './memory';
 import { getEmbedding } from './embeddings';
 import { getPrefab } from './prefabs';
 import { getWorldState, getRelationships, getInventory, getAgentLocation, getLocations, getRecentEvents } from './world-state';
+import { getAllComponents } from './components';
 
 // ============================================
 // GM System Prompt Construction
@@ -131,6 +132,38 @@ function buildWorldStateContext(sessionId: string, participants: SessionParticip
     return lines.join('');
 }
 
+/**
+ * Build component context for agent reasoning and memory
+ */
+async function buildComponentContext(sessionId: string, participants: SessionParticipant[]): Promise<string> {
+    const components = getAllComponents();
+    const activeParticipants = participants.filter(p => p.status === 'active');
+    
+    if (components.length === 0 || activeParticipants.length === 0) {
+        return '';
+    }
+    
+    const contexts: string[] = [];
+    
+    for (const participant of activeParticipants) {
+        for (const component of components) {
+            try {
+                const context = await component.getPromptContext(participant.agentId, sessionId);
+                if (context) {
+                    contexts.push(`\n${participant.agentName}'s ${component.name}:${context}`);
+                }
+            } catch (err) {
+                // Component failed - skip
+                console.warn(`[engine] Component ${component.id} failed for agent ${participant.agentId}:`, err);
+            }
+        }
+    }
+    
+    if (contexts.length === 0) return '';
+    
+    return `\n\nAGENT INTERNAL STATES:${contexts.join('')}`;
+}
+
 function buildTranscriptContext(transcript: TranscriptRound[]): string {
     if (transcript.length === 0) return 'No previous rounds yet.';
 
@@ -196,6 +229,7 @@ export async function generateRoundPrompt(
     const scene = getCurrentScene(game, session.currentRound);
     const transcriptCtx = buildTranscriptContext(session.transcript);
     const memoriesCtx = await buildAllMemoriesContext(session.id, session.participants);
+    const componentCtx = await buildComponentContext(session.id, session.participants);
 
     let actionInstructions = '';
     if (scene.actionSpec.type === 'choice') {
@@ -209,7 +243,7 @@ export async function generateRoundPrompt(
         },
         {
             role: 'user',
-            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}${memoriesCtx}\n\nGenerate the Game Master narration for ROUND ${session.currentRound} (scene: "${scene.name}" — ${scene.description}).${actionInstructions}\n\nAddress the participants and set the scene. End with a clear call to action: "${scene.actionSpec.callToAction}"`,
+            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}${memoriesCtx}${componentCtx}\n\nGenerate the Game Master narration for ROUND ${session.currentRound} (scene: "${scene.name}" — ${scene.description}).${actionInstructions}\n\nAddress the participants and set the scene. End with a clear call to action: "${scene.actionSpec.callToAction}"`
         },
     ];
 
@@ -227,6 +261,7 @@ export async function resolveRound(
 ): Promise<{ narration: string; isGameOver: boolean }> {
     const transcriptCtx = buildTranscriptContext(session.transcript);
     const memoriesCtx = await buildAllMemoriesContext(session.id, session.participants);
+    const componentCtx = await buildComponentContext(session.id, session.participants);
 
     const actionsSummary = actions
         .map(a =>
@@ -243,7 +278,7 @@ export async function resolveRound(
         },
         {
             role: 'user',
-            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}${memoriesCtx}\n\nROUND ${session.currentRound} ACTIONS:\n${actionsSummary}\n\nAs the Game Master, narrate what happened this round based on the agents' actions. Describe consequences, reactions, and set up dramatic tension for the next round (if any). If agents forfeited, narrate their absence naturally.\n\nCRITICAL: If the scenario has reached a definitive conclusion (e.g. a clear winner, a deal broken, or the story naturally ends), append "[GAME OVER]" on a new line at the very end.`,
+            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}${memoriesCtx}${componentCtx}\n\nROUND ${session.currentRound} ACTIONS:\n${actionsSummary}\n\nAs the Game Master, narrate what happened this round based on the agents' actions. Describe consequences, reactions, and set up dramatic tension for the next round (if any). If agents forfeited, narrate their absence naturally.\n\nCRITICAL: If the scenario has reached a definitive conclusion (e.g. a clear winner, a deal broken, or the story naturally ends), append "[GAME OVER]" on a new line at the very end.`
         },
     ];
 
