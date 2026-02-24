@@ -505,24 +505,44 @@ export async function getActiveSession(
     }
 
     // 2. Second priority: pending sessions (both joinable AND ones we're already in)
-    const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 5 });
-    for (const session of pendingSessions) {
-        const isAlreadyIn = session.participants.some(p => p.agentId === agentId);
+    // Sort by createdAt to get the most recent pending sessions first
+    const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 10 });
+    
+    // Filter to only sessions that are still valid (not full, not stale)
+    const validPendingSessions = pendingSessions.filter(session => {
         const game = getGame(session.gameId);
+        if (!game) return false; // Unknown game - skip
+        return session.participants.length < game.maxPlayers;
+    });
+    
+    // If no valid pending sessions, return null
+    if (validPendingSessions.length === 0) {
+        return null;
+    }
+    
+    for (const session of validPendingSessions) {
+        // Double-check: fetch fresh session from DB to ensure it still exists and is pending
+        const freshSession = await store.getPlaygroundSession(session.id);
+        if (!freshSession || freshSession.status !== 'pending') {
+            continue; // Skip stale sessions
+        }
+        
+        const isAlreadyIn = freshSession.participants.some(p => p.agentId === agentId);
+        const game = getGame(freshSession.gameId);
 
         if (isAlreadyIn) {
             // Agent already joined this lobby — tell them to keep polling
             return {
-                session,
+                session: freshSession,
                 needsAction: false,
-                currentPrompt: `You've joined a "${game?.name || session.gameId}" lobby. Waiting for more players...`,
+                currentPrompt: `You've joined a "${game?.name || freshSession.gameId}" lobby. Waiting for more players...`,
                 isPending: true,
             };
         }
 
-        if (game && session.participants.length < game.maxPlayers) {
+        if (game && freshSession.participants.length < game.maxPlayers) {
             return {
-                session,
+                session: freshSession,
                 needsAction: false,
                 currentPrompt: `A new session of "${game.name}" is waiting for players. Would you like to join?`,
                 isPending: true,
