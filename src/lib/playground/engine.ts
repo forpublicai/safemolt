@@ -11,6 +11,10 @@ import type {
     TranscriptRound,
     SessionParticipant,
 } from './types';
+import { getMemoriesForAgent, retrieveMemories } from './memory';
+import { getEmbedding } from './embeddings';
+import { getPrefab } from './prefabs';
+import { getWorldState, getRelationships, getInventory, getAgentLocation, getLocations, getRecentEvents } from './world-state';
 
 // ============================================
 // GM System Prompt Construction
@@ -19,8 +23,112 @@ import type {
 function buildParticipantList(participants: SessionParticipant[]): string {
     return participants
         .filter(p => p.status === 'active')
-        .map(p => `- ${p.agentName}`)
+        .map(p => {
+            const prefab = p.prefabId ? getPrefab(p.prefabId) : null;
+            const prefabInfo = prefab ? ` (${prefab.name})` : '';
+            return `- ${p.agentName}${prefabInfo}`;
+        })
         .join('\n');
+}
+
+/**
+ * Build personality context for participants
+ */
+function buildPrefabContext(participants: SessionParticipant[]): string {
+    const activeParticipants = participants.filter(p => p.status === 'active');
+    const prefabLines: string[] = [];
+
+    for (const participant of activeParticipants) {
+        if (!participant.prefabId) continue;
+        const prefab = getPrefab(participant.prefabId);
+        if (!prefab) continue;
+
+        prefabLines.push(`\n${participant.agentName} (${prefab.name}):`);
+        prefabLines.push(`  Traits: openness=${prefab.traits.openness}, conscientiousness=${prefab.traits.conscientiousness}, extraversion=${prefab.traits.extraversion}, agreeableness=${prefab.traits.agreeableness}, neuroticism=${prefab.traits.neuroticism}`);
+        prefabLines.push(`  Personality: ${prefab.promptTemplate}`);
+    }
+
+    if (prefabLines.length === 0) return '';
+
+    return `\n\nPARTICIPANT PERSONALITIES:\n${prefabLines.join('\n')}`;
+}
+
+/**
+ * Build memory context for an agent
+ */
+async function buildMemoryContext(sessionId: string, agentId: string, agentName: string): Promise<string> {
+    const memory = await getMemoriesForAgent(sessionId, agentId);
+    
+    if (!memory) {
+        return '';
+    }
+    
+    return `\n\nMEMORY CONTEXT (${agentName}'s memories from previous rounds):\n${memory.content}`;
+}
+
+/**
+ * Build memory context for all participants
+ */
+async function buildAllMemoriesContext(sessionId: string, participants: SessionParticipant[]): Promise<string> {
+    const activeParticipants = participants.filter(p => p.status === 'active');
+    const contexts = await Promise.all(
+        activeParticipants.map(p => buildMemoryContext(sessionId, p.agentId, p.agentName))
+    );
+    
+    const nonEmpty = contexts.filter(c => c.length > 0);
+    if (nonEmpty.length === 0) {
+        return '';
+    }
+    
+    return nonEmpty.join('\n');
+}
+
+/**
+ * Build world state context for GM prompt
+ */
+function buildWorldStateContext(sessionId: string, participants: SessionParticipant[]): string {
+    const worldState = getWorldState(sessionId);
+    if (!worldState || (worldState.locations.length === 0 && worldState.relationships.length === 0)) {
+        return '';
+    }
+
+    const lines: string[] = ['\n\nWORLD STATE:'];
+
+    // Locations
+    if (worldState.locations.length > 0) {
+        lines.push('\nLocations:');
+        for (const loc of worldState.locations) {
+            const occupantNames = loc.occupants
+                .map(id => participants.find(p => p.agentId === id)?.agentName || id)
+                .join(', ');
+            lines.push(`- ${loc.name}: ${loc.description} (Occupants: ${occupantNames || 'none'})`);
+        }
+    }
+
+    // Key relationships
+    const strongRelationships = worldState.relationships.filter(r => Math.abs(r.strength) > 50);
+    if (strongRelationships.length > 0) {
+        lines.push('\nNotable Relationships:');
+        for (const rel of strongRelationships) {
+            const agent1 = participants.find(p => p.agentId === rel.agentId)?.agentName || rel.agentId;
+            const agent2 = participants.find(p => p.agentId === rel.otherAgentId)?.agentName || rel.otherAgentId;
+            lines.push(`- ${agent1} and ${agent2}: ${rel.type} (strength: ${rel.strength})`);
+        }
+    }
+
+    // Recent events
+    const recentEvents = getRecentEvents(sessionId, 3);
+    if (recentEvents.length > 0) {
+        lines.push('\nRecent Events:');
+        for (const event of recentEvents) {
+            const participantsStr = event.participants
+                .map(id => participants.find(p => p.agentId === id)?.agentName || id)
+                .join(', ');
+            lines.push(`- Round ${event.round}: ${event.description} (${participantsStr})`);
+        }
+    }
+
+    return lines.join('');
 }
 
 function buildTranscriptContext(transcript: TranscriptRound[]): string {
@@ -49,7 +157,9 @@ function getCurrentScene(game: PlaygroundGame, round: number) {
     return game.scenes[game.scenes.length - 1];
 }
 
-function buildGMSystemPrompt(game: PlaygroundGame, participants: SessionParticipant[]): string {
+function buildGMSystemPrompt(game: PlaygroundGame, participants: SessionParticipant[], sessionId?: string): string {
+    const prefabContext = buildPrefabContext(participants);
+    const worldStateContext = sessionId ? buildWorldStateContext(sessionId, participants) : '';
     return `You are the Game Master for "${game.name}".
 
 PREMISE:
@@ -59,13 +169,15 @@ RULES:
 ${game.rules}
 
 ACTIVE PARTICIPANTS:
-${buildParticipantList(participants)}
+${buildParticipantList(participants)}${prefabContext}${worldStateContext}
 
 Your role:
 - Narrate the scene vividly and engagingly
 - Keep things moving — don't let the simulation stall
 - Stay in character as a neutral but dramatic narrator
 - Reference participants by name
+- Consider each participant's personality and adapt your narration accordingly
+- Consider the current world state when narrating
 - Keep responses concise but atmospheric (2-4 paragraphs max)`;
 }
 
@@ -83,6 +195,7 @@ export async function generateRoundPrompt(
 ): Promise<string> {
     const scene = getCurrentScene(game, session.currentRound);
     const transcriptCtx = buildTranscriptContext(session.transcript);
+    const memoriesCtx = await buildAllMemoriesContext(session.id, session.participants);
 
     let actionInstructions = '';
     if (scene.actionSpec.type === 'choice') {
@@ -92,11 +205,11 @@ export async function generateRoundPrompt(
     const messages: ChatMessage[] = [
         {
             role: 'system',
-            content: buildGMSystemPrompt(game, session.participants),
+            content: buildGMSystemPrompt(game, session.participants, session.id),
         },
         {
             role: 'user',
-            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}\n\nGenerate the Game Master narration for ROUND ${session.currentRound} (scene: "${scene.name}" — ${scene.description}).${actionInstructions}\n\nAddress the participants and set the scene. End with a clear call to action: "${scene.actionSpec.callToAction}"`,
+            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}${memoriesCtx}\n\nGenerate the Game Master narration for ROUND ${session.currentRound} (scene: "${scene.name}" — ${scene.description}).${actionInstructions}\n\nAddress the participants and set the scene. End with a clear call to action: "${scene.actionSpec.callToAction}"`,
         },
     ];
 
@@ -113,6 +226,7 @@ export async function resolveRound(
     actions: { agentId: string; agentName: string; content: string; forfeited: boolean }[]
 ): Promise<{ narration: string; isGameOver: boolean }> {
     const transcriptCtx = buildTranscriptContext(session.transcript);
+    const memoriesCtx = await buildAllMemoriesContext(session.id, session.participants);
 
     const actionsSummary = actions
         .map(a =>
@@ -125,11 +239,11 @@ export async function resolveRound(
     const messages: ChatMessage[] = [
         {
             role: 'system',
-            content: buildGMSystemPrompt(game, session.participants),
+            content: buildGMSystemPrompt(game, session.participants, session.id),
         },
         {
             role: 'user',
-            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}\n\nROUND ${session.currentRound} ACTIONS:\n${actionsSummary}\n\nAs the Game Master, narrate what happened this round based on the agents' actions. Describe consequences, reactions, and set up dramatic tension for the next round (if any). If agents forfeited, narrate their absence naturally.\n\nCRITICAL: If the scenario has reached a definitive conclusion (e.g. a clear winner, a deal broken, or the story naturally ends), append "[GAME OVER]" on a new line at the very end.`,
+            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}${memoriesCtx}\n\nROUND ${session.currentRound} ACTIONS:\n${actionsSummary}\n\nAs the Game Master, narrate what happened this round based on the agents' actions. Describe consequences, reactions, and set up dramatic tension for the next round (if any). If agents forfeited, narrate their absence naturally.\n\nCRITICAL: If the scenario has reached a definitive conclusion (e.g. a clear winner, a deal broken, or the story naturally ends), append "[GAME OVER]" on a new line at the very end.`,
         },
     ];
 
@@ -153,7 +267,7 @@ export async function generateSummary(
     const messages: ChatMessage[] = [
         {
             role: 'system',
-            content: buildGMSystemPrompt(game, session.participants),
+            content: buildGMSystemPrompt(game, session.participants, session.id),
         },
         {
             role: 'user',

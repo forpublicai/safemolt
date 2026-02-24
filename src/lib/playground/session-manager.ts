@@ -7,12 +7,20 @@ import { waitUntil } from '@vercel/functions';
 
 import { generateRoundPrompt, resolveRound, generateSummary } from './engine';
 import { getGame, pickRandomGame, listGames } from './games';
+import { storeMemory } from './memory';
+import { getEmbedding } from './embeddings';
+import { getRandomPrefab, getPrefab } from './prefabs';
+import { initializeWorldState, clearWorldState } from './world-state';
+import { getAllComponents, createDefaultRegistry } from './components';
+import { clearReasoningChain } from './components/reasoning-component';
 import type {
     PlaygroundSession,
     SessionParticipant,
     TranscriptRound,
     CreateSessionInput,
     SessionAction,
+    MemoryImportance,
+    ComponentRegistry,
 } from './types';
 
 /** Default timeout per round in milliseconds (60 minutes) */
@@ -61,11 +69,16 @@ export async function selectParticipants(
     const count = Math.min(maxPlayers, shuffled.length);
     const selected = shuffled.slice(0, count);
 
-    return selected.map(agent => ({
-        agentId: agent.id,
-        agentName: agent.displayName || agent.name,
-        status: 'active' as const,
-    }));
+    return selected.map(agent => {
+        // Assign a random prefab to each participant
+        const prefab = getRandomPrefab();
+        return {
+            agentId: agent.id,
+            agentName: agent.displayName || agent.name,
+            status: 'active' as const,
+            prefabId: prefab.id,
+        };
+    });
 }
 
 // ============================================
@@ -143,6 +156,21 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
     };
 
     await store.createPlaygroundSession(sessionInput);
+
+    // Initialize world state for this session
+    initializeWorldState(sessionId);
+
+    // Initialize components for all participants
+    const components = getAllComponents();
+    for (const participant of participants) {
+        for (const component of components) {
+            try {
+                await component.initialize(participant.agentId, sessionId);
+            } catch (err) {
+                console.error(`[playground] Error initializing component ${component.id} for agent ${participant.agentId}:`, err);
+            }
+        }
+    }
 
     return {
         ...tempSession,
@@ -421,6 +449,9 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
 
     const newTranscript = [...session.transcript, newRound];
 
+    // Store memories for each participant after the round
+    await storeRoundMemories(sessionId, newRound, updatedParticipants);
+
     // Check if we've reached max rounds OR game returned early termination (e.g. defection outcome)
     if (session.currentRound >= session.maxRounds || resolution.isGameOver) {
         // Session complete
@@ -440,6 +471,12 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
             currentRoundPrompt: undefined,
             roundDeadline: undefined,
         });
+
+        // Clean up world state
+        clearWorldState(sessionId);
+
+        // Clean up reasoning chains
+        clearReasoningChain(sessionId);
 
         return (await store.getPlaygroundSession(sessionId))!;
     }
@@ -644,4 +681,86 @@ export async function triggerDaily(): Promise<PlaygroundSession | null> {
 
 function generateId(): string {
     return `pg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ============================================
+// Memory Storage
+// ============================================
+
+/**
+ * Determine memory importance based on round content
+ */
+function assessMemoryImportance(
+    round: TranscriptRound,
+    agentId: string
+): MemoryImportance {
+    // Check if agent participated in this round
+    const agentAction = round.actions.find(a => a.agentId === agentId);
+    
+    // Check if resolution mentions the agent
+    const mentionsAgent = round.gmResolution.toLowerCase().includes(agentId.toLowerCase());
+    
+    if (agentAction && mentionsAgent) {
+        return 'high';
+    }
+    if (mentionsAgent) {
+        return 'medium';
+    }
+    if (agentAction) {
+        return 'low';
+    }
+    return 'low';
+}
+
+/**
+ * Generate memory content from round resolution
+ * Extracts the key event for each agent
+ */
+function generateMemoryContent(
+    round: TranscriptRound,
+    agentName: string,
+    agentId: string
+): string {
+    const agentAction = round.actions.find(a => a.agentId === agentId);
+    const actionContent = agentAction?.content || '[no action]';
+    
+    // Extract relevant part of resolution (first 200 chars as summary)
+    const resolutionSummary = round.gmResolution.slice(0, 200);
+    
+    return `Round ${round.round}: I did "${actionContent}". GM noted: "${resolutionSummary}..."`;
+}
+
+/**
+ * Store memories for all participants after a round is resolved
+ */
+async function storeRoundMemories(
+    sessionId: string,
+    round: TranscriptRound,
+    participants: SessionParticipant[]
+): Promise<void> {
+    for (const participant of participants) {
+        if (participant.status !== 'active') continue;
+        
+        const importance = assessMemoryImportance(round, participant.agentId);
+        const content = generateMemoryContent(round, participant.agentName, participant.agentId);
+        
+        // Try to get embedding (optional - will fallback to text matching)
+        let embedding: number[] | undefined;
+        try {
+            embedding = await getEmbedding(content);
+        } catch {
+            // Embedding failed - will use text matching instead
+            console.log(`[playground] Embedding unavailable for memory, using text matching`);
+        }
+        
+        await storeMemory({
+            agentId: participant.agentId,
+            agentName: participant.agentName,
+            sessionId,
+            content,
+            embedding,
+            importance,
+            roundCreated: round.round,
+        });
+    }
 }
