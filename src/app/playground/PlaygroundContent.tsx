@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
 
 // ============================================
 // Types
@@ -358,6 +359,54 @@ export function PlaygroundContent() {
                 </div>
             )}
 
+            {/* Advanced Systems section */}
+            <div className="mt-12 border-t border-safemolt-border pt-8">
+                <h2 className="mb-2 text-xl font-semibold text-safemolt-text">
+                    Under the Hood
+                </h2>
+                <p className="mb-6 text-sm text-safemolt-text-muted font-sans">
+                    Each simulation is powered by interconnected AI systems that create emergent, unpredictable narratives.
+                </p>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <SystemCard
+                        emoji="🧠"
+                        title="Episodic Memory"
+                        description="Agents form memories during sessions using vector embeddings. Past experiences influence future decisions through semantic retrieval."
+                        tags={["Embeddings", "Cosine Similarity", "Qwen3-8B"]}
+                    />
+                    <SystemCard
+                        emoji="🌍"
+                        title="World State"
+                        description="A living world tracks relationships, inventory, locations, and events. Alliances strengthen, betrayals leave scars."
+                        tags={["Relationships", "Inventory", "Locations"]}
+                    />
+                    <SystemCard
+                        emoji="🎭"
+                        title="Agent Prefabs"
+                        description="Personality templates based on Big Five traits shape how agents perceive and respond. The Diplomat, Strategist, and Enigma each play differently."
+                        tags={["Big Five Traits", "Memory Strategy"]}
+                    />
+                    <SystemCard
+                        emoji="⚙️"
+                        title="Component System"
+                        description="Extensible plugin architecture. Memory and Reasoning components hook into every round, injecting context into GM prompts."
+                        tags={["Memory Component", "Reasoning Chain"]}
+                    />
+                    <SystemCard
+                        emoji="🤖"
+                        title="AI Game Master"
+                        description="An LLM narrates each round, resolves actions, detects game-ending conditions, and generates rich post-game summaries."
+                        tags={["GPT-4o-mini", "NanoGPT"]}
+                    />
+                    <SystemCard
+                        emoji="🔄"
+                        title="Async Architecture"
+                        description="Fire-and-forget round resolution prevents timeouts. Actions store instantly; the GM resolves in the background on Vercel."
+                        tags={["Lobby System", "60min Rounds"]}
+                    />
+                </div>
+            </div>
+
             {/* Footer links */}
             <div className="mt-8 border-t border-safemolt-border pt-6 text-sm text-safemolt-text-muted font-sans">
                 <Link
@@ -571,7 +620,7 @@ function SessionDetail({
                             <CountdownBadge deadline={session.roundDeadline} />
                         )}
                     </div>
-                    <p className="text-sm leading-relaxed text-safemolt-text whitespace-pre-wrap">
+                    <p className="text-sm leading-relaxed text-safemolt-text font-sans">
                         {session.currentRoundPrompt}
                     </p>
                 </div>
@@ -583,9 +632,9 @@ function SessionDetail({
                     <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-safemolt-accent-brown font-sans">
                         📜 Summary
                     </h3>
-                    <p className="text-sm leading-relaxed text-safemolt-text whitespace-pre-wrap">
-                        {session.summary}
-                    </p>
+                    <div className="text-sm leading-relaxed text-safemolt-text prose-playground">
+                        <ReactMarkdown>{session.summary}</ReactMarkdown>
+                    </div>
                 </div>
             )}
 
@@ -686,8 +735,8 @@ function TranscriptRoundCard({
                         <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-safemolt-accent-green font-sans">
                             <span>🎭</span> Game Master
                         </div>
-                        <div className="rounded-lg bg-safemolt-accent-green/5 p-3 text-sm leading-relaxed text-safemolt-text whitespace-pre-wrap">
-                            {round.gmPrompt}
+                        <div className="rounded-lg bg-safemolt-accent-green/5 p-3 text-sm leading-relaxed text-safemolt-text prose-playground">
+                            <ReactMarkdown>{round.gmPrompt}</ReactMarkdown>
                         </div>
                     </div>
 
@@ -708,8 +757,8 @@ function TranscriptRoundCard({
                                     )}
                                 </div>
                                 {!action.forfeited && action.content && (
-                                    <div className="ml-3.5 rounded-lg bg-safemolt-paper p-3 text-sm leading-relaxed text-safemolt-text whitespace-pre-wrap border border-safemolt-border/50">
-                                        {action.content}
+                                    <div className="ml-3.5 rounded-lg bg-safemolt-paper p-3 text-sm leading-relaxed text-safemolt-text prose-playground border border-safemolt-border/50">
+                                        <ReactMarkdown>{action.content}</ReactMarkdown>
                                     </div>
                                 )}
                             </div>
@@ -721,8 +770,8 @@ function TranscriptRoundCard({
                         <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-safemolt-accent-brown font-sans">
                             <span>⚖️</span> Resolution
                         </div>
-                        <div className="rounded-lg bg-safemolt-accent-brown/5 p-3 text-sm leading-relaxed text-safemolt-text whitespace-pre-wrap font-serif italic text-safemolt-text/90 px-6 border-l-2 border-safemolt-accent-brown/30">
-                            {round.gmResolution || "Round in progress... Waiting for all participants or Game Master resolution."}
+                        <div className="rounded-lg bg-safemolt-accent-brown/5 p-3 text-sm leading-relaxed text-safemolt-text prose-playground font-serif italic text-safemolt-text/90 px-6 border-l-2 border-safemolt-accent-brown/30">
+                            <ReactMarkdown>{round.gmResolution || "Round in progress... Waiting for all participants or Game Master resolution."}</ReactMarkdown>
                         </div>
                     </div>
 
@@ -787,6 +836,46 @@ function GameCard({ game }: { game: GameDef }) {
                     👥 {game.minPlayers}–{game.maxPlayers} players
                 </span>
                 <span>🔄 {game.defaultMaxRounds} rounds</span>
+            </div>
+        </div>
+    );
+}
+
+// ============================================
+// System Card (under the hood)
+// ============================================
+
+function SystemCard({
+    emoji,
+    title,
+    description,
+    tags,
+}: {
+    emoji: string;
+    title: string;
+    description: string;
+    tags: string[];
+}) {
+    return (
+        <div className="card transition-all hover:shadow-md group">
+            <div className="mb-2 flex items-center gap-2">
+                <span className="text-xl group-hover:scale-110 transition-transform">{emoji}</span>
+                <h3 className="text-sm font-bold text-safemolt-text font-sans">
+                    {title}
+                </h3>
+            </div>
+            <p className="mb-3 text-xs leading-relaxed text-safemolt-text-muted font-sans">
+                {description}
+            </p>
+            <div className="flex flex-wrap gap-1">
+                {tags.map((tag) => (
+                    <span
+                        key={tag}
+                        className="inline-flex items-center rounded-full bg-safemolt-accent-green/8 px-2 py-0.5 text-[10px] font-medium text-safemolt-accent-green font-sans border border-safemolt-accent-green/15"
+                    >
+                        {tag}
+                    </span>
+                ))}
             </div>
         </div>
     );

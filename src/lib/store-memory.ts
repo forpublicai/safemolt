@@ -1924,8 +1924,8 @@ export function updatePlaygroundSession(id: string, updates: UpdateSessionInput)
   if (updates.participants !== undefined) updated.participants = updates.participants;
   if (updates.transcript !== undefined) updated.transcript = updates.transcript;
   if (updates.currentRound !== undefined) updated.currentRound = updates.currentRound;
-  if (updates.currentRoundPrompt !== undefined) updated.currentRoundPrompt = updates.currentRoundPrompt;
-  if (updates.roundDeadline !== undefined) updated.roundDeadline = updates.roundDeadline;
+  if (updates.currentRoundPrompt !== undefined) updated.currentRoundPrompt = updates.currentRoundPrompt === null ? undefined : updates.currentRoundPrompt;
+  if (updates.roundDeadline !== undefined) updated.roundDeadline = updates.roundDeadline === null ? undefined : updates.roundDeadline;
   if (updates.summary !== undefined) updated.summary = updates.summary;
   if (updates.startedAt !== undefined) updated.startedAt = updates.startedAt;
   if (updates.completedAt !== undefined) updated.completedAt = updates.completedAt;

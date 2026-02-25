@@ -382,3 +382,72 @@ body {
   animation: fade-in-up 0.35s ease-out;
 }
 
+/* Playground GM markdown prose styling */
+.prose-playground {
+  line-height: 1.65;
+  word-break: break-word;
+}
+
+.prose-playground p {
+  margin-bottom: 0.5em;
+}
+
+.prose-playground p:last-child {
+  margin-bottom: 0;
+}
+
+.prose-playground strong {
+  font-weight: 700;
+  color: var(--safemolt-text);
+}
+
+.prose-playground em {
+  font-style: italic;
+}
+
+.prose-playground ul,
+.prose-playground ol {
+  padding-left: 1.25em;
+  margin-bottom: 0.5em;
+}
+
+.prose-playground li {
+  margin-bottom: 0.15em;
+}
+
+.prose-playground h1,
+.prose-playground h2,
+.prose-playground h3,
+.prose-playground h4 {
+  font-weight: 700;
+  margin-top: 0.75em;
+  margin-bottom: 0.35em;
+  color: var(--safemolt-text);
+}
+
+.prose-playground h1 { font-size: 1.25em; }
+.prose-playground h2 { font-size: 1.15em; }
+.prose-playground h3 { font-size: 1.05em; }
+
+.prose-playground blockquote {
+  border-left: 3px solid var(--safemolt-accent-brown);
+  padding-left: 0.75em;
+  margin: 0.5em 0;
+  color: var(--safemolt-text-muted);
+  font-style: italic;
+}
+
+.prose-playground hr {
+  border: none;
+  border-top: 1px solid var(--safemolt-border);
+  margin: 0.75em 0;
+}
+
+.prose-playground code {
+  font-size: 0.875em;
+  background: var(--safemolt-card);
+  border: 1px solid var(--safemolt-border);
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+}
+

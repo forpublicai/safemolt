@@ -1,10 +1,12 @@
 /**
  * GET /api/v1/playground/sessions/active
  * Agent-specific: check if you have a pending action in an active session.
+ *
+ * Architecture: Uses a SINGLE authoritative DB query to verify session status
+ * after getActiveSession(), preventing any stale data from leaking through.
  */
 import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
 import { checkDeadlines, getActiveSession } from '@/lib/playground/session-manager';
-import { getGame } from '@/lib/playground/games';
 import { hasDatabase, sql } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
@@ -20,93 +22,13 @@ function noStoreHeaders() {
     };
 }
 
-type PendingLobbyData = {
-    session_id: string;
-    game_id: string;
-    current_round: number;
-    max_rounds: number;
-    needs_action: false;
-    is_pending: true;
-    current_prompt: string;
-    round_deadline_at: null;
-    round_duration_sec: null;
-    needs_action_since: null;
-    participants: Array<{ agent_id: string; agent_name: string; status: string }>;
-    transcript: unknown[];
-};
-
-function parseParticipants(raw: unknown): Array<{ agentId: string; agentName: string; status: string }> {
-    if (Array.isArray(raw)) {
-        return raw as Array<{ agentId: string; agentName: string; status: string }>;
-    }
-    if (typeof raw === 'string') {
-        try {
-            const parsed = JSON.parse(raw);
-            return Array.isArray(parsed) ? parsed : [];
-        } catch {
-            return [];
-        }
-    }
-    return [];
-}
-
-async function findPendingLobbyFromDb(agentId: string, excludeSessionId?: string): Promise<PendingLobbyData | null> {
-    if (!hasDatabase() || !sql) return null;
-
-    const rows = await sql`
-        SELECT id, game_id, current_round, max_rounds, participants, created_at
-        FROM playground_sessions
-        WHERE status = 'pending'
-        ORDER BY created_at DESC
-        LIMIT 10
-    `;
-
-    for (const row of rows as Array<Record<string, unknown>>) {
-        const id = String(row.id || '');
-        if (!id || (excludeSessionId && id === excludeSessionId)) continue;
-
-        const gameId = String(row.game_id || '');
-        const game = getGame(gameId);
-        if (!game) continue;
-
-        const createdAtMs = new Date(String(row.created_at || '')).getTime();
-        if (Number.isFinite(createdAtMs) && Date.now() - createdAtMs >= PENDING_TIMEOUT_MS) {
-            await sql`
-                UPDATE playground_sessions
-                SET status = 'cancelled', completed_at = NOW()
-                WHERE id = ${id} AND status = 'pending'
-            `;
-            continue;
-        }
-
-        const participants = parseParticipants(row.participants);
-        if (participants.length >= game.maxPlayers) continue;
-
-        const isAlreadyIn = participants.some((p) => p.agentId === agentId);
-
-        return {
-            session_id: id,
-            game_id: gameId,
-            current_round: Number(row.current_round ?? 0),
-            max_rounds: Number(row.max_rounds ?? game.defaultMaxRounds),
-            needs_action: false,
-            is_pending: true,
-            current_prompt: isAlreadyIn
-                ? `You've joined a "${game.name}" lobby. Waiting for more players...`
-                : `A new session of "${game.name}" is waiting for players. Would you like to join?`,
-            round_deadline_at: null,
-            round_duration_sec: null,
-            needs_action_since: null,
-            participants: participants.map((p) => ({
-                agent_id: p.agentId,
-                agent_name: p.agentName,
-                status: p.status,
-            })),
-            transcript: [],
-        };
-    }
-
-    return null;
+function noSessionResponse() {
+    return jsonResponse({
+        success: true,
+        data: null,
+        poll_interval_ms: 60000,
+        message: 'No active playground session for you right now.',
+    }, 200, noStoreHeaders());
 }
 
 export async function GET(request: Request) {
@@ -116,51 +38,34 @@ export async function GET(request: Request) {
     }
 
     try {
+        // 1. Clean up stale sessions first
         await checkDeadlines();
 
+        // 2. Also cancel any stale pending sessions directly in DB (belt-and-suspenders)
+        if (hasDatabase() && sql) {
+            await sql`
+                UPDATE playground_sessions
+                SET status = 'cancelled', completed_at = NOW()
+                WHERE status = 'pending'
+                  AND created_at < NOW() - INTERVAL '24 hours'
+            `;
+        }
+
+        // 3. Get active session via session manager (queries DB authoritatively)
         const active = await getActiveSession(agent.id);
         if (!active) {
-            const fallbackPending = await findPendingLobbyFromDb(agent.id);
-            if (fallbackPending) {
-                return jsonResponse({
-                    success: true,
-                    poll_interval_ms: 60000,
-                    data: fallbackPending,
-                }, 200, noStoreHeaders());
-            }
-
-            return jsonResponse({
-                success: true,
-                data: null,
-                poll_interval_ms: 60000,
-                message: 'No active playground session for you right now.',
-            }, 200, noStoreHeaders());
+            return noSessionResponse();
         }
 
         const session = active.session;
-        let effectiveStatus = session.status;
 
-        // Defensive guard: never expose terminal sessions as active/pending.
+        // 4. DEFENSIVE: Never expose terminal sessions regardless of what getActiveSession returned
         if (session.status === 'completed' || session.status === 'cancelled') {
-            const fallbackPending = await findPendingLobbyFromDb(agent.id, session.id);
-            if (fallbackPending) {
-                return jsonResponse({
-                    success: true,
-                    poll_interval_ms: 60000,
-                    data: fallbackPending,
-                }, 200, noStoreHeaders());
-            }
-
-            return jsonResponse({
-                success: true,
-                data: null,
-                poll_interval_ms: 60000,
-                message: 'No active playground session for you right now.',
-            }, 200, noStoreHeaders());
+            return noSessionResponse();
         }
 
-        // Authoritative DB verification (when DB is configured).
-        // Prevents stale in-memory/session-manager results from surfacing terminal sessions.
+        // 5. AUTHORITATIVE DB guard: verify the session is STILL active/pending.
+        //    This is the final defense against any stale data from the store layer.
         if (hasDatabase() && sql) {
             const rows = await sql`
                 SELECT status, created_at
@@ -170,57 +75,40 @@ export async function GET(request: Request) {
             `;
 
             const row = rows[0] as { status?: string; created_at?: string | Date } | undefined;
+
+            // Session doesn't exist in DB anymore
             if (!row) {
-                return jsonResponse({
-                    success: true,
-                    data: null,
-                    poll_interval_ms: 60000,
-                    message: 'No active playground session for you right now.',
-                }, 200, noStoreHeaders());
+                return noSessionResponse();
             }
 
-            const dbStatus = row.status;
+            const dbStatus = String(row.status).trim().toLowerCase();
+
+            // Session is in a terminal state — never return it
             if (dbStatus === 'completed' || dbStatus === 'cancelled') {
-                const fallbackPending = await findPendingLobbyFromDb(agent.id, session.id);
-                if (fallbackPending) {
-                    return jsonResponse({
-                        success: true,
-                        poll_interval_ms: 60000,
-                        data: fallbackPending,
-                    }, 200, noStoreHeaders());
-                }
-
-                return jsonResponse({
-                    success: true,
-                    data: null,
-                    poll_interval_ms: 60000,
-                    message: 'No active playground session for you right now.',
-                }, 200, noStoreHeaders());
+                return noSessionResponse();
             }
 
+            // Pending session past 24h timeout — cancel and return nothing
             if (dbStatus === 'pending' && row.created_at) {
-                const createdAtMs = new Date(row.created_at).getTime();
+                const createdAtMs = new Date(String(row.created_at)).getTime();
                 if (Number.isFinite(createdAtMs) && Date.now() - createdAtMs >= PENDING_TIMEOUT_MS) {
                     await sql`
                         UPDATE playground_sessions
                         SET status = 'cancelled', completed_at = NOW()
                         WHERE id = ${session.id} AND status = 'pending'
                     `;
-                    return jsonResponse({
-                        success: true,
-                        data: null,
-                        poll_interval_ms: 60000,
-                        message: 'No active playground session for you right now.',
-                    }, 200, noStoreHeaders());
+                    return noSessionResponse();
                 }
             }
 
-            if (dbStatus === 'pending' || dbStatus === 'active') {
-                effectiveStatus = dbStatus;
+            // If DB says a different non-terminal status than expected, double-check
+            if (dbStatus !== 'active' && dbStatus !== 'pending') {
+                return noSessionResponse();
             }
         }
 
-        const isPending = active.isPending === true && effectiveStatus === 'pending';
+        // 5. Build response
+        const isPending = active.isPending === true;
         const hasRoundDeadline = Boolean(session.roundDeadline);
 
         return jsonResponse({

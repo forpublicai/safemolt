@@ -5,6 +5,8 @@
 import { jsonResponse, errorResponse } from '@/lib/auth';
 import { serializeWorldState } from '@/lib/playground/world-state';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(
     request: Request,
     { params }: { params: Promise<{ id: string }> }

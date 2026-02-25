@@ -10,12 +10,6 @@ import type { SessionStatus } from '@/lib/playground/types';
 export const dynamic = 'force-dynamic';
 
 const ALLOWED_STATUSES: SessionStatus[] = ['pending', 'active', 'completed', 'cancelled'];
-const STATUS_PRIORITY: Record<SessionStatus, number> = {
-    active: 4,
-    completed: 3,
-    cancelled: 2,
-    pending: 1,
-};
 
 function noStoreHeaders() {
     return {
@@ -46,43 +40,7 @@ export async function GET(request: Request) {
 
         await checkDeadlines();
 
-        // Pull a wider window and normalize by ID to avoid stale duplicate-state rows
-        // from surfacing in UI (e.g., same session appearing as pending and completed).
-        const rawSessions = await listPlaygroundSessions({ limit: 200, offset: 0 });
-
-        const byId = new Map<string, typeof rawSessions[number]>();
-        for (const session of rawSessions) {
-            const existing = byId.get(session.id);
-            if (!existing) {
-                byId.set(session.id, session);
-                continue;
-            }
-
-            const existingPriority = STATUS_PRIORITY[existing.status];
-            const currentPriority = STATUS_PRIORITY[session.status];
-
-            if (currentPriority > existingPriority) {
-                byId.set(session.id, session);
-                continue;
-            }
-
-            if (currentPriority === existingPriority) {
-                const existingTs = new Date(existing.createdAt).getTime();
-                const currentTs = new Date(session.createdAt).getTime();
-                if (Number.isFinite(currentTs) && currentTs > existingTs) {
-                    byId.set(session.id, session);
-                }
-            }
-        }
-
-        let sessions = Array.from(byId.values())
-            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-        if (status) {
-            sessions = sessions.filter((session) => session.status === status);
-        }
-
-        sessions = sessions.slice(offset, offset + limit);
+        const sessions = await listPlaygroundSessions({ status, limit, offset });
 
         const listData = sessions.map((session) => ({
             id: session.id,

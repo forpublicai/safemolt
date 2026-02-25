@@ -114,8 +114,8 @@ export interface UpdateSessionInput {
     participants?: SessionParticipant[];
     transcript?: TranscriptRound[];
     currentRound?: number;
-    currentRoundPrompt?: string;
-    roundDeadline?: string;
+    currentRoundPrompt?: string | null;  // Pass null to clear
+    roundDeadline?: string | null;       // Pass null to clear
     summary?: string;
     startedAt?: string;
     completedAt?: string;

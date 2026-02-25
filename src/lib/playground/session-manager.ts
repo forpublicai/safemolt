@@ -430,8 +430,8 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
             transcript: [...session.transcript, newRound],
             summary,
             completedAt: new Date().toISOString(),
-            currentRoundPrompt: undefined,
-            roundDeadline: undefined,
+            currentRoundPrompt: null,
+            roundDeadline: null,
         });
 
         return (await store.getPlaygroundSession(sessionId))!;
@@ -473,8 +473,8 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
             transcript: newTranscript,
             summary,
             completedAt: new Date().toISOString(),
-            currentRoundPrompt: undefined,
-            roundDeadline: undefined,
+            currentRoundPrompt: null,
+            roundDeadline: null,
         });
 
         // Clean up world state
@@ -515,70 +515,72 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
 
 /**
  * Get the active session for a specific agent, with info on whether they need to act.
+ *
+ * Priority order:
+ *   1. Active session where agent needs to submit an action
+ *   2. Active session where agent already responded (waiting for round resolution)
+ *   3. Pending session where agent already joined (waiting for more players)
+ *   4. Pending session the agent can join
  */
 export async function getActiveSession(
     agentId: string
 ): Promise<{ session: PlaygroundSession; needsAction: boolean; currentPrompt: string; isPending?: boolean; needsActionSince?: string } | null> {
     const store = await getStore();
 
-    // 1. First priority: sessions where we are already active and need to respond
+    // --- Active sessions --- (highest priority)
     const activeSessions = await store.listPlaygroundSessions({ status: 'active', limit: 10 });
 
+    // 1. Active session where agent NEEDS to act (not yet submitted)
     for (const session of activeSessions) {
-        // Verify session is still active in DB
         const freshSession = await store.getPlaygroundSession(session.id);
-        if (!freshSession || freshSession.status !== 'active') {
-            continue; // Skip stale sessions
+        if (!freshSession || freshSession.status !== 'active') continue;
+
+        const participant = freshSession.participants.find(p => p.agentId === agentId);
+        if (!participant || participant.status !== 'active') continue;
+
+        const actions = await store.getPlaygroundActions(freshSession.id, freshSession.currentRound);
+        const alreadySubmitted = actions.some(a => a.agentId === agentId);
+
+        if (!alreadySubmitted) {
+            const roundDurationMs = 60 * 60 * 1000;
+            const needsActionSince = freshSession.roundDeadline
+                ? new Date(new Date(freshSession.roundDeadline).getTime() - roundDurationMs).toISOString()
+                : new Date().toISOString();
+            return {
+                session: freshSession,
+                needsAction: true,
+                currentPrompt: freshSession.currentRoundPrompt || '',
+                needsActionSince,
+            };
         }
+    }
+
+    // 2. Active session where agent already responded (waiting for others / GM resolution)
+    for (const session of activeSessions) {
+        const freshSession = await store.getPlaygroundSession(session.id);
+        if (!freshSession || freshSession.status !== 'active') continue;
+
         const participant = freshSession.participants.find(p => p.agentId === agentId);
         if (participant && participant.status === 'active') {
-            const actions = await store.getPlaygroundActions(freshSession.id, freshSession.currentRound);
-            const alreadySubmitted = actions.some(a => a.agentId === agentId);
-
-            if (!alreadySubmitted) {
-                // Calculate when action was first needed (deadline - 60 min round duration)
-                const roundDurationMs = 60 * 60 * 1000; // 60 minutes
-                const needsActionSince = freshSession.roundDeadline 
-                    ? new Date(new Date(freshSession.roundDeadline).getTime() - roundDurationMs).toISOString()
-                    : new Date().toISOString();
-                return {
-                    session: freshSession,
-                    needsAction: true,
-                    currentPrompt: freshSession.currentRoundPrompt || '',
-                    needsActionSince,
-                };
-            }
+            return {
+                session: freshSession,
+                needsAction: false,
+                currentPrompt: freshSession.currentRoundPrompt || '',
+            };
         }
     }
 
-    // 2. Second priority: pending sessions (both joinable AND ones we're already in)
-    // Sort by createdAt to get the most recent pending sessions first
+    // --- Pending sessions --- (lower priority)
     const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 10 });
-    
-    // Filter to only sessions that are still valid (not full, not stale)
-    const validPendingSessions = pendingSessions.filter(session => {
-        const game = getGame(session.gameId);
-        if (!game) return false; // Unknown game - skip
-        return session.participants.length < game.maxPlayers;
-    });
-    
-    // If no valid pending sessions, return null
-    if (validPendingSessions.length === 0) {
-        return null;
-    }
-    
-    for (const session of validPendingSessions) {
-        // Double-check: fetch fresh session from DB to ensure it still exists and is pending
-        const freshSession = await store.getPlaygroundSession(session.id);
-        if (!freshSession || freshSession.status !== 'pending') {
-            continue; // Skip stale sessions
-        }
-        
-        const isAlreadyIn = freshSession.participants.some(p => p.agentId === agentId);
-        const game = getGame(freshSession.gameId);
 
+    // 3. Pending session where agent already joined
+    for (const session of pendingSessions) {
+        const freshSession = await store.getPlaygroundSession(session.id);
+        if (!freshSession || freshSession.status !== 'pending') continue;
+
+        const isAlreadyIn = freshSession.participants.some(p => p.agentId === agentId);
         if (isAlreadyIn) {
-            // Agent already joined this lobby — tell them to keep polling
+            const game = getGame(freshSession.gameId);
             return {
                 session: freshSession,
                 needsAction: false,
@@ -586,30 +588,22 @@ export async function getActiveSession(
                 isPending: true,
             };
         }
+    }
 
-        if (game && freshSession.participants.length < game.maxPlayers) {
+    // 4. Pending session the agent can join
+    for (const session of pendingSessions) {
+        const freshSession = await store.getPlaygroundSession(session.id);
+        if (!freshSession || freshSession.status !== 'pending') continue;
+
+        const game = getGame(freshSession.gameId);
+        if (!game) continue;
+
+        if (freshSession.participants.length < game.maxPlayers) {
             return {
                 session: freshSession,
                 needsAction: false,
                 currentPrompt: `A new session of "${game.name}" is waiting for players. Would you like to join?`,
                 isPending: true,
-            };
-        }
-    }
-
-    // 3. Last check: sessions where we are active but already responded (still return it so bot can see status)
-    for (const session of activeSessions) {
-        // Triple-check: verify session is still 'active' in DB
-        const freshSession = await store.getPlaygroundSession(session.id);
-        if (!freshSession || freshSession.status !== 'active') {
-            continue; // Skip stale sessions
-        }
-        const participant = freshSession.participants.find(p => p.agentId === agentId);
-        if (participant && participant.status === 'active') {
-            return {
-                session: freshSession,
-                needsAction: false,
-                currentPrompt: freshSession.currentRoundPrompt || '',
             };
         }
     }
@@ -647,7 +641,12 @@ export async function checkDeadlines(): Promise<void> {
         if (ageMs >= PENDING_TIMEOUT_MS) {
             try {
                 console.log(`[playground] Session ${session.id} expired in pending state. Cancelling.`);
-                await store.updatePlaygroundSession(session.id, { status: 'cancelled' });
+                await store.updatePlaygroundSession(session.id, {
+                    status: 'cancelled',
+                    completedAt: new Date().toISOString(),
+                    currentRoundPrompt: null,
+                    roundDeadline: null,
+                });
             } catch (err) {
                 console.error(`[playground] Error cancelling pending session ${session.id}:`, err);
             }

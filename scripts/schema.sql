@@ -305,3 +305,4 @@ CREATE TABLE IF NOT EXISTS playground_actions (
 
 CREATE INDEX IF NOT EXISTS idx_pg_actions_session_round ON playground_actions(session_id, round);
 CREATE INDEX IF NOT EXISTS idx_pg_actions_agent ON playground_actions(agent_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_actions_unique ON playground_actions(session_id, agent_id, round);
