@@ -128,7 +128,30 @@ export function PlaygroundContent() {
             const res = await fetch(`/api/v1/playground/sessions${statusParam}&_t=${Date.now()}`, { cache: 'no-store' });
             const data = await res.json();
             if (data.success) {
-                setSessions(data.data || []);
+                const latestSessions: PlaygroundSession[] = data.data || [];
+                setSessions(latestSessions);
+
+                setSelectedSession((previous) => {
+                    if (!previous) return previous;
+                    const refreshed = latestSessions.find((s) => s.id === previous.id);
+                    if (!refreshed) return previous;
+
+                    if (
+                        refreshed.status !== previous.status ||
+                        refreshed.currentRound !== previous.currentRound ||
+                        refreshed.completedAt !== previous.completedAt
+                    ) {
+                        return {
+                            ...previous,
+                            status: refreshed.status,
+                            currentRound: refreshed.currentRound,
+                            completedAt: refreshed.completedAt,
+                            participants: refreshed.participants,
+                        };
+                    }
+
+                    return previous;
+                });
             }
         } catch {
             setError("Failed to load sessions");

@@ -1,21 +1,35 @@
-import { NextResponse } from 'next/server';
+import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
 import { createPendingSession } from '@/lib/playground/session-manager';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: Request) {
+    const agent = await getAgentFromRequest(req);
+    if (!agent) {
+        return errorResponse('Unauthorized', 'Valid Authorization: Bearer <api_key> required', 401);
+    }
+
     try {
-        const body = await req.json();
+        let body: Record<string, unknown> = {};
+        try {
+            body = await req.json() as Record<string, unknown>;
+        } catch {
+            body = {};
+        }
+
         const { gameId, game_id } = body;
-        const targetGameId = gameId || game_id;
+        const targetGameId = typeof gameId === 'string'
+            ? gameId
+            : typeof game_id === 'string'
+                ? game_id
+                : undefined;
 
         // Create a new pending session
         const session = await createPendingSession(targetGameId);
 
-        return NextResponse.json({ success: true, data: session });
+        return jsonResponse({ success: true, data: session });
     } catch (error) {
         console.error("Error triggering session:", error);
-        return NextResponse.json(
-            { success: false, error: error instanceof Error ? error.message : "Internal server error" },
-            { status: 500 }
-        );
+        return errorResponse(error instanceof Error ? error.message : 'Internal server error', undefined, 500);
     }
 }
