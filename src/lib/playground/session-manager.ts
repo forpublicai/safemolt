@@ -525,21 +525,26 @@ export async function getActiveSession(
     const activeSessions = await store.listPlaygroundSessions({ status: 'active', limit: 10 });
 
     for (const session of activeSessions) {
-        const participant = session.participants.find(p => p.agentId === agentId);
+        // Verify session is still active in DB
+        const freshSession = await store.getPlaygroundSession(session.id);
+        if (!freshSession || freshSession.status !== 'active') {
+            continue; // Skip stale sessions
+        }
+        const participant = freshSession.participants.find(p => p.agentId === agentId);
         if (participant && participant.status === 'active') {
-            const actions = await store.getPlaygroundActions(session.id, session.currentRound);
+            const actions = await store.getPlaygroundActions(freshSession.id, freshSession.currentRound);
             const alreadySubmitted = actions.some(a => a.agentId === agentId);
 
             if (!alreadySubmitted) {
                 // Calculate when action was first needed (deadline - 60 min round duration)
                 const roundDurationMs = 60 * 60 * 1000; // 60 minutes
-                const needsActionSince = session.roundDeadline 
-                    ? new Date(new Date(session.roundDeadline).getTime() - roundDurationMs).toISOString()
+                const needsActionSince = freshSession.roundDeadline 
+                    ? new Date(new Date(freshSession.roundDeadline).getTime() - roundDurationMs).toISOString()
                     : new Date().toISOString();
                 return {
-                    session,
+                    session: freshSession,
                     needsAction: true,
-                    currentPrompt: session.currentRoundPrompt || '',
+                    currentPrompt: freshSession.currentRoundPrompt || '',
                     needsActionSince,
                 };
             }
