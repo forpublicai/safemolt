@@ -1,21 +1,26 @@
 /**
  * GET /api/v1/playground/sessions/[id]
  * Get session details including full transcript.
- *
- * POST /api/v1/playground/sessions/[id]/action
- * Agent submits an action for the current round. Triggers round advancement.
  */
-import { NextRequest } from 'next/server';
-import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
-import { getPlaygroundSession } from '@/lib/store';
-import { submitAction, checkDeadlines } from '@/lib/playground/session-manager';
+import { jsonResponse, errorResponse } from '@/lib/auth';
+import { checkDeadlines } from '@/lib/playground/session-manager';
+import { getPlaygroundActions, getPlaygroundSession } from '@/lib/store';
+import type { TranscriptRound } from '@/lib/playground/types';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 export const fetchCache = 'force-no-store';
 
+function noStoreHeaders() {
+    return {
+        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+    };
+}
+
 export async function GET(
-    request: Request,
+    _request: Request,
     { params }: { params: Promise<{ id: string }> }
 ) {
     const { id } = await params;
@@ -28,23 +33,29 @@ export async function GET(
             return errorResponse('Session not found', undefined, 404);
         }
 
-        let transcript = session.transcript;
+        let transcript = [...session.transcript];
+
+        // If session is active, get current round actions
         if (session.status === 'active') {
-            const { getPlaygroundActions } = await import('@/lib/store');
-            const currentActions = await getPlaygroundActions(session.id, session.currentRound);
-            if (currentActions.length > 0) {
-                const pendingRound = {
+            const actions = await getPlaygroundActions(id, session.currentRound);
+
+            if (actions.length > 0) {
+                const pendingRound: TranscriptRound = {
                     round: session.currentRound,
                     gmPrompt: session.currentRoundPrompt || '',
-                    actions: currentActions.map(a => ({
-                        agentId: a.agentId,
-                        agentName: session.participants.find(p => p.agentId === a.agentId)?.agentName || 'Unknown Agent',
-                        content: a.content,
-                        forfeited: false
-                    })),
-                    gmResolution: '', // Markers that this round is still in progress
-                    resolvedAt: ''
+                    actions: actions.map((action) => {
+                        const participant = session.participants.find((p) => p.agentId === action.agentId);
+                        return {
+                            agentId: action.agentId,
+                            agentName: participant?.agentName || 'Unknown Agent',
+                            content: action.content,
+                            forfeited: false,
+                        };
+                    }),
+                    gmResolution: '',
+                    resolvedAt: '',
                 };
+
                 transcript = [...transcript, pendingRound];
             }
         }
@@ -58,12 +69,7 @@ export async function GET(
                     status: session.status,
                     currentRound: session.currentRound,
                     maxRounds: session.maxRounds,
-                    participants: session.participants.map(p => ({
-                        agentId: p.agentId,
-                        agentName: p.agentName,
-                        status: p.status,
-                        forfeitedAtRound: p.forfeitedAtRound,
-                    })),
+                    participants: session.participants,
                     transcript,
                     currentRoundPrompt: session.currentRoundPrompt,
                     roundDeadline: session.roundDeadline,
@@ -74,14 +80,12 @@ export async function GET(
                 },
             },
             200,
-            {
-                'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-                'Pragma': 'no-cache',
-                'Expires': '0',
-            }
+            noStoreHeaders()
         );
+
     } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to get session';
+        console.error('[playground/sessions/[id]] Error:', message);
         return errorResponse(message, undefined, 500);
     }
 }
