@@ -27,7 +27,7 @@ export async function GET(request: Request) {
         await checkDeadlines();
 
         const active = await getActiveSession(agent.id);
-        if (!active) {
+        if (!active || active.isPending) {
             return jsonResponse({
                 success: true,
                 data: null,
