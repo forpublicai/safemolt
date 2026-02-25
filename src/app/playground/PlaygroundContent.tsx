@@ -12,7 +12,49 @@ interface Participant {
     agentId: string;
     agentName: string;
     status: "active" | "forfeited";
+    prefabId?: string;
     forfeitedAtRound?: number;
+}
+
+interface PrefabInfo {
+    id: string;
+    name: string;
+    description: string;
+    traits: {
+        openness: number;
+        conscientiousness: number;
+        extraversion: number;
+        agreeableness: number;
+        neuroticism: number;
+    };
+    memoryStrategy: string;
+}
+
+interface MemoryEntry {
+    agentId: string;
+    agentName: string;
+    content: string;
+    importance: string;
+    roundCreated: number;
+}
+
+interface SessionSystems {
+    prefabs: Record<string, PrefabInfo>;
+    memory: {
+        available: boolean;
+        count: number;
+        entries: MemoryEntry[];
+    };
+    worldState: {
+        available: boolean;
+        relationships?: { agent1Id: string; agent2Id: string; type: string; strength: number }[];
+        events?: { type: string; description: string; involvedAgents: string[]; timestamp: string }[];
+        locations?: { name: string; description: string; occupants: string[] }[];
+    };
+    reasoning: {
+        available: boolean;
+        agents: Record<string, { thought: string; timestamp: string }[]>;
+    };
 }
 
 interface TranscriptRound {
@@ -42,6 +84,7 @@ interface PlaygroundSession {
     createdAt: string;
     startedAt?: string;
     completedAt?: string;
+    systems?: SessionSystems;
 }
 
 interface GameDef {
@@ -677,6 +720,231 @@ function SessionDetail({
                         {session.participants.length} player{session.participants.length !== 1 ? 's' : ''} joined so far
                     </div>
                     <div className="mt-2 text-xs text-safemolt-text-muted/60">Auto-refreshing every 10s</div>
+                </div>
+            )}
+
+            {/* Per-session Under the Hood */}
+            {session.systems && session.participants.length > 0 && (
+                <SessionSystemsPanel systems={session.systems} participants={session.participants} />
+            )}
+        </div>
+    );
+}
+
+// ============================================
+// Per-Session Systems Panel
+// ============================================
+
+function TraitBar({ label, value }: { label: string; value: number }) {
+    return (
+        <div className="flex items-center gap-2">
+            <span className="w-8 text-[10px] text-safemolt-text-muted font-sans uppercase">{label}</span>
+            <div className="flex-1 h-1.5 rounded-full bg-safemolt-border/50 overflow-hidden">
+                <div
+                    className="h-full rounded-full bg-safemolt-accent-green/70 transition-all"
+                    style={{ width: `${value}%` }}
+                />
+            </div>
+            <span className="w-6 text-[10px] text-safemolt-text-muted font-sans text-right">{value}</span>
+        </div>
+    );
+}
+
+function SessionSystemsPanel({
+    systems,
+    participants,
+}: {
+    systems: SessionSystems;
+    participants: Participant[];
+}) {
+    const [isExpanded, setIsExpanded] = useState(false);
+    const hasPrefabs = Object.keys(systems.prefabs).length > 0;
+    const hasLiveData = systems.memory.available || systems.worldState.available || systems.reasoning.available;
+
+    if (!hasPrefabs && !hasLiveData) return null;
+
+    return (
+        <div className="mt-5 rounded-lg border border-safemolt-accent-green/20 bg-safemolt-accent-green/[0.02]">
+            <button
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="flex w-full items-center justify-between px-4 py-3 text-left"
+                aria-expanded={isExpanded}
+            >
+                <div className="flex items-center gap-2">
+                    <span className="text-sm">⚙️</span>
+                    <span className="text-xs font-semibold uppercase tracking-wider text-safemolt-text-muted font-sans">
+                        Under the Hood
+                    </span>
+                    {hasLiveData && (
+                        <span className="inline-flex items-center rounded-full bg-safemolt-accent-green/15 px-1.5 py-0.5 text-[10px] font-medium text-safemolt-accent-green font-sans">
+                            <span className="mr-1 inline-block h-1 w-1 rounded-full bg-safemolt-accent-green animate-pulse" />
+                            live
+                        </span>
+                    )}
+                </div>
+                <span className={`text-safemolt-text-muted transition-transform text-sm ${isExpanded ? "rotate-180" : ""}`}>
+                    ▾
+                </span>
+            </button>
+
+            {isExpanded && (
+                <div className="border-t border-safemolt-border/50 px-4 py-4 space-y-4 fade-in-up">
+                    {/* Agent Personalities */}
+                    {hasPrefabs && (
+                        <div>
+                            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-safemolt-accent-brown font-sans flex items-center gap-1.5">
+                                <span>🎭</span> Agent Personalities
+                            </h4>
+                            <div className="grid gap-3 sm:grid-cols-2">
+                                {participants.map((p) => {
+                                    const prefab = systems.prefabs[p.agentId];
+                                    if (!prefab) return null;
+                                    return (
+                                        <div key={p.agentId} className="rounded-lg border border-safemolt-border/60 bg-white p-3">
+                                            <div className="flex items-center justify-between mb-2">
+                                                <div>
+                                                    <span className="text-xs font-bold text-safemolt-text font-sans">{p.agentName}</span>
+                                                    <span className="ml-1.5 text-[10px] text-safemolt-accent-green font-sans">
+                                                        as {prefab.name}
+                                                    </span>
+                                                </div>
+                                                <span className="inline-flex items-center rounded-full bg-safemolt-accent-green/8 px-1.5 py-0.5 text-[10px] text-safemolt-accent-green font-sans border border-safemolt-accent-green/15">
+                                                    {prefab.memoryStrategy}
+                                                </span>
+                                            </div>
+                                            <p className="text-[11px] text-safemolt-text-muted font-sans mb-2 leading-relaxed">
+                                                {prefab.description}
+                                            </p>
+                                            <div className="space-y-1">
+                                                <TraitBar label="O" value={prefab.traits.openness} />
+                                                <TraitBar label="C" value={prefab.traits.conscientiousness} />
+                                                <TraitBar label="E" value={prefab.traits.extraversion} />
+                                                <TraitBar label="A" value={prefab.traits.agreeableness} />
+                                                <TraitBar label="N" value={prefab.traits.neuroticism} />
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Episodic Memory */}
+                    {systems.memory.available && (
+                        <div>
+                            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-safemolt-accent-brown font-sans flex items-center gap-1.5">
+                                <span>🧠</span> Episodic Memory
+                                <span className="text-[10px] font-normal normal-case text-safemolt-text-muted ml-1">
+                                    ({systems.memory.count} {systems.memory.count === 1 ? 'memory' : 'memories'})
+                                </span>
+                            </h4>
+                            <div className="space-y-2">
+                                {systems.memory.entries.map((m, i) => (
+                                    <div key={i} className="rounded-lg border border-safemolt-border/50 bg-white p-3">
+                                        <div className="flex items-center justify-between mb-1">
+                                            <span className="text-xs font-semibold text-safemolt-text font-sans">{m.agentName}</span>
+                                            <div className="flex items-center gap-1.5">
+                                                <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium font-sans ${
+                                                    m.importance === 'critical' ? 'bg-safemolt-error/15 text-safemolt-error' :
+                                                    m.importance === 'high' ? 'bg-safemolt-accent-brown/15 text-safemolt-accent-brown' :
+                                                    'bg-safemolt-border/40 text-safemolt-text-muted'
+                                                }`}>
+                                                    {m.importance}
+                                                </span>
+                                                <span className="text-[10px] text-safemolt-text-muted font-sans">R{m.roundCreated}</span>
+                                            </div>
+                                        </div>
+                                        <p className="text-[11px] text-safemolt-text-muted font-sans leading-relaxed">
+                                            {m.content}
+                                        </p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* World State */}
+                    {systems.worldState.available && (
+                        <div>
+                            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-safemolt-accent-brown font-sans flex items-center gap-1.5">
+                                <span>🌍</span> World State
+                            </h4>
+                            <div className="space-y-2">
+                                {/* Relationships */}
+                                {systems.worldState.relationships && systems.worldState.relationships.length > 0 && (
+                                    <div className="rounded-lg border border-safemolt-border/50 bg-white p-3">
+                                        <span className="text-[10px] font-semibold uppercase text-safemolt-text-muted font-sans">Relationships</span>
+                                        <div className="mt-1 space-y-1">
+                                            {systems.worldState.relationships.map((r, i) => (
+                                                <div key={i} className="flex items-center gap-2 text-[11px] font-sans">
+                                                    <span className="text-safemolt-text">{r.agent1Id}</span>
+                                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                                        r.type === 'ally' || r.type === 'trusted' ? 'bg-safemolt-success/15 text-safemolt-success' :
+                                                        r.type === 'enemy' || r.type === 'suspicious' ? 'bg-safemolt-error/15 text-safemolt-error' :
+                                                        'bg-safemolt-border/40 text-safemolt-text-muted'
+                                                    }`}>
+                                                        {r.type} ({r.strength > 0 ? '+' : ''}{r.strength})
+                                                    </span>
+                                                    <span className="text-safemolt-text">{r.agent2Id}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {/* Events */}
+                                {systems.worldState.events && systems.worldState.events.length > 0 && (
+                                    <div className="rounded-lg border border-safemolt-border/50 bg-white p-3">
+                                        <span className="text-[10px] font-semibold uppercase text-safemolt-text-muted font-sans">Recent Events</span>
+                                        <div className="mt-1 space-y-1">
+                                            {systems.worldState.events.slice(-5).map((e, i) => (
+                                                <div key={i} className="text-[11px] font-sans text-safemolt-text-muted">
+                                                    <span className={`mr-1 text-[10px] px-1 py-0.5 rounded font-medium ${
+                                                        e.type === 'betrayal' || e.type === 'conflict' ? 'bg-safemolt-error/10 text-safemolt-error' :
+                                                        e.type === 'alliance' || e.type === 'trade' ? 'bg-safemolt-success/10 text-safemolt-success' :
+                                                        'bg-safemolt-border/40 text-safemolt-text-muted'
+                                                    }`}>{e.type}</span>
+                                                    {e.description}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Reasoning Chains */}
+                    {systems.reasoning.available && (
+                        <div>
+                            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-safemolt-accent-brown font-sans flex items-center gap-1.5">
+                                <span>💭</span> Reasoning Chains
+                            </h4>
+                            <div className="space-y-2">
+                                {Object.entries(systems.reasoning.agents).map(([agentId, chain]) => {
+                                    const participant = participants.find(p => p.agentId === agentId);
+                                    return (
+                                        <div key={agentId} className="rounded-lg border border-safemolt-border/50 bg-white p-3">
+                                            <span className="text-xs font-semibold text-safemolt-text font-sans">{participant?.agentName || agentId}</span>
+                                            <div className="mt-1 space-y-1">
+                                                {chain.slice(-3).map((entry, i) => (
+                                                    <div key={i} className="text-[11px] text-safemolt-text-muted font-sans pl-2 border-l-2 border-safemolt-accent-green/20">
+                                                        {entry.thought}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Ephemeral notice for systems data */}
+                    {!hasLiveData && hasPrefabs && (
+                        <div className="text-center text-[11px] text-safemolt-text-muted/60 font-sans">
+                            Memory, world state, and reasoning data are ephemeral — available only during active sessions.
+                        </div>
+                    )}
                 </div>
             )}
         </div>
