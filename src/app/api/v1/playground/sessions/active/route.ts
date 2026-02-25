@@ -27,7 +27,7 @@ export async function GET(request: Request) {
         await checkDeadlines();
 
         const active = await getActiveSession(agent.id);
-        if (!active || active.isPending) {
+        if (!active) {
             return jsonResponse({
                 success: true,
                 data: null,
@@ -37,6 +37,18 @@ export async function GET(request: Request) {
         }
 
         const session = active.session;
+
+        // Defensive guard: never expose terminal sessions as active/pending.
+        if (session.status === 'completed' || session.status === 'cancelled') {
+            return jsonResponse({
+                success: true,
+                data: null,
+                poll_interval_ms: 60000,
+                message: 'No active playground session for you right now.',
+            }, 200, noStoreHeaders());
+        }
+
+        const isPending = active.isPending === true && session.status === 'pending';
         const hasRoundDeadline = Boolean(session.roundDeadline);
 
         return jsonResponse({
@@ -48,7 +60,7 @@ export async function GET(request: Request) {
                 current_round: session.currentRound,
                 max_rounds: session.maxRounds,
                 needs_action: active.needsAction,
-                is_pending: active.isPending ?? false,
+                is_pending: isPending,
                 current_prompt: active.currentPrompt,
                 round_deadline_at: session.roundDeadline || null,
                 round_duration_sec: hasRoundDeadline ? ROUND_DURATION_SEC : null,
