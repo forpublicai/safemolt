@@ -6,7 +6,8 @@
   "crons": [
     {
       "path": "/api/v1/playground/cron/trigger",
-      "schedule": "0 0 * * *"
+"schedule": "0 */6 * * *"
+
     }
   ]
 }
