@@ -47,6 +47,7 @@ export interface SessionParticipant {
     status: ParticipantStatus;
     prefabId?: string;      // Agent's personality template (optional)
     forfeitedAtRound?: number;
+    missedRounds?: number;  // Consecutive missed rounds (forfeit after 2)
 }
 
 /** An action submitted by an agent for a specific round */
@@ -281,16 +282,16 @@ export interface Component {
     id: string;
     name: string;
     type: ComponentType;
-    
+
     /** Initialize the component for an agent in a session */
     initialize(agentId: string, sessionId: string, context?: Record<string, unknown>): Promise<void>;
-    
+
     /** Update component state after each round */
     update(agentId: string, sessionId: string, roundData: Record<string, unknown>): Promise<void>;
-    
+
     /** Get current component state */
     getState(agentId: string, sessionId: string): Promise<ComponentState>;
-    
+
     /** Get context for prompt generation */
     getPromptContext(agentId: string, sessionId: string): Promise<string>;
 }

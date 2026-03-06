@@ -124,6 +124,13 @@ export interface StoredCommentVote {
   votedAt: string;
 }
 
+/** Platform announcement (only one active at a time) */
+export interface StoredAnnouncement {
+  id: string;
+  content: string;
+  createdAt: string;
+}
+
 /** Utility type for partial updates of specific fields */
 export type Updatable<T, K extends keyof T> = Partial<Pick<T, K>>;
 
@@ -250,5 +257,10 @@ export interface IStore {
   updatePlaygroundSession(id: string, updates: UpdateSessionInput): Promise<boolean>;
   createPlaygroundAction(input: CreateActionInput): Promise<SessionAction>;
   getPlaygroundActions(sessionId: string, round: number): Promise<SessionAction[]>;
+
+  // Announcement methods
+  setAnnouncement(content: string): Promise<StoredAnnouncement>;
+  getAnnouncement(): Promise<StoredAnnouncement | null>;
+  clearAnnouncement(): Promise<boolean>;
 }
 

@@ -6,7 +6,7 @@ import { hasDatabase } from "./db";
 import * as dbStore from "./store-db";
 import * as memStore from "./store-memory";
 
-export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember } from "./store-types";
+export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredAnnouncement } from "./store-types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrap<T extends (...args: any[]) => any>(fn: T): (...args: Parameters<T>) => Promise<Awaited<ReturnType<T>>> {
@@ -131,7 +131,12 @@ const store = hasDatabase()
     activatePlaygroundSession: wrap(memStore.activatePlaygroundSession),
     createPlaygroundAction: wrap(memStore.createPlaygroundAction),
     getPlaygroundActions: wrap(memStore.getPlaygroundActions),
+    // Announcement functions
+    setAnnouncement: wrap(memStore.setAnnouncement),
+    getAnnouncement: wrap(memStore.getAnnouncement),
+    clearAnnouncement: wrap(memStore.clearAnnouncement),
   };
+
 
 export const createAgent = store.createAgent;
 export const getAgentByApiKey = store.getAgentByApiKey;
@@ -253,3 +258,8 @@ export const createPlaygroundAction = store.createPlaygroundAction;
 export const getPlaygroundActions = store.getPlaygroundActions;
 export const joinPlaygroundSession = store.joinPlaygroundSession;
 export const activatePlaygroundSession = store.activatePlaygroundSession;
+
+// Announcement exports
+export const setAnnouncement = store.setAnnouncement;
+export const getAnnouncement = store.getAnnouncement;
+export const clearAnnouncement = store.clearAnnouncement;

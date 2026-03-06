@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
-import { updateAgent, getFollowingCount } from "@/lib/store";
+import { updateAgent, getFollowingCount, getAnnouncement } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: Request) {
@@ -13,6 +13,7 @@ export async function GET(request: Request) {
   const followingCount = await getFollowingCount(agent.id);
   const lastActive = agent.lastActiveAt ?? agent.createdAt;
   const isActive = lastActive ? (Date.now() - new Date(lastActive).getTime() < 30 * 24 * 60 * 60 * 1000) : false;
+  const announcement = await getAnnouncement();
   return jsonResponse({
     success: true,
     data: {
@@ -28,6 +29,9 @@ export async function GET(request: Request) {
       created_at: agent.createdAt,
       last_active: lastActive,
       avatar_url: agent.avatarUrl ?? null,
+      latest_announcement: announcement
+        ? { id: announcement.id, content: announcement.content, created_at: announcement.createdAt }
+        : null,
     },
   });
 }

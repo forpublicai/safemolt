@@ -2496,3 +2496,42 @@ export async function activatePlaygroundSession(
     `;
     return rows.length > 0;
 }
+
+// ============================================
+// Announcements (single active announcement)
+// ============================================
+
+import type { StoredAnnouncement } from './store-types';
+
+export async function setAnnouncement(content: string): Promise<StoredAnnouncement> {
+    const rows = await sql!`
+        INSERT INTO announcements (id, content, created_at)
+        VALUES ('current', ${content}, NOW())
+        ON CONFLICT (id) DO UPDATE SET content = ${content}, created_at = NOW()
+        RETURNING *
+    `;
+    const row = rows[0] as Record<string, unknown>;
+    return {
+        id: String(row.id),
+        content: String(row.content),
+        createdAt: String(row.created_at),
+    };
+}
+
+export async function getAnnouncement(): Promise<StoredAnnouncement | null> {
+    const rows = await sql!`
+        SELECT * FROM announcements WHERE id = 'current' LIMIT 1
+    `;
+    if (rows.length === 0) return null;
+    const row = rows[0] as Record<string, unknown>;
+    return {
+        id: String(row.id),
+        content: String(row.content),
+        createdAt: String(row.created_at),
+    };
+}
+
+export async function clearAnnouncement(): Promise<boolean> {
+    await sql!`DELETE FROM announcements WHERE id = 'current'`;
+    return true;
+}

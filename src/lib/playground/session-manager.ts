@@ -383,12 +383,25 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
         return session;
     }
 
-    // Forfeit agents who didn't submit
+    // Grace period: track missed rounds instead of immediate forfeit
+    // 1st miss: agent stays active, action defaults to empty
+    // 2nd consecutive miss: agent is forfeited
     const updatedParticipants = session.participants.map(p => {
-        if (p.status === 'active' && !submittedAgentIds.has(p.agentId)) {
-            return { ...p, status: 'forfeited' as const, forfeitedAtRound: session.currentRound };
+        if (p.status !== 'active') return p;
+
+        if (submittedAgentIds.has(p.agentId)) {
+            // Submitted — reset missed rounds counter
+            return { ...p, missedRounds: 0 };
         }
-        return p;
+
+        // Missed this round
+        const newMissedRounds = (p.missedRounds ?? 0) + 1;
+        if (newMissedRounds >= 2) {
+            // 2nd consecutive miss — forfeit
+            return { ...p, status: 'forfeited' as const, forfeitedAtRound: session.currentRound, missedRounds: newMissedRounds };
+        }
+        // 1st miss — grace period, stay active but action will be empty
+        return { ...p, missedRounds: newMissedRounds };
     });
 
     // Build actions list for the GM (including forfeits)
@@ -453,7 +466,7 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
 
     // Store memories for each participant after the round
     await storeRoundMemories(sessionId, newRound, updatedParticipants);
-    
+
     // Update world state (relationships, events) based on round resolution
     updateWorldStateFromRound(sessionId, newRound, updatedParticipants);
 
@@ -710,10 +723,10 @@ function assessMemoryImportance(
 ): MemoryImportance {
     // Check if agent participated in this round
     const agentAction = round.actions.find(a => a.agentId === agentId);
-    
+
     // Check if resolution mentions the agent
     const mentionsAgent = round.gmResolution.toLowerCase().includes(agentId.toLowerCase());
-    
+
     if (agentAction && mentionsAgent) {
         return 'high';
     }
@@ -737,10 +750,10 @@ function generateMemoryContent(
 ): string {
     const agentAction = round.actions.find(a => a.agentId === agentId);
     const actionContent = agentAction?.content || '[no action]';
-    
+
     // Extract relevant part of resolution (first 200 chars as summary)
     const resolutionSummary = round.gmResolution.slice(0, 200);
-    
+
     return `Round ${round.round}: I did "${actionContent}". GM noted: "${resolutionSummary}..."`;
 }
 
@@ -754,10 +767,10 @@ async function storeRoundMemories(
 ): Promise<void> {
     for (const participant of participants) {
         if (participant.status !== 'active') continue;
-        
+
         const importance = assessMemoryImportance(round, participant.agentId);
         const content = generateMemoryContent(round, participant.agentName, participant.agentId);
-        
+
         // Try to get embedding (optional - will fallback to text matching)
         let embedding: number[] | undefined;
         try {
@@ -766,7 +779,7 @@ async function storeRoundMemories(
             // Embedding failed - will use text matching instead
             console.log(`[playground] Embedding unavailable for memory, using text matching`);
         }
-        
+
         await storeMemory({
             agentId: participant.agentId,
             agentName: participant.agentName,
@@ -790,29 +803,29 @@ function updateWorldStateFromRound(
     participants: SessionParticipant[]
 ): void {
     const resolution = round.gmResolution.toLowerCase();
-    
+
     // Extract key events from the GM resolution
     const roundNum = round.round;
-    
+
     // Detect trade/exchange mentions and update relationships
     const activeParticipants = participants.filter(p => p.status === 'active');
-    
+
     // Simple heuristic: if agents are mentioned together in resolution, strengthen relationship
     for (let i = 0; i < activeParticipants.length; i++) {
         for (let j = i + 1; j < activeParticipants.length; j++) {
             const agent1 = activeParticipants[i];
             const agent2 = activeParticipants[j];
-            
+
             const name1InResolution = resolution.includes(agent1.agentName.toLowerCase());
             const name2InResolution = resolution.includes(agent2.agentName.toLowerCase());
-            
+
             if (name1InResolution && name2InResolution) {
                 // Check for positive or negative interactions
                 const positiveWords = ['cooperate', 'agree', 'trade', 'deal', 'alliance', 'help', 'support', 'accept', 'trust'];
                 const negativeWords = ['betray', 'reject', 'refuse', 'conflict', 'dispute', 'defect', 'deny'];
-                
+
                 let relationshipChange = 10; // Default: interacting = positive
-                
+
                 for (const word of positiveWords) {
                     if (resolution.includes(word)) {
                         relationshipChange = 15;
@@ -825,17 +838,17 @@ function updateWorldStateFromRound(
                         break;
                     }
                 }
-                
+
                 // Get existing relationship or create new one
                 const worldState = getWorldState(sessionId);
                 if (worldState) {
                     const existingRel = worldState.relationships.find(
                         r => (r.agentId === agent1.agentId && r.otherAgentId === agent2.agentId) ||
-                             (r.agentId === agent2.agentId && r.otherAgentId === agent1.agentId)
+                            (r.agentId === agent2.agentId && r.otherAgentId === agent1.agentId)
                     );
-                    
+
                     const newStrength = existingRel ? existingRel.strength + relationshipChange : relationshipChange;
-                    
+
                     setRelationship(sessionId, {
                         agentId: agent1.agentId,
                         otherAgentId: agent2.agentId,
@@ -847,7 +860,7 @@ function updateWorldStateFromRound(
             }
         }
     }
-    
+
     // Add a world event for this round
     const eventDescription = resolution.slice(0, 150) + (resolution.length > 150 ? '...' : '');
     addWorldEvent(sessionId, {

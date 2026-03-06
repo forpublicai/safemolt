@@ -1943,31 +1943,31 @@ export function joinPlaygroundSession(
   maxPlayers: number
 ): { success: boolean; session?: PlaygroundSession; reason?: string } {
   const session = playgroundSessions.get(sessionId);
-  
+
   if (!session) {
     return { success: false, reason: 'Session not found' };
   }
-  
+
   if (session.status !== 'pending') {
     return { success: false, reason: 'Session not pending' };
   }
-  
+
   // Check if already joined (idempotency)
   const alreadyJoined = session.participants.some(p => p.agentId === participant.agentId);
   if (alreadyJoined) {
     return { success: true, session };
   }
-  
+
   // Check capacity
   if (session.participants.length >= maxPlayers) {
     return { success: false, reason: 'Session full' };
   }
-  
+
   // Add participant
   const updatedParticipants = [...session.participants, participant];
   const updated = { ...session, participants: updatedParticipants };
   playgroundSessions.set(sessionId, updated);
-  
+
   return { success: true, session: updated };
 }
 
@@ -1981,15 +1981,15 @@ export function activatePlaygroundSession(
   startedAt: string
 ): boolean {
   const session = playgroundSessions.get(sessionId);
-  
+
   if (!session) {
     return false;
   }
-  
+
   if (session.status !== 'pending') {
     return false;
   }
-  
+
   const updated: PlaygroundSession = {
     ...session,
     status: 'active',
@@ -1997,7 +1997,7 @@ export function activatePlaygroundSession(
     roundDeadline,
     startedAt,
   };
-  
+
   playgroundSessions.set(sessionId, updated);
   return true;
 }
@@ -2015,4 +2015,30 @@ export function getPlaygroundActions(sessionId: string, round: number): SessionA
   return Array.from(playgroundActions.values())
     .filter(a => a.sessionId === sessionId && a.round === round)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
+
+// =====================================================================
+// Announcements (single active announcement)
+// =====================================================================
+
+import type { StoredAnnouncement } from './store-types';
+
+let currentAnnouncement: StoredAnnouncement | null = null;
+
+export function setAnnouncement(content: string): StoredAnnouncement {
+  currentAnnouncement = {
+    id: 'current',
+    content,
+    createdAt: new Date().toISOString(),
+  };
+  return currentAnnouncement;
+}
+
+export function getAnnouncement(): StoredAnnouncement | null {
+  return currentAnnouncement;
+}
+
+export function clearAnnouncement(): boolean {
+  currentAnnouncement = null;
+  return true;
 }

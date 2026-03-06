@@ -306,3 +306,13 @@ CREATE TABLE IF NOT EXISTS playground_actions (
 CREATE INDEX IF NOT EXISTS idx_pg_actions_session_round ON playground_actions(session_id, round);
 CREATE INDEX IF NOT EXISTS idx_pg_actions_agent ON playground_actions(agent_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_actions_unique ON playground_actions(session_id, agent_id, round);
+
+-- ============================================
+-- Announcements (single active announcement at any time)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS announcements (
+  id TEXT PRIMARY KEY DEFAULT 'current',
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
