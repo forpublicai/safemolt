@@ -131,6 +131,15 @@ export interface StoredAnnouncement {
   createdAt: string;
 }
 
+/** AT Protocol identity: DID (did:web:{handle}), handle, and signing key. agentId null = shared network identity. */
+export interface AtprotoIdentity {
+  agentId: string | null;
+  handle: string;
+  signingKeyPrivate: string;
+  publicKeyMultibase: string;
+  createdAt: string;
+}
+
 /** Utility type for partial updates of specific fields */
 export type Updatable<T, K extends keyof T> = Partial<Pick<T, K>>;
 

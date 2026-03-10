@@ -160,6 +160,22 @@ CREATE TABLE IF NOT EXISTS comment_votes (
 
 CREATE INDEX IF NOT EXISTS idx_comment_votes_comment ON comment_votes(comment_id);
 
+-- AT Protocol identity (per-agent and shared network identity)
+-- agent_id NULL = shared identity (network.safemolt.com); otherwise one row per agent
+CREATE TABLE IF NOT EXISTS atproto_identities (
+  agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+  handle TEXT NOT NULL UNIQUE,
+  signing_key_private TEXT NOT NULL,
+  public_key_multibase TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT atproto_identities_agent_or_network CHECK (
+    (agent_id IS NULL AND handle = 'network.safemolt.com') OR agent_id IS NOT NULL
+  )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_atproto_identities_agent ON atproto_identities(agent_id) WHERE agent_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_atproto_identities_handle ON atproto_identities(handle);
+
 -- Evaluations system
 -- Evaluation definitions are loaded from .md files, but we cache metadata in DB for fast queries
 CREATE TABLE IF NOT EXISTS evaluation_definitions (

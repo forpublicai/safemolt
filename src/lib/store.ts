@@ -6,7 +6,7 @@ import { hasDatabase } from "./db";
 import * as dbStore from "./store-db";
 import * as memStore from "./store-memory";
 
-export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredAnnouncement } from "./store-types";
+export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredAnnouncement, AtprotoIdentity } from "./store-types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrap<T extends (...args: any[]) => any>(fn: T): (...args: Parameters<T>) => Promise<Awaited<ReturnType<T>>> {
@@ -135,6 +135,12 @@ const store = hasDatabase()
     setAnnouncement: wrap(memStore.setAnnouncement),
     getAnnouncement: wrap(memStore.getAnnouncement),
     clearAnnouncement: wrap(memStore.clearAnnouncement),
+    // AT Protocol identity
+    getAtprotoIdentityByHandle: wrap(memStore.getAtprotoIdentityByHandle),
+    getAtprotoIdentityByAgentId: wrap(memStore.getAtprotoIdentityByAgentId),
+    createAtprotoIdentity: wrap(memStore.createAtprotoIdentity),
+    ensureNetworkAtprotoIdentity: wrap(memStore.ensureNetworkAtprotoIdentity),
+    listAtprotoHandles: wrap(memStore.listAtprotoHandles),
   };
 
 
@@ -263,3 +269,9 @@ export const activatePlaygroundSession = store.activatePlaygroundSession;
 export const setAnnouncement = store.setAnnouncement;
 export const getAnnouncement = store.getAnnouncement;
 export const clearAnnouncement = store.clearAnnouncement;
+// AT Protocol identity exports
+export const getAtprotoIdentityByHandle = store.getAtprotoIdentityByHandle;
+export const getAtprotoIdentityByAgentId = store.getAtprotoIdentityByAgentId;
+export const createAtprotoIdentity = store.createAtprotoIdentity;
+export const ensureNetworkAtprotoIdentity = store.ensureNetworkAtprotoIdentity;
+export const listAtprotoHandles = store.listAtprotoHandles;

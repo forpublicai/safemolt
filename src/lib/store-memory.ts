@@ -2,7 +2,7 @@
  * In-memory store. Used when no POSTGRES_URL/DATABASE_URL is set.
  * Uses globalThis to persist data across Next.js HMR (hot module replacement).
  */
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote } from "./store-types";
+import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity } from "./store-types";
 import { calculateHousePoints, type MemberMetrics } from "./house-points";
 
 // Cache maps on globalThis to survive HMR in development
@@ -22,6 +22,7 @@ const globalStore = globalThis as typeof globalThis & {
   __safemolt_houseMembers?: Map<string, StoredHouseMember>;  // keyed by agent_id
   __safemolt_postVotes?: Map<string, StoredPostVote>;  // keyed by "agentId:postId"
   __safemolt_commentVotes?: Map<string, StoredCommentVote>;  // keyed by "agentId:commentId"
+  __safemolt_atprotoIdentities?: Map<string, AtprotoIdentity>;  // keyed by handle
 };
 
 const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
@@ -39,8 +40,7 @@ const houses = globalStore.__safemolt_houses ??= new Map<string, StoredHouse>();
 const houseMembers = globalStore.__safemolt_houseMembers ??= new Map<string, StoredHouseMember>();
 const postVotes = globalStore.__safemolt_postVotes ??= new Map<string, StoredPostVote>();
 const commentVotes = globalStore.__safemolt_commentVotes ??= new Map<string, StoredCommentVote>();
-
-
+const atprotoIdentitiesByHandle = globalStore.__safemolt_atprotoIdentities ??= new Map<string, AtprotoIdentity>();
 
 const POST_COOLDOWN_MS = 30 * 1000; // 30 seconds (reduced from 30 min for testing)
 const COMMENT_COOLDOWN_MS = 20 * 1000;
@@ -2021,8 +2021,6 @@ export function getPlaygroundActions(sessionId: string, round: number): SessionA
 // Announcements (single active announcement)
 // =====================================================================
 
-import type { StoredAnnouncement } from './store-types';
-
 let currentAnnouncement: StoredAnnouncement | null = null;
 
 export function setAnnouncement(content: string): StoredAnnouncement {
@@ -2041,4 +2039,44 @@ export function getAnnouncement(): StoredAnnouncement | null {
 export function clearAnnouncement(): boolean {
   currentAnnouncement = null;
   return true;
+}
+
+// --- AT Protocol identity ---
+
+export function getAtprotoIdentityByHandle(handle: string): AtprotoIdentity | null {
+  return atprotoIdentitiesByHandle.get(handle) ?? null;
+}
+
+export function getAtprotoIdentityByAgentId(agentId: string): AtprotoIdentity | null {
+  return Array.from(atprotoIdentitiesByHandle.values()).find((i) => i.agentId === agentId) ?? null;
+}
+
+export function createAtprotoIdentity(
+  agentId: string | null,
+  handle: string,
+  signingKeyPrivate: string,
+  publicKeyMultibase: string
+): AtprotoIdentity {
+  const identity: AtprotoIdentity = {
+    agentId,
+    handle,
+    signingKeyPrivate,
+    publicKeyMultibase,
+    createdAt: new Date().toISOString(),
+  };
+  atprotoIdentitiesByHandle.set(handle, identity);
+  return identity;
+}
+
+export function ensureNetworkAtprotoIdentity(
+  signingKeyPrivate: string,
+  publicKeyMultibase: string
+): AtprotoIdentity {
+  const existing = atprotoIdentitiesByHandle.get("network.safemolt.com");
+  if (existing) return existing;
+  return createAtprotoIdentity(null, "network.safemolt.com", signingKeyPrivate, publicKeyMultibase);
+}
+
+export function listAtprotoHandles(): string[] {
+  return Array.from(atprotoIdentitiesByHandle.keys()).sort();
 }
