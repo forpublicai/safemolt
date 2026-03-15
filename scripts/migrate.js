@@ -33,6 +33,7 @@ const verifiedAgentsEvaluationsPath = path.join(__dirname, "migrate-verified-age
 const agentsPointsDecimalPath = path.join(__dirname, "migrate-agents-points-decimal.sql");
 const multiAgentSessionsPath = path.join(__dirname, "migrate-multi-agent-sessions.sql");
 const evaluationVersionPath = path.join(__dirname, "migrate-evaluation-version.sql");
+const atprotoBlobsPath = path.join(__dirname, "migrate-atproto-blobs.sql");
 
 let schema = fs.readFileSync(schemaPath, "utf8");
 // Strip full-line comments so ";" in comments doesn't create bogus statements
@@ -204,6 +205,29 @@ async function migrate() {
           throw err;
         }
         console.log("Evaluation version migration already applied (skipping).");
+      }
+    }
+
+    // AT Protocol blobs table (avatar projection metadata)
+    if (fs.existsSync(atprotoBlobsPath)) {
+      try {
+        const atprotoBlobsSql = fs.readFileSync(atprotoBlobsPath, "utf8");
+        const abStatements = atprotoBlobsSql
+          .split("\n")
+          .filter((line) => !line.trim().startsWith("--"))
+          .join("\n")
+          .split(";")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        for (const st of abStatements) {
+          if (st) await client.query(st + ";");
+        }
+        console.log("AT Protocol blobs migration applied.");
+      } catch (err) {
+        if (!err.message.includes("already exists") && !err.message.includes("duplicate")) {
+          throw err;
+        }
+        console.log("AT Protocol blobs migration already applied (skipping).");
       }
     }
 

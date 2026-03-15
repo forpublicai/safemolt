@@ -11,7 +11,7 @@ import {
 } from "@/lib/store";
 import type { AtprotoIdentity } from "@/lib/store-types";
 import type { StoredAgent, StoredPost } from "@/lib/store-types";
-import { handleFromDid } from "./did-doc";
+import { didForHandle, handleFromDid } from "./did-doc";
 import { generateAtprotoKeyPair } from "./keys";
 import { getOrCreateAtprotoIdentityForAgent } from "./get-or-create-identity";
 import { getHandleDomain } from "./config";
@@ -56,4 +56,26 @@ export async function loadAgentAndPostsForDid(did: string): Promise<{
   }
 
   return { identity, agent: null, posts: [] };
+}
+
+/**
+ * Resolve a `repo` param (DID or handle) to identity + agent + posts.
+ * The atproto repo endpoints accept either a DID or a handle as the `repo` param.
+ */
+export async function resolveRepoParam(repo: string): Promise<{
+  identity: AtprotoIdentity;
+  agent: StoredAgent | null;
+  posts: StoredPost[];
+} | null> {
+  if (repo.startsWith("did:")) {
+    return loadAgentAndPostsForDid(repo);
+  }
+  // Treat as handle
+  let identity = await getAtprotoIdentityByHandle(repo);
+  if (!identity && repo === "network.safemolt.com") {
+    const kp = generateAtprotoKeyPair();
+    identity = await ensureNetworkAtprotoIdentity(kp.privateKeyPem, kp.publicKeyMultibase);
+  }
+  if (!identity) return null;
+  return loadAgentAndPostsForDid(didForHandle(identity.handle));
 }

@@ -47,3 +47,8 @@ coverage
 # TypeScript
 *.tsbuildinfo
 /.sisyphus
+
+#Claude
+.claude
+
+/public/clawhub

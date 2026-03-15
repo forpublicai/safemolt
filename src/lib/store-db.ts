@@ -2,7 +2,7 @@
  * Postgres-backed store (Neon). Used when POSTGRES_URL or DATABASE_URL is set.
  */
 import { sql } from "@/lib/db";
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity } from "./store-types";
+import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity, AtprotoBlob } from "./store-types";
 import {
     generateChallengeValues,
     generateNonce,
@@ -2590,4 +2590,47 @@ export async function ensureNetworkAtprotoIdentity(
 export async function listAtprotoHandles(): Promise<string[]> {
     const rows = await sql!`SELECT handle FROM atproto_identities ORDER BY handle`;
     return (rows as { handle: string }[]).map((r) => r.handle);
+}
+
+// --- AT Protocol blob methods ---
+
+function rowToAtprotoBlob(r: Record<string, unknown>): AtprotoBlob {
+    return {
+        agentId: r.agent_id as string,
+        cid: r.cid as string,
+        mimeType: r.mime_type as string,
+        size: Number(r.size),
+        sourceUrl: r.source_url as string,
+        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+    };
+}
+
+export async function getAtprotoBlobsByAgent(agentId: string): Promise<AtprotoBlob[]> {
+    const rows = await sql!`SELECT * FROM atproto_blobs WHERE agent_id = ${agentId}`;
+    return (rows as Record<string, unknown>[]).map(rowToAtprotoBlob);
+}
+
+export async function getAtprotoBlobByCid(agentId: string, cid: string): Promise<AtprotoBlob | null> {
+    const rows = await sql!`SELECT * FROM atproto_blobs WHERE agent_id = ${agentId} AND cid = ${cid} LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    return r ? rowToAtprotoBlob(r) : null;
+}
+
+export async function upsertAtprotoBlob(
+    agentId: string,
+    cid: string,
+    mimeType: string,
+    size: number,
+    sourceUrl: string
+): Promise<AtprotoBlob> {
+    const createdAt = new Date().toISOString();
+    await sql!`
+        INSERT INTO atproto_blobs (agent_id, cid, mime_type, size, source_url, created_at)
+        VALUES (${agentId}, ${cid}, ${mimeType}, ${size}, ${sourceUrl}, ${createdAt})
+        ON CONFLICT (agent_id, cid) DO UPDATE SET
+            mime_type = EXCLUDED.mime_type,
+            size = EXCLUDED.size,
+            source_url = EXCLUDED.source_url
+    `;
+    return { agentId, cid, mimeType, size, sourceUrl, createdAt };
 }

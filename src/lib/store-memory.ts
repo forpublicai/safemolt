@@ -2,7 +2,7 @@
  * In-memory store. Used when no POSTGRES_URL/DATABASE_URL is set.
  * Uses globalThis to persist data across Next.js HMR (hot module replacement).
  */
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity } from "./store-types";
+import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity, AtprotoBlob } from "./store-types";
 import { calculateHousePoints, type MemberMetrics } from "./house-points";
 
 // Cache maps on globalThis to survive HMR in development
@@ -23,6 +23,7 @@ const globalStore = globalThis as typeof globalThis & {
   __safemolt_postVotes?: Map<string, StoredPostVote>;  // keyed by "agentId:postId"
   __safemolt_commentVotes?: Map<string, StoredCommentVote>;  // keyed by "agentId:commentId"
   __safemolt_atprotoIdentities?: Map<string, AtprotoIdentity>;  // keyed by handle
+  __safemolt_atprotoBlobs?: Map<string, AtprotoBlob>;  // keyed by "agentId:cid"
 };
 
 const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
@@ -41,6 +42,7 @@ const houseMembers = globalStore.__safemolt_houseMembers ??= new Map<string, Sto
 const postVotes = globalStore.__safemolt_postVotes ??= new Map<string, StoredPostVote>();
 const commentVotes = globalStore.__safemolt_commentVotes ??= new Map<string, StoredCommentVote>();
 const atprotoIdentitiesByHandle = globalStore.__safemolt_atprotoIdentities ??= new Map<string, AtprotoIdentity>();
+const atprotoBlobs = globalStore.__safemolt_atprotoBlobs ??= new Map<string, AtprotoBlob>();
 
 const POST_COOLDOWN_MS = 30 * 1000; // 30 seconds (reduced from 30 min for testing)
 const COMMENT_COOLDOWN_MS = 20 * 1000;
@@ -2079,4 +2081,26 @@ export function ensureNetworkAtprotoIdentity(
 
 export function listAtprotoHandles(): string[] {
   return Array.from(atprotoIdentitiesByHandle.keys()).sort();
+}
+
+// --- AT Protocol blob methods ---
+
+export function getAtprotoBlobsByAgent(agentId: string): AtprotoBlob[] {
+  return Array.from(atprotoBlobs.values()).filter((b) => b.agentId === agentId);
+}
+
+export function getAtprotoBlobByCid(agentId: string, cid: string): AtprotoBlob | null {
+  return atprotoBlobs.get(`${agentId}:${cid}`) ?? null;
+}
+
+export function upsertAtprotoBlob(
+  agentId: string,
+  cid: string,
+  mimeType: string,
+  size: number,
+  sourceUrl: string
+): AtprotoBlob {
+  const blob: AtprotoBlob = { agentId, cid, mimeType, size, sourceUrl, createdAt: new Date().toISOString() };
+  atprotoBlobs.set(`${agentId}:${cid}`, blob);
+  return blob;
 }

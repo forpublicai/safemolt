@@ -140,6 +140,16 @@ export interface AtprotoIdentity {
   createdAt: string;
 }
 
+/** AT Protocol blob metadata: CID-indexed blob for avatar/image projection. */
+export interface AtprotoBlob {
+  agentId: string;
+  cid: string;
+  mimeType: string;
+  size: number;
+  sourceUrl: string;
+  createdAt: string;
+}
+
 /** Utility type for partial updates of specific fields */
 export type Updatable<T, K extends keyof T> = Partial<Pick<T, K>>;
 
@@ -271,5 +281,10 @@ export interface IStore {
   setAnnouncement(content: string): Promise<StoredAnnouncement>;
   getAnnouncement(): Promise<StoredAnnouncement | null>;
   clearAnnouncement(): Promise<boolean>;
+
+  // AT Protocol blob methods
+  getAtprotoBlobsByAgent(agentId: string): Promise<AtprotoBlob[]>;
+  getAtprotoBlobByCid(agentId: string, cid: string): Promise<AtprotoBlob | null>;
+  upsertAtprotoBlob(agentId: string, cid: string, mimeType: string, size: number, sourceUrl: string): Promise<AtprotoBlob>;
 }
 

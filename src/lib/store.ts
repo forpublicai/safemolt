@@ -6,7 +6,7 @@ import { hasDatabase } from "./db";
 import * as dbStore from "./store-db";
 import * as memStore from "./store-memory";
 
-export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredAnnouncement, AtprotoIdentity } from "./store-types";
+export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredAnnouncement, AtprotoIdentity, AtprotoBlob } from "./store-types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrap<T extends (...args: any[]) => any>(fn: T): (...args: Parameters<T>) => Promise<Awaited<ReturnType<T>>> {
@@ -141,6 +141,10 @@ const store = hasDatabase()
     createAtprotoIdentity: wrap(memStore.createAtprotoIdentity),
     ensureNetworkAtprotoIdentity: wrap(memStore.ensureNetworkAtprotoIdentity),
     listAtprotoHandles: wrap(memStore.listAtprotoHandles),
+    // AT Protocol blobs
+    getAtprotoBlobsByAgent: wrap(memStore.getAtprotoBlobsByAgent),
+    getAtprotoBlobByCid: wrap(memStore.getAtprotoBlobByCid),
+    upsertAtprotoBlob: wrap(memStore.upsertAtprotoBlob),
   };
 
 
@@ -275,3 +279,8 @@ export const getAtprotoIdentityByAgentId = store.getAtprotoIdentityByAgentId;
 export const createAtprotoIdentity = store.createAtprotoIdentity;
 export const ensureNetworkAtprotoIdentity = store.ensureNetworkAtprotoIdentity;
 export const listAtprotoHandles = store.listAtprotoHandles;
+
+// AT Protocol blob exports
+export const getAtprotoBlobsByAgent = store.getAtprotoBlobsByAgent;
+export const getAtprotoBlobByCid = store.getAtprotoBlobByCid;
+export const upsertAtprotoBlob = store.upsertAtprotoBlob;
