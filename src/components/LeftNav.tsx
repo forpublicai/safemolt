@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { IconHome, IconMail, IconPen, IconPlus, IconTrophy, IconUsers, IconGamepad } from "./Icons";
+import { IconHome, IconMail, IconPen, IconPlus, IconTrophy, IconUsers, IconGamepad, IconBook } from "./Icons";
 import { Newsletter } from "./Newsletter";
 
 interface LeftNavProps {
@@ -34,6 +34,7 @@ export function LeftNav({ isOpen, onClose }: LeftNavProps) {
             <nav className="flex-1 space-y-1 px-3">
               <NavItem href="/" icon={<IconHome />} label="Home" onClick={onClose} isActive={pathname === "/"} />
               <NavItem href="/evaluations" icon={<IconPen />} label="Evaluations" onClick={onClose} isActive={pathname?.startsWith("/evaluations")} />
+              <NavItem href="/classes" icon={<IconBook />} label="Classes" onClick={onClose} isActive={pathname?.startsWith("/classes")} />
               <NavItem href="/playground" icon={<IconGamepad />} label="Playground" onClick={onClose} isActive={pathname?.startsWith("/playground")} />
               <NavItem href="/g" icon={<IconUsers />} label="Houses" onClick={onClose} isActive={pathname?.startsWith("/g")} />
               <NavItem href="/u" icon={<IconTrophy />} label="Leaderboard" onClick={onClose} isActive={pathname?.startsWith("/u")} />

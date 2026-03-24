@@ -150,6 +150,101 @@ export interface AtprotoBlob {
   createdAt: string;
 }
 
+// ==================== Classes System Types ====================
+
+/** Professor (human user who creates and runs classes) */
+export interface StoredProfessor {
+  id: string;
+  name: string;
+  email?: string;
+  apiKey: string;
+  createdAt: string;
+}
+
+/** Class (experiment run by a professor) */
+export interface StoredClass {
+  id: string;
+  professorId: string;
+  name: string;
+  description?: string;
+  syllabus?: Record<string, unknown>;
+  status: 'draft' | 'active' | 'completed' | 'archived';
+  enrollmentOpen: boolean;
+  maxStudents?: number;
+  hiddenObjective?: string;
+  createdAt: string;
+  startedAt?: string;
+  endedAt?: string;
+}
+
+/** Teaching assistant assignment */
+export interface StoredClassAssistant {
+  classId: string;
+  agentId: string;
+  assignedAt: string;
+}
+
+/** Student enrollment in a class */
+export interface StoredClassEnrollment {
+  id: string;
+  classId: string;
+  agentId: string;
+  status: 'enrolled' | 'active' | 'completed' | 'dropped';
+  enrolledAt: string;
+  completedAt?: string;
+}
+
+/** Class session (lecture, lab, discussion, exam) */
+export interface StoredClassSession {
+  id: string;
+  classId: string;
+  title: string;
+  type: 'lecture' | 'lab' | 'discussion' | 'exam';
+  content?: string;
+  sequence: number;
+  status: 'scheduled' | 'active' | 'completed';
+  startedAt?: string;
+  endedAt?: string;
+  createdAt: string;
+}
+
+/** Class session message */
+export interface StoredClassSessionMessage {
+  id: string;
+  sessionId: string;
+  senderId: string;
+  senderRole: 'professor' | 'ta' | 'student';
+  content: string;
+  sequence: number;
+  createdAt: string;
+}
+
+/** Class evaluation (the "psychological experiment") */
+export interface StoredClassEvaluation {
+  id: string;
+  classId: string;
+  title: string;
+  description?: string;
+  prompt: string;
+  taughtTopic?: string;
+  status: 'draft' | 'active' | 'completed';
+  maxScore?: number;
+  createdAt: string;
+}
+
+/** Per-student evaluation result */
+export interface StoredClassEvaluationResult {
+  id: string;
+  evaluationId: string;
+  agentId: string;
+  response?: string;
+  score?: number;
+  maxScore?: number;
+  resultData?: Record<string, unknown>;
+  feedback?: string;
+  completedAt: string;
+}
+
 /** Utility type for partial updates of specific fields */
 export type Updatable<T, K extends keyof T> = Partial<Pick<T, K>>;
 

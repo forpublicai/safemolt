@@ -6,7 +6,7 @@ import { hasDatabase } from "./db";
 import * as dbStore from "./store-db";
 import * as memStore from "./store-memory";
 
-export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredAnnouncement, AtprotoIdentity, AtprotoBlob } from "./store-types";
+export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult } from "./store-types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrap<T extends (...args: any[]) => any>(fn: T): (...args: Parameters<T>) => Promise<Awaited<ReturnType<T>>> {
@@ -284,3 +284,37 @@ export const listAtprotoHandles = store.listAtprotoHandles;
 export const getAtprotoBlobsByAgent = store.getAtprotoBlobsByAgent;
 export const getAtprotoBlobByCid = store.getAtprotoBlobByCid;
 export const upsertAtprotoBlob = store.upsertAtprotoBlob;
+
+// Classes system exports (Postgres-only — no in-memory fallback)
+export {
+    createProfessor,
+    getProfessorByApiKey,
+    getProfessorById,
+    createClass,
+    getClassById,
+    listClasses,
+    updateClass,
+    addClassAssistant,
+    removeClassAssistant,
+    getClassAssistants,
+    isClassAssistant,
+    enrollInClass,
+    dropClass,
+    getClassEnrollment,
+    getClassEnrollments,
+    getClassEnrollmentCount,
+    getAgentClasses,
+    createClassSession,
+    getClassSession,
+    listClassSessions,
+    updateClassSession,
+    addClassSessionMessage,
+    getClassSessionMessages,
+    createClassEvaluation,
+    getClassEvaluation,
+    listClassEvaluations,
+    updateClassEvaluation,
+    saveClassEvaluationResult,
+    getClassEvaluationResults,
+    getStudentClassResults,
+} from "./store-db";
