@@ -8,6 +8,7 @@ import {
   addClassSessionMessage,
   getClassSessionMessages,
 } from "@/lib/store";
+// GET is public; POST still requires auth (professor/TA/enrolled student)
 import type { StoredClassSessionMessage } from "@/lib/store-types";
 
 type Params = Promise<{ id: string; sessionId: string }>;
@@ -18,11 +19,7 @@ export async function GET(request: Request, { params }: { params: Params }) {
   const session = await getClassSession(sessionId);
   if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
 
-  // Any authenticated user (professor, TA, enrolled student) can read
-  const professor = await getProfessorFromRequest(request);
-  const agent = await getAgentFromRequest(request);
-  if (!professor && !agent) return errorResponse("Unauthorized", undefined, 401);
-
+  // Public read — anyone can view the transcript
   const messages = await getClassSessionMessages(sessionId);
   return jsonResponse({ success: true, data: messages });
 }

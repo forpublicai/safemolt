@@ -7,7 +7,7 @@ interface ClassDetail {
   id: string;
   name: string;
   description?: string;
-  syllabus?: Record<string, unknown>;
+  syllabus?: Record<string, string>;
   status: string;
   enrollmentOpen: boolean;
   maxStudents?: number;
@@ -60,26 +60,37 @@ export function ClassDetailClient({ classId }: { classId: string }) {
 
   return (
     <div className="max-w-5xl px-4 py-12 sm:px-6">
-      {/* Header */}
+      {/* Breadcrumb */}
       <div className="mb-2 text-sm text-safemolt-text-muted">
         <Link href="/classes" className="hover:text-safemolt-accent-green">Classes</Link>
         {" / "}
         <span>{cls.name}</span>
       </div>
-      <h1 className="mb-2 text-3xl font-bold text-safemolt-text">{cls.name}</h1>
-      <div className="mb-4 flex items-center gap-3">
+
+      {/* Header */}
+      <h1 className="mb-3 text-3xl font-bold text-safemolt-text">{cls.name}</h1>
+
+      {/* Status row */}
+      <div className="mb-6 flex flex-wrap items-center gap-2">
         <span className={`pill text-xs ${cls.status === "active" ? "pill-active" : ""}`}>
           {cls.status}
         </span>
-        <span className="text-sm text-safemolt-text-muted">
-          {cls.enrollment_count} enrolled
-          {cls.maxStudents ? ` / ${cls.maxStudents} max` : ""}
-        </span>
-        {cls.your_enrollment && (
-          <span className="pill pill-active text-xs">
-            You: {cls.your_enrollment.status}
+        {cls.enrollmentOpen && (
+          <span className="pill text-xs border-safemolt-accent-green/40 bg-safemolt-accent-green/10 text-safemolt-accent-green">
+            Enrollment open
           </span>
         )}
+        {!cls.enrollmentOpen && cls.status === "active" && (
+          <span className="pill text-xs">Enrollment closed</span>
+        )}
+        {cls.your_enrollment && (
+          <span className="pill pill-active text-xs">
+            Enrolled
+          </span>
+        )}
+        <span className="text-sm text-safemolt-text-muted">
+          {cls.enrollment_count ?? 0} enrolled{cls.maxStudents ? ` / ${cls.maxStudents} max` : ""}
+        </span>
       </div>
 
       {/* Description */}
@@ -90,12 +101,19 @@ export function ClassDetailClient({ classId }: { classId: string }) {
       )}
 
       {/* Syllabus */}
-      {cls.syllabus && (
+      {cls.syllabus && Object.keys(cls.syllabus).length > 0 && (
         <div className="card mb-6 p-4">
-          <h2 className="mb-2 text-lg font-semibold text-safemolt-text">Syllabus</h2>
-          <pre className="whitespace-pre-wrap text-sm text-safemolt-text-muted">
-            {JSON.stringify(cls.syllabus, null, 2)}
-          </pre>
+          <h2 className="mb-3 text-lg font-semibold text-safemolt-text">Syllabus</h2>
+          <div className="space-y-1">
+            {Object.entries(cls.syllabus).map(([key, value]) => (
+              <div key={key} className="flex gap-3 text-sm">
+                <span className="shrink-0 font-medium text-safemolt-text-muted capitalize">
+                  {key.replace(/_/g, " ")}
+                </span>
+                <span className="text-safemolt-text">{String(value)}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -113,10 +131,12 @@ export function ClassDetailClient({ classId }: { classId: string }) {
                 className="card block p-3 transition hover:border-safemolt-accent-green/40"
               >
                 <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-xs text-safemolt-text-muted mr-2">#{s.sequence}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-safemolt-text-muted">#{s.sequence}</span>
                     <span className="font-medium text-safemolt-text">{s.title}</span>
-                    <span className="ml-2 text-xs text-safemolt-text-muted">{s.type}</span>
+                    <span className="rounded bg-safemolt-border/50 px-1.5 py-0.5 text-[10px] text-safemolt-text-muted">
+                      {s.type}
+                    </span>
                   </div>
                   <span className={`pill text-xs ${s.status === "active" ? "pill-active" : ""}`}>
                     {s.status}
@@ -138,16 +158,16 @@ export function ClassDetailClient({ classId }: { classId: string }) {
             {evaluations.map((e) => (
               <div key={e.id} className="card p-3">
                 <div className="flex items-center justify-between">
-                  <div>
+                  <div className="flex items-center gap-2">
                     <span className="font-medium text-safemolt-text">{e.title}</span>
                     {e.taughtTopic && (
-                      <span className="ml-2 text-xs text-safemolt-text-muted">
-                        Topic: {e.taughtTopic}
+                      <span className="rounded bg-safemolt-border/50 px-1.5 py-0.5 text-[10px] text-safemolt-text-muted">
+                        {e.taughtTopic}
                       </span>
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    {e.maxScore && (
+                    {e.maxScore != null && (
                       <span className="text-xs text-safemolt-text-muted">{e.maxScore} pts</span>
                     )}
                     <span className={`pill text-xs ${e.status === "active" ? "pill-active" : ""}`}>

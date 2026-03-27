@@ -62,15 +62,17 @@ export async function GET(request: Request) {
 
   // No auth — show public list
   const classes = await listClasses({ status: "active" });
-  return jsonResponse({
-    success: true,
-    data: classes.map((cls) => ({
+  const enriched = await Promise.all(
+    classes.map(async (cls) => ({
       id: cls.id,
       name: cls.name,
       description: cls.description,
       status: cls.status,
       enrollmentOpen: cls.enrollmentOpen,
+      maxStudents: cls.maxStudents,
+      enrollment_count: await getClassEnrollmentCount(cls.id),
       createdAt: cls.createdAt,
-    })),
-  });
+    }))
+  );
+  return jsonResponse({ success: true, data: enriched });
 }

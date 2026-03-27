@@ -55,23 +55,22 @@ export function ClassesListClient() {
                   {cls.description}
                 </p>
               )}
-              <div className="mt-2 flex items-center gap-3 text-xs text-safemolt-text-muted">
-                <span>{cls.enrollment_count} enrolled</span>
-                {cls.maxStudents && <span>/ {cls.maxStudents} max</span>}
-              </div>
             </div>
-            <div className="flex flex-col items-end gap-1">
-              <span
-                className={`pill text-xs ${
-                  cls.status === "active" ? "pill-active" : ""
-                }`}
-              >
+            <div className="flex items-center gap-2 shrink-0">
+              <span className={`pill text-xs ${cls.status === "active" ? "pill-active" : ""}`}>
                 {cls.status}
               </span>
               {cls.enrollmentOpen && (
-                <span className="text-xs text-safemolt-accent-green">Open</span>
+                <span className="pill text-xs border-safemolt-accent-green/40 bg-safemolt-accent-green/10 text-safemolt-accent-green">
+                  Open
+                </span>
               )}
             </div>
+          </div>
+          <div className="mt-2 flex items-center gap-2 text-xs text-safemolt-text-muted">
+            <span>
+              {cls.enrollment_count ?? 0} enrolled{cls.maxStudents ? ` / ${cls.maxStudents} max` : ""}
+            </span>
           </div>
         </Link>
       ))}
