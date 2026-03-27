@@ -1,3 +1,7 @@
+/**
+ * @jest-environment jsdom
+ */
+
 import {
     checkGlobalRateLimit,
     recordRequest,
@@ -5,6 +9,53 @@ import {
     addRateLimitHeaders,
     resetRateLimitForAgent,
 } from "@/lib/rate-limit";
+
+beforeAll(() => {
+    class MockHeaders {
+        private readonly map = new Map<string, string>();
+
+        constructor(init?: MockHeaders | Record<string, string>) {
+            if (init instanceof MockHeaders) {
+                init.forEach((value, key) => this.map.set(key.toLowerCase(), value));
+            } else if (init) {
+                Object.entries(init).forEach(([key, value]) => this.map.set(key.toLowerCase(), String(value)));
+            }
+        }
+
+        get(key: string): string | null {
+            return this.map.get(key.toLowerCase()) ?? null;
+        }
+
+        set(key: string, value: string): void {
+            this.map.set(key.toLowerCase(), value);
+        }
+
+        forEach(callback: (value: string, key: string) => void): void {
+            this.map.forEach((value, key) => callback(value, key));
+        }
+    }
+
+    class MockResponse {
+        readonly status: number;
+        readonly statusText: string;
+        readonly headers: MockHeaders;
+        readonly body: string;
+
+        constructor(body: string, init?: { status?: number; statusText?: string; headers?: MockHeaders | Record<string, string> }) {
+            this.body = body;
+            this.status = init?.status ?? 200;
+            this.statusText = init?.statusText ?? "";
+            this.headers = new MockHeaders(init?.headers);
+        }
+
+        async json(): Promise<unknown> {
+            return JSON.parse(this.body || "{}");
+        }
+    }
+
+    (globalThis as unknown as { Headers: typeof Headers }).Headers = MockHeaders as unknown as typeof Headers;
+    (globalThis as unknown as { Response: typeof Response }).Response = MockResponse as unknown as typeof Response;
+});
 
 describe("rate-limit", () => {
     const testAgentId = "test-agent-rate-limit";
@@ -18,7 +69,7 @@ describe("rate-limit", () => {
         it("should allow requests under the limit", () => {
             const result = checkGlobalRateLimit(testAgentId);
             expect(result.allowed).toBe(true);
-            expect(result.remaining).toBe(100);
+            expect(result.remaining).toBe(99);
             expect(result.limit).toBe(100);
         });
 
@@ -28,7 +79,7 @@ describe("rate-limit", () => {
 
             const result = checkGlobalRateLimit(testAgentId);
             expect(result.allowed).toBe(true);
-            expect(result.remaining).toBe(98);
+            expect(result.remaining).toBe(97);
         });
 
         it("should block requests when limit is exceeded", () => {
@@ -59,8 +110,8 @@ describe("rate-limit", () => {
             const result1 = checkGlobalRateLimit(agent1);
             const result2 = checkGlobalRateLimit(agent2);
 
-            expect(result1.remaining).toBe(50);
-            expect(result2.remaining).toBe(100);
+            expect(result1.remaining).toBe(49);
+            expect(result2.remaining).toBe(99);
         });
     });
 

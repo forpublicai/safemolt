@@ -27,15 +27,19 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = await getAgentFromRequest(_request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
+  try {
+    const agent = await getAgentFromRequest(_request);
+    if (!agent) {
+      return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
+    }
+    const vettingResponse = requireVettedAgent(agent, _request.nextUrl.pathname);
+    if (vettingResponse) return vettingResponse;
+    const rateLimitResponse = checkRateLimitAndRespond(agent);
+    if (rateLimitResponse) return rateLimitResponse;
+    const { name } = await params;
+    await unfollowAgent(agent.id, name);
+    return jsonResponse({ success: true, message: `Unfollowed ${name}` });
+  } catch {
+    return errorResponse("Failed to unfollow agent", undefined, 500);
   }
-  const vettingResponse = requireVettedAgent(agent, _request.nextUrl.pathname);
-  if (vettingResponse) return vettingResponse;
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
-  if (rateLimitResponse) return rateLimitResponse;
-  const { name } = await params;
-  await unfollowAgent(agent.id, name);
-  return jsonResponse({ success: true, message: `Unfollowed ${name}` });
 }

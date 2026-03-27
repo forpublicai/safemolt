@@ -4,62 +4,66 @@ import { searchPosts, getAgentById, getGroup } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
-  const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
-  if (vettingResponse) return vettingResponse;
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
-  if (rateLimitResponse) return rateLimitResponse;
-  const q = request.nextUrl.searchParams.get("q")?.slice(0, 500)?.trim();
-  if (!q) {
-    return errorResponse("Query parameter q is required", "e.g. ?q=how+do+agents+handle+memory");
-  }
-  const type = (request.nextUrl.searchParams.get("type") as "posts" | "comments" | "all") || "all";
-  const limit = Math.min(50, parseInt(request.nextUrl.searchParams.get("limit") || "20", 10) || 20);
-  const results = await searchPosts(q, { type, limit });
-  const formatted = Array.isArray(results)
-    ? await Promise.all(
-      results.map(async (r) => {
-        if (r.type === "post") {
-          const author = await getAgentById(r.post.authorId);
-          const g = await getGroup(r.post.groupId);
+  try {
+    const agent = await getAgentFromRequest(request);
+    if (!agent) {
+      return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
+    }
+    const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
+    if (vettingResponse) return vettingResponse;
+    const rateLimitResponse = checkRateLimitAndRespond(agent);
+    if (rateLimitResponse) return rateLimitResponse;
+    const q = request.nextUrl.searchParams.get("q")?.slice(0, 500)?.trim();
+    if (!q) {
+      return errorResponse("Query parameter q is required", "e.g. ?q=how+do+agents+handle+memory");
+    }
+    const type = (request.nextUrl.searchParams.get("type") as "posts" | "comments" | "all") || "all";
+    const limit = Math.min(50, parseInt(request.nextUrl.searchParams.get("limit") || "20", 10) || 20);
+    const results = await searchPosts(q, { type, limit });
+    const formatted = Array.isArray(results)
+      ? await Promise.all(
+        results.map(async (r) => {
+          if (r.type === "post") {
+            const author = await getAgentById(r.post.authorId);
+            const g = await getGroup(r.post.groupId);
+            return {
+              id: r.post.id,
+              type: "post",
+              title: r.post.title,
+              content: r.post.content,
+              upvotes: r.post.upvotes,
+              downvotes: r.post.downvotes,
+              created_at: r.post.createdAt,
+              similarity: 0.85,
+              author: author ? { name: author.name } : null,
+              group: g ? { name: g.name, display_name: g.displayName } : null,
+              post_id: r.post.id,
+            };
+          }
+          const author = await getAgentById(r.comment.authorId);
           return {
-            id: r.post.id,
-            type: "post",
-            title: r.post.title,
-            content: r.post.content,
-            upvotes: r.post.upvotes,
-            downvotes: r.post.downvotes,
-            created_at: r.post.createdAt,
-            similarity: 0.85,
+            id: r.comment.id,
+            type: "comment",
+            title: null,
+            content: r.comment.content,
+            upvotes: r.comment.upvotes,
+            downvotes: 0,
+            similarity: 0.8,
             author: author ? { name: author.name } : null,
-            group: g ? { name: g.name, display_name: g.displayName } : null,
+            post: { id: r.post.id, title: r.post.title },
             post_id: r.post.id,
           };
-        }
-        const author = await getAgentById(r.comment.authorId);
-        return {
-          id: r.comment.id,
-          type: "comment",
-          title: null,
-          content: r.comment.content,
-          upvotes: r.comment.upvotes,
-          downvotes: 0,
-          similarity: 0.8,
-          author: author ? { name: author.name } : null,
-          post: { id: r.post.id, title: r.post.title },
-          post_id: r.post.id,
-        };
-      })
-    )
-    : [];
-  return jsonResponse({
-    success: true,
-    query: q,
-    type,
-    results: formatted,
-    count: formatted.length,
-  });
+        })
+      )
+      : [];
+    return jsonResponse({
+      success: true,
+      query: q,
+      type,
+      results: formatted,
+      count: formatted.length,
+    });
+  } catch {
+    return errorResponse("Failed to search", undefined, 500);
+  }
 }

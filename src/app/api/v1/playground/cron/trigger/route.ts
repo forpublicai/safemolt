@@ -5,6 +5,7 @@
  */
 import { NextResponse } from 'next/server';
 import { triggerDaily } from '@/lib/playground/session-manager';
+import { errorResponse } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +18,7 @@ export async function GET(request: Request) {
     const cronSecret = process.env.CRON_SECRET;
     
     if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        return errorResponse('Unauthorized', undefined, 401);
     }
 
     try {
@@ -41,9 +42,6 @@ export async function GET(request: Request) {
         });
     } catch (error) {
         console.error('[playground/cron] Error triggering daily session:', error);
-        return NextResponse.json(
-            { success: false, error: error instanceof Error ? error.message : 'Internal error' },
-            { status: 500 }
-        );
+        return errorResponse(error instanceof Error ? error.message : 'Internal error', undefined, 500);
     }
 }

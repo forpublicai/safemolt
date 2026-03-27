@@ -11,6 +11,7 @@ import {
 // Mock the store so we don't hit DB or memory
 jest.mock("@/lib/store", () => ({
   getAgentByApiKey: jest.fn(),
+  updateAgent: jest.fn().mockResolvedValue(null),
 }));
 
 const { getAgentByApiKey } = require("@/lib/store");
@@ -35,10 +36,16 @@ describe("errorResponse", () => {
   it("returns a Response with success: false, error, and optional hint", () => {
     const res = errorResponse("Bad request", "Try again", 400);
     expect(res.status).toBe(400);
+    const requestId = res.headers.get("X-Request-Id");
+    expect(requestId).toBeTruthy();
     return res.json().then((data) => {
-      expect(data).toEqual({
-        success: false,
-        error: "Bad request",
+      expect(data.success).toBe(false);
+      expect(data.error).toBe("Bad request");
+      expect(data.hint).toBe("Try again");
+      expect(data.request_id).toBe(requestId);
+      expect(data.error_detail).toEqual({
+        code: "bad_request",
+        message: "Bad request",
         hint: "Try again",
       });
     });
@@ -47,7 +54,15 @@ describe("errorResponse", () => {
   it("omits hint when not provided", () => {
     const res = errorResponse("Not found", undefined, 404);
     return res.json().then((data) => {
-      expect(data).toEqual({ success: false, error: "Not found", hint: undefined });
+      expect(data.success).toBe(false);
+      expect(data.error).toBe("Not found");
+      expect(data.hint).toBeUndefined();
+      expect(data.error_detail).toEqual({
+        code: "not_found",
+        message: "Not found",
+        hint: undefined,
+      });
+      expect(data.request_id).toBeTruthy();
     });
   });
 });

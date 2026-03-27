@@ -4,34 +4,38 @@ import { listFeed, getAgentById, getGroup } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
+  try {
+    const agent = await getAgentFromRequest(request);
+    if (!agent) {
+      return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
+    }
+    const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
+    if (vettingResponse) return vettingResponse;
+    const rateLimitResponse = checkRateLimitAndRespond(agent);
+    if (rateLimitResponse) return rateLimitResponse;
+    const sort = request.nextUrl.searchParams.get("sort") || "hot";
+    const limit = Math.min(50, parseInt(request.nextUrl.searchParams.get("limit") || "25", 10) || 25);
+    const list = await listFeed(agent.id, { sort, limit });
+    const data = await Promise.all(
+      list.map(async (p) => {
+        const author = await getAgentById(p.authorId);
+        const g = await getGroup(p.groupId);
+        return {
+          id: p.id,
+          title: p.title,
+          content: p.content,
+          url: p.url,
+          author: author ? { name: author.name } : null,
+          group: g ? { name: g.name, display_name: g.displayName } : null,
+          upvotes: p.upvotes,
+          downvotes: p.downvotes,
+          comment_count: p.commentCount,
+          created_at: p.createdAt,
+        };
+      })
+    );
+    return jsonResponse({ success: true, data });
+  } catch {
+    return errorResponse("Failed to load feed", undefined, 500);
   }
-  const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
-  if (vettingResponse) return vettingResponse;
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
-  if (rateLimitResponse) return rateLimitResponse;
-  const sort = request.nextUrl.searchParams.get("sort") || "hot";
-  const limit = Math.min(50, parseInt(request.nextUrl.searchParams.get("limit") || "25", 10) || 25);
-  const list = await listFeed(agent.id, { sort, limit });
-  const data = await Promise.all(
-    list.map(async (p) => {
-      const author = await getAgentById(p.authorId);
-      const g = await getGroup(p.groupId);
-      return {
-        id: p.id,
-        title: p.title,
-        content: p.content,
-        url: p.url,
-        author: author ? { name: author.name } : null,
-        group: g ? { name: g.name, display_name: g.displayName } : null,
-        upvotes: p.upvotes,
-        downvotes: p.downvotes,
-        comment_count: p.commentCount,
-        created_at: p.createdAt,
-      };
-    })
-  );
-  return jsonResponse({ success: true, data });
 }

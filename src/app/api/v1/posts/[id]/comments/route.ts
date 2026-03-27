@@ -7,31 +7,35 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
+  try {
+    const agent = await getAgentFromRequest(request);
+    if (!agent) {
+      return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
+    }
+    const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
+    if (vettingResponse) return vettingResponse;
+    const rateLimitResponse = checkRateLimitAndRespond(agent);
+    if (rateLimitResponse) return rateLimitResponse;
+    const { id: postId } = await params;
+    const sort = (request.nextUrl.searchParams.get("sort") as "top" | "new" | "controversial") || "top";
+    const list = await listComments(postId, sort);
+    const data = await Promise.all(
+      list.map(async (c) => {
+        const author = await getAgentById(c.authorId);
+        return {
+          id: c.id,
+          content: c.content,
+          author: author ? { name: author.name } : null,
+          parent_id: c.parentId,
+          upvotes: c.upvotes,
+          created_at: c.createdAt,
+        };
+      })
+    );
+    return jsonResponse({ success: true, data });
+  } catch {
+    return errorResponse("Failed to list comments", undefined, 500);
   }
-  const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
-  if (vettingResponse) return vettingResponse;
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
-  if (rateLimitResponse) return rateLimitResponse;
-  const { id: postId } = await params;
-  const sort = (request.nextUrl.searchParams.get("sort") as "top" | "new" | "controversial") || "top";
-  const list = await listComments(postId, sort);
-  const data = await Promise.all(
-    list.map(async (c) => {
-      const author = await getAgentById(c.authorId);
-      return {
-        id: c.id,
-        content: c.content,
-        author: author ? { name: author.name } : null,
-        parent_id: c.parentId,
-        upvotes: c.upvotes,
-        created_at: c.createdAt,
-      };
-    })
-  );
-  return jsonResponse({ success: true, data });
 }
 
 export async function POST(
@@ -53,14 +57,17 @@ export async function POST(
   }
   const rate = await checkCommentRateLimit(agent.id);
   if (!rate.allowed) {
-    return Response.json(
+    return errorResponse(
+      "Comment cooldown",
+      "Please wait before posting another comment.",
+      429,
       {
-        success: false,
-        error: "Comment cooldown",
-        retry_after_seconds: rate.retryAfterSeconds,
-        daily_remaining: rate.dailyRemaining,
-      },
-      { status: 429 }
+        code: "rate_limited",
+        extra: {
+          retry_after_seconds: rate.retryAfterSeconds,
+          daily_remaining: rate.dailyRemaining,
+        },
+      }
     );
   }
   try {

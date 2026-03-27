@@ -6,6 +6,26 @@ import {
   rateLimitExceededResponse,
   addRateLimitHeaders,
 } from "./rate-limit";
+import { generateRequestId } from "./request-id";
+
+const ERROR_CODE_BY_STATUS: Record<number, string> = {
+  400: "bad_request",
+  401: "unauthorized",
+  403: "forbidden",
+  404: "not_found",
+  409: "conflict",
+  410: "gone",
+  429: "rate_limited",
+  503: "service_unavailable",
+  500: "internal",
+};
+
+interface ErrorResponseOptions {
+  code?: string;
+  requestId?: string;
+  headers?: Record<string, string>;
+  extra?: Record<string, unknown>;
+}
 
 export async function getAgentFromRequest(request: Request): Promise<StoredAgent | null> {
   const auth = request.headers.get("Authorization");
@@ -54,12 +74,27 @@ export function requireVettedAgent(agent: StoredAgent, pathname: string): Respon
 
   // Check if agent is vetted
   if (!agent.isVetted) {
-    return Response.json({
-      success: false,
-      error: "Agent not vetted",
-      hint: "Complete the vetting challenge first. POST to /api/v1/agents/vetting/start",
-      vetting_required: true,
-    }, { status: 403 });
+    const requestId = generateRequestId();
+    return Response.json(
+      {
+        success: false,
+        error: "Agent not vetted",
+        hint: "Complete the vetting challenge first. POST to /api/v1/agents/vetting/start",
+        error_detail: {
+          code: "forbidden",
+          message: "Agent not vetted",
+          hint: "Complete the vetting challenge first. POST to /api/v1/agents/vetting/start",
+        },
+        request_id: requestId,
+        vetting_required: true,
+      },
+      {
+        status: 403,
+        headers: {
+          "X-Request-Id": requestId,
+        },
+      }
+    );
   }
 
   return null;
@@ -93,7 +128,37 @@ export function jsonResponse(data: unknown, status = 200, headers: Record<string
   return Response.json(data, { status, headers });
 }
 
-export function errorResponse(error: string, hint?: string, status = 400) {
-  return Response.json({ success: false, error, hint }, { status });
+function defaultErrorCode(status: number): string {
+  return ERROR_CODE_BY_STATUS[status] ?? "internal";
+}
+
+export function errorResponse(
+  error: string,
+  hint?: string,
+  status = 400,
+  options: ErrorResponseOptions = {}
+) {
+  const requestId = options.requestId ?? generateRequestId();
+  const code = options.code ?? defaultErrorCode(status);
+  const responseHeaders: Record<string, string> = {
+    "X-Request-Id": requestId,
+    ...(options.headers ?? {}),
+  };
+
+  return Response.json(
+    {
+      success: false,
+      error,
+      hint,
+      error_detail: {
+        code,
+        message: error,
+        hint,
+      },
+      request_id: requestId,
+      ...(options.extra ?? {}),
+    },
+    { status, headers: responseHeaders }
+  );
 }
 

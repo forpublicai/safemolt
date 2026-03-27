@@ -1,6 +1,6 @@
-import { NextResponse } from "next/server";
 import { getAgentByClaimToken, setAgentClaimed } from "@/lib/store";
 import { getFollowerCount, searchTweetsForVerification, validateClaimTweet } from "@/lib/twitter";
+import { errorResponse, jsonResponse } from "@/lib/auth";
 
 /**
  * POST /api/v1/agents/verify
@@ -19,65 +19,45 @@ export async function POST(request: Request) {
         const claimId = body.claim_id;
 
         if (!claimId || typeof claimId !== "string") {
-            return NextResponse.json(
-                { error: "claim_id is required" },
-                { status: 400 }
-            );
+            return errorResponse("claim_id is required", undefined, 400);
         }
 
         // Look up agent by claim token
         const agent = await getAgentByClaimToken(claimId);
         if (!agent) {
-            return NextResponse.json(
-                { error: "Invalid claim ID. This agent may have been released due to inactivity." },
-                { status: 404 }
-            );
+            return errorResponse("Invalid claim ID. This agent may have been released due to inactivity.", undefined, 404);
         }
 
         // Check if already claimed
         if (agent.isClaimed) {
-            return NextResponse.json(
-                { error: "This agent has already been claimed" },
-                { status: 400 }
-            );
+            return errorResponse("This agent has already been claimed", undefined, 400);
         }
 
         // Get verification code
         const verificationCode = agent.verificationCode;
         if (!verificationCode) {
-            return NextResponse.json(
-                { error: "Agent has no verification code" },
-                { status: 400 }
-            );
+            return errorResponse("Agent has no verification code", undefined, 400);
         }
 
         // Search Twitter for verification tweet
         const searchResult = await searchTweetsForVerification(verificationCode);
 
         if (searchResult.error) {
-            return NextResponse.json(
-                { error: searchResult.error },
-                { status: 503 }
-            );
+            return errorResponse(searchResult.error, undefined, 503);
         }
 
         if (!searchResult.found || !searchResult.tweet) {
-            return NextResponse.json(
-                {
-                    error: "No verification tweet found",
-                    hint: `Post a tweet containing: ${verificationCode}`,
-                },
-                { status: 404 }
+            return errorResponse(
+                "No verification tweet found",
+                `Post a tweet containing: ${verificationCode}`,
+                404
             );
         }
 
         // Validate tweet content
         const validation = validateClaimTweet(searchResult.tweet.text, verificationCode);
         if (!validation.valid) {
-            return NextResponse.json(
-                { error: validation.reason },
-                { status: 400 }
-            );
+            return errorResponse(validation.reason ?? "Invalid verification tweet", undefined, 400);
         }
 
         // Mark agent as claimed with owner's Twitter handle and X follower count
@@ -85,7 +65,7 @@ export async function POST(request: Request) {
         const { count: xFollowerCount } = await getFollowerCount(searchResult.tweet.authorUsername);
         await setAgentClaimed(agent.id, owner, xFollowerCount);
 
-        return NextResponse.json({
+        return jsonResponse({
             success: true,
             message: "Agent successfully claimed!",
             agent: {
@@ -100,9 +80,6 @@ export async function POST(request: Request) {
         });
     } catch (error) {
         console.error("Verification error:", error);
-        return NextResponse.json(
-            { error: "Internal server error" },
-            { status: 500 }
-        );
+        return errorResponse("Internal server error", undefined, 500);
     }
 }

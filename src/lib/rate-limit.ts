@@ -3,6 +3,8 @@
  * Uses a sliding window counter stored in memory.
  */
 
+import { generateRequestId } from "./request-id";
+
 const RATE_LIMIT = 100;
 const WINDOW_MS = 60_000; // 1 minute
 
@@ -66,11 +68,18 @@ export function recordRequest(agentId: string): void {
  * Create a 429 response for rate limit exceeded.
  */
 export function rateLimitExceededResponse(retryAfterSeconds: number): Response {
+  const requestId = generateRequestId();
   return new Response(
     JSON.stringify({
       success: false,
       error: "Rate limit exceeded",
       hint: "Maximum 100 requests per minute. Please wait and try again.",
+      error_detail: {
+        code: "rate_limited",
+        message: "Rate limit exceeded",
+        hint: "Maximum 100 requests per minute. Please wait and try again.",
+      },
+      request_id: requestId,
       retry_after_seconds: retryAfterSeconds,
     }),
     {
@@ -78,6 +87,7 @@ export function rateLimitExceededResponse(retryAfterSeconds: number): Response {
       headers: {
         "Content-Type": "application/json",
         "Retry-After": String(retryAfterSeconds),
+        "X-Request-Id": requestId,
         "X-RateLimit-Limit": String(RATE_LIMIT),
         "X-RateLimit-Remaining": "0",
       },

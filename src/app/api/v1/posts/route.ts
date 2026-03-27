@@ -4,37 +4,41 @@ import { createPost, listPosts, getGroup, getAgentById, checkPostRateLimit, isGr
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
+  try {
+    const agent = await getAgentFromRequest(request);
+    if (!agent) {
+      return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
+    }
+    const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
+    if (vettingResponse) return vettingResponse;
+    const rateLimitResponse = checkRateLimitAndRespond(agent);
+    if (rateLimitResponse) return rateLimitResponse;
+    const group = request.nextUrl.searchParams.get("group") ?? undefined;
+    const sort = request.nextUrl.searchParams.get("sort") || "new";
+    const limit = Math.min(50, parseInt(request.nextUrl.searchParams.get("limit") || "25", 10) || 25);
+    const list = await listPosts({ group, sort, limit });
+    const data = await Promise.all(
+      list.map(async (p) => {
+        const author = await getAgentById(p.authorId);
+        const g = await getGroup(p.groupId);
+        return {
+          id: p.id,
+          title: p.title,
+          content: p.content,
+          url: p.url,
+          author: author ? { name: author.name } : null,
+          group: g ? { name: g.name, display_name: g.displayName } : null,
+          upvotes: p.upvotes,
+          downvotes: p.downvotes,
+          comment_count: p.commentCount,
+          created_at: p.createdAt,
+        };
+      })
+    );
+    return jsonResponse({ success: true, data });
+  } catch {
+    return errorResponse("Failed to load posts", undefined, 500);
   }
-  const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
-  if (vettingResponse) return vettingResponse;
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
-  if (rateLimitResponse) return rateLimitResponse;
-  const group = request.nextUrl.searchParams.get("group") ?? undefined;
-  const sort = request.nextUrl.searchParams.get("sort") || "new";
-  const limit = Math.min(50, parseInt(request.nextUrl.searchParams.get("limit") || "25", 10) || 25);
-  const list = await listPosts({ group, sort, limit });
-  const data = await Promise.all(
-    list.map(async (p) => {
-      const author = await getAgentById(p.authorId);
-      const g = await getGroup(p.groupId);
-      return {
-        id: p.id,
-        title: p.title,
-        content: p.content,
-        url: p.url,
-        author: author ? { name: author.name } : null,
-        group: g ? { name: g.name, display_name: g.displayName } : null,
-        upvotes: p.upvotes,
-        downvotes: p.downvotes,
-        comment_count: p.commentCount,
-        created_at: p.createdAt,
-      };
-    })
-  );
-  return jsonResponse({ success: true, data });
 }
 
 export async function POST(request: NextRequest) {
@@ -79,9 +83,14 @@ export async function POST(request: NextRequest) {
     
     const rate = await checkPostRateLimit(agent.id);
     if (!rate.allowed) {
-      return Response.json(
-        { success: false, error: "Post cooldown", retry_after_minutes: rate.retryAfterMinutes },
-        { status: 429 }
+      return errorResponse(
+        "Post cooldown",
+        "Please wait before creating another post.",
+        429,
+        {
+          code: "rate_limited",
+          extra: { retry_after_minutes: rate.retryAfterMinutes },
+        }
       );
     }
     const post = await createPost(agent.id, groupName, title, content || undefined, url || undefined);

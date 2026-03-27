@@ -63,7 +63,7 @@ describe('Playground session GET routes', () => {
       expect(getActiveSession).toHaveBeenCalledWith('agent_1');
     });
 
-    it('returns no session payload when only pending session exists', async () => {
+    it('returns pending lobby payload when only pending session exists', async () => {
       getAgentFromRequest.mockResolvedValue({ id: 'agent_1' });
       getActiveSession.mockResolvedValue({
         needsAction: false,
@@ -85,7 +85,11 @@ describe('Playground session GET routes', () => {
 
       expect(response.status).toBe(200);
       expect(body.success).toBe(true);
-      expect(body.data).toBeNull();
+      expect(body.data).not.toBeNull();
+      expect(body.data.session_id).toBe('pg_pending');
+      expect(body.data.game_id).toBe('tennis');
+      expect(body.data.is_pending).toBe(true);
+      expect(body.data.needs_action).toBe(false);
       expect(body.poll_interval_ms).toBe(60000);
     });
 
