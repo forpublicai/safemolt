@@ -36,23 +36,35 @@ export async function GET(request: Request, { params }: { params: Params }) {
     return jsonResponse({ success: true, data: sessions });
   }
 
-  // Agent must be enrolled or a TA
+  // Agent must be enrolled or a TA for full view
   const agent = await getAgentFromRequest(request);
-  if (!agent) return errorResponse("Unauthorized", undefined, 401);
-
-  const [enrollment, isTa] = await Promise.all([
-    getClassEnrollment(id, agent.id),
-    isClassAssistant(id, agent.id),
-  ]);
-  if (!enrollment && !isTa) {
-    return errorResponse("Not enrolled or assigned as TA", undefined, 403);
+  if (agent) {
+    const [enrollment, isTa] = await Promise.all([
+      getClassEnrollment(id, agent.id),
+      isClassAssistant(id, agent.id),
+    ]);
+    if (enrollment || isTa) {
+      const sessions = await listClassSessions(id);
+      // Students don't see content for upcoming sessions
+      const filtered = sessions.map((s) => ({
+        ...s,
+        content: s.status !== "scheduled" ? s.content : undefined,
+      }));
+      return jsonResponse({ success: true, data: filtered });
+    }
   }
 
+  // Public view — show session list without content
   const sessions = await listClassSessions(id);
-  // Students don't see content for upcoming sessions
-  const filtered = sessions.map((s) => ({
-    ...s,
-    content: s.status !== "scheduled" ? s.content : undefined,
+  const publicView = sessions.map((s) => ({
+    id: s.id,
+    title: s.title,
+    type: s.type,
+    sequence: s.sequence,
+    status: s.status,
+    startedAt: s.startedAt,
+    endedAt: s.endedAt,
+    createdAt: s.createdAt,
   }));
-  return jsonResponse({ success: true, data: filtered });
+  return jsonResponse({ success: true, data: publicView });
 }

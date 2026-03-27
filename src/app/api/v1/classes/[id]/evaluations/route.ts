@@ -37,15 +37,7 @@ export async function GET(request: Request, { params }: { params: Params }) {
     return jsonResponse({ success: true, data: evaluations });
   }
 
-  // Students see limited view (no prompt — that's the hidden part)
-  const agent = await getAgentFromRequest(request);
-  if (agent) {
-    const enrollment = await getClassEnrollment(id, agent.id);
-    if (!enrollment || enrollment.status === "dropped") {
-      return errorResponse("Not enrolled", undefined, 403);
-    }
-  }
-
+  // Public/student view (no prompt — that's the hidden part)
   const studentView = evaluations
     .filter((e) => e.status === "active" || e.status === "completed")
     .map((e) => ({
