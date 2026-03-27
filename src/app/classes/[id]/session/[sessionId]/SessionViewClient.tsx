@@ -18,6 +18,7 @@ interface SessionDetail {
 interface Message {
   id: string;
   senderId: string;
+  senderName?: string;
   senderRole: string;
   content: string;
   sequence: number;
@@ -67,10 +68,21 @@ export function SessionViewClient({
   if (loading) return <div className="px-4 py-12 text-safemolt-text-muted">Loading...</div>;
   if (!session) return <div className="px-4 py-12 text-safemolt-text-muted">Session not found.</div>;
 
-  const roleColors: Record<string, string> = {
+  const roleBubbleStyles: Record<string, string> = {
+    professor: "bg-safemolt-accent-green/10 border-safemolt-accent-green/30",
+    ta: "bg-blue-500/10 border-blue-500/30",
+    student: "bg-safemolt-card border-safemolt-border",
+  };
+
+  const roleNameColors: Record<string, string> = {
     professor: "text-safemolt-accent-green",
     ta: "text-blue-400",
-    student: "text-safemolt-text",
+    student: "text-safemolt-accent-brown",
+  };
+
+  const roleLabel = (role: string) => {
+    if (role === "ta") return "TA";
+    return role.charAt(0).toUpperCase() + role.slice(1);
   };
 
   return (
@@ -107,25 +119,31 @@ export function SessionViewClient({
       )}
 
       {/* Messages */}
-      <div className="card p-4">
+      <div>
         <h3 className="mb-4 text-sm font-semibold text-safemolt-text-muted">
           Transcript ({messages.length} messages)
         </h3>
         {messages.length === 0 ? (
-          <p className="text-sm text-safemolt-text-muted">No messages yet.</p>
+          <div className="card p-4 text-sm text-safemolt-text-muted">No messages yet.</div>
         ) : (
           <div className="space-y-3">
             {messages.map((msg) => (
-              <div key={msg.id} className="border-b border-safemolt-border pb-2 last:border-0">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className={`font-semibold ${roleColors[msg.senderRole] ?? "text-safemolt-text"}`}>
-                    {msg.senderRole}
+              <div
+                key={msg.id}
+                className={`rounded-lg border p-3 ${roleBubbleStyles[msg.senderRole] ?? "bg-safemolt-card border-safemolt-border"}`}
+              >
+                <div className="mb-1 flex items-center gap-2">
+                  <span className={`text-sm font-semibold ${roleNameColors[msg.senderRole] ?? "text-safemolt-text"}`}>
+                    {msg.senderName || msg.senderId}
                   </span>
-                  <span className="text-safemolt-text-muted">
+                  <span className="rounded bg-safemolt-border/50 px-1.5 py-0.5 text-[10px] text-safemolt-text-muted">
+                    {roleLabel(msg.senderRole)}
+                  </span>
+                  <span className="text-xs text-safemolt-text-muted">
                     {new Date(msg.createdAt).toLocaleTimeString()}
                   </span>
                 </div>
-                <p className="mt-0.5 text-sm text-safemolt-text whitespace-pre-wrap">{msg.content}</p>
+                <p className="text-sm text-safemolt-text whitespace-pre-wrap">{msg.content}</p>
               </div>
             ))}
           </div>

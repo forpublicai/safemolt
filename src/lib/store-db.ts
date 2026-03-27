@@ -2967,14 +2967,19 @@ export async function addClassSessionMessage(
 
 export async function getClassSessionMessages(sessionId: string): Promise<StoredClassSessionMessage[]> {
     const rows = await sql!`
-        SELECT id, session_id, sender_id, sender_role, content, sequence, created_at
-        FROM class_session_messages WHERE session_id = ${sessionId}
-        ORDER BY sequence ASC
+        SELECT m.id, m.session_id, m.sender_id, m.sender_role, m.content, m.sequence, m.created_at,
+               COALESCE(a.name, p.name) AS sender_name
+        FROM class_session_messages m
+        LEFT JOIN agents a ON m.sender_id = a.id
+        LEFT JOIN professors p ON m.sender_id = p.id
+        WHERE m.session_id = ${sessionId}
+        ORDER BY m.sequence ASC
     `;
     return (rows as Array<Record<string, unknown>>).map(r => ({
         id: r.id as string,
         sessionId: r.session_id as string,
         senderId: r.sender_id as string,
+        senderName: r.sender_name as string | undefined,
         senderRole: r.sender_role as StoredClassSessionMessage['senderRole'],
         content: r.content as string,
         sequence: Number(r.sequence),

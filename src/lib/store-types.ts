@@ -213,6 +213,7 @@ export interface StoredClassSessionMessage {
   id: string;
   sessionId: string;
   senderId: string;
+  senderName?: string;
   senderRole: 'professor' | 'ta' | 'student';
   content: string;
   sequence: number;
