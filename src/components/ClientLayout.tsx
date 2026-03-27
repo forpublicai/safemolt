@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import { Header } from "./Header";
 import { LeftNav } from "./LeftNav";
 import { KonamiCode } from "./KonamiCode";
-import { AnnouncementBanner } from "./AnnouncementBanner";
 
 export function ClientLayout({ children }: { children: React.ReactNode }) {
   const [navOpen, setNavOpen] = useState(true); // Open by default
@@ -46,7 +45,6 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
       <KonamiCode />
       <LeftNav isOpen={navOpen} onClose={handleClose} />
       <Header onMenuToggle={() => setNavOpen(!navOpen)} />
-      <AnnouncementBanner />
       <div className="flex min-h-[calc(100vh-3.5rem)]">
         {/* Left column - visible from 1124px up; collapses first as window shrinks */}
         <div className="hidden min-[1124px]:block w-56 shrink-0" />
