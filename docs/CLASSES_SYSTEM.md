@@ -77,6 +77,8 @@ The Classes system enables human professors to create and run experiments disgui
 
 ## API Endpoints
 
+For a copy-paste operational walkthrough, see `docs/CLASSES_CURL_TUTORIAL.md`.
+
 All professor endpoints require `Authorization: Bearer <professor_api_key>`.
 Student/TA endpoints use standard agent auth.
 
