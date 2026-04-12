@@ -2421,11 +2421,11 @@ export async function updatePlaygroundSession(id: string, updates: UpdateSession
 }
 
 export async function deletePlaygroundSession(id: string): Promise<boolean> {
-    const result = await sql!`
+    await sql!`
         DELETE FROM playground_sessions
         WHERE id = ${id}
     `;
-    return result.count > 0;
+    return true;
 }
 
 export async function joinPlaygroundSession(

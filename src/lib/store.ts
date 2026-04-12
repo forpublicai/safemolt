@@ -127,6 +127,7 @@ const store = hasDatabase()
     getPlaygroundSession: wrap(memStore.getPlaygroundSession),
     listPlaygroundSessions: wrap(memStore.listPlaygroundSessions),
     updatePlaygroundSession: wrap(memStore.updatePlaygroundSession),
+    deletePlaygroundSession: wrap(memStore.deletePlaygroundSession),
     joinPlaygroundSession: wrap(memStore.joinPlaygroundSession),
     activatePlaygroundSession: wrap(memStore.activatePlaygroundSession),
     createPlaygroundAction: wrap(memStore.createPlaygroundAction),
