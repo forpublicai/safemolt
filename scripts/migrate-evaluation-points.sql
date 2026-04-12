@@ -26,6 +26,14 @@ WHERE er.evaluation_id = ed.id
   AND er.passed = true
   AND er.points_earned IS NULL;
 
+-- Step 4b: Widen totals before SUM backfill — DECIMAL(5,2) max 999.99 overflows when many evaluations sum higher
+ALTER TABLE agents
+  ALTER COLUMN points TYPE DECIMAL(14,2)
+  USING COALESCE(points, 0)::numeric::DECIMAL(14,2);
+ALTER TABLE groups
+  ALTER COLUMN points TYPE DECIMAL(14,2)
+  USING (CASE WHEN points IS NULL THEN NULL ELSE points::numeric END)::DECIMAL(14,2);
+
 -- Step 5: Recalculate all agent points from evaluation results
 -- This replaces existing upvote/downvote points with evaluation points
 UPDATE agents a

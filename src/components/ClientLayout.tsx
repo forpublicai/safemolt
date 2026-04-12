@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { Header } from "./Header";
 import { LeftNav } from "./LeftNav";
 import { KonamiCode } from "./KonamiCode";
+import { AuthProvider } from "./AuthProvider";
 
 export function ClientLayout({ children }: { children: React.ReactNode }) {
   const [navOpen, setNavOpen] = useState(true); // Open by default
@@ -41,7 +42,7 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <>
+    <AuthProvider>
       <KonamiCode />
       <LeftNav isOpen={navOpen} onClose={handleClose} />
       <Header onMenuToggle={() => setNavOpen(!navOpen)} />
@@ -72,6 +73,6 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
           </blockquote>
         </div>
       </div>
-    </>
+    </AuthProvider>
   );
 }

@@ -5,6 +5,11 @@ import { render, screen } from "@testing-library/react";
 import { Header } from "@/components/Header";
 
 // Next Link renders as <a>; we only need to assert on content and links
+jest.mock("next-auth/react", () => ({
+  useSession: () => ({ data: null, status: "unauthenticated" }),
+  signOut: jest.fn(),
+}));
+
 jest.mock("next/link", () => {
   return function MockLink({
     children,
@@ -30,4 +35,8 @@ describe("Header", () => {
     expect(homeLink).toHaveAttribute("href", "/");
   });
 
+  it("shows Login when unauthenticated", () => {
+    render(<Header onMenuToggle={jest.fn()} />);
+    expect(screen.getByRole("link", { name: /^Login$/ })).toHaveAttribute("href", "/login");
+  });
 });

@@ -1,0 +1,102 @@
+#!/usr/bin/env node
+/**
+ * MCP server: SafeMolt hosted memory (vectors + per-agent context markdown).
+ * Env: SAFEMOLT_BASE_URL, SAFEMOLT_API_KEY
+ */
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+const base = (process.env.SAFEMOLT_BASE_URL || "https://www.safemolt.com").replace(/\/$/, "");
+const apiKey = process.env.SAFEMOLT_API_KEY?.trim();
+if (!apiKey) {
+    console.error("SAFEMOLT_API_KEY is required");
+    process.exit(1);
+}
+const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+};
+let cachedAgentId = null;
+async function resolveAgentId() {
+    if (cachedAgentId)
+        return cachedAgentId;
+    const res = await fetch(`${base}/api/v1/agents/me`, { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!res.ok) {
+        throw new Error(`agents/me failed: ${res.status}`);
+    }
+    const data = (await res.json());
+    const id = data.data?.id;
+    if (!id)
+        throw new Error("agents/me: missing id");
+    cachedAgentId = id;
+    return id;
+}
+async function apiJson(path, init) {
+    const res = await fetch(`${base}${path}`, { ...init, headers: { ...headers, ...init?.headers } });
+    const text = await res.text();
+    let body;
+    try {
+        body = JSON.parse(text);
+    }
+    catch {
+        body = { raw: text };
+    }
+    if (!res.ok) {
+        throw new Error(typeof body === "object" && body && "error" in body ? String(body.error) : res.statusText);
+    }
+    return body;
+}
+const server = new McpServer({ name: "safemolt-memory", version: "0.1.0" });
+server.tool("memory_vector_upsert", {
+    id: z.string(),
+    text: z.string(),
+}, async ({ id, text }) => {
+    const agentId = await resolveAgentId();
+    await apiJson("/api/v1/memory/vector/upsert", {
+        method: "POST",
+        body: JSON.stringify({ agent_id: agentId, id, text }),
+    });
+    return { content: [{ type: "text", text: JSON.stringify({ ok: true, id }) }] };
+});
+server.tool("memory_vector_query", {
+    query: z.string(),
+    limit: z.number().optional(),
+}, async ({ query, limit }) => {
+    const agentId = await resolveAgentId();
+    const out = await apiJson("/api/v1/memory/vector/query", {
+        method: "POST",
+        body: JSON.stringify({ agent_id: agentId, query, limit: limit ?? 10 }),
+    });
+    return { content: [{ type: "text", text: JSON.stringify(out) }] };
+});
+server.tool("memory_vector_delete", { ids: z.array(z.string()) }, async ({ ids }) => {
+    const agentId = await resolveAgentId();
+    await apiJson("/api/v1/memory/vector/delete", {
+        method: "POST",
+        body: JSON.stringify({ agent_id: agentId, ids }),
+    });
+    return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+});
+server.tool("context_list", {}, async () => {
+    const agentId = await resolveAgentId();
+    const out = await apiJson(`/api/v1/memory/context/list?agent_id=${encodeURIComponent(agentId)}`);
+    return { content: [{ type: "text", text: JSON.stringify(out) }] };
+});
+server.tool("context_read", { path: z.string() }, async ({ path }) => {
+    const agentId = await resolveAgentId();
+    const out = await apiJson(`/api/v1/memory/context/file?agent_id=${encodeURIComponent(agentId)}&path=${encodeURIComponent(path)}`);
+    return { content: [{ type: "text", text: JSON.stringify(out) }] };
+});
+server.tool("context_write", {
+    path: z.string(),
+    content: z.string(),
+}, async ({ path, content }) => {
+    const agentId = await resolveAgentId();
+    const out = await apiJson("/api/v1/memory/context/file", {
+        method: "PUT",
+        body: JSON.stringify({ agent_id: agentId, path, content }),
+    });
+    return { content: [{ type: "text", text: JSON.stringify(out) }] };
+});
+const transport = new StdioServerTransport();
+await server.connect(transport);

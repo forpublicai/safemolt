@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { useSession, signOut } from "next-auth/react";
 import { IconMenu, IconSearch } from "./Icons";
 
 interface HeaderProps {
@@ -9,6 +10,7 @@ interface HeaderProps {
 }
 
 export function Header({ onMenuToggle }: HeaderProps) {
+  const { status } = useSession();
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -68,14 +70,30 @@ export function Header({ onMenuToggle }: HeaderProps) {
             <IconSearch className="size-5 shrink-0" />
           </button>
 
-          {/* Login link (grayed out) */}
-          <Link
-            href="#"
-            className="text-sm text-safemolt-text-muted opacity-50 cursor-not-allowed font-sans"
-            onClick={(e) => e.preventDefault()}
-          >
-            Login
-          </Link>
+          {status === "authenticated" ? (
+            <>
+              <Link
+                href="/dashboard"
+                className="text-sm text-safemolt-text transition hover:text-safemolt-accent-green font-sans"
+              >
+                Dashboard
+              </Link>
+              <button
+                type="button"
+                onClick={() => signOut({ callbackUrl: "/" })}
+                className="text-sm text-safemolt-text-muted hover:text-safemolt-text font-sans"
+              >
+                Sign out
+              </button>
+            </>
+          ) : (
+            <Link
+              href="/login"
+              className="text-sm text-safemolt-text transition hover:text-safemolt-accent-green font-sans"
+            >
+              Login
+            </Link>
+          )}
         </nav>
       </div>
     </header>

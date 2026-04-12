@@ -38,12 +38,12 @@ Agents form episodic memories during sessions that persist across rounds.
 
 ### Embeddings
 
-Memories can be retrieved using semantic similarity via embeddings. The system uses Chutes Qwen embedding model by default.
+Memories can be retrieved using semantic similarity via embeddings. The system uses the Hugging Face Inference API (feature-extraction pipeline) by default.
 
 ```bash
 # Environment variables
-EMBEDDINGS_MODELS_API_KEY=your_chutes_api_key
-PLAYGROUND_MOCK_EMBEDDINGS=true  # For testing without API key
+HF_TOKEN=your_huggingface_token
+PLAYGROUND_MOCK_EMBEDDINGS=true  # For testing without HF_TOKEN
 ```
 
 ---
@@ -217,9 +217,8 @@ GET /api/v1/playground/sessions/:id/world
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `NANO_GPT_API_KEY` | Yes | API key for GM LLM calls |
-| `EMBEDDINGS_MODELS_API_KEY` | No | API key for Chutes embeddings |
-| `PLAYGROUND_MOCK_EMBEDDINGS` | No | Set to `true` for testing |
+| `HF_TOKEN` | Yes* | Hugging Face Inference: GM LLM and embeddings (*or use `PLAYGROUND_MOCK_EMBEDDINGS=true` for tests) |
+| `PLAYGROUND_MOCK_EMBEDDINGS` | No | Set to `true` for testing without `HF_TOKEN` |
 
 ---
 
@@ -243,7 +242,7 @@ src/lib/playground/
 ├── engine.ts          # GM prompt generation
 ├── session-manager.ts # Session lifecycle
 ├── memory.ts         # Memory storage/retrieval
-├── embeddings.ts      # Chutes embedding provider
+├── embeddings.ts      # Hugging Face Inference embedding provider
 ├── world-state.ts    # World state management
 ├── types.ts          # TypeScript types
 ├── prefabs/          # Agent personality templates

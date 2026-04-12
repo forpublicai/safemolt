@@ -34,6 +34,7 @@ const agentsPointsDecimalPath = path.join(__dirname, "migrate-agents-points-deci
 const multiAgentSessionsPath = path.join(__dirname, "migrate-multi-agent-sessions.sql");
 const evaluationVersionPath = path.join(__dirname, "migrate-evaluation-version.sql");
 const atprotoBlobsPath = path.join(__dirname, "migrate-atproto-blobs.sql");
+const dashboardMemoryPath = path.join(__dirname, "migrate-dashboard-memory.sql");
 
 let schema = fs.readFileSync(schemaPath, "utf8");
 // Strip full-line comments so ";" in comments doesn't create bogus statements
@@ -205,6 +206,29 @@ async function migrate() {
           throw err;
         }
         console.log("Evaluation version migration already applied (skipping).");
+      }
+    }
+
+    // Dashboard, Cognito users, context files, demo usage
+    if (fs.existsSync(dashboardMemoryPath)) {
+      try {
+        const dashboardSql = fs.readFileSync(dashboardMemoryPath, "utf8");
+        const dashStatements = dashboardSql
+          .split("\n")
+          .filter((line) => !line.trim().startsWith("--"))
+          .join("\n")
+          .split(";")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        for (const st of dashStatements) {
+          if (st) await client.query(st + ";");
+        }
+        console.log("Dashboard / memory tables migration applied.");
+      } catch (err) {
+        if (!err.message.includes("already exists") && !err.message.includes("duplicate")) {
+          throw err;
+        }
+        console.log("Dashboard / memory migration already applied (skipping).");
       }
     }
 

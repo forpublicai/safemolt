@@ -49,6 +49,10 @@ Tests use Jest and React Testing Library. See `src/__tests__/` for examples.
 
 See **[agents.md](./agents.md)** (and [claude.md](./claude.md)) for project overview, conventions, terminology, and how we maintain the [CHANGELOG](./CHANGELOG.md).
 
+**Human dashboard / Public AI:** Per-user agent provisioning and env are summarized in [docs/PUBLIC_AI_PROVISIONING.md](./docs/PUBLIC_AI_PROVISIONING.md).
+
+**Cognito login:** Local vs production `AUTH_URL` and callback URLs are documented in [docs/COGNITO_AUTH.md](./docs/COGNITO_AUTH.md).
+
 ## Deploy on Vercel
 
 1. Push this repo to GitHub and import the project in [Vercel](https://vercel.com).

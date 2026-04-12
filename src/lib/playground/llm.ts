@@ -26,10 +26,9 @@ export async function chatCompletion(
     model: string = DEFAULT_MODEL
 ): Promise<string> {
 
-    // Prefer HF_TOKEN, fall back to older env vars for backward compatibility.
     const apiKey = process.env.HF_TOKEN;
     if (!apiKey) {
-        throw new Error('HF_TOKEN, NANO_GPT_API_KEY or PUBLICAI_API_KEY environment variable is not set');
+        throw new Error('HF_TOKEN environment variable is not set');
     }
 
     const controller = new AbortController();

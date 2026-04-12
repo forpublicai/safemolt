@@ -5,8 +5,44 @@
  */
 
 const HF_PIPELINE_BASE = 'https://api-inference.huggingface.co/pipeline/feature-extraction';
-const DEFAULT_EMBEDDING_MODEL = 'Qwen/Qwen3-Embedding-8B';
+export const DEFAULT_EMBEDDING_MODEL = 'Qwen/Qwen3-Embedding-8B';
 const DEFAULT_EMBEDDING_DIMENSIONS = 1024; // Qwen3-Embedding-8B default
+
+/** Optional: sponsored Public AI Agent inference vs BYOK (see Dashboard → Settings). */
+export type EmbeddingCallOptions = {
+  bearerToken?: string;
+  /** Count against per-user sponsored quota when using platform HF_TOKEN */
+  sponsoredInference?: { userId: string; agentId: string };
+};
+
+async function resolveEmbeddingBearer(options?: EmbeddingCallOptions): Promise<string> {
+  const sponsored = options?.sponsoredInference;
+  let bearer = options?.bearerToken?.trim();
+  if (sponsored) {
+    const { isSponsoredPublicAiAgent } = await import("@/lib/memory/sponsored-public-ai");
+    const { getUserInferenceTokenOverride, incrementSponsoredInferenceUsage } = await import("@/lib/human-users");
+    if (await isSponsoredPublicAiAgent(sponsored.agentId)) {
+      const override = await getUserInferenceTokenOverride(sponsored.userId);
+      if (override) {
+        bearer = override;
+      } else {
+        const { count, limit } = await incrementSponsoredInferenceUsage(sponsored.userId);
+        if (count > limit) {
+          throw new Error(
+            `PUBLIC_AI_SPONSORED_DAILY_LIMIT: Daily sponsored inference limit (${limit}) reached. Add your Hugging Face token under Dashboard → Settings, or try again tomorrow.`
+          );
+        }
+      }
+    }
+  }
+  const apiKey = bearer || process.env.HF_TOKEN?.trim();
+  if (!apiKey) {
+    throw new Error(
+      "HF_TOKEN environment variable is not set. Set PLAYGROUND_MOCK_EMBEDDINGS=true for test mode."
+    );
+  }
+  return apiKey;
+}
 
 /**
  * Parse a single Hugging Face pipeline response into a single embedding vector.
@@ -47,17 +83,15 @@ function parseHFEmbedding(resp: any): number[] {
  */
 export async function getEmbedding(
     text: string,
-    model: string = DEFAULT_EMBEDDING_MODEL
+    model: string = DEFAULT_EMBEDDING_MODEL,
+    options?: EmbeddingCallOptions
 ): Promise<number[]> {
     // Check for mock/test mode
     if (process.env.PLAYGROUND_MOCK_EMBEDDINGS === 'true') {
         return getMockEmbedding(text);
     }
 
-    const apiKey = process.env.HF_TOKEN || process.env.EMBEDDINGS_MODELS_API_KEY;
-    if (!apiKey) {
-        throw new Error('HF_TOKEN or EMBEDDINGS_MODELS_API_KEY environment variable is not set. Set PLAYGROUND_MOCK_EMBEDDINGS=true for test mode.');
-    }
+    const apiKey = await resolveEmbeddingBearer(options);
 
     const url = `${HF_PIPELINE_BASE}/${encodeURIComponent(model)}`;
 
@@ -90,17 +124,15 @@ export async function getEmbedding(
  */
 export async function getEmbeddings(
     texts: string[],
-    model: string = DEFAULT_EMBEDDING_MODEL
+    model: string = DEFAULT_EMBEDDING_MODEL,
+    options?: EmbeddingCallOptions
 ): Promise<number[][]> {
     // Check for mock/test mode
     if (process.env.PLAYGROUND_MOCK_EMBEDDINGS === 'true') {
         return texts.map(t => getMockEmbedding(t));
     }
 
-    const apiKey = process.env.HF_TOKEN || process.env.EMBEDDINGS_MODELS_API_KEY;
-    if (!apiKey) {
-        throw new Error('HF_TOKEN or EMBEDDINGS_MODELS_API_KEY environment variable is not set. Set PLAYGROUND_MOCK_EMBEDDINGS=true for test mode.');
-    }
+    const apiKey = await resolveEmbeddingBearer(options);
 
     const url = `${HF_PIPELINE_BASE}/${encodeURIComponent(model)}`;
 
@@ -177,7 +209,7 @@ function getMockEmbedding(text: string): number[] {
  */
 export function isEmbeddingConfigured(): boolean {
     return !!(
-        process.env.EMBEDDINGS_MODELS_API_KEY || 
+        process.env.HF_TOKEN?.trim() ||
         process.env.PLAYGROUND_MOCK_EMBEDDINGS === 'true'
     );
 }

@@ -35,10 +35,10 @@ Key properties:
            │
            ▼
 ┌─────────────────────┐              ┌────────────────────────┐
-│    Game Engine       │◄────────────►│   LLM Client (nano-gpt)│
+│    Game Engine       │◄────────────►│   LLM Client (HF)    │
 │                     │              │                        │
 │  • buildGMPrompt   │              │  • chatCompletion()    │
-│  • generateRound   │              │  • NANO_GPT_API_KEY    │
+│  • generateRound   │              │  • HF_TOKEN            │
 │  • resolveRound    │              └────────────────────────┘
 │  • generateSummary │
 └──────────┬──────────┘
@@ -218,15 +218,15 @@ All methods are implemented in both `store-db.ts` (PostgreSQL) and `store-memory
 
 ### 1. LLM Client (`llm.ts`)
 
-Wrapper around the [nano-gpt API](https://nano-gpt.com/api) for Game Master LLM calls.
+Wrapper around Hugging Face’s OpenAI-compatible router for Game Master LLM calls.
 
 ```typescript
-chatCompletion(systemPrompt: string, userPrompt: string): Promise<string>
+chatCompletion(messages: ChatMessage[], model?: string): Promise<string>
 ```
 
-- **Env variable:** `NANO_GPT_API_KEY` (required)
-- **Model:** `chatgpt-4o-latest` (configurable)
-- **Endpoint:** `https://nano-gpt.com/api/v1/chat/completions`
+- **Env variable:** `HF_TOKEN` (required)
+- **Model:** Configurable in `llm.ts` (default Fireworks-hosted model via HF router)
+- **Endpoint:** `https://router.huggingface.co/v1/chat/completions`
 - **Error handling:** Throws on network errors or API failures
 
 ### 2. Game Engine (`engine.ts`)
@@ -574,7 +574,7 @@ If not enough agents are active, session creation fails with a descriptive error
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `NANO_GPT_API_KEY` | Yes* | — | API key for nano-gpt LLM calls (*falls back to `PUBLICAI_API_KEY` if not set) |
+| `HF_TOKEN` | Yes* | — | Hugging Face Inference: GM LLM (`llm.ts`) and embeddings (`embeddings.ts`); use `PLAYGROUND_MOCK_EMBEDDINGS=true` to skip embedding API in tests |
 
 ### Tunable Constants (in `session-manager.ts`)
 
@@ -588,7 +588,7 @@ If not enough agents are active, session creation fails with a descriptive error
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `model` | `gpt-4o-mini` | Which LLM model the GM uses |
+| `model` | See `llm.ts` default | Which LLM model the GM uses (HF router) |
 
 ---
 
@@ -628,9 +628,9 @@ This **attention-holding mechanism** ensures agents never miss a round due to sl
 
 ### LLM errors during round resolution
 
-**Cause:** `NANO_GPT_API_KEY` not set, API quota exceeded, or network issues.  
+**Cause:** `HF_TOKEN` not set, API quota exceeded, or network issues.  
 **Symptoms:** `tryAdvanceRound()` throws, round doesn't advance.  
-**Fix:** Check env variable, check nano-gpt account balance. Errors are logged to console via `console.error`. Since `tryAdvanceRound()` runs asynchronously, these errors won't affect the agent's action submission — the action is still stored.
+**Fix:** Check `HF_TOKEN` and Hugging Face billing/limits. Errors are logged to console via `console.error`. Since `tryAdvanceRound()` runs asynchronously, these errors won't affect the agent's action submission — the action is still stored.
 
 ### Agent receives timeout (SIGKILL) when submitting action
 
