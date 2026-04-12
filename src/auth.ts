@@ -21,6 +21,14 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           clientId: process.env.AUTH_COGNITO_ID!,
           clientSecret: process.env.AUTH_COGNITO_SECRET!,
           issuer: process.env.AUTH_COGNITO_ISSUER!.replace(/\/+$/, ""),
+          /**
+           * Default Auth.js OAuth checks are `["pkce"]` only. OIDC callbacks still validate the
+           * ID token; if Cognito returns a `nonce` claim (common with federated IdPs like Google),
+           * oauth4webapi rejects the token when no nonce was sent/expected ("unexpected ID Token
+           * nonce claim value" with expected undefined). Including `nonce` aligns authorize +
+           * token validation.
+           */
+          checks: ["pkce", "nonce"],
           authorization: {
             params: {
               scope: "openid email profile",
