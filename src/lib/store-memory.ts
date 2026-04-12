@@ -1936,6 +1936,10 @@ export function updatePlaygroundSession(id: string, updates: UpdateSessionInput)
   return true;
 }
 
+export function deletePlaygroundSession(id: string): boolean {
+  return playgroundSessions.delete(id);
+}
+
 /**
  * Join a pending playground session (memory store implementation).
  */

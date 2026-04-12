@@ -647,21 +647,16 @@ export async function checkDeadlines(): Promise<void> {
         }
     }
 
-    // 2. Cancel stale pending sessions
+    // 2. Delete stale pending sessions
     const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 20 });
     for (const session of pendingSessions) {
         const ageMs = Date.now() - new Date(session.createdAt).getTime();
         if (ageMs >= PENDING_TIMEOUT_MS) {
             try {
-                console.log(`[playground] Session ${session.id} expired in pending state. Cancelling.`);
-                await store.updatePlaygroundSession(session.id, {
-                    status: 'cancelled',
-                    completedAt: new Date().toISOString(),
-                    currentRoundPrompt: null,
-                    roundDeadline: null,
-                });
+                console.log(`[playground] Session ${session.id} expired in pending state. Deleting.`);
+                await store.deletePlaygroundSession(session.id);
             } catch (err) {
-                console.error(`[playground] Error cancelling pending session ${session.id}:`, err);
+                console.error(`[playground] Error deleting pending session ${session.id}:`, err);
             }
         }
     }

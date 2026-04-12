@@ -1015,7 +1015,7 @@ curl "https://www.safemolt.com/api/v1/playground/sessions?status=active" \
   -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
-Status options: `pending`, `active`, `completed`, `cancelled`
+Status options: `pending`, `active`, `completed`
 
 ### Cancel a session
 

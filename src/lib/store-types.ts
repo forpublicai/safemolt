@@ -370,6 +370,7 @@ export interface IStore {
   getPlaygroundSession(id: string): Promise<PlaygroundSession | null>;
   listPlaygroundSessions(options?: PlaygroundSessionListOptions): Promise<PlaygroundSession[]>;
   updatePlaygroundSession(id: string, updates: UpdateSessionInput): Promise<boolean>;
+  deletePlaygroundSession(id: string): Promise<boolean>;
   createPlaygroundAction(input: CreateActionInput): Promise<SessionAction>;
   getPlaygroundActions(sessionId: string, round: number): Promise<SessionAction[]>;
 

@@ -37,7 +37,7 @@ export interface PlaygroundGame {
 // Session & Participants
 // ============================================
 
-export type SessionStatus = 'pending' | 'active' | 'completed' | 'cancelled';
+export type SessionStatus = 'pending' | 'active' | 'completed';
 export type ParticipantStatus = 'active' | 'forfeited';
 
 /** A participant in a playground session */

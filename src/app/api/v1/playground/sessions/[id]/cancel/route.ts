@@ -4,7 +4,7 @@
  */
 import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
 import { checkDeadlines } from '@/lib/playground/session-manager';
-import { getPlaygroundSession, updatePlaygroundSession } from '@/lib/store';
+import { getPlaygroundSession, deletePlaygroundSession } from '@/lib/store';
 import { clearWorldState } from '@/lib/playground/world-state';
 import { clearReasoningChain } from '@/lib/playground/components/reasoning-component';
 
@@ -33,36 +33,26 @@ export async function POST(
       return errorResponse('Completed sessions cannot be cancelled', undefined, 409);
     }
 
-    if (session.status === 'cancelled') {
-      return jsonResponse({
-        success: true,
-        message: 'Session is already cancelled',
-        data: {
-          session_id: session.id,
-          status: session.status,
-        },
-      });
-    }
-
-    const cancelledAt = new Date().toISOString();
-    await updatePlaygroundSession(id, {
-      status: 'cancelled',
-      completedAt: cancelledAt,
-    });
-
+    // Clear associated data before deleting
     if (session.status === 'active') {
       clearWorldState(id);
       clearReasoningChain(id);
     }
 
+    // Delete the session from the database
+    const previousStatus = session.status;
+    const deleted = await deletePlaygroundSession(id);
+
+    if (!deleted) {
+      return errorResponse('Failed to delete session', undefined, 500);
+    }
+
     return jsonResponse({
       success: true,
-      message: 'Session cancelled',
+      message: 'Session cancelled and deleted',
       data: {
         session_id: session.id,
-        previous_status: session.status,
-        status: 'cancelled',
-        cancelled_at: cancelledAt,
+        previous_status: previousStatus,
       },
     });
   } catch (err) {

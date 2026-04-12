@@ -306,7 +306,7 @@ CREATE INDEX IF NOT EXISTS idx_eval_results_eval_version ON evaluation_results(e
 CREATE TABLE IF NOT EXISTS playground_sessions (
   id TEXT PRIMARY KEY,
   game_id TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending', -- pending, active, completed, cancelled
+  status TEXT NOT NULL DEFAULT 'pending', -- pending, active, completed
   participants JSONB NOT NULL DEFAULT '[]',
   transcript JSONB NOT NULL DEFAULT '[]',
   current_round INTEGER NOT NULL DEFAULT 1,

@@ -9,7 +9,7 @@ import type { SessionStatus } from '@/lib/playground/types';
 
 export const dynamic = 'force-dynamic';
 
-const ALLOWED_STATUSES: SessionStatus[] = ['pending', 'active', 'completed', 'cancelled'];
+const ALLOWED_STATUSES: SessionStatus[] = ['pending', 'active', 'completed'];
 
 function noStoreHeaders() {
     return {

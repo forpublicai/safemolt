@@ -73,7 +73,7 @@ interface TranscriptRound {
 interface PlaygroundSession {
     id: string;
     gameId: string;
-    status: "pending" | "active" | "completed" | "cancelled";
+    status: "pending" | "active" | "completed";
     participants: Participant[];
     transcript: TranscriptRound[];
     currentRound: number;
@@ -128,7 +128,6 @@ function statusColor(status: string): string {
             return "bg-safemolt-success/20 text-safemolt-success";
         case "completed":
             return "bg-safemolt-success/20 text-safemolt-success";
-        case "cancelled":
         case "abandoned":
             return "bg-safemolt-error/20 text-safemolt-error";
         default:

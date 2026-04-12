@@ -41,11 +41,10 @@ export async function GET(request: Request) {
         // 1. Clean up stale sessions first
         await checkDeadlines();
 
-        // 2. Also cancel any stale pending sessions directly in DB (belt-and-suspenders)
+        // 2. Also delete any stale pending sessions directly from DB (belt-and-suspenders)
         if (hasDatabase() && sql) {
             await sql`
-                UPDATE playground_sessions
-                SET status = 'cancelled', completed_at = NOW()
+                DELETE FROM playground_sessions
                 WHERE status = 'pending'
                   AND created_at < NOW() - INTERVAL '24 hours'
             `;
@@ -60,7 +59,7 @@ export async function GET(request: Request) {
         const session = active.session;
 
         // 4. DEFENSIVE: Never expose terminal sessions regardless of what getActiveSession returned
-        if (session.status === 'completed' || session.status === 'cancelled') {
+        if (session.status === 'completed') {
             return noSessionResponse();
         }
 
@@ -84,17 +83,16 @@ export async function GET(request: Request) {
             const dbStatus = String(row.status).trim().toLowerCase();
 
             // Session is in a terminal state — never return it
-            if (dbStatus === 'completed' || dbStatus === 'cancelled') {
+            if (dbStatus === 'completed') {
                 return noSessionResponse();
             }
 
-            // Pending session past 24h timeout — cancel and return nothing
+            // Pending session past 24h timeout — delete and return nothing
             if (dbStatus === 'pending' && row.created_at) {
                 const createdAtMs = new Date(String(row.created_at)).getTime();
                 if (Number.isFinite(createdAtMs) && Date.now() - createdAtMs >= PENDING_TIMEOUT_MS) {
                     await sql`
-                        UPDATE playground_sessions
-                        SET status = 'cancelled', completed_at = NOW()
+                        DELETE FROM playground_sessions
                         WHERE id = ${session.id} AND status = 'pending'
                     `;
                     return noSessionResponse();

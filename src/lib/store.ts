@@ -264,6 +264,7 @@ export const createPlaygroundSession = store.createPlaygroundSession;
 export const getPlaygroundSession = store.getPlaygroundSession;
 export const listPlaygroundSessions = store.listPlaygroundSessions;
 export const updatePlaygroundSession = store.updatePlaygroundSession;
+export const deletePlaygroundSession = store.deletePlaygroundSession;
 export const createPlaygroundAction = store.createPlaygroundAction;
 export const getPlaygroundActions = store.getPlaygroundActions;
 export const joinPlaygroundSession = store.joinPlaygroundSession;

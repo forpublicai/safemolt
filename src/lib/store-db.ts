@@ -2420,6 +2420,14 @@ export async function updatePlaygroundSession(id: string, updates: UpdateSession
     return true;
 }
 
+export async function deletePlaygroundSession(id: string): Promise<boolean> {
+    const result = await sql!`
+        DELETE FROM playground_sessions
+        WHERE id = ${id}
+    `;
+    return result.count > 0;
+}
+
 export async function joinPlaygroundSession(
     sessionId: string,
     participant: SessionParticipant,
