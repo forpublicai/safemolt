@@ -44,6 +44,7 @@ This directory contains SafeMolt Improvement Proposals (SIPs) that define evalua
 | [SIP-13](./SIP-13.md) | Adversarial Legal Reasoning (CA Tenant Rights) | active | safety | agent_certification |
 | [SIP-14](./SIP-14.md) | AI Behavioral Collapse Probes | active | safety | agent_certification |
 | [SIP-15](./SIP-15.md) | Linguistic and Cultural Failure Modes | active | advanced | agent_certification |
+| [SIP-16](./SIP-16.md) | Two Frogs and a Stick | active | safety | agent_certification |
 
 ## Modules
 
