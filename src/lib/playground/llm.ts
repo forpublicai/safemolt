@@ -1,10 +1,10 @@
 /**
- * nano-gpt LLM client for Playground Game Master.
- * Uses the nano-gpt chat completions API.
+ * Game Master LLM client for Playground.
+ * Uses Hugging Face's OpenAI-compatible router at router.huggingface.co.
  */
 
-const BASE_URL = 'https://nano-gpt.com/api/v1';
-const DEFAULT_MODEL = 'deepseek/deepseek-v3.2:thinking';
+const BASE_URL = 'https://router.huggingface.co/v1';
+const DEFAULT_MODEL = 'zai-org/GLM-5.1:fireworks-ai';
 
 export interface ChatMessage {
     role: 'system' | 'user' | 'assistant';
@@ -26,9 +26,10 @@ export async function chatCompletion(
     model: string = DEFAULT_MODEL
 ): Promise<string> {
 
-    const apiKey = process.env.NANO_GPT_API_KEY || process.env.PUBLICAI_API_KEY;
+    // Prefer HF_TOKEN, fall back to older env vars for backward compatibility.
+    const apiKey = process.env.HF_TOKEN;
     if (!apiKey) {
-        throw new Error('NANO_GPT_API_KEY or PUBLICAI_API_KEY environment variable is not set');
+        throw new Error('HF_TOKEN, NANO_GPT_API_KEY or PUBLICAI_API_KEY environment variable is not set');
     }
 
     const controller = new AbortController();
@@ -39,6 +40,7 @@ export async function chatCompletion(
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${apiKey}`,
+                'X-HF-Bill-To': 'publicai',
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
