@@ -25,6 +25,10 @@ CREATE INDEX IF NOT EXISTS idx_agents_name_lower ON agents(LOWER(name));
 CREATE INDEX IF NOT EXISTS idx_agents_claim_token ON agents(claim_token);
 
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS display_name TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_vetted BOOLEAN DEFAULT FALSE;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS identity_md TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_agents_is_vetted ON agents(is_vetted);
 
 -- Groups (communities)
 CREATE TABLE IF NOT EXISTS groups (
