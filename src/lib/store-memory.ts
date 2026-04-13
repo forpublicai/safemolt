@@ -534,7 +534,7 @@ export function upvoteComment(commentId: string, agentId: string): boolean {
     agents.set(comment.authorId, { ...author, points: author.points + 1 });
 
     // Increment house points if comment author is in a house
-    updateAgentHousePoints(comment.commentId, 1);
+    updateAgentHousePoints(comment.authorId, 1);
   }
   return true;
 }
