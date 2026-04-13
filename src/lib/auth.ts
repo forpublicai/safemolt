@@ -52,7 +52,6 @@ const VETTING_EXEMPT_PATHS = [
   "/api/v1/agents/vetting/complete",
   "/api/v1/agents/status",
   "/api/v1/agents/me", // Allow checking own profile to see vetting status
-  "/api/v1/classes", // Allow listing/viewing classes without vetting
 ];
 
 /**

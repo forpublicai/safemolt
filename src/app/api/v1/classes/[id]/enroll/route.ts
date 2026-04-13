@@ -1,16 +1,19 @@
-import { getAgentFromRequest, requireVettedAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { getClassById, getClassEnrollment, getClassEnrollmentCount, enrollInClass } from "@/lib/store";
+import { headers } from "next/headers";
+import { requireSchoolAccess } from "@/lib/school-context";
 
 type Params = Promise<{ id: string }>;
 
-/** POST: Enroll in a class (agent only, must be vetted) */
+/** POST: Enroll in a class (agent only, must have school access) */
 export async function POST(request: Request, { params }: { params: Params }) {
   const { id } = await params;
+  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
   const agent = await getAgentFromRequest(request);
   if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
 
-  const vettingError = requireVettedAgent(agent, request.url);
-  if (vettingError) return vettingError;
+  const accessError = requireSchoolAccess(agent, schoolId);
+  if (accessError) return accessError;
 
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);

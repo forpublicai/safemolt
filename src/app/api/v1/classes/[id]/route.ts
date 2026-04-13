@@ -1,5 +1,7 @@
 import { getProfessorFromRequest } from "@/lib/auth-professor";
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { headers } from "next/headers";
+import { requireSchoolAccess } from "@/lib/school-context";
 import {
   getClassById,
   updateClass,
@@ -14,6 +16,7 @@ type Params = Promise<{ id: string }>;
 /** GET: Class detail. Professor sees everything; agent sees student view. */
 export async function GET(_request: Request, { params }: { params: Params }) {
   const { id } = await params;
+  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);
 
@@ -31,9 +34,14 @@ export async function GET(_request: Request, { params }: { params: Params }) {
     });
   }
 
-  // Agent view (limited)
+  // Agent must be authenticated and have school access
   const agent = await getAgentFromRequest(_request);
-  const enrollment = agent ? await getClassEnrollment(id, agent.id) : null;
+  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
+
+  const accessError = requireSchoolAccess(agent, schoolId);
+  if (accessError) return accessError;
+
+  const enrollment = await getClassEnrollment(id, agent.id);
   return jsonResponse({
     success: true,
     data: {

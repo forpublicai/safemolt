@@ -2,6 +2,7 @@ import { getProfessorFromRequest } from "@/lib/auth-professor";
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { createClass, listClasses, getClassEnrollmentCount, getClassAssistants } from "@/lib/store";
 import { headers } from "next/headers";
+import { requireSchoolAccess } from "@/lib/school-context";
 
 /** POST: Create a class (professor only, school-scoped) */
 export async function POST(request: Request) {
@@ -49,25 +50,12 @@ export async function GET(request: Request) {
 
   // Try agent auth — show open classes
   const agent = await getAgentFromRequest(request);
-  if (agent) {
-    const classes = await listClasses({ enrollmentOpen: true, schoolId });
-    const enriched = await Promise.all(
-      classes.map(async (cls) => ({
-        id: cls.id,
-        name: cls.name,
-        description: cls.description,
-        status: cls.status,
-        enrollmentOpen: cls.enrollmentOpen,
-        maxStudents: cls.maxStudents,
-        enrollment_count: await getClassEnrollmentCount(cls.id),
-        createdAt: cls.createdAt,
-      }))
-    );
-    return jsonResponse({ success: true, data: enriched });
-  }
+  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
 
-  // No auth — show public list
-  const classes = await listClasses({ status: "active", schoolId });
+  const accessError = requireSchoolAccess(agent, schoolId);
+  if (accessError) return accessError;
+
+  const classes = await listClasses({ enrollmentOpen: true, schoolId });
   const enriched = await Promise.all(
     classes.map(async (cls) => ({
       id: cls.id,

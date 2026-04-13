@@ -25,6 +25,8 @@ export async function GET(request: Request) {
       follower_count: agent.followerCount,
       following_count: followingCount,
       is_claimed: agent.isClaimed,
+      is_vetted: agent.isVetted ?? false,
+      is_admitted: agent.isAdmitted ?? false,
       is_active: isActive,
       created_at: agent.createdAt,
       last_active: lastActive,

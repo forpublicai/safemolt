@@ -1,12 +1,25 @@
 import { getProfessorFromRequest } from "@/lib/auth-professor";
-import { jsonResponse, errorResponse } from "@/lib/auth";
+import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { getClassById, getClassSession, updateClassSession } from "@/lib/store";
+import { headers } from "next/headers";
+import { requireSchoolAccess } from "@/lib/school-context";
 
 type Params = Promise<{ id: string; sessionId: string }>;
 
-/** GET: Session detail */
+/** GET: Session detail (must be authenticated with school access) */
 export async function GET(_request: Request, { params }: { params: Params }) {
   const { sessionId } = await params;
+  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
+
+  // Professor gets full access
+  const professor = await getProfessorFromRequest(_request);
+  if (!professor) {
+    const agent = await getAgentFromRequest(_request);
+    if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
+    const accessError = requireSchoolAccess(agent, schoolId);
+    if (accessError) return accessError;
+  }
+
   const session = await getClassSession(sessionId);
   if (!session) return errorResponse("Session not found", undefined, 404);
   return jsonResponse({ success: true, data: session });

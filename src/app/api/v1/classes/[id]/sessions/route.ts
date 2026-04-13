@@ -1,5 +1,7 @@
 import { getProfessorFromRequest } from "@/lib/auth-professor";
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { headers } from "next/headers";
+import { requireSchoolAccess } from "@/lib/school-context";
 import { getClassById, createClassSession, listClassSessions, getClassEnrollment, isClassAssistant } from "@/lib/store";
 
 type Params = Promise<{ id: string }>;
@@ -26,6 +28,7 @@ export async function POST(request: Request, { params }: { params: Params }) {
 /** GET: List sessions for a class (professor, TA, or enrolled student) */
 export async function GET(request: Request, { params }: { params: Params }) {
   const { id } = await params;
+  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);
 
@@ -36,35 +39,23 @@ export async function GET(request: Request, { params }: { params: Params }) {
     return jsonResponse({ success: true, data: sessions });
   }
 
-  // Agent must be enrolled or a TA for full view
+  // Agent must be authenticated and have school access
   const agent = await getAgentFromRequest(request);
-  if (agent) {
-    const [enrollment, isTa] = await Promise.all([
-      getClassEnrollment(id, agent.id),
-      isClassAssistant(id, agent.id),
-    ]);
-    if (enrollment || isTa) {
-      const sessions = await listClassSessions(id);
-      // Students don't see content for upcoming sessions
-      const filtered = sessions.map((s) => ({
-        ...s,
-        content: s.status !== "scheduled" ? s.content : undefined,
-      }));
-      return jsonResponse({ success: true, data: filtered });
-    }
-  }
+  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
 
-  // Public view — show session list without content
+  const accessError = requireSchoolAccess(agent, schoolId);
+  if (accessError) return accessError;
+
+  const [enrollment, isTa] = await Promise.all([
+    getClassEnrollment(id, agent.id),
+    isClassAssistant(id, agent.id),
+  ]);
+
   const sessions = await listClassSessions(id);
-  const publicView = sessions.map((s) => ({
-    id: s.id,
-    title: s.title,
-    type: s.type,
-    sequence: s.sequence,
-    status: s.status,
-    startedAt: s.startedAt,
-    endedAt: s.endedAt,
-    createdAt: s.createdAt,
+  // Students don't see content for upcoming sessions; non-enrolled see no content
+  const filtered = sessions.map((s) => ({
+    ...s,
+    content: (enrollment || isTa) && s.status !== "scheduled" ? s.content : undefined,
   }));
-  return jsonResponse({ success: true, data: publicView });
+  return jsonResponse({ success: true, data: filtered });
 }

@@ -1,6 +1,8 @@
 import { getProfessorFromRequest } from "@/lib/auth-professor";
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { getClassById, createClassEvaluation, listClassEvaluations, getClassEnrollment } from "@/lib/store";
+import { headers } from "next/headers";
+import { requireSchoolAccess } from "@/lib/school-context";
 
 type Params = Promise<{ id: string }>;
 
@@ -23,9 +25,10 @@ export async function POST(request: Request, { params }: { params: Params }) {
   return jsonResponse({ success: true, data: evaluation }, 201);
 }
 
-/** GET: List evaluations for a class */
+/** GET: List evaluations for a class (must be authenticated with school access) */
 export async function GET(request: Request, { params }: { params: Params }) {
   const { id } = await params;
+  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);
 
@@ -37,7 +40,14 @@ export async function GET(request: Request, { params }: { params: Params }) {
     return jsonResponse({ success: true, data: evaluations });
   }
 
-  // Public/student view (no prompt — that's the hidden part)
+  // Agents must be authenticated and have school access
+  const agent = await getAgentFromRequest(request);
+  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
+
+  const accessError = requireSchoolAccess(agent, schoolId);
+  if (accessError) return accessError;
+
+  // Student view (prompt omitted — revealed only at submission)
   const studentView = evaluations
     .filter((e) => e.status === "active" || e.status === "completed")
     .map((e) => ({
@@ -48,7 +58,6 @@ export async function GET(request: Request, { params }: { params: Params }) {
       status: e.status,
       maxScore: e.maxScore,
       createdAt: e.createdAt,
-      // prompt is intentionally omitted — students only see it when they submit
     }));
 
   return jsonResponse({ success: true, data: studentView });

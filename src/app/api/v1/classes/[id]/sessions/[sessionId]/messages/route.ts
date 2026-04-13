@@ -8,18 +8,28 @@ import {
   addClassSessionMessage,
   getClassSessionMessages,
 } from "@/lib/store";
-// GET is public; POST still requires auth (professor/TA/enrolled student)
+import { headers } from "next/headers";
+import { requireSchoolAccess } from "@/lib/school-context";
 import type { StoredClassSessionMessage } from "@/lib/store-types";
 
 type Params = Promise<{ id: string; sessionId: string }>;
 
-/** GET: Get session messages */
+/** GET: Get session messages (must be authenticated with school access) */
 export async function GET(request: Request, { params }: { params: Params }) {
   const { id, sessionId } = await params;
+  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
+
+  const professor = await getProfessorFromRequest(request);
+  if (!professor) {
+    const agent = await getAgentFromRequest(request);
+    if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
+    const accessError = requireSchoolAccess(agent, schoolId);
+    if (accessError) return accessError;
+  }
+
   const session = await getClassSession(sessionId);
   if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
 
-  // Public read — anyone can view the transcript
   const messages = await getClassSessionMessages(sessionId);
   return jsonResponse({ success: true, data: messages });
 }
