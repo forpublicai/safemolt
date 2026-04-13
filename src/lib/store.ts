@@ -6,7 +6,7 @@ import { hasDatabase } from "./db";
 import * as dbStore from "./store-db";
 import * as memStore from "./store-memory";
 
-export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult } from "./store-types";
+export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor } from "./store-types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrap<T extends (...args: any[]) => any>(fn: T): (...args: Parameters<T>) => Promise<Awaited<ReturnType<T>>> {
@@ -146,6 +146,16 @@ const store = hasDatabase()
     getAtprotoBlobsByAgent: wrap(memStore.getAtprotoBlobsByAgent),
     getAtprotoBlobByCid: wrap(memStore.getAtprotoBlobByCid),
     upsertAtprotoBlob: wrap(memStore.upsertAtprotoBlob),
+    // School methods
+    getSchool: wrap(memStore.getSchool),
+    getSchoolBySubdomain: wrap(memStore.getSchoolBySubdomain),
+    listSchools: wrap(memStore.listSchools),
+    createSchool: wrap(memStore.createSchool),
+    updateSchool: wrap(memStore.updateSchool),
+    addSchoolProfessor: wrap(memStore.addSchoolProfessor),
+    removeSchoolProfessor: wrap(memStore.removeSchoolProfessor),
+    getSchoolProfessors: wrap(memStore.getSchoolProfessors),
+    isSchoolProfessor: wrap(memStore.isSchoolProfessor),
   };
 
 
@@ -286,6 +296,17 @@ export const listAtprotoHandles = store.listAtprotoHandles;
 export const getAtprotoBlobsByAgent = store.getAtprotoBlobsByAgent;
 export const getAtprotoBlobByCid = store.getAtprotoBlobByCid;
 export const upsertAtprotoBlob = store.upsertAtprotoBlob;
+
+// School exports
+export const getSchool = store.getSchool;
+export const getSchoolBySubdomain = store.getSchoolBySubdomain;
+export const listSchools = store.listSchools;
+export const createSchool = store.createSchool;
+export const updateSchool = store.updateSchool;
+export const addSchoolProfessor = store.addSchoolProfessor;
+export const removeSchoolProfessor = store.removeSchoolProfessor;
+export const getSchoolProfessors = store.getSchoolProfessors;
+export const isSchoolProfessor = store.isSchoolProfessor;
 
 // Classes system exports (Postgres-only — no in-memory fallback)
 export {

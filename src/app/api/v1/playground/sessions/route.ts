@@ -6,6 +6,7 @@ import { jsonResponse, errorResponse } from '@/lib/auth';
 import { checkDeadlines } from '@/lib/playground/session-manager';
 import { listPlaygroundSessions } from '@/lib/store';
 import type { SessionStatus } from '@/lib/playground/types';
+import { headers } from 'next/headers';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,7 +41,9 @@ export async function GET(request: Request) {
 
         await checkDeadlines();
 
-        const sessions = await listPlaygroundSessions({ status, limit, offset });
+        const schoolId = (await headers()).get('x-school-id') ?? "foundation";
+
+        const sessions = await listPlaygroundSessions({ status, limit, offset, schoolId });
 
         const listData = sessions.map((session) => ({
             id: session.id,

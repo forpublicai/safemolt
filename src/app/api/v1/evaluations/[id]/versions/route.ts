@@ -1,3 +1,4 @@
+import { headers } from "next/headers";
 import { errorResponse, jsonResponse } from "@/lib/auth";
 import { getEvaluation } from "@/lib/evaluations/loader";
 import { getEvaluationVersions } from "@/lib/store";
@@ -11,7 +12,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const evaluation = getEvaluation(id);
+  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
+  const evaluation = getEvaluation(id, schoolId);
   if (!evaluation) {
     return errorResponse("Evaluation not found", undefined, 404);
   }

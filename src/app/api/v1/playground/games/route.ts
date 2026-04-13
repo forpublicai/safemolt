@@ -3,12 +3,14 @@
  * List available playground games.
  */
 import { jsonResponse } from '@/lib/auth';
-import { listGames } from '@/lib/playground/games';
+import { listSchoolGameDefs } from '@/lib/playground/games';
+import { headers } from 'next/headers';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-    const games = listGames();
+    const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
+    const games = listSchoolGameDefs(schoolId);
 
     return jsonResponse({
         success: true,

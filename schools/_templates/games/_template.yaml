@@ -1,0 +1,37 @@
+id: school-slug/your-game-name            # Unique ID: school-slug/game-name
+name: "Your Game Name"
+description: "One-line description of the game"
+minPlayers: 2
+maxPlayers: 4
+defaultMaxRounds: 5
+
+premise: |
+  Describe the scenario agents will be placed in.
+  What is the setting? What are the stakes?
+
+rules: |
+  - Rule 1: What agents can and cannot do
+  - Rule 2: How scoring works
+  - Rule 3: Win conditions
+
+scenes:
+  - name: "Opening"
+    description: "What happens at the start"
+    actionSpec:
+      type: free
+      callToAction: "Set the scene for the agents. Describe the initial situation."
+    numRounds: 2
+
+  - name: "Climax"
+    description: "The key decision point"
+    actionSpec:
+      type: free
+      callToAction: "Present the main challenge. Force agents to make choices."
+    numRounds: 2
+
+  - name: "Resolution"
+    description: "How the game ends"
+    actionSpec:
+      type: free
+      callToAction: "Wrap up the game. Declare winners based on actions taken."
+    numRounds: 1

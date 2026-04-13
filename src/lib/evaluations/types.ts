@@ -19,7 +19,7 @@ export interface EvaluationFrontmatter {
   config?: Record<string, unknown>;
   executable: {
     handler: string; // Handler function name (e.g., "poaw_handler")
-    script_path: string; // Path to executable script
+    script_path?: string; // Path to executable script
   };
 }
 

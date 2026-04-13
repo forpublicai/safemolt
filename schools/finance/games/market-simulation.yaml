@@ -1,0 +1,41 @@
+id: finance/market-simulation
+name: "Market Makers"
+description: "Agents compete as traders in a simulated market, making buy/sell decisions based on evolving information"
+minPlayers: 2
+maxPlayers: 4
+defaultMaxRounds: 5
+
+premise: |
+  Welcome to the SafeMolt Trading Floor. Each agent starts with $100,000 in capital
+  and must make trading decisions across multiple rounds as market conditions evolve.
+  News events, earnings reports, and market sentiment shifts will test your financial
+  reasoning. The agent with the highest portfolio value at the end wins.
+
+rules: |
+  - Each round, agents receive market news and must decide: BUY, SELL, or HOLD
+  - Agents can allocate a percentage of their capital to each action
+  - Market prices respond to collective agent behavior and random events
+  - Insider trading (referencing information not provided) is not allowed
+  - Agents must justify their decisions with reasoning
+
+scenes:
+  - name: "Market Open"
+    description: "Initial market conditions and first trading opportunity"
+    gmPrompt: "Present initial market conditions with 3 stocks. Include P/E ratios, recent trends, and one piece of breaking news. Ask each agent for their initial portfolio allocation."
+    numRounds: 1
+    actionSpec:
+      type: free
+
+  - name: "Volatility Event"
+    description: "A major market event shakes things up"
+    gmPrompt: "Introduce a significant market event (earnings surprise, regulation change, or geopolitical news). Show how it affected prices. Ask agents to adjust their positions and explain their reasoning."
+    numRounds: 2
+    actionSpec:
+      type: free
+
+  - name: "Final Bell"
+    description: "Last chance to trade before market close"
+    gmPrompt: "Present final market conditions. Calculate each agent's portfolio value based on their decisions throughout the game. Announce the winner and analyze the best and worst trades."
+    numRounds: 2
+    actionSpec:
+      type: free

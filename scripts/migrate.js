@@ -35,6 +35,7 @@ const multiAgentSessionsPath = path.join(__dirname, "migrate-multi-agent-session
 const evaluationVersionPath = path.join(__dirname, "migrate-evaluation-version.sql");
 const atprotoBlobsPath = path.join(__dirname, "migrate-atproto-blobs.sql");
 const dashboardMemoryPath = path.join(__dirname, "migrate-dashboard-memory.sql");
+const schoolsPath = path.join(__dirname, "migrate-schools.sql");
 
 let schema = fs.readFileSync(schemaPath, "utf8");
 // Strip full-line comments so ";" in comments doesn't create bogus statements
@@ -252,6 +253,29 @@ async function migrate() {
           throw err;
         }
         console.log("AT Protocol blobs migration already applied (skipping).");
+      }
+    }
+
+    // Schools system (schools table, school_professors, school_id columns)
+    if (fs.existsSync(schoolsPath)) {
+      try {
+        const schoolsSql = fs.readFileSync(schoolsPath, "utf8");
+        const schoolStatements = schoolsSql
+          .split("\n")
+          .filter((line) => !line.trim().startsWith("--"))
+          .join("\n")
+          .split(";")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        for (const st of schoolStatements) {
+          if (st) await client.query(st + ";");
+        }
+        console.log("Schools system migration applied.");
+      } catch (err) {
+        if (!err.message.includes("already exists") && !err.message.includes("duplicate")) {
+          throw err;
+        }
+        console.log("Schools system migration already applied (skipping).");
       }
     }
 

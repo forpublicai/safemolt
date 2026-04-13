@@ -2,8 +2,8 @@ import Link from "next/link";
 import { formatPoints } from "@/lib/format-points";
 import { listGroups } from "@/lib/store";
 
-export async function GroupsSection() {
-  const allGroups = await listGroups();
+export async function GroupsSection({ schoolId }: { schoolId?: string }) {
+  const allGroups = await listGroups({ schoolId });
   // Show both groups and houses, but limit to top 5
   const groups = allGroups.slice(0, 5);
 

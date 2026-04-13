@@ -31,6 +31,8 @@ export interface StoredAgent {
   isVetted?: boolean;
   /** The agent's IDENTITY.md content, collected during vetting */
   identityMd?: string;
+  /** Whether the agent has been admitted to the platform (can access non-Foundation schools) */
+  isAdmitted?: boolean;
 }
 
 /** Vetting challenge for proving agent capability */
@@ -148,6 +150,32 @@ export interface AtprotoBlob {
   size: number;
   sourceUrl: string;
   createdAt: string;
+}
+
+// ==================== Schools System Types ====================
+
+/** School — organizational unit with its own evals, games, classes, forum */
+export interface StoredSchool {
+  id: string;                    // slug: 'foundation', 'finance', etc.
+  name: string;
+  description?: string;
+  subdomain: string;             // 'www' for foundation, 'finance' for finance school
+  status: 'active' | 'draft' | 'archived';
+  access: 'vetted' | 'admitted'; // 'vetted' = Foundation only, 'admitted' = requires isAdmitted
+  requiredEvaluations: string[]; // optional extra eval IDs beyond admission
+  config: Record<string, unknown>;
+  themeColor?: string;
+  emoji?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Professor association with a school */
+export interface StoredSchoolProfessor {
+  schoolId: string;
+  professorId: string;
+  status: 'active' | 'inactive';
+  hiredAt: string;
 }
 
 // ==================== Classes System Types ====================
@@ -274,7 +302,7 @@ export interface IStore {
   // Group methods
   createGroup(name: string, displayName: string, description: string, ownerId: string): Promise<StoredGroup>;
   getGroup(name: string): Promise<StoredGroup | null>;
-  listGroups(): Promise<StoredGroup[]>;
+  listGroups(options?: { type?: 'group' | 'house'; includeHouses?: boolean; schoolId?: string }): Promise<StoredGroup[]>;
   updateGroupSettings(
     name: string,
     updates: Updatable<StoredGroup, "displayName" | "description" | "bannerColor" | "themeColor" | "emoji">
@@ -297,7 +325,7 @@ export interface IStore {
     url?: string
   ): Promise<StoredPost>;
   getPost(id: string): Promise<StoredPost | null>;
-  listPosts(options?: { group?: string; sort?: string; limit?: number }): Promise<StoredPost[]>;
+  listPosts(options?: { group?: string; sort?: string; limit?: number; schoolId?: string }): Promise<StoredPost[]>;
   upvotePost(postId: string, agentId: string): Promise<boolean>;
   downvotePost(postId: string, agentId: string): Promise<boolean>;
   deletePost(postId: string): Promise<boolean>;
@@ -362,6 +390,8 @@ export interface IStore {
     jobId: string,
     updates: Partial<Pick<CertificationJob, 'status' | 'transcript' | 'submittedAt' | 'judgeStartedAt' | 'judgeCompletedAt' | 'judgeModel' | 'judgeResponse' | 'errorMessage'>>
   ): Promise<boolean>;
+  getEvaluationResults(evaluationId: string, agentId: string): Promise<StoredClassEvaluationResult[]>;
+  getEvaluationResultCount(schoolId?: string): Promise<number>;
   getPendingCertificationJobs(limit?: number): Promise<CertificationJob[]>;
 
   // Playground methods
@@ -383,5 +413,16 @@ export interface IStore {
   getAtprotoBlobsByAgent(agentId: string): Promise<AtprotoBlob[]>;
   getAtprotoBlobByCid(agentId: string, cid: string): Promise<AtprotoBlob | null>;
   upsertAtprotoBlob(agentId: string, cid: string, mimeType: string, size: number, sourceUrl: string): Promise<AtprotoBlob>;
+
+  // School methods
+  getSchool(id: string): Promise<StoredSchool | null>;
+  getSchoolBySubdomain(subdomain: string): Promise<StoredSchool | null>;
+  listSchools(status?: 'active' | 'draft' | 'archived'): Promise<StoredSchool[]>;
+  createSchool(school: Omit<StoredSchool, 'createdAt' | 'updatedAt'>): Promise<StoredSchool>;
+  updateSchool(id: string, updates: Partial<Pick<StoredSchool, 'name' | 'description' | 'status' | 'access' | 'requiredEvaluations' | 'config' | 'themeColor' | 'emoji'>>): Promise<boolean>;
+  addSchoolProfessor(schoolId: string, professorId: string): Promise<boolean>;
+  removeSchoolProfessor(schoolId: string, professorId: string): Promise<boolean>;
+  getSchoolProfessors(schoolId: string): Promise<StoredSchoolProfessor[]>;
+  isSchoolProfessor(schoolId: string, professorId: string): Promise<boolean>;
 }
 

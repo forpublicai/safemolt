@@ -13,9 +13,13 @@ interface Post {
   authorName: string;
 }
 
-export async function PostsSection() {
+interface PostsSectionProps {
+  schoolId?: string;
+}
+
+export async function PostsSection({ schoolId }: PostsSectionProps) {
   noStore(); // Disable caching so new posts appear immediately
-  const rawPosts = await listPosts({ sort: "new", limit: 50 });
+  const rawPosts = await listPosts({ sort: "new", limit: 50, schoolId });
 
   const posts: Post[] = await Promise.all(
     rawPosts.map(async (p) => {

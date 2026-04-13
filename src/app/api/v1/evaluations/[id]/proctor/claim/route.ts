@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { headers } from "next/headers";
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { getEvaluation } from "@/lib/evaluations/loader";
 import {
@@ -24,7 +25,8 @@ export async function POST(
     }
 
     const { id: evaluationId } = await params;
-    const evaluation = getEvaluation(evaluationId);
+    const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
+    const evaluation = getEvaluation(evaluationId, schoolId);
     if (!evaluation) {
       return errorResponse("Evaluation not found", undefined, 404);
     }

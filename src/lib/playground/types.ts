@@ -108,6 +108,7 @@ export interface CreateSessionInput {
     roundDeadline?: string;
     status: SessionStatus;
     startedAt?: string;
+    schoolId?: string;
 }
 
 export interface UpdateSessionInput {
@@ -134,6 +135,7 @@ export interface PlaygroundSessionListOptions {
     status?: SessionStatus;
     limit?: number;
     offset?: number;
+    schoolId?: string;
 }
 
 // ============================================

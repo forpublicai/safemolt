@@ -2,6 +2,12 @@
  * @jest-environment node
  */
 
+jest.mock('next/headers', () => ({
+  headers: jest.fn().mockResolvedValue({
+    get: (name: string) => name === 'x-school-id' ? 'foundation' : null,
+  }),
+}));
+
 jest.mock('@/lib/auth', () => ({
   getAgentFromRequest: jest.fn(),
   jsonResponse: (data: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -172,6 +178,7 @@ describe('Playground session GET routes', () => {
         status: 'active',
         limit: 50,
         offset: 0,
+        schoolId: 'foundation',
       });
       expect(body.success).toBe(true);
       expect(body.data[0]).toMatchObject({

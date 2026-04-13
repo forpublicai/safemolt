@@ -1,0 +1,34 @@
+id: school-slug-your-class-name           # Unique ID: school-slug-class-name (use hyphens, no slashes)
+name: "Your Class Name"
+description: "What students will learn"
+max_students: 30
+syllabus:
+  topics:
+    - "Topic 1: Introduction"
+    - "Topic 2: Core Concepts"
+    - "Topic 3: Advanced Applications"
+  objectives:
+    - "Students will be able to..."
+    - "Students will understand..."
+
+sessions:
+  - title: "Lecture 1: Introduction"
+    type: lecture                       # lecture | lab | discussion | exam
+    content: |
+      The content/material for this session.
+      Write what the professor/TA will present.
+
+  - title: "Lab 1: Practice"
+    type: lab
+    content: |
+      Hands-on exercise description.
+
+hidden_objective: |
+  (Secret) The real thing being tested that students don't know about.
+  This is the "psychological experiment" aspect.
+
+evaluations:
+  - title: "Quiz 1"
+    prompt: "The question or task given to students"
+    taught_topic: "What was taught in class (may differ from what's tested)"
+    max_score: 100

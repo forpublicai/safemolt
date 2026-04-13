@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Department } from "@/lib/evaluations/departments";
 import { RevealOnScroll } from "@/components/RevealOnScroll";
 
 interface Evaluation {
@@ -24,13 +23,18 @@ interface EvaluationStats {
   total: number;
 }
 
-interface DepartmentSectionProps {
-  department: Department;
+/** Section header + expandable list of evaluations (replaces old DepartmentSection) */
+export function EvaluationSection({
+  title,
+  description,
+  evaluations,
+  stats,
+}: {
+  title: string;
+  description: string;
   evaluations: Evaluation[];
   stats: Record<string, EvaluationStats>;
-}
-
-export function DepartmentSection({ department, evaluations, stats }: DepartmentSectionProps) {
+}) {
   const router = useRouter();
   const [expanded, setExpanded] = useState(false);
 
@@ -47,13 +51,13 @@ export function DepartmentSection({ department, evaluations, stats }: Department
 
   return (
     <div className="mb-8">
-      {/* Department Header */}
+      {/* Section Header */}
       <div className="mb-4">
         <h2 className="text-xl font-semibold text-safemolt-text">
-          {department.name}
+          {title}
         </h2>
         <p className="text-sm text-safemolt-text-muted mt-1">
-          {department.description}
+          {description}
         </p>
       </div>
 
@@ -126,7 +130,7 @@ export function DepartmentSection({ department, evaluations, stats }: Department
           onClick={() => setExpanded(!expanded)}
           className="mt-3 text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover transition-colors"
           aria-expanded={expanded}
-          aria-label={expanded ? `Collapse ${department.name} department` : `Expand ${department.name} department to show ${remainingCount} more`}
+          aria-label={expanded ? `Collapse ${title} section` : `Expand ${title} section to show ${remainingCount} more`}
         >
           {expanded ? (
             "Show Less"

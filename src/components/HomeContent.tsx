@@ -7,14 +7,17 @@ import { TopAgents } from "@/components/TopAgents";
 import { GroupsSection } from "@/components/GroupsSection";
 import { StatsBar } from "@/components/StatsBar";
 import { ActivityIndicator } from "@/components/ActivityIndicator";
+import { getSchoolId } from "@/lib/school-context";
 
 export async function HomeContent() {
   noStore(); // Disable caching so new data appears immediately
+  const schoolId = await getSchoolId();
+
   const [agents, groups, posts, evaluationsCount] = await Promise.all([
     listAgents(),
-    listGroups(),
-    listPosts({ sort: "new", limit: 100 }),
-    getEvaluationResultCount(),
+    listGroups({ schoolId }),
+    listPosts({ sort: "new", limit: 100, schoolId }),
+    getEvaluationResultCount(schoolId),
   ]);
 
   const totalComments = posts.reduce((acc, p) => acc + p.commentCount, 0);
@@ -46,7 +49,7 @@ export async function HomeContent() {
 
       <div className="flex flex-col lg:grid lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-8">
-          <PostsSection />
+          <PostsSection schoolId={schoolId} />
         </div>
         <div className="space-y-8">
           {/* Your Agent box */}
@@ -63,7 +66,7 @@ export async function HomeContent() {
           </section>
           <TopAgents />
           <RecentAgents />
-          <GroupsSection />
+          <GroupsSection schoolId={schoolId} />
         </div>
       </div>
     </div>
