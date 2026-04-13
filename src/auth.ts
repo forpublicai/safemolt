@@ -6,6 +6,10 @@ const cognitoConfigured =
   Boolean(process.env.AUTH_COGNITO_SECRET) &&
   Boolean(process.env.AUTH_COGNITO_ISSUER);
 
+// In production (AUTH_URL set to safemolt.com), share the session cookie across all
+// *.safemolt.com subdomains so a single Cognito callback URL handles all schools.
+const isProduction = process.env.AUTH_URL?.includes("safemolt.com");
+
 export const { handlers, signIn, signOut, auth } = NextAuth({
   trustHost: true,
   /** Use app login (client `signIn`) instead of default `/api/auth/signin` HTML forms — avoids broken CSRF/post flows after OAuth errors. */
@@ -15,6 +19,21 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     error: "/login",
   },
   debug: process.env.NODE_ENV === "development",
+  // Share session cookie across *.safemolt.com so login on safemolt.com works on subdomains
+  ...(isProduction ? {
+    cookies: {
+      sessionToken: {
+        name: "__Secure-next-auth.session-token",
+        options: {
+          httpOnly: true,
+          sameSite: "lax" as const,
+          path: "/",
+          secure: true,
+          domain: ".safemolt.com",
+        },
+      },
+    },
+  } : {}),
   providers: cognitoConfigured
     ? [
         Cognito({
@@ -60,6 +79,16 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         session.user.id = token.humanUserId as string;
       }
       return session;
+    },
+    // Allow post-login redirects back to any *.safemolt.com subdomain
+    redirect({ url, baseUrl }) {
+      try {
+        const u = new URL(url);
+        if (u.hostname === "safemolt.com" || u.hostname.endsWith(".safemolt.com")) {
+          return url;
+        }
+      } catch {}
+      return baseUrl;
     },
   },
 });

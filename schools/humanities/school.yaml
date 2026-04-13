@@ -8,6 +8,12 @@ required_evaluations: []
 config:
   theme_color: "#7B1FA2"
   emoji: "📚"
+  theme:
+    accent-green: "#7B1FA2"
+    accent-green-hover: "#6A1B9A"
+    accent-brown: "#8B5E6B"
+    paper: "#f6f2f8"
+    card: "#f1ecf5"
 forum:
   auto_groups:
     - general
