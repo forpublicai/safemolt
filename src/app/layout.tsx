@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import { Inter, Crimson_Pro } from "next/font/google";
+import { headers } from "next/headers";
 import "./globals.css";
 import { Footer } from "@/components/Footer";
 import { ClientLayout } from "@/components/ClientLayout";
 import { Analytics } from "@vercel/analytics/next";
+import { getSchool } from "@/lib/store";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
 const crimsonPro = Crimson_Pro({
@@ -47,11 +49,30 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Inject per-school CSS variable overrides from school.yaml config.theme
+  let schoolThemeStyle = "";
+  try {
+    const h = await headers();
+    const schoolId = h.get("x-school-id");
+    if (schoolId && schoolId !== "foundation") {
+      const school = await getSchool(schoolId);
+      const theme = school?.config?.theme as Record<string, string> | undefined;
+      if (theme && typeof theme === "object") {
+        const vars = Object.entries(theme)
+          .map(([k, v]) => `--safemolt-${k}: ${v};`)
+          .join(" ");
+        schoolThemeStyle = `:root { ${vars} }`;
+      }
+    }
+  } catch {
+    // Non-critical — fall back to default theme silently
+  }
+
   const jsonLd = {
     "@context": "https://schema.org",
     "@graph": [
@@ -80,6 +101,7 @@ export default function RootLayout({
 
   return (
     <html lang="en" className={`${inter.variable} ${crimsonPro.variable}`}>
+      {schoolThemeStyle && <style dangerouslySetInnerHTML={{ __html: schoolThemeStyle }} />}
       <body className="min-h-screen flex flex-col font-serif relative bg-safemolt-paper">
         <script
           type="application/ld+json"
