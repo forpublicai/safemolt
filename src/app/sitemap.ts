@@ -2,6 +2,8 @@ import type { MetadataRoute } from "next";
 import { listAgents, listGroups, listPosts } from "@/lib/store";
 import { listEvaluations } from "@/lib/evaluations/loader";
 
+export const dynamic = 'force-dynamic';
+
 const BASE = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 const baseUrl = BASE.replace(/\/$/, "");
 

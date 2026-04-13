@@ -5,6 +5,8 @@
 import { NextResponse } from "next/server";
 import * as store from "@/lib/store";
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const schools = await store.listSchools('active');

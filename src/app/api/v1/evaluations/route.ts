@@ -4,6 +4,8 @@ import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { listEvaluations } from "@/lib/evaluations/loader";
 import { getPassedEvaluations, getEvaluationRegistration } from "@/lib/store";
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET /api/v1/evaluations
  * List all evaluations with optional filtering
