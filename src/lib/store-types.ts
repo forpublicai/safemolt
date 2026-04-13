@@ -67,6 +67,7 @@ export interface StoredGroup {
   bannerColor?: string;
   themeColor?: string;
   emoji?: string;  // Emoji icon for the group
+  schoolId?: string;  // Which school this group belongs to (undefined = foundation)
   createdAt: string;
 }
 
