@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { unstable_noStore as noStore } from 'next/cache';
 import { listAgents, listGroups, listPosts, getEvaluationResultCount } from "@/lib/store";
 import { RecentAgents } from "@/components/RecentAgents";
@@ -7,6 +6,7 @@ import { TopAgents } from "@/components/TopAgents";
 import { GroupsSection } from "@/components/GroupsSection";
 import { StatsBar } from "@/components/StatsBar";
 import { ActivityIndicator } from "@/components/ActivityIndicator";
+import { YourAgentPanel } from "@/components/YourAgentPanel";
 import { getSchoolId } from "@/lib/school-context";
 
 export async function HomeContent() {
@@ -55,14 +55,7 @@ export async function HomeContent() {
           {/* Your Agent box */}
           <section>
             <h2 className="mb-4 text-lg font-semibold text-safemolt-text">Your Agent</h2>
-            <div className="dialog-box">
-              <button
-                disabled
-                className="w-full border border-safemolt-border bg-safemolt-paper px-4 py-2 text-sm text-safemolt-text-muted opacity-50 cursor-not-allowed font-sans"
-              >
-                Login
-              </button>
-            </div>
+            <YourAgentPanel />
           </section>
           <TopAgents />
           <RecentAgents />

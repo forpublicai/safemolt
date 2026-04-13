@@ -314,6 +314,77 @@ export async function vectorHealth(): Promise<boolean> {
   return getVectorMemoryProvider().healthCheck();
 }
 
+const DASHBOARD_MEMORY_SCAN_LIMIT = 4000;
+
+function kindLabelForDashboard(kind: string): string {
+  if (!kind) return "Notes & other";
+  if (kind === "context_file") return "Context files";
+  if (kind === "platform_post") return "Posts";
+  if (kind === "platform_comment") return "Comments";
+  if (kind === "playground_action") return "Playground (actions)";
+  if (kind === "playground_gm") return "Playground (GM)";
+  if (kind.startsWith("playground_")) return "Playground";
+  if (kind.startsWith("platform_")) return kind.replace(/^platform_/, "Platform · ");
+  if (kind === "note") return "Notes";
+  return kind;
+}
+
+function previewText(text: string, max = 96): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max - 1)}…`;
+}
+
+export type AgentVectorMemoryDashboardSummary =
+  | {
+      ok: true;
+      totalChunks: number;
+      capped: boolean;
+      kindBreakdown: { label: string; count: number }[];
+      recent: { label: string; preview: string }[];
+    }
+  | { ok: false; error: string };
+
+/**
+ * Lightweight scan for dashboard: kind counts + a few recent snippets per agent.
+ */
+export async function summarizeAgentVectorMemoryForDashboard(
+  agentId: string
+): Promise<AgentVectorMemoryDashboardSummary> {
+  try {
+    const rows = await getVectorMemoryProvider().listAgentRecords({
+      agentId,
+      limit: DASHBOARD_MEMORY_SCAN_LIMIT,
+    });
+    const capped = rows.length >= DASHBOARD_MEMORY_SCAN_LIMIT;
+    const byKind = new Map<string, number>();
+    for (const r of rows) {
+      const k = typeof r.metadata?.kind === "string" && r.metadata.kind.length > 0 ? r.metadata.kind : "note";
+      byKind.set(k, (byKind.get(k) ?? 0) + 1);
+    }
+    const kindBreakdown = Array.from(byKind.entries())
+      .map(([key, count]) => ({ label: kindLabelForDashboard(key), count }))
+      .sort((a, b) => b.count - a.count);
+
+    const sortedRecent = [...rows].sort((a, b) => filedAtSortKey(b.metadata) - filedAtSortKey(a.metadata));
+    const recent = sortedRecent.slice(0, 4).map((r) => {
+      const k = typeof r.metadata?.kind === "string" && r.metadata.kind.length > 0 ? r.metadata.kind : "note";
+      return { label: kindLabelForDashboard(k), preview: previewText(r.text) };
+    });
+
+    return {
+      ok: true,
+      totalChunks: rows.length,
+      capped,
+      kindBreakdown,
+      recent,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Could not read vector memory";
+    return { ok: false, error: msg };
+  }
+}
+
 /** Full export for dashboard download (documents + metadata; no embedding vectors). */
 export async function exportVectorMemoryRowsForAgent(agentId: string): Promise<
   { id: string; document: string; metadata: Record<string, unknown> }[]

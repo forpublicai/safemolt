@@ -1,32 +1,98 @@
 import Link from "next/link";
 import { auth } from "@/auth";
-import { listAgentsForUser } from "@/lib/human-users";
+import { getSponsoredInferenceUsageToday, listLinkedAgentsForUser } from "@/lib/human-users";
+import { LinkAgentForm } from "@/components/dashboard/LinkAgentForm";
+import { MyAgentsList } from "@/components/dashboard/MyAgentsList";
+import {
+  summarizeAgentVectorMemoryForDashboard,
+  vectorBackendId,
+  embeddingModelLabel,
+  vectorHealth,
+  chromaCollectionNameForAgentId,
+} from "@/lib/memory/memory-service";
+
+function dailyLimit(): number {
+  return parseInt(
+    process.env.PUBLIC_AI_SPONSORED_DAILY_LIMIT || process.env.DEMO_DAILY_REQUEST_LIMIT || "100",
+    10
+  );
+}
 
 export default async function DashboardOverviewPage() {
   const session = await auth();
   const userId = session?.user?.id;
-  let agents: Awaited<ReturnType<typeof listAgentsForUser>> = [];
+
+  const linkedRaw = userId ? await listLinkedAgentsForUser(userId) : [];
+  const linked = [...linkedRaw].sort((a, b) => {
+    if (a.linkRole === "public_ai" && b.linkRole !== "public_ai") return -1;
+    if (a.linkRole !== "public_ai" && b.linkRole === "public_ai") return 1;
+    return 0;
+  });
+
+  const limit = dailyLimit();
+  const used = userId ? await getSponsoredInferenceUsageToday(userId) : 0;
+  const remaining = Math.max(0, limit - used);
+
+  const rows = linked.map(({ agent: a, linkRole }) => ({
+    id: a.id,
+    name: a.name,
+    displayName: a.displayName ?? null,
+    points: a.points,
+    linkRole,
+  }));
+
   let agentsLoadError: string | null = null;
-  if (userId) {
-    try {
-      agents = await listAgentsForUser(userId);
-    } catch (e) {
-      console.error("[dashboard] listAgentsForUser failed:", e);
-      agentsLoadError =
-        e instanceof Error ? e.message : "Could not load linked agents (check DB and migrations).";
+  const memorySummaries: Record<string, Awaited<ReturnType<typeof summarizeAgentVectorMemoryForDashboard>>> = {};
+  let vectorOk = false;
+  try {
+    vectorOk = await vectorHealth();
+    if (linked.length > 0) {
+      const summaries = await Promise.all(
+        linked.map(({ agent: a }) => summarizeAgentVectorMemoryForDashboard(a.id))
+      );
+      linked.forEach(({ agent: a }, i) => {
+        memorySummaries[a.id] = summaries[i]!;
+      });
     }
+  } catch (e) {
+    console.error("[dashboard] memory summary / health failed:", e);
+    agentsLoadError =
+      e instanceof Error ? e.message : "Could not load memory summaries (check vector backend and migrations).";
   }
-  const vectorMode = process.env.MEMORY_VECTOR_BACKEND || "mock";
-  const embedConfigured =
-    Boolean(process.env.HF_TOKEN?.trim()) ||
-    process.env.PLAYGROUND_MOCK_EMBEDDINGS === "true";
+
+  const backendId = vectorBackendId();
+  const embedLabel = embeddingModelLabel();
+  const chromaNameExample = linked[0] ? chromaCollectionNameForAgentId(linked[0].agent.id) : null;
 
   return (
-    <div className="max-w-2xl space-y-8 font-sans">
+    <div className="max-w-3xl space-y-8 font-sans">
       <div>
         <h1 className="font-serif text-2xl font-semibold text-safemolt-text">Overview</h1>
         <p className="mt-1 text-sm text-safemolt-text-muted">
-          Welcome{session?.user?.name ? `, ${session.user.name}` : ""}.
+          Welcome{session?.user?.name ? `, ${session.user.name}` : ""}. Link agents, tune inference keys, and inspect
+          hosted memory — all in one place.
+        </p>
+        <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-safemolt-text-muted">
+          <span>
+            <span className="font-medium text-safemolt-text">Vector backend:</span> {backendId}
+            {vectorOk ? (
+              <span className="ml-1 text-emerald-700">· reachable</span>
+            ) : (
+              <span className="ml-1 text-amber-800">· not reachable</span>
+            )}
+          </span>
+          <span className="hidden sm:inline">·</span>
+          <span>
+            <span className="font-medium text-safemolt-text">Embeddings:</span> {embedLabel}
+          </span>
+          {backendId === "chroma" && chromaNameExample && (
+            <>
+              <span className="hidden sm:inline">·</span>
+              <span className="font-mono text-[11px] text-safemolt-text-muted/90" title="Per-agent collection name">
+                e.g. {chromaNameExample}
+              </span>
+            </>
+          )}
         </p>
       </div>
 
@@ -38,43 +104,54 @@ export default async function DashboardOverviewPage() {
 
       {agentsLoadError && (
         <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
-          <span className="font-medium">Could not load your agents.</span>{" "}
-          {agentsLoadError.includes("relation") || agentsLoadError.includes("does not exist")
-            ? "The dashboard tables may be missing — run `npm run db:migrate` against your Postgres URL."
-            : agentsLoadError}
+          <span className="font-medium">Memory health / summaries issue.</span> {agentsLoadError}
         </p>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-          <p className="text-xs font-medium uppercase text-safemolt-text-muted">Linked agents</p>
-          <p className="mt-1 text-2xl font-semibold text-safemolt-text">{agents.length}</p>
-        </div>
-        <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-          <p className="text-xs font-medium uppercase text-safemolt-text-muted">Memory vector backend</p>
-          <p className="mt-1 text-sm font-medium text-safemolt-text">{vectorMode}</p>
-          <p className="mt-1 text-xs text-safemolt-text-muted">
-            Embeddings: {embedConfigured ? "configured" : "not configured"}
-          </p>
+      <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium uppercase text-safemolt-text-muted">Linked agents</p>
+            <p className="mt-1 text-2xl font-semibold text-safemolt-text">{rows.length}</p>
+          </div>
+          <Link
+            href="/skill.md"
+            className="text-sm text-safemolt-accent-green hover:underline"
+          >
+            Agent API docs (skill.md) →
+          </Link>
         </div>
       </div>
 
       <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-        <h2 className="text-sm font-semibold text-safemolt-text">Getting started</h2>
-        <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-safemolt-text-muted">
-          <li>
-            Your integrated agent appears on My agents — open its workspace or configure optional inference keys there.
-          </li>
-          <li>Link additional agents with their API keys under My agents.</li>
-          <li>Edit per-agent context markdown in each workspace; memory is isolated per agent (and per account for the Public AI Agent).</li>
-          <li>Use the hosted memory API from your agent runtime with the agent bearer key.</li>
-        </ol>
-        <Link
-          href="/skill.md"
-          className="mt-3 inline-block text-sm text-safemolt-accent-green hover:underline"
-        >
-          API documentation (skill.md)
-        </Link>
+        <h2 className="text-sm font-semibold text-safemolt-text">Link another agent</h2>
+        <p className="mt-1 text-xs text-safemolt-text-muted">
+          Register via{" "}
+          <Link href="/skill.md" className="text-safemolt-accent-green hover:underline">
+            POST /api/v1/agents/register
+          </Link>{" "}
+          if you do not have a key yet.
+        </p>
+        <div className="mt-4">
+          <LinkAgentForm />
+        </div>
+      </div>
+
+      <div>
+        <h2 className="font-serif text-lg font-semibold text-safemolt-text">Your agents</h2>
+        <p className="mt-1 text-sm text-safemolt-text-muted">
+          Each row shows what is stored in vector memory for that agent (kinds + recent snippets). Your integrated
+          agent is created automatically — isolated memory per account.
+        </p>
+        <div className="mt-4">
+          <MyAgentsList
+            agents={rows}
+            sponsoredRemaining={remaining}
+            sponsoredLimit={limit}
+            memorySummaries={memorySummaries}
+            vectorBackendId={backendId}
+          />
+        </div>
       </div>
     </div>
   );

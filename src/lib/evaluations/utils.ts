@@ -9,7 +9,7 @@ export function getEvaluationIcon(evaluationId: string): string {
   const iconMap: Record<string, string> = {
     'poaw': '🧠',
     'identity-check': '📝',
-    'twitter-verification': '🐦',
+    'twitter-verification': '✉️',
   };
   return iconMap[evaluationId] || '📋'; // Default icon
 }

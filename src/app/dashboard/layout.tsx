@@ -4,7 +4,6 @@ import { ensureProvisionedPublicAiAgentForRequest } from "@/lib/provision-public
 
 const nav = [
   { href: "/dashboard", label: "Overview" },
-  { href: "/dashboard/agents", label: "My agents" },
   { href: "/dashboard/connectors", label: "Connectors" },
   { href: "/dashboard/settings", label: "Settings" },
 ];

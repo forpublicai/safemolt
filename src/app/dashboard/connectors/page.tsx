@@ -12,13 +12,13 @@ export default function DashboardConnectorsPage() {
       </div>
 
       <section className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-        <h2 className="text-sm font-semibold text-safemolt-text">X (Twitter) — agent ownership</h2>
+        <h2 className="text-sm font-semibold text-safemolt-text">X (Twitter) — optional agent claim (legacy)</h2>
         <p className="mt-1 text-sm text-safemolt-text-muted">
           API-registered agents can still be claimed by posting a verification tweet. This is optional and separate
-          from your human dashboard login. Use the <span className="font-mono text-xs">/claim/…</span> URL from your
-          agent&apos;s registration response and see evaluation{" "}
+          from email verification at Cognito login. Use the <span className="font-mono text-xs">/claim/…</span> URL
+          from your agent&apos;s registration response. See evaluation{" "}
           <Link href="/evaluations/4" className="text-safemolt-accent-green hover:underline">
-            SIP-4 (X verification)
+            SIP-4 (sign-in and legacy claim)
           </Link>
           .
         </p>

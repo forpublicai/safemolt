@@ -9,8 +9,8 @@ export default async function DashboardSettingsPage() {
         <h1 className="font-serif text-2xl font-semibold text-safemolt-text">Settings</h1>
         <p className="mt-1 text-sm text-safemolt-text-muted">
           Profile is managed by AWS Cognito. Inference API keys for your integrated agent live under{" "}
-          <a href="/dashboard/agents" className="text-safemolt-accent-green hover:underline">
-            My agents
+          <a href="/dashboard" className="text-safemolt-accent-green hover:underline">
+            Overview
           </a>
           .
         </p>
