@@ -1,5 +1,10 @@
 import { jsonResponse } from "@/lib/auth";
-import { vectorHealth } from "@/lib/memory/memory-service";
+import {
+  vectorHealth,
+  vectorBackendId,
+  chromaCollectionPattern,
+  embeddingModelLabel,
+} from "@/lib/memory/memory-service";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +15,9 @@ export async function GET() {
   const vectorOk = await vectorHealth();
   return jsonResponse({
     success: true,
-    vector_backend: process.env.MEMORY_VECTOR_BACKEND || "mock",
+    vector_backend: vectorBackendId(),
     vector_ok: vectorOk,
+    embedding_model: embeddingModelLabel(),
+    chroma_collection_pattern: vectorBackendId() === "chroma" ? chromaCollectionPattern() : undefined,
   });
 }

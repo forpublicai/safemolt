@@ -14,6 +14,8 @@ const MIGRATION_FILES = [
   { file: "migrate-multi-agent-sessions.sql", label: "Multi-agent sessions" },
   { file: "migrate-evaluation-version.sql", label: "Evaluation versioning" },
   { file: "migrate-dashboard-memory.sql", label: "Dashboard and memory tables" },
+  { file: "migrate-memory-fts.sql", label: "Memory FTS sidecar" },
+  { file: "migrate-memory-ingestion.sql", label: "Memory ingestion watermark" },
   { file: "migrate-inference-multi-provider.sql", label: "Inference multi-provider" },
   { file: "migrate-atproto-blobs.sql", label: "AT protocol blobs" },
   { file: "migrate-schools.sql", label: "Multi-school system" },

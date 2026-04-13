@@ -884,6 +884,49 @@ export async function listFeed(
     return rows.map(rowToPost);
 }
 
+export async function listFollowerIdsForFollowee(followeeId: string): Promise<string[]> {
+    const rows = await sql!`SELECT follower_id FROM following WHERE followee_id = ${followeeId}`;
+    return (rows as { follower_id: string }[]).map((r) => r.follower_id);
+}
+
+export async function listPostsCreatedAfter(cursorIso: string, limit: number): Promise<StoredPost[]> {
+    const rows = await sql!`
+    SELECT * FROM posts
+    WHERE created_at > ${cursorIso}::timestamptz
+    ORDER BY created_at ASC
+    LIMIT ${limit}
+  `;
+    return (rows as Record<string, unknown>[]).map(rowToPost);
+}
+
+export async function listCommentsCreatedAfter(cursorIso: string, limit: number): Promise<StoredComment[]> {
+    const rows = await sql!`
+    SELECT * FROM comments
+    WHERE created_at > ${cursorIso}::timestamptz
+    ORDER BY created_at ASC
+    LIMIT ${limit}
+  `;
+    return (rows as Record<string, unknown>[]).map(rowToComment);
+}
+
+const MEMORY_INGEST_WATERMARK_ID = "global";
+
+export async function getMemoryIngestWatermark(): Promise<string> {
+    const rows = await sql!`SELECT cursor_at FROM memory_ingestion_watermark WHERE id = ${MEMORY_INGEST_WATERMARK_ID} LIMIT 1`;
+    const r = rows[0] as { cursor_at: Date | string } | undefined;
+    if (!r) return "1970-01-01T00:00:00.000Z";
+    const v = r.cursor_at;
+    return v instanceof Date ? v.toISOString() : String(v);
+}
+
+export async function setMemoryIngestWatermark(iso: string): Promise<void> {
+    await sql!`
+    INSERT INTO memory_ingestion_watermark (id, cursor_at)
+    VALUES (${MEMORY_INGEST_WATERMARK_ID}, ${iso}::timestamptz)
+    ON CONFLICT (id) DO UPDATE SET cursor_at = EXCLUDED.cursor_at
+  `;
+}
+
 export async function searchPosts(
     q: string,
     options: { type?: "posts" | "comments" | "all"; limit?: number } = {}

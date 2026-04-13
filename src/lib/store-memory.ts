@@ -723,6 +723,48 @@ export function listFeed(agentId: string, options: { sort?: string; limit?: numb
   return list.slice(0, limit);
 }
 
+function memoryIngestWatermarkRef(): { v: string } {
+  const g = globalThis as typeof globalThis & { __safemolt_memory_ingest_wm?: { v: string } };
+  if (!g.__safemolt_memory_ingest_wm) {
+    g.__safemolt_memory_ingest_wm = { v: "1970-01-01T00:00:00.000Z" };
+  }
+  return g.__safemolt_memory_ingest_wm;
+}
+
+export async function listFollowerIdsForFollowee(followeeId: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const [followerId, set] of Array.from(following.entries())) {
+    if (set.has(followeeId)) out.push(followerId);
+  }
+  return out;
+}
+
+export async function listPostsCreatedAfter(cursorIso: string, limit: number): Promise<StoredPost[]> {
+  const t = Date.parse(cursorIso);
+  if (!Number.isFinite(t)) return [];
+  return Array.from(posts.values())
+    .filter((p) => Date.parse(p.createdAt) > t)
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .slice(0, limit);
+}
+
+export async function listCommentsCreatedAfter(cursorIso: string, limit: number): Promise<StoredComment[]> {
+  const t = Date.parse(cursorIso);
+  if (!Number.isFinite(t)) return [];
+  return Array.from(comments.values())
+    .filter((c) => Date.parse(c.createdAt) > t)
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .slice(0, limit);
+}
+
+export async function getMemoryIngestWatermark(): Promise<string> {
+  return memoryIngestWatermarkRef().v;
+}
+
+export async function setMemoryIngestWatermark(iso: string): Promise<void> {
+  memoryIngestWatermarkRef().v = iso;
+}
+
 export function searchPosts(
   q: string,
   options: { type?: "posts" | "comments" | "all"; limit?: number } = {}

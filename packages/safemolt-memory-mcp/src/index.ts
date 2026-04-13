@@ -49,19 +49,34 @@ async function apiJson(path: string, init?: RequestInit): Promise<unknown> {
   return body;
 }
 
-const server = new McpServer({ name: "safemolt-memory", version: "0.1.0" });
+const RETRIEVAL_HINT =
+  "Before stating user-specific facts from memory, prefer memory_vector_query / recall / hybrid if unsure — verify, do not guess.\n\n";
+
+const server = new McpServer({ name: "safemolt-memory", version: "0.2.0" });
 
 server.tool(
   "memory_vector_upsert",
   {
     id: z.string(),
     text: z.string(),
+    metadata: z.record(z.unknown()).optional(),
+    chunk: z.boolean().optional(),
+    parent_id: z.string().optional(),
+    dedup_mode: z.enum(["off", "skip", "replace"]).optional(),
   },
-  async ({ id, text }) => {
+  async ({ id, text, metadata, chunk, parent_id, dedup_mode }) => {
     const agentId = await resolveAgentId();
     await apiJson("/api/v1/memory/vector/upsert", {
       method: "POST",
-      body: JSON.stringify({ agent_id: agentId, id, text }),
+      body: JSON.stringify({
+        agent_id: agentId,
+        id,
+        text,
+        ...(metadata ? { metadata } : {}),
+        ...(chunk !== undefined ? { chunk } : {}),
+        ...(parent_id ? { parent_id } : {}),
+        ...(dedup_mode ? { dedup_mode } : {}),
+      }),
     });
     return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, id }) }] };
   }
@@ -72,14 +87,66 @@ server.tool(
   {
     query: z.string(),
     limit: z.number().optional(),
+    threshold: z.number().optional(),
   },
-  async ({ query, limit }) => {
+  async ({ query, limit, threshold }) => {
     const agentId = await resolveAgentId();
     const out = await apiJson("/api/v1/memory/vector/query", {
       method: "POST",
+      body: JSON.stringify({
+        agent_id: agentId,
+        query,
+        limit: limit ?? 10,
+        ...(threshold !== undefined ? { threshold } : {}),
+      }),
+    });
+    return {
+      content: [{ type: "text" as const, text: RETRIEVAL_HINT + JSON.stringify(out) }],
+    };
+  }
+);
+
+server.tool(
+  "memory_vector_recall",
+  {
+    mode: z.enum(["hot", "semantic"]),
+    query: z.string().optional(),
+    limit: z.number().optional(),
+    kind: z.string().optional(),
+  },
+  async ({ mode, query, limit, kind }) => {
+    const agentId = await resolveAgentId();
+    const out = await apiJson("/api/v1/memory/vector/recall", {
+      method: "POST",
+      body: JSON.stringify({
+        agent_id: agentId,
+        mode,
+        ...(query !== undefined ? { query } : {}),
+        limit: limit ?? 10,
+        ...(kind ? { kind } : {}),
+      }),
+    });
+    return {
+      content: [{ type: "text" as const, text: RETRIEVAL_HINT + JSON.stringify(out) }],
+    };
+  }
+);
+
+server.tool(
+  "memory_vector_hybrid",
+  {
+    query: z.string(),
+    limit: z.number().optional(),
+  },
+  async ({ query, limit }) => {
+    const agentId = await resolveAgentId();
+    const out = await apiJson("/api/v1/memory/vector/hybrid", {
+      method: "POST",
       body: JSON.stringify({ agent_id: agentId, query, limit: limit ?? 10 }),
     });
-    return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };
+    return {
+      content: [{ type: "text" as const, text: RETRIEVAL_HINT + JSON.stringify(out) }],
+    };
   }
 );
 

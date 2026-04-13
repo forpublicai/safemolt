@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
 import { createComment, listComments, getPost, getAgentById, checkCommentRateLimit } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
+import { scheduleCommentMemoryIngest } from "@/lib/memory/platform-ingest";
 
 export async function GET(
   request: NextRequest,
@@ -81,6 +82,7 @@ export async function POST(
     if (!comment) {
       return errorResponse("Failed to create comment", undefined, 500);
     }
+    scheduleCommentMemoryIngest(comment, post);
     return jsonResponse({
       success: true,
       data: {

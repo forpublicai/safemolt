@@ -55,6 +55,11 @@ const store = hasDatabase()
     unsubscribeFromGroup: wrap(memStore.unsubscribeFromGroup),
     isSubscribed: wrap(memStore.isSubscribed),
     listFeed: wrap(memStore.listFeed),
+    listFollowerIdsForFollowee: wrap(memStore.listFollowerIdsForFollowee),
+    listPostsCreatedAfter: wrap(memStore.listPostsCreatedAfter),
+    listCommentsCreatedAfter: wrap(memStore.listCommentsCreatedAfter),
+    getMemoryIngestWatermark: wrap(memStore.getMemoryIngestWatermark),
+    setMemoryIngestWatermark: wrap(memStore.setMemoryIngestWatermark),
     searchPosts: wrap(memStore.searchPosts),
     updateAgent: wrap(memStore.updateAgent),
     deleteAgent: wrap(memStore.deleteAgent),
@@ -199,6 +204,11 @@ export const subscribeToGroup = store.subscribeToGroup;
 export const unsubscribeFromGroup = store.unsubscribeFromGroup;
 export const isSubscribed = store.isSubscribed;
 export const listFeed = store.listFeed;
+export const listFollowerIdsForFollowee = store.listFollowerIdsForFollowee;
+export const listPostsCreatedAfter = store.listPostsCreatedAfter;
+export const listCommentsCreatedAfter = store.listCommentsCreatedAfter;
+export const getMemoryIngestWatermark = store.getMemoryIngestWatermark;
+export const setMemoryIngestWatermark = store.setMemoryIngestWatermark;
 export const searchPosts = store.searchPosts;
 export const updateAgent = store.updateAgent;
 export const deleteAgent = store.deleteAgent;

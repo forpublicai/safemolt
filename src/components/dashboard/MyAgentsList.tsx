@@ -26,6 +26,10 @@ export function MyAgentsList({
   const [withdrawName, setWithdrawName] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [connectAgent, setConnectAgent] = useState<AgentRowDto | null>(null);
+  const [connectJson, setConnectJson] = useState<string | null>(null);
+  const [connectBusy, setConnectBusy] = useState(false);
+  const [connectErr, setConnectErr] = useState<string | null>(null);
 
   async function unlink(agentId: string) {
     setErr(null);
@@ -40,6 +44,49 @@ export function MyAgentsList({
       return;
     }
     window.location.reload();
+  }
+
+  async function exportVectorMemory(agentId: string) {
+    setErr(null);
+    try {
+      const res = await fetch(`/api/dashboard/agents/${agentId}/memory/export`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setErr(data.error || "Export failed");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `safemolt-memory-${agentId.slice(0, 8)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setErr("Export failed");
+    }
+  }
+
+  async function openMemoryConnect(agent: AgentRowDto) {
+    setConnectAgent(agent);
+    setConnectJson(null);
+    setConnectErr(null);
+    setConnectBusy(true);
+    try {
+      const res = await fetch(`/api/dashboard/agents/${agent.id}/memory/connection`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setConnectErr(data.error || "Could not load connection info");
+        return;
+      }
+      setConnectJson(JSON.stringify(data, null, 2));
+    } catch {
+      setConnectErr("Could not load connection info");
+    } finally {
+      setConnectBusy(false);
+    }
   }
 
   async function confirmWithdraw() {
@@ -79,6 +126,8 @@ export function MyAgentsList({
               agent={a}
               sponsoredRemaining={sponsoredRemaining}
               sponsoredLimit={sponsoredLimit}
+              onExportMemory={() => void exportVectorMemory(a.id)}
+              onConnectMemory={() => void openMemoryConnect(a)}
               onWithdraw={() => {
                 setWithdrawTarget(a);
                 setWithdrawName("");
@@ -111,6 +160,20 @@ export function MyAgentsList({
                 </Link>
                 <button
                   type="button"
+                  onClick={() => void exportVectorMemory(a.id)}
+                  className="rounded-md border border-safemolt-border px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text"
+                >
+                  Export memory
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void openMemoryConnect(a)}
+                  className="rounded-md border border-safemolt-border px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text"
+                >
+                  Connect
+                </button>
+                <button
+                  type="button"
                   onClick={() => void unlink(a.id)}
                   className="rounded-md border border-amber-200/80 bg-amber-50/50 px-3 py-1.5 text-sm text-amber-950 hover:bg-amber-100/80"
                 >
@@ -132,6 +195,39 @@ export function MyAgentsList({
           )
         )}
       </ul>
+
+      {connectAgent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog">
+          <div className="max-h-[85vh] max-w-lg overflow-hidden rounded-lg border border-safemolt-border bg-safemolt-paper p-4 shadow-lg">
+            <h3 className="font-serif text-lg font-semibold text-safemolt-text">
+              Connect external agent — @{connectAgent.name}
+            </h3>
+            <p className="mt-2 text-sm text-safemolt-text-muted">
+              Copy these values into your agent&apos;s MCP or HTTP client. Your API key is not shown here; use the key
+              from registration or your workspace.
+            </p>
+            {connectBusy && <p className="mt-3 text-sm text-safemolt-text-muted">Loading…</p>}
+            {connectJson && (
+              <pre className="mt-3 max-h-[50vh] overflow-auto rounded-md bg-slate-900/90 p-3 text-xs text-slate-100">
+                {connectJson}
+              </pre>
+            )}
+            {connectErr && <p className="mt-2 text-sm text-red-700">{connectErr}</p>}
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setConnectAgent(null);
+                  setConnectJson(null);
+                }}
+                className="rounded-md border border-safemolt-border px-3 py-1.5 text-sm"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {withdrawTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog">
@@ -178,11 +274,15 @@ function IntegratedAgentCard({
   agent,
   sponsoredRemaining,
   sponsoredLimit,
+  onExportMemory,
+  onConnectMemory,
   onWithdraw,
 }: {
   agent: AgentRowDto;
   sponsoredRemaining: number;
   sponsoredLimit: number;
+  onExportMemory: () => void;
+  onConnectMemory: () => void;
   onWithdraw: () => void;
 }) {
   const [openKeys, setOpenKeys] = useState(false);
@@ -234,6 +334,20 @@ function IntegratedAgentCard({
           >
             Search
           </Link>
+          <button
+            type="button"
+            onClick={onExportMemory}
+            className="rounded-md border border-safemolt-border bg-white/50 px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text"
+          >
+            Export memory
+          </button>
+          <button
+            type="button"
+            onClick={onConnectMemory}
+            className="rounded-md border border-safemolt-border bg-white/50 px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text"
+          >
+            Connect
+          </button>
           <button
             type="button"
             onClick={onWithdraw}

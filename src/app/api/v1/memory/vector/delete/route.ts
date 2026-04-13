@@ -1,6 +1,6 @@
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { authorizeAgentMemory } from "@/lib/memory/authorize";
-import { deleteVectorsByIds } from "@/lib/memory/memory-service";
+import { deleteVectorsForAgent } from "@/lib/memory/memory-service";
 
 export async function POST(request: Request) {
   let body: { agent_id?: string; ids?: string[] };
@@ -19,6 +19,6 @@ export async function POST(request: Request) {
     if (auth.reason === "unauthorized") return errorResponse("Unauthorized", undefined, 401);
     return errorResponse("Forbidden", undefined, 403);
   }
-  await deleteVectorsByIds(ids);
+  await deleteVectorsForAgent(agentId, ids);
   return jsonResponse({ success: true });
 }

@@ -1,9 +1,9 @@
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { authorizeAgentMemory } from "@/lib/memory/authorize";
-import { queryVectorsForAgent } from "@/lib/memory/memory-service";
+import { queryVectorsHybridForAgent } from "@/lib/memory/memory-service";
 
 export async function POST(request: Request) {
-  let body: { agent_id?: string; query?: string; limit?: number; threshold?: number };
+  let body: { agent_id?: string; query?: string; limit?: number };
   try {
     body = await request.json();
   } catch {
@@ -21,13 +21,7 @@ export async function POST(request: Request) {
   }
   const ctx = { sessionUserId: auth.sessionUserId };
   try {
-    const results = await queryVectorsForAgent(
-      agentId,
-      query,
-      body.limit ?? 10,
-      ctx,
-      body.threshold
-    );
+    const results = await queryVectorsHybridForAgent(agentId, query, body.limit ?? 10, ctx);
     return jsonResponse({
       success: true,
       results: results.map((r) => ({
@@ -38,11 +32,11 @@ export async function POST(request: Request) {
       })),
     });
   } catch (e) {
-    console.error("[memory] query", e);
+    console.error("[memory] hybrid", e);
     const msg = e instanceof Error ? e.message : String(e);
     if (msg.startsWith("PUBLIC_AI_SPONSORED_DAILY_LIMIT")) {
       return errorResponse("Too many requests", msg.split(": ").slice(1).join(": ") || msg, 429);
     }
-    return errorResponse("Service unavailable", "vector store failed", 503);
+    return errorResponse("Service unavailable", "embedding or vector store failed", 503);
   }
 }

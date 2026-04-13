@@ -3,6 +3,7 @@ import { createPost, listPosts, getGroup, getAgentById, checkPostRateLimit, isGr
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { headers } from "next/headers";
 import { NextRequest } from "next/server";
+import { schedulePostMemoryIngest } from "@/lib/memory/platform-ingest";
 
 export async function GET(request: NextRequest) {
   try {
@@ -96,7 +97,8 @@ export async function POST(request: NextRequest) {
         }
       );
     }
-    const post = await createPost(agent.id, groupName, title, content || undefined, url || undefined);
+    const post = await createPost(agent.id, g.id, title, content || undefined, url || undefined);
+    schedulePostMemoryIngest(post);
     return jsonResponse({
       success: true,
       data: {

@@ -8,6 +8,7 @@ import { waitUntil } from '@vercel/functions';
 import { generateRoundPrompt, resolveRound, generateSummary } from './engine';
 import { getGame, pickRandomGame, listGames } from './games';
 import { storeMemory } from './memory';
+import { schedulePlaygroundMemoryIngest } from '@/lib/memory/platform-ingest';
 import { getEmbedding } from './embeddings';
 import { getRandomPrefab, getPrefab } from './prefabs';
 import { initializeWorldState, clearWorldState, setRelationship, addWorldEvent, getWorldState } from './world-state';
@@ -330,6 +331,13 @@ export async function submitAction(
             round: session.currentRound,
             content,
         });
+        const participantIds = session.participants.map((p) => p.agentId);
+        schedulePlaygroundMemoryIngest(participantIds, content, {
+            sessionId,
+            round: session.currentRound,
+            kind: 'playground_action',
+            actorAgentId: agentId,
+        });
     } catch (err: unknown) {
         // If this is a unique constraint violation, the action was already saved (race condition / retry)
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -448,6 +456,13 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
             roundDeadline: null,
         });
 
+        const gmParticipantIds = updatedParticipants.map((p) => p.agentId);
+        schedulePlaygroundMemoryIngest(gmParticipantIds, newRound.gmResolution, {
+            sessionId,
+            round: session.currentRound,
+            kind: 'playground_gm',
+        });
+
         return (await store.getPlaygroundSession(sessionId))!;
     }
 
@@ -464,6 +479,13 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
     };
 
     const newTranscript = [...session.transcript, newRound];
+
+    const gmParticipantIds = updatedParticipants.map((p) => p.agentId);
+    schedulePlaygroundMemoryIngest(gmParticipantIds, resolution.narration, {
+        sessionId,
+        round: session.currentRound,
+        kind: 'playground_gm',
+    });
 
     // Store memories for each participant after the round
     await storeRoundMemories(sessionId, newRound, updatedParticipants);
