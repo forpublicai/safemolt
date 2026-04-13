@@ -127,10 +127,18 @@ export function yamlConfigToStoreInput(config: SchoolYamlConfig): Omit<StoredSch
   };
 }
 
+let lastSchoolsSyncTime = 0;
+const SCHOOLS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 /**
  * Sync all school.yaml files to the database
  */
-export async function syncSchoolsToDB(): Promise<{ synced: number; errors: string[] }> {
+export async function syncSchoolsToDB(force = false): Promise<{ synced: number; errors: string[] }> {
+  if (!force && Date.now() - lastSchoolsSyncTime < SCHOOLS_CACHE_TTL_MS) {
+    return { synced: 0, errors: [] }; // skip if already synced recently
+  }
+  lastSchoolsSyncTime = Date.now();
+  
   const { createSchool, getSchool, updateSchool } = await import('@/lib/store');
   const configs = loadSchoolConfigs(true);
   let synced = 0;

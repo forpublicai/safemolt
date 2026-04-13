@@ -86,6 +86,9 @@ export async function syncAllSchoolClassesToDB(): Promise<{ totalSynced: number;
   return { totalSynced, errors: allErrors };
 }
 
+const classSyncCache = new Map<string, number>();
+const CLASS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 /**
  * Sync class YAML files from a school folder to the database.
  * Creates classes (and their sessions/evaluations) if they don't already exist.
@@ -94,8 +97,16 @@ export async function syncAllSchoolClassesToDB(): Promise<{ totalSynced: number;
  */
 export async function syncSchoolClassesToDB(
   schoolId: string,
-  professorId?: string
+  professorId?: string,
+  force = false
 ): Promise<{ synced: number; errors: string[] }> {
+  if (!force) {
+    const lastSync = classSyncCache.get(schoolId) || 0;
+    if (Date.now() - lastSync < CLASS_CACHE_TTL_MS) {
+      return { synced: 0, errors: [] }; // already synced recently
+    }
+  }
+  classSyncCache.set(schoolId, Date.now());
   const {
     createClass,
     getClassById,

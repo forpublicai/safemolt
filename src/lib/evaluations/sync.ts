@@ -4,13 +4,21 @@ import { loadEvaluations } from './loader';
 import { readdirSync, existsSync } from 'fs';
 import { join } from 'path';
 
+let lastEvaluationsSyncTime = 0;
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 /**
  * Syncs all evaluation markdown files to the database.
  * Usage:
  * - On server startup (instrumentation.ts)
  * - Via manual script (scripts/sync-evaluations.ts)
  */
-export async function syncEvaluationsToDb() {
+export async function syncEvaluationsToDb(force = false) {
+    if (!force && Date.now() - lastEvaluationsSyncTime < CACHE_TTL_MS) {
+        return; // Skip sync if already executed recently
+    }
+    lastEvaluationsSyncTime = Date.now();
+    
     console.log('🔄 Syncing evaluations definition to database...');
 
     if (!sql) {
