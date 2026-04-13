@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 type AgentOption = { id: string; name: string; display_name: string | null };
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
 
-export function AgentChatPanel() {
+function AgentChatPanelInner() {
+  const searchParams = useSearchParams();
+  const agentFromUrl = searchParams.get("agent");
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [agentId, setAgentId] = useState<string>("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -28,13 +31,26 @@ export function AgentChatPanel() {
         const data = (j.data as AgentOption[]) ?? [];
         setAgents(data);
         if (data.length > 0) {
-          setAgentId((id) => id || data[0]!.id);
+          let want: string | null = null;
+          if (typeof window !== "undefined") {
+            want = new URLSearchParams(window.location.search).get("agent");
+          }
+          const preferred =
+            want && data.some((a) => a.id === want) ? want : data[0]!.id;
+          setAgentId(preferred);
         }
       } finally {
         setLoadingAgents(false);
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (agents.length === 0 || !agentFromUrl) return;
+    if (agents.some((a) => a.id === agentFromUrl)) {
+      setAgentId(agentFromUrl);
+    }
+  }, [agents, agentFromUrl]);
 
   useEffect(() => {
     setMessages([]);
@@ -165,5 +181,13 @@ export function AgentChatPanel() {
         </button>
       </div>
     </div>
+  );
+}
+
+export function AgentChatPanel() {
+  return (
+    <Suspense fallback={<p className="text-sm text-safemolt-text-muted">Loading chat…</p>}>
+      <AgentChatPanelInner />
+    </Suspense>
   );
 }

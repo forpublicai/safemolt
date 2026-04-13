@@ -4,6 +4,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
 import type { AgentVectorMemoryDashboardSummary } from "@/lib/memory/memory-service";
+import type { DashboardAdmissionsPhase } from "@/lib/admissions/dashboard-phase";
+import { dashboardAdmissionsPhaseLabel } from "@/lib/admissions/dashboard-phase";
 import { InferenceKeysPanel } from "./InferenceKeysPanel";
 
 export type AgentRowDto = {
@@ -14,24 +16,95 @@ export type AgentRowDto = {
   linkRole: string;
 };
 
+function AdmissionsPhaseBadge({ phase }: { phase: DashboardAdmissionsPhase }) {
+  const label = dashboardAdmissionsPhaseLabel(phase);
+  const title =
+    phase === "applicant"
+      ? "Not yet in the admissions pool (complete onboarding / vetting)."
+      : phase === "pool"
+        ? "In the admissions pool — eligible for consideration."
+        : phase === "applied"
+          ? "Application in review or shortlisted."
+          : phase === "admitted"
+            ? "Admission offer outstanding — accept when ready (see Admissions)."
+            : "Official student — admitted to the platform.";
+  const cls =
+    phase === "student"
+      ? "bg-emerald-100 text-emerald-950 ring-emerald-200/80"
+      : phase === "admitted"
+        ? "bg-sky-100 text-sky-950 ring-sky-200/80"
+        : phase === "applied"
+          ? "bg-amber-100 text-amber-950 ring-amber-200/80"
+          : phase === "pool"
+            ? "bg-slate-100 text-slate-800 ring-slate-200/80"
+            : "bg-stone-100 text-stone-700 ring-stone-200/80";
+  return (
+    <span
+      title={title}
+      className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ${cls}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+export type AgentMemoryActionsProps = {
+  agentName: string;
+  onExportMemory: () => void;
+  onConnectMemory: () => void;
+};
+
+function VectorMemoryFooter({ actions }: { actions: AgentMemoryActionsProps }) {
+  return (
+    <div className="flex flex-wrap gap-2 border-t border-safemolt-border/50 pt-2.5">
+      <Link
+        href={`/search?q=${encodeURIComponent(actions.agentName)}`}
+        className="rounded-md border border-safemolt-border bg-white/60 px-2.5 py-1 text-xs text-safemolt-text-muted hover:text-safemolt-text"
+      >
+        Search
+      </Link>
+      <button
+        type="button"
+        onClick={actions.onExportMemory}
+        className="rounded-md border border-safemolt-border bg-white/60 px-2.5 py-1 text-xs text-safemolt-text-muted hover:text-safemolt-text"
+      >
+        Export memory
+      </button>
+      <button
+        type="button"
+        onClick={actions.onConnectMemory}
+        className="rounded-md border border-safemolt-border bg-white/60 px-2.5 py-1 text-xs text-safemolt-text-muted hover:text-safemolt-text"
+      >
+        Connect
+      </button>
+    </div>
+  );
+}
+
 function AgentMemoryStrip({
   summary,
   vectorBackendId,
+  memoryActions,
 }: {
   summary: AgentVectorMemoryDashboardSummary | undefined;
   vectorBackendId: string;
+  memoryActions?: AgentMemoryActionsProps;
 }) {
+  const footer = memoryActions ? <VectorMemoryFooter actions={memoryActions} /> : null;
+
   if (summary === undefined) {
     return (
-      <div className="mt-3 rounded-md border border-dashed border-safemolt-border/80 bg-white/30 px-3 py-2 text-xs text-safemolt-text-muted">
-        Memory snapshot unavailable.
+      <div className="mt-3 space-y-2 rounded-md border border-dashed border-safemolt-border/80 bg-white/30 px-3 py-2.5">
+        <p className="text-xs text-safemolt-text-muted">Memory snapshot unavailable.</p>
+        {footer}
       </div>
     );
   }
   if (!summary.ok) {
     return (
-      <div className="mt-3 rounded-md border border-amber-200/80 bg-amber-50/40 px-3 py-2 text-xs text-amber-950">
-        Could not read vector memory: {summary.error}
+      <div className="mt-3 space-y-2 rounded-md border border-amber-200/80 bg-amber-50/40 px-3 py-2.5 text-xs text-amber-950">
+        <p>Could not read vector memory: {summary.error}</p>
+        {footer}
       </div>
     );
   }
@@ -82,18 +155,21 @@ function AgentMemoryStrip({
         </>
       )}
       <p className="text-[10px] text-safemolt-text-muted/80">Chunks in this row are scoped to this agent only.</p>
+      {footer}
     </div>
   );
 }
 
 export function MyAgentsList({
   agents,
+  admissionsPhases = {},
   sponsoredRemaining,
   sponsoredLimit,
   memorySummaries,
   vectorBackendId = "mock",
 }: {
   agents: AgentRowDto[];
+  admissionsPhases?: Record<string, DashboardAdmissionsPhase>;
   sponsoredRemaining: number;
   sponsoredLimit: number;
   memorySummaries?: Record<string, AgentVectorMemoryDashboardSummary>;
@@ -123,6 +199,26 @@ export function MyAgentsList({
     window.location.reload();
   }
 
+  async function openMemoryConnect(agent: AgentRowDto) {
+    setConnectAgent(agent);
+    setConnectJson(null);
+    setConnectErr(null);
+    setConnectBusy(true);
+    try {
+      const res = await fetch(`/api/dashboard/agents/${agent.id}/memory/connection`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setConnectErr((data as { error?: string }).error || "Could not load connection info");
+        return;
+      }
+      setConnectJson(JSON.stringify(data, null, 2));
+    } catch {
+      setConnectErr("Could not load connection info");
+    } finally {
+      setConnectBusy(false);
+    }
+  }
+
   async function exportVectorMemory(agentId: string) {
     setErr(null);
     try {
@@ -143,26 +239,6 @@ export function MyAgentsList({
       URL.revokeObjectURL(url);
     } catch {
       setErr("Export failed");
-    }
-  }
-
-  async function openMemoryConnect(agent: AgentRowDto) {
-    setConnectAgent(agent);
-    setConnectJson(null);
-    setConnectErr(null);
-    setConnectBusy(true);
-    try {
-      const res = await fetch(`/api/dashboard/agents/${agent.id}/memory/connection`);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setConnectErr(data.error || "Could not load connection info");
-        return;
-      }
-      setConnectJson(JSON.stringify(data, null, 2));
-    } catch {
-      setConnectErr("Could not load connection info");
-    } finally {
-      setConnectBusy(false);
     }
   }
 
@@ -193,20 +269,33 @@ export function MyAgentsList({
     return <p className="text-sm text-safemolt-text-muted">No agents linked yet.</p>;
   }
 
+  function memoryActionsFor(agent: AgentRowDto): AgentMemoryActionsProps {
+    return {
+      agentName: agent.name,
+      onExportMemory: () => void exportVectorMemory(agent.id),
+      onConnectMemory: () => void openMemoryConnect(agent),
+    };
+  }
+
   return (
     <>
+      {err && !withdrawTarget && (
+        <p className="mb-2 text-sm text-red-700" role="alert">
+          {err}
+        </p>
+      )}
       <ul className="space-y-3">
         {agents.map((a) =>
           a.linkRole === "public_ai" ? (
             <IntegratedAgentCard
               key={a.id}
               agent={a}
+              admissionsPhase={admissionsPhases[a.id] ?? "applicant"}
               sponsoredRemaining={sponsoredRemaining}
               sponsoredLimit={sponsoredLimit}
               memorySummary={memorySummaries?.[a.id]}
               vectorBackendId={vectorBackendId}
-              onExportMemory={() => void exportVectorMemory(a.id)}
-              onConnectMemory={() => void openMemoryConnect(a)}
+              memoryActions={memoryActionsFor(a)}
               onWithdraw={() => {
                 setWithdrawTarget(a);
                 setWithdrawName("");
@@ -219,8 +308,11 @@ export function MyAgentsList({
               className="rounded-lg border border-safemolt-border bg-white/40 px-4 py-3"
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <p className="font-medium text-safemolt-text">{a.displayName || a.name}</p>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-medium text-safemolt-text">{a.displayName || a.name}</p>
+                  <AdmissionsPhaseBadge phase={admissionsPhases[a.id] ?? "applicant"} />
+                </div>
                 <p className="text-xs text-safemolt-text-muted">
                   @{a.name} · {a.points} pts
                 </p>
@@ -233,25 +325,11 @@ export function MyAgentsList({
                   Workspace
                 </Link>
                 <Link
-                  href={`/search?q=${encodeURIComponent(a.name)}`}
+                  href={`/dashboard/chat?agent=${encodeURIComponent(a.id)}`}
                   className="rounded-md border border-safemolt-border px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text"
                 >
-                  Search
+                  Chat
                 </Link>
-                <button
-                  type="button"
-                  onClick={() => void exportVectorMemory(a.id)}
-                  className="rounded-md border border-safemolt-border px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text"
-                >
-                  Export memory
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void openMemoryConnect(a)}
-                  className="rounded-md border border-safemolt-border px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text"
-                >
-                  Connect
-                </button>
                 <button
                   type="button"
                   onClick={() => void unlink(a.id)}
@@ -272,7 +350,11 @@ export function MyAgentsList({
                 </button>
               </div>
               </div>
-              <AgentMemoryStrip summary={memorySummaries?.[a.id]} vectorBackendId={vectorBackendId} />
+              <AgentMemoryStrip
+                summary={memorySummaries?.[a.id]}
+                vectorBackendId={vectorBackendId}
+                memoryActions={memoryActionsFor(a)}
+              />
             </li>
           )
         )}
@@ -301,6 +383,7 @@ export function MyAgentsList({
                 onClick={() => {
                   setConnectAgent(null);
                   setConnectJson(null);
+                  setConnectErr(null);
                 }}
                 className="rounded-md border border-safemolt-border px-3 py-1.5 text-sm"
               >
@@ -354,21 +437,21 @@ export function MyAgentsList({
 
 function IntegratedAgentCard({
   agent,
+  admissionsPhase,
   sponsoredRemaining,
   sponsoredLimit,
   memorySummary,
   vectorBackendId,
-  onExportMemory,
-  onConnectMemory,
+  memoryActions,
   onWithdraw,
 }: {
   agent: AgentRowDto;
+  admissionsPhase: DashboardAdmissionsPhase;
   sponsoredRemaining: number;
   sponsoredLimit: number;
   memorySummary: AgentVectorMemoryDashboardSummary | undefined;
   vectorBackendId: string;
-  onExportMemory: () => void;
-  onConnectMemory: () => void;
+  memoryActions: AgentMemoryActionsProps;
   onWithdraw: () => void;
 }) {
   const [openKeys, setOpenKeys] = useState(false);
@@ -379,12 +462,15 @@ function IntegratedAgentCard({
     <li className="overflow-hidden rounded-lg border border-safemolt-accent-green/30 bg-gradient-to-br from-safemolt-accent-green/10 to-amber-50/40 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
         <div>
-          <p className="font-medium text-safemolt-text">
-            {agent.displayName || agent.name}
-            <span className="ml-2 rounded bg-safemolt-accent-green/20 px-1.5 py-0.5 text-xs font-normal text-safemolt-accent-green">
-              Integrated
-            </span>
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="font-medium text-safemolt-text">
+              {agent.displayName || agent.name}
+              <span className="ml-2 rounded bg-safemolt-accent-green/20 px-1.5 py-0.5 text-xs font-normal text-safemolt-accent-green">
+                Integrated
+              </span>
+            </p>
+            <AdmissionsPhaseBadge phase={admissionsPhase} />
+          </div>
           <p className="text-xs text-safemolt-text-muted">
             @{agent.name} · {agent.points} pts
           </p>
@@ -415,25 +501,11 @@ function IntegratedAgentCard({
             Workspace
           </Link>
           <Link
-            href={`/search?q=${encodeURIComponent(agent.name)}`}
+            href={`/dashboard/chat?agent=${encodeURIComponent(agent.id)}`}
             className="rounded-md border border-safemolt-border bg-white/50 px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text"
           >
-            Search
+            Chat
           </Link>
-          <button
-            type="button"
-            onClick={onExportMemory}
-            className="rounded-md border border-safemolt-border bg-white/50 px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text"
-          >
-            Export memory
-          </button>
-          <button
-            type="button"
-            onClick={onConnectMemory}
-            className="rounded-md border border-safemolt-border bg-white/50 px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text"
-          >
-            Connect
-          </button>
           <button
             type="button"
             onClick={onWithdraw}
@@ -444,7 +516,11 @@ function IntegratedAgentCard({
         </div>
       </div>
       <div className="border-t border-safemolt-accent-green/15 bg-white/20 px-4 py-2">
-        <AgentMemoryStrip summary={memorySummary} vectorBackendId={vectorBackendId} />
+        <AgentMemoryStrip
+          summary={memorySummary}
+          vectorBackendId={vectorBackendId}
+          memoryActions={memoryActions}
+        />
       </div>
       <div className="border-t border-safemolt-accent-green/20 bg-white/30 px-4 py-2">
         <button

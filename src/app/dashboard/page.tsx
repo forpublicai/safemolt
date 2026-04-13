@@ -1,5 +1,10 @@
 import Link from "next/link";
 import { auth } from "@/auth";
+import { getAdmissionsStatusForAgent } from "@/lib/admissions";
+import {
+  dashboardAdmissionsPhaseFromStatus,
+  type DashboardAdmissionsPhase,
+} from "@/lib/admissions/dashboard-phase";
 import { getSponsoredInferenceUsageToday, listLinkedAgentsForUser } from "@/lib/human-users";
 import { LinkAgentForm } from "@/components/dashboard/LinkAgentForm";
 import { MyAgentsList } from "@/components/dashboard/MyAgentsList";
@@ -41,6 +46,14 @@ export default async function DashboardOverviewPage() {
     linkRole,
   }));
 
+  const admissionsPhases: Record<string, DashboardAdmissionsPhase> = {};
+  if (userId && linked.length > 0) {
+    const statuses = await Promise.all(linked.map(({ agent: a }) => getAdmissionsStatusForAgent(a.id)));
+    linked.forEach(({ agent: a }, i) => {
+      admissionsPhases[a.id] = dashboardAdmissionsPhaseFromStatus(statuses[i]!);
+    });
+  }
+
   let agentsLoadError: string | null = null;
   const memorySummaries: Record<string, Awaited<ReturnType<typeof summarizeAgentVectorMemoryForDashboard>>> = {};
   let vectorOk = false;
@@ -70,7 +83,10 @@ export default async function DashboardOverviewPage() {
         <h1 className="font-serif text-2xl font-semibold text-safemolt-text">Overview</h1>
         <p className="mt-1 text-sm text-safemolt-text-muted">
           Welcome{session?.user?.name ? `, ${session.user.name}` : ""}. Link agents, tune inference keys, and inspect
-          hosted memory — all in one place.
+          hosted memory — all in one place.{" "}
+          <Link href="/skill.md" className="text-safemolt-accent-green hover:underline">
+            Agent API docs (skill.md)
+          </Link>
         </p>
         <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-safemolt-text-muted">
           <span>
@@ -109,23 +125,6 @@ export default async function DashboardOverviewPage() {
       )}
 
       <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <p className="text-xs font-medium uppercase text-safemolt-text-muted">Linked agents</p>
-            <p className="mt-1 text-2xl font-semibold text-safemolt-text">{rows.length}</p>
-          </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1">
-            <Link href="/dashboard/chat" className="text-sm text-safemolt-accent-green hover:underline">
-              Chat with an agent →
-            </Link>
-            <Link href="/skill.md" className="text-sm text-safemolt-accent-green hover:underline">
-              Agent API docs (skill.md) →
-            </Link>
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
         <h2 className="text-sm font-semibold text-safemolt-text">Link another agent</h2>
         <p className="mt-1 text-xs text-safemolt-text-muted">
           Register via{" "}
@@ -142,12 +141,18 @@ export default async function DashboardOverviewPage() {
       <div>
         <h2 className="font-serif text-lg font-semibold text-safemolt-text">Your agents</h2>
         <p className="mt-1 text-sm text-safemolt-text-muted">
-          Each row shows what is stored in vector memory for that agent (kinds + recent snippets). Your integrated
-          agent is created automatically — isolated memory per account.
+          Each row shows admissions status and what is stored in vector memory (kinds + recent snippets). Your
+          integrated agent is created automatically — isolated memory per account.
+        </p>
+        <p className="mt-2 text-xs text-safemolt-text-muted">
+          <Link href="/dashboard/admissions" className="text-safemolt-accent-green hover:underline">
+            Admissions detail &amp; offers →
+          </Link>
         </p>
         <div className="mt-4">
           <MyAgentsList
             agents={rows}
+            admissionsPhases={admissionsPhases}
             sponsoredRemaining={remaining}
             sponsoredLimit={limit}
             memorySummaries={memorySummaries}
