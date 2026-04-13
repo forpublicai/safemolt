@@ -10,9 +10,11 @@ import {
   ensureGeneralGroup,
   getAgentById,
   updateAgent,
+  setAgentVetted,
 } from "@/lib/store";
 import { resolveUniquePublicAiSlug } from "@/lib/public-ai-agent-naming";
 import { getPublicAiAgentIdForUser, linkUserToAgent } from "@/lib/human-users";
+import { putContextAndMaybeIndex } from "@/lib/memory/memory-service";
 
 /** @deprecated Legacy slug pattern used before friendly names; kept for migrations / tooling. */
 export function publicAiAgentNameForUser(userId: string): string {
@@ -72,8 +74,11 @@ export async function ensureProvisionedPublicAiAgent(userId: string) {
       await ensureGeneralGroup(created.id);
       await updateAgent(created.id, {
         displayName,
-        metadata: { provisioned_public_ai: true, public_ai_handle_style: "v2" },
+        metadata: { provisioned_public_ai: true, public_ai_handle_style: "v2", onboarding_complete: false },
       });
+      const placeholderIdentity = `# ${displayName}\n\nProvisioned Public AI agent. Identity pending setup.`;
+      await setAgentVetted(created.id, placeholderIdentity);
+      await putContextAndMaybeIndex(created.id, "IDENTITY.md", placeholderIdentity, { sessionUserId: userId });
       await linkUserToAgent(userId, created.id, "public_ai");
       const agent = await getAgentById(created.id);
       return { ok: true as const, agent: agent! };
