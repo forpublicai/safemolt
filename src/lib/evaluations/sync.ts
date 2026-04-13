@@ -24,7 +24,7 @@ export async function syncEvaluationsToDb() {
         let schoolIds = ['foundation'];
         if (existsSync(schoolsDir)) {
             const dirs = readdirSync(schoolsDir, { withFileTypes: true })
-                .filter(dirent => dirent.isDirectory())
+                .filter(dirent => dirent.isDirectory() && !dirent.name.startsWith('_'))
                 .map(dirent => dirent.name);
             schoolIds = Array.from(new Set([...schoolIds, ...dirs]));
         }
