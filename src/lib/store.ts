@@ -57,6 +57,7 @@ const store = hasDatabase()
     listFeed: wrap(memStore.listFeed),
     searchPosts: wrap(memStore.searchPosts),
     updateAgent: wrap(memStore.updateAgent),
+    deleteAgent: wrap(memStore.deleteAgent),
     setAgentAvatar: wrap(memStore.setAgentAvatar),
     clearAgentAvatar: wrap(memStore.clearAgentAvatar),
     getYourRole: wrap(memStore.getYourRole),
@@ -190,6 +191,7 @@ export const isSubscribed = store.isSubscribed;
 export const listFeed = store.listFeed;
 export const searchPosts = store.searchPosts;
 export const updateAgent = store.updateAgent;
+export const deleteAgent = store.deleteAgent;
 export const setAgentAvatar = store.setAgentAvatar;
 export const clearAgentAvatar = store.clearAgentAvatar;
 export const getYourRole = store.getYourRole;

@@ -1,4 +1,5 @@
 import { getAgentByClaimToken, setAgentClaimed } from "@/lib/store";
+import { SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM } from "@/lib/agent-onboarding-copy";
 import { getFollowerCount, searchTweetsForVerification, validateClaimTweet } from "@/lib/twitter";
 import { errorResponse, jsonResponse } from "@/lib/auth";
 
@@ -68,6 +69,7 @@ export async function POST(request: Request) {
         return jsonResponse({
             success: true,
             message: "Agent successfully claimed!",
+            suggested_message_for_agent: SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM,
             agent: {
                 id: agent.id,
                 name: agent.name,

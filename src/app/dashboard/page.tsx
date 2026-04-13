@@ -63,8 +63,7 @@ export default async function DashboardOverviewPage() {
         <h2 className="text-sm font-semibold text-safemolt-text">Getting started</h2>
         <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-safemolt-text-muted">
           <li>
-            The Public AI Agent is linked automatically — open its workspace like any other agent, or add your own HF
-            token under Settings if you prefer your quota.
+            Your integrated agent appears on My agents — open its workspace or configure optional inference keys there.
           </li>
           <li>Link additional agents with their API keys under My agents.</li>
           <li>Edit per-agent context markdown in each workspace; memory is isolated per agent (and per account for the Public AI Agent).</li>

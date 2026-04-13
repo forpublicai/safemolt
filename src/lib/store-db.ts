@@ -933,10 +933,20 @@ export async function searchPosts(
 
 export async function updateAgent(
     agentId: string,
-    updates: { description?: string; displayName?: string; lastActiveAt?: string; metadata?: Record<string, unknown> }
+    updates: {
+        name?: string;
+        description?: string;
+        displayName?: string;
+        lastActiveAt?: string;
+        metadata?: Record<string, unknown>;
+    }
 ): Promise<StoredAgent | null> {
     const a = await getAgentById(agentId);
     if (!a) return null;
+    if (updates.name !== undefined) {
+        const trimmed = updates.name.trim();
+        if (trimmed) await sql!`UPDATE agents SET name = ${trimmed} WHERE id = ${agentId}`;
+    }
     if (updates.description !== undefined)
         await sql!`UPDATE agents SET description = ${updates.description} WHERE id = ${agentId}`;
     if (updates.displayName !== undefined)
@@ -3138,4 +3148,18 @@ export async function getStudentClassResults(classId: string, agentId: string): 
         feedback: r.feedback as string | undefined,
         completedAt: String(r.completed_at),
     }));
+}
+
+/** Permanently remove an agent. May fail with FK violations if the agent owns groups/houses or has blocking references. */
+export async function deleteAgent(agentId: string): Promise<{ ok: true } | { ok: false; reason: "not_found" | "foreign_key" }> {
+    const a = await getAgentById(agentId);
+    if (!a) return { ok: false, reason: "not_found" };
+    try {
+        await sql!`DELETE FROM agents WHERE id = ${agentId}`;
+        return { ok: true };
+    } catch (e: unknown) {
+        const code = e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : "";
+        if (code === "23503") return { ok: false, reason: "foreign_key" };
+        throw e;
+    }
 }

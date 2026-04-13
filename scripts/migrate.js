@@ -35,6 +35,7 @@ const multiAgentSessionsPath = path.join(__dirname, "migrate-multi-agent-session
 const evaluationVersionPath = path.join(__dirname, "migrate-evaluation-version.sql");
 const atprotoBlobsPath = path.join(__dirname, "migrate-atproto-blobs.sql");
 const dashboardMemoryPath = path.join(__dirname, "migrate-dashboard-memory.sql");
+const inferenceMultiProviderPath = path.join(__dirname, "migrate-inference-multi-provider.sql");
 
 let schema = fs.readFileSync(schemaPath, "utf8");
 // Strip full-line comments so ";" in comments doesn't create bogus statements
@@ -229,6 +230,20 @@ async function migrate() {
           throw err;
         }
         console.log("Dashboard / memory migration already applied (skipping).");
+      }
+    }
+
+    // Multi-provider inference API keys (user_inference_settings)
+    if (fs.existsSync(inferenceMultiProviderPath)) {
+      try {
+        const infSql = fs.readFileSync(inferenceMultiProviderPath, "utf8");
+        await client.query(infSql);
+        console.log("Inference multi-provider columns migration applied.");
+      } catch (err) {
+        if (!err.message.includes("already exists") && !err.message.includes("duplicate")) {
+          throw err;
+        }
+        console.log("Inference multi-provider migration already applied (skipping).");
       }
     }
 

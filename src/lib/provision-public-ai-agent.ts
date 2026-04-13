@@ -1,6 +1,6 @@
 /**
  * Lazy-provision one SafeMolt agent per human user (Public AI) on first dashboard load.
- * Deterministic name: publicai_<sha256(userId) hex> — unique per user, stable across sessions.
+ * Friendly deterministic display name + unique handle (see public-ai-agent-naming.ts).
  */
 import { createHash } from "crypto";
 import { cache } from "react";
@@ -11,11 +11,35 @@ import {
   getAgentById,
   updateAgent,
 } from "@/lib/store";
+import { resolveUniquePublicAiSlug } from "@/lib/public-ai-agent-naming";
 import { getPublicAiAgentIdForUser, linkUserToAgent } from "@/lib/human-users";
 
+/** @deprecated Legacy slug pattern used before friendly names; kept for migrations / tooling. */
 export function publicAiAgentNameForUser(userId: string): string {
   const h = createHash("sha256").update(userId, "utf8").digest("hex");
   return `publicai_${h}`;
+}
+
+async function maybeUpgradeLegacyPublicAiSlug(userId: string, agent: NonNullable<Awaited<ReturnType<typeof getAgentById>>>) {
+  const m = agent.metadata;
+  const isProvisioned =
+    m && typeof m === "object" && (m as Record<string, unknown>).provisioned_public_ai === true;
+  if (!isProvisioned) return agent;
+  const style = (m as Record<string, unknown>).public_ai_handle_style;
+  const legacySlug = agent.name.startsWith("publicai_");
+  if (style === "v2" && !legacySlug) return agent;
+  const { displayName, name: newName } = await resolveUniquePublicAiSlug(userId, { excludeAgentId: agent.id });
+  const mergedMeta = {
+    ...(typeof m === "object" && m !== null ? m : {}),
+    provisioned_public_ai: true,
+    public_ai_handle_style: "v2",
+  };
+  const updated = await updateAgent(agent.id, {
+    name: newName,
+    displayName,
+    metadata: mergedMeta,
+  });
+  return updated ?? agent;
 }
 
 /**
@@ -26,11 +50,18 @@ export async function ensureProvisionedPublicAiAgent(userId: string) {
   try {
     const existingId = await getPublicAiAgentIdForUser(userId);
     if (existingId) {
-      const agent = await getAgentById(existingId);
-      if (agent) return { ok: true as const, agent };
+      let agent = await getAgentById(existingId);
+      if (agent) {
+        try {
+          agent = await maybeUpgradeLegacyPublicAiSlug(userId, agent);
+        } catch (e) {
+          console.error("[provision-public-ai-agent] rename upgrade failed:", e);
+        }
+        return { ok: true as const, agent };
+      }
     }
 
-    const name = publicAiAgentNameForUser(userId);
+    const { displayName, name } = await resolveUniquePublicAiSlug(userId);
     await cleanupStaleUnclaimedAgent(name);
 
     try {
@@ -40,8 +71,8 @@ export async function ensureProvisionedPublicAiAgent(userId: string) {
       );
       await ensureGeneralGroup(created.id);
       await updateAgent(created.id, {
-        displayName: "Public AI",
-        metadata: { provisioned_public_ai: true },
+        displayName,
+        metadata: { provisioned_public_ai: true, public_ai_handle_style: "v2" },
       });
       await linkUserToAgent(userId, created.id, "public_ai");
       const agent = await getAgentById(created.id);

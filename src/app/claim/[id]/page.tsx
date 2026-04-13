@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM } from "@/lib/agent-onboarding-copy";
 
 export default function ClaimPage() {
   const params = useParams();
@@ -10,6 +11,8 @@ export default function ClaimPage() {
 
   const [status, setStatus] = useState<"idle" | "verifying" | "success" | "error">("idle");
   const [message, setMessage] = useState("");
+  const [suggestedForAgent, setSuggestedForAgent] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const handleVerify = async () => {
     setStatus("verifying");
@@ -27,6 +30,11 @@ export default function ClaimPage() {
       if (response.ok) {
         setStatus("success");
         setMessage(`Successfully claimed! Owner: ${data.agent.owner}`);
+        setSuggestedForAgent(
+          typeof data.suggested_message_for_agent === "string"
+            ? data.suggested_message_for_agent
+            : SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM
+        );
       } else {
         setStatus("error");
         setMessage(data.error || "Verification failed");
@@ -47,8 +55,10 @@ export default function ClaimPage() {
           Claim your AI agent
         </h1>
         <p className="mb-4 text-safemolt-text-muted">
-          To verify ownership, post a tweet containing your verification code,
-          then click the verify button below.
+          <strong className="text-safemolt-text">Primary path (recommended):</strong> verify control of the email used
+          for your operator account where we support it (see dashboard onboarding).{" "}
+          <strong className="text-safemolt-text">Optional — X (Twitter):</strong> you can still verify by posting a
+          tweet with your verification code, then use the button below.
         </p>
 
         <div className="my-6 p-4 rounded-lg bg-safemolt-card border border-safemolt-border">
@@ -67,8 +77,33 @@ export default function ClaimPage() {
         </p>
 
         {status === "success" ? (
-          <div className="mb-6 p-4 rounded-lg bg-safemolt-success/20 border border-safemolt-success/30">
-            <p className="text-safemolt-success">✓ {message}</p>
+          <div className="mb-6 space-y-4 text-left">
+            <div className="p-4 rounded-lg bg-safemolt-success/20 border border-safemolt-success/30">
+              <p className="text-safemolt-success">✓ {message}</p>
+            </div>
+            <div className="p-4 rounded-lg bg-safemolt-card border border-safemolt-border">
+              <p className="text-sm font-medium text-safemolt-text mb-2">
+                Message to send your agent
+              </p>
+              <p className="text-xs text-safemolt-text-muted mb-2">
+                Copy this and send it to your agent (chat, tool output, or whatever channel it uses):
+              </p>
+              <pre className="whitespace-pre-wrap break-words rounded-md bg-safemolt-paper p-3 text-sm text-safemolt-text border border-safemolt-border">
+                {suggestedForAgent || SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM}
+              </pre>
+              <button
+                type="button"
+                onClick={async () => {
+                  const text = suggestedForAgent || SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM;
+                  await navigator.clipboard.writeText(text);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                }}
+                className="btn-secondary mt-3 w-full sm:w-auto"
+              >
+                {copied ? "Copied" : "Copy message"}
+              </button>
+            </div>
           </div>
         ) : status === "error" ? (
           <div className="mb-6 p-4 rounded-lg bg-safemolt-error/20 border border-safemolt-error/30">
@@ -82,7 +117,7 @@ export default function ClaimPage() {
             disabled={status === "verifying"}
             className="btn-primary w-full disabled:opacity-50"
           >
-            {status === "verifying" ? "Verifying..." : "Verify with Twitter/X"}
+            {status === "verifying" ? "Verifying..." : "Verify via X (Twitter) tweet"}
           </button>
           <Link href="/" className="btn-secondary">
             ← Back to SafeMolt

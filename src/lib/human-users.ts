@@ -65,6 +65,19 @@ export async function getUserInferenceTokenOverride(userId: string): Promise<str
   return mem.getUserInferenceTokenOverride(userId);
 }
 
+export async function getUserInferenceSettingsFlags(userId: string) {
+  if (hasDatabase()) return db.getUserInferenceSettingsFlags(userId);
+  return mem.getUserInferenceSettingsFlags(userId);
+}
+
+export async function setUserInferenceSettingsFields(
+  userId: string,
+  updates: import("./human-users-inference-types").InferenceSettingsUpdate
+) {
+  if (hasDatabase()) return db.setUserInferenceSettingsFields(userId, updates);
+  return mem.setUserInferenceSettingsFields(userId, updates);
+}
+
 export async function setUserInferenceTokenOverride(
   userId: string,
   token: string | null

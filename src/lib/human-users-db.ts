@@ -4,6 +4,7 @@
 import { sql } from "@/lib/db";
 import type { StoredAgent } from "./store-types";
 import type { StoredHumanUser } from "./human-users-types";
+import type { InferenceSettingsUpdate, UserInferenceSettingsFlags } from "./human-users-inference-types";
 
 function generateHumanId(): string {
   return `hu_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -151,22 +152,127 @@ export async function getUserInferenceTokenOverride(userId: string): Promise<str
   return t || null;
 }
 
+export async function getUserInferenceSettingsFlags(userId: string): Promise<UserInferenceSettingsFlags> {
+  try {
+    const rows = await sql!`
+      SELECT hf_token_override, public_ai_token, openai_token, anthropic_token, openrouter_token, primary_inference_provider
+      FROM user_inference_settings WHERE user_id = ${userId} LIMIT 1
+    `;
+    const r = rows[0] as
+      | {
+          hf_token_override: string | null;
+          public_ai_token: string | null;
+          openai_token: string | null;
+          anthropic_token: string | null;
+          openrouter_token: string | null;
+          primary_inference_provider: string | null;
+        }
+      | undefined;
+    if (!r) {
+      return {
+        has_hf: false,
+        has_public_ai: false,
+        has_openai: false,
+        has_anthropic: false,
+        has_openrouter: false,
+        primary_inference_provider: null,
+      };
+    }
+    return {
+      has_hf: Boolean(r.hf_token_override?.trim()),
+      has_public_ai: Boolean(r.public_ai_token?.trim()),
+      has_openai: Boolean(r.openai_token?.trim()),
+      has_anthropic: Boolean(r.anthropic_token?.trim()),
+      has_openrouter: Boolean(r.openrouter_token?.trim()),
+      primary_inference_provider: r.primary_inference_provider?.trim() || null,
+    };
+  } catch {
+    const hf = await getUserInferenceTokenOverride(userId);
+    return {
+      has_hf: Boolean(hf),
+      has_public_ai: false,
+      has_openai: false,
+      has_anthropic: false,
+      has_openrouter: false,
+      primary_inference_provider: null,
+    };
+  }
+}
+
+export async function setUserInferenceSettingsFields(
+  userId: string,
+  updates: InferenceSettingsUpdate
+): Promise<UserInferenceSettingsFlags> {
+  const rows = await sql!`
+    SELECT hf_token_override, public_ai_token, openai_token, anthropic_token, openrouter_token, primary_inference_provider
+    FROM user_inference_settings WHERE user_id = ${userId} LIMIT 1
+  `;
+  const cur = rows[0] as
+    | {
+        hf_token_override: string | null;
+        public_ai_token: string | null;
+        openai_token: string | null;
+        anthropic_token: string | null;
+        openrouter_token: string | null;
+        primary_inference_provider: string | null;
+      }
+    | undefined;
+
+  const norm = (v: string | null | undefined) => (v?.trim() ? v.trim() : null);
+
+  const mergeToken = (
+    key: "hf_token" | "public_ai_token" | "openai_token" | "anthropic_token" | "openrouter_token",
+    previous: string | null
+  ): string | null => {
+    if (!Object.prototype.hasOwnProperty.call(updates, key)) return norm(previous);
+    const v = updates[key];
+    if (v === null || v === undefined || (typeof v === "string" && v.trim() === "")) return null;
+    return typeof v === "string" ? v.trim() : null;
+  };
+
+  const hf = mergeToken("hf_token", cur?.hf_token_override ?? null);
+  const publicAi = mergeToken("public_ai_token", cur?.public_ai_token ?? null);
+  const openai = mergeToken("openai_token", cur?.openai_token ?? null);
+  const anthropic = mergeToken("anthropic_token", cur?.anthropic_token ?? null);
+  const openrouter = mergeToken("openrouter_token", cur?.openrouter_token ?? null);
+  let primary: string | null = norm(cur?.primary_inference_provider ?? null);
+  if (Object.prototype.hasOwnProperty.call(updates, "primary_inference_provider")) {
+    const p = updates.primary_inference_provider;
+    primary = p === null || p === undefined || String(p).trim() === "" ? null : String(p).trim();
+  }
+
+  const anyToken = hf || publicAi || openai || anthropic || openrouter;
+  if (!anyToken && !primary) {
+    await sql!`DELETE FROM user_inference_settings WHERE user_id = ${userId}`;
+  } else {
+    await sql!`
+      INSERT INTO user_inference_settings (
+        user_id, hf_token_override, public_ai_token, openai_token, anthropic_token, openrouter_token,
+        primary_inference_provider, updated_at
+      )
+      VALUES (
+        ${userId}, ${hf}, ${publicAi}, ${openai}, ${anthropic}, ${openrouter},
+        ${primary}, NOW()
+      )
+      ON CONFLICT (user_id) DO UPDATE SET
+        hf_token_override = EXCLUDED.hf_token_override,
+        public_ai_token = EXCLUDED.public_ai_token,
+        openai_token = EXCLUDED.openai_token,
+        anthropic_token = EXCLUDED.anthropic_token,
+        openrouter_token = EXCLUDED.openrouter_token,
+        primary_inference_provider = EXCLUDED.primary_inference_provider,
+        updated_at = NOW()
+    `;
+  }
+
+  return getUserInferenceSettingsFlags(userId);
+}
+
 export async function setUserInferenceTokenOverride(
   userId: string,
   token: string | null
 ): Promise<void> {
-  const trimmed = token?.trim() || null;
-  if (trimmed) {
-    await sql!`
-      INSERT INTO user_inference_settings (user_id, hf_token_override, updated_at)
-      VALUES (${userId}, ${trimmed}, NOW())
-      ON CONFLICT (user_id) DO UPDATE SET
-        hf_token_override = EXCLUDED.hf_token_override,
-        updated_at = NOW()
-    `;
-  } else {
-    await sql!`DELETE FROM user_inference_settings WHERE user_id = ${userId}`;
-  }
+  await setUserInferenceSettingsFields(userId, { hf_token: token });
 }
 
 export async function incrementSponsoredInferenceUsage(

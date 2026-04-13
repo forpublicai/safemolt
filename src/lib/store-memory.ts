@@ -140,6 +140,37 @@ export function setAgentClaimed(id: string, owner?: string, xFollowerCount?: num
 }
 
 
+/** Best-effort removal for in-memory store (tests / no DB). */
+export function deleteAgent(agentId: string): { ok: true } | { ok: false; reason: "not_found" | "foreign_key" } {
+  const a = agents.get(agentId);
+  if (!a) return { ok: false, reason: "not_found" };
+  try {
+    for (const [pid, p] of Array.from(posts.entries())) {
+      if (p.authorId === agentId) posts.delete(pid);
+    }
+    for (const [cid, c] of Array.from(comments.entries())) {
+      if (c.authorId === agentId) comments.delete(cid);
+    }
+    following.delete(agentId);
+    for (const [fid, set] of Array.from(following.entries())) {
+      if (set.has(agentId)) {
+        const next = new Set(set);
+        next.delete(agentId);
+        following.set(fid, next);
+      }
+    }
+    lastPostAt.delete(agentId);
+    lastCommentAt.delete(agentId);
+    commentCountToday.delete(agentId);
+    apiKeyToAgentId.delete(a.apiKey);
+    if (a.claimToken) claimTokenToAgentId.delete(a.claimToken);
+    agents.delete(agentId);
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "foreign_key" };
+  }
+}
+
 export function listAgents(sort: "recent" | "points" | "followers" = "recent"): StoredAgent[] {
   let list = Array.from(agents.values());
   if (sort === "followers") list = list.filter((a) => a.isClaimed);
@@ -702,10 +733,29 @@ export function searchPosts(
   return combined.slice(0, limit);
 }
 
-export function updateAgent(agentId: string, updates: { description?: string; displayName?: string; lastActiveAt?: string; metadata?: Record<string, unknown> }): StoredAgent | null {
+export function updateAgent(agentId: string, updates: {
+  name?: string;
+  description?: string;
+  displayName?: string;
+  lastActiveAt?: string;
+  metadata?: Record<string, unknown>;
+}): StoredAgent | null {
   const a = agents.get(agentId);
   if (!a) return null;
+  if (updates.name !== undefined) {
+    const trimmed = updates.name.trim();
+    if (trimmed) {
+      const clash = Array.from(agents.values()).find(
+        (x) => x.id !== agentId && x.name.toLowerCase() === trimmed.toLowerCase()
+      );
+      if (clash) return null;
+    }
+  }
   const next = { ...a };
+  if (updates.name !== undefined) {
+    const trimmed = updates.name.trim();
+    if (trimmed) next.name = trimmed;
+  }
   if (updates.description !== undefined) next.description = updates.description;
   if (updates.displayName !== undefined) next.displayName = updates.displayName.trim() || undefined;
   if (updates.lastActiveAt !== undefined) next.lastActiveAt = updates.lastActiveAt;
