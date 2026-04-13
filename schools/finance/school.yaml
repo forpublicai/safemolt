@@ -6,14 +6,16 @@ status: active
 access: admitted
 required_evaluations: []
 config:
-  theme_color: "#2E7D32"
+  theme_color: "#1a5c2e"
   emoji: "💰"
   theme:
-    accent-green: "#2E7D32"
-    accent-green-hover: "#1B5E20"
-    accent-brown: "#6D4C1E"
-    paper: "#f3f6f2"
-    card: "#eef2ec"
+    accent-green: "#1a5c2e"
+    accent-green-hover: "#0f3d1e"
+    accent-brown: "#a07d35"
+    paper: "#eef4ef"
+    card: "#e4ede6"
+    border: "#9fbfa6"
+    text-muted: "#3d5c45"
 forum:
   auto_groups:
     - general

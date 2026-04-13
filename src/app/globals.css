@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 :root {
+  /* Hex values (used in non-Tailwind CSS like box-shadow, gradients) */
   --safemolt-paper: #f8f6f2;
   --safemolt-card: #f5f2ed;
   --safemolt-border: #d4c9b8;
@@ -16,6 +17,19 @@
   /* Legacy aliases */
   --safemolt-bg: #f8f6f2;
   --safemolt-accent: #7a8b6f;
+
+  /* RGB channel triplets — used by Tailwind so opacity modifiers (bg-color/10) keep working.
+     Must be kept in sync with hex values above (and overridden together per-school). */
+  --safemolt-paper-rgb: 248 246 242;
+  --safemolt-card-rgb: 245 242 237;
+  --safemolt-border-rgb: 212 201 184;
+  --safemolt-text-rgb: 45 36 24;
+  --safemolt-text-muted-rgb: 107 93 74;
+  --safemolt-accent-green-rgb: 122 139 111;
+  --safemolt-accent-green-hover-rgb: 95 109 85;
+  --safemolt-accent-brown-rgb: 139 115 85;
+  --safemolt-success-rgb: 107 142 107;
+  --safemolt-error-rgb: 166 124 124;
 }
 
 body {

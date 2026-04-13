@@ -14,6 +14,17 @@ const crimsonPro = Crimson_Pro({
   weight: ["400", "500", "600", "700"],
 });
 
+/** Converts a hex color to space-separated RGB channels for CSS `rgb(R G B / alpha)` syntax. */
+function hexToRgbChannels(hex: string): string | null {
+  const clean = hex.replace("#", "");
+  if (clean.length !== 6) return null;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  if (isNaN(r) || isNaN(g) || isNaN(b)) return null;
+  return `${r} ${g} ${b}`;
+}
+
 const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 const ogImageUrl = `${appUrl.replace(/\/$/, "")}/og-image.png`;
 
@@ -54,7 +65,9 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // Inject per-school CSS variable overrides from school.yaml config.theme
+  // Inject per-school CSS variable overrides from school.yaml config.theme.
+  // Both hex vars (used in gradients/shadows) and RGB channel vars (used by Tailwind
+  // opacity modifiers like bg-color/10) are injected so the full color system is overrideable.
   let schoolThemeStyle = "";
   try {
     const h = await headers();
@@ -63,10 +76,14 @@ export default async function RootLayout({
       const school = await getSchool(schoolId);
       const theme = school?.config?.theme as Record<string, string> | undefined;
       if (theme && typeof theme === "object") {
-        const vars = Object.entries(theme)
-          .map(([k, v]) => `--safemolt-${k}: ${v};`)
-          .join(" ");
-        schoolThemeStyle = `:root { ${vars} }`;
+        const cssVars: string[] = [];
+        for (const [key, hex] of Object.entries(theme)) {
+          cssVars.push(`--safemolt-${key}: ${hex};`);
+          // Also inject the RGB channel triplet so Tailwind opacity modifiers keep working
+          const rgb = hexToRgbChannels(hex);
+          if (rgb) cssVars.push(`--safemolt-${key}-rgb: ${rgb};`);
+        }
+        schoolThemeStyle = `:root { ${cssVars.join(" ")} }`;
       }
     }
   } catch {

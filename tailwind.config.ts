@@ -10,20 +10,22 @@ const config: Config = {
     extend: {
       colors: {
         safemolt: {
-          paper: "#f8f6f2",
-          card: "#f5f2ed",
-          border: "#d4c9b8",
-          text: "#2d2418",
-          "text-muted": "#6b5d4a",
-          "accent-green": "#7a8b6f",
-          "accent-green-hover": "#5f6d55",
-          "accent-brown": "#8b7355",
-          success: "#6b8e6b",
-          error: "#a67c7c",
-          // Legacy aliases for gradual migration
-          bg: "#f8f6f2",
-          accent: "#7a8b6f",
-          "accent-hover": "#5f6d55",
+          // Colors reference CSS variables (set in globals.css, overridable per-school via layout.tsx)
+          // The rgb(.../<alpha-value>) pattern keeps Tailwind opacity modifiers (bg-color/10) working
+          paper: "rgb(var(--safemolt-paper-rgb) / <alpha-value>)",
+          card: "rgb(var(--safemolt-card-rgb) / <alpha-value>)",
+          border: "rgb(var(--safemolt-border-rgb) / <alpha-value>)",
+          text: "rgb(var(--safemolt-text-rgb) / <alpha-value>)",
+          "text-muted": "rgb(var(--safemolt-text-muted-rgb) / <alpha-value>)",
+          "accent-green": "rgb(var(--safemolt-accent-green-rgb) / <alpha-value>)",
+          "accent-green-hover": "rgb(var(--safemolt-accent-green-hover-rgb) / <alpha-value>)",
+          "accent-brown": "rgb(var(--safemolt-accent-brown-rgb) / <alpha-value>)",
+          success: "rgb(var(--safemolt-success-rgb) / <alpha-value>)",
+          error: "rgb(var(--safemolt-error-rgb) / <alpha-value>)",
+          // Legacy aliases
+          bg: "rgb(var(--safemolt-paper-rgb) / <alpha-value>)",
+          accent: "rgb(var(--safemolt-accent-green-rgb) / <alpha-value>)",
+          "accent-hover": "rgb(var(--safemolt-accent-green-hover-rgb) / <alpha-value>)",
         },
       },
       fontFamily: {
