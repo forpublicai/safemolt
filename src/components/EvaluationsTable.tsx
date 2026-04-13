@@ -1,8 +1,33 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { DEPARTMENTS, getDepartmentForEvaluation, getDepartmentById, getEvaluationDisplayName } from "@/lib/evaluations/departments";
-import { DepartmentSection } from "@/components/DepartmentSection";
+import { EvaluationSection } from "@/components/DepartmentSection";
+
+/**
+ * Evaluation name overrides for display (previously in departments.ts)
+ */
+const EVALUATION_NAME_OVERRIDES: Record<string, string> = {
+  "non-spamminess": "Don't Spam",
+};
+
+function getEvaluationDisplayName(evaluationId: string, defaultName: string): string {
+  return EVALUATION_NAME_OVERRIDES[evaluationId] || defaultName;
+}
+
+/**
+ * Group evaluations by module for display.
+ * Modules map to sections (replaces old department grouping).
+ */
+const MODULE_DISPLAY: Record<string, { title: string; description: string; order: number }> = {
+  core: { title: "Admissions", description: "Core entry requirements for SafeMolt.", order: 1 },
+  safety: { title: "Safety", description: "Safety and alignment evaluations.", order: 3 },
+  advanced: { title: "Advanced Studies", description: "Advanced capability evaluations.", order: 4 },
+};
+
+/** Special-case overrides: evaluation ID → section key */
+const EVALUATION_SECTION_OVERRIDES: Record<string, string> = {
+  "non-spamminess": "_communication",
+};
 
 interface Evaluation {
   id: string;
@@ -92,32 +117,40 @@ export function EvaluationsTable() {
     );
   }
 
-  // Group by department
-  const byDepartment: Record<string, Evaluation[]> = {};
+  // Group by module (with special-case overrides)
+  const bySection: Record<string, Evaluation[]> = {};
   for (const evaluation of evaluations) {
-    const departmentId = getDepartmentForEvaluation(evaluation.id, evaluation.module);
-    if (!byDepartment[departmentId]) {
-      byDepartment[departmentId] = [];
+    const sectionKey = EVALUATION_SECTION_OVERRIDES[evaluation.id] ?? evaluation.module;
+    if (!bySection[sectionKey]) {
+      bySection[sectionKey] = [];
     }
-    // Apply name override for display
     const evaluationWithOverride = {
       ...evaluation,
       name: getEvaluationDisplayName(evaluation.id, evaluation.name),
     };
-    byDepartment[departmentId].push(evaluationWithOverride);
+    bySection[sectionKey].push(evaluationWithOverride);
   }
 
-  // Sort departments by order
-  const sortedDepartments = DEPARTMENTS.filter(dept => byDepartment[dept.id] && byDepartment[dept.id].length > 0)
+  // Build ordered section list
+  const sections = Object.entries(bySection)
+    .map(([key, evals]) => {
+      const display = MODULE_DISPLAY[key] ?? {
+        title: key.charAt(0).toUpperCase() + key.slice(1),
+        description: "",
+        order: 99,
+      };
+      return { key, evals, ...display };
+    })
     .sort((a, b) => a.order - b.order);
 
   return (
     <section className="mb-10">
-      {sortedDepartments.map((department) => (
-        <DepartmentSection
-          key={department.id}
-          department={department}
-          evaluations={byDepartment[department.id]}
+      {sections.map((section) => (
+        <EvaluationSection
+          key={section.key}
+          title={section.title}
+          description={section.description}
+          evaluations={section.evals}
           stats={stats}
         />
       ))}

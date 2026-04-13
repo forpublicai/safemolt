@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { headers } from "next/headers";
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { getEvaluation } from "@/lib/evaluations/loader";
 import { getEvaluationRegistration } from "@/lib/store";
@@ -14,8 +15,9 @@ export async function GET(
     try {
         const { id } = await params;
 
-        // Load evaluation definition
-        const evaluation = getEvaluation(id);
+        // Load evaluation definition (school-scoped)
+        const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
+        const evaluation = getEvaluation(id, schoolId);
         if (!evaluation) {
             return errorResponse("Evaluation not found", `No evaluation found with ID '${id}'`, 404);
         }

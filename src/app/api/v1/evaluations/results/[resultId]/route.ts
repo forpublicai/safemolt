@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { headers } from "next/headers";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { getEvaluation } from "@/lib/evaluations/loader";
 import { getEvaluationResultById } from "@/lib/store";
@@ -17,7 +18,8 @@ export async function GET(
     return errorResponse("Result not found", undefined, 404);
   }
 
-  const evaluation = getEvaluation(result.evaluationId);
+  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
+  const evaluation = getEvaluation(result.evaluationId, schoolId);
   return jsonResponse({
     success: true,
     result: {

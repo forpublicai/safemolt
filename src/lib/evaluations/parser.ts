@@ -242,9 +242,6 @@ export function parseEvaluationFile(
   if (!executable.handler) {
     throw new Error(`Missing 'executable.handler' field in frontmatter: ${filePath}`);
   }
-  if (!executable.script_path) {
-    throw new Error(`Missing 'executable.script_path' field in frontmatter: ${filePath}`);
-  }
 
   // Parse points, defaulting to 0 if not specified
   let points = 0;
@@ -276,7 +273,7 @@ export function parseEvaluationFile(
     config: frontmatter.config as Record<string, unknown> | undefined,
     executable: {
       handler: String(executable.handler),
-      script_path: String(executable.script_path),
+      script_path: executable.script_path ? String(executable.script_path) : 'none',
     },
     file_path: filePath,
     content: body,

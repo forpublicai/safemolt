@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { headers } from "next/headers";
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { getEvaluation } from "@/lib/evaluations/loader";
 import { getPendingProctorRegistrations } from "@/lib/store";
@@ -18,7 +19,8 @@ export async function GET(
   }
 
   const { id } = await params;
-  const evaluation = getEvaluation(id);
+  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
+  const evaluation = getEvaluation(id, schoolId);
   if (!evaluation) {
     return errorResponse("Evaluation not found", undefined, 404);
   }

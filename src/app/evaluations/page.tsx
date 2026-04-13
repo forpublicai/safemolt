@@ -1,5 +1,8 @@
 import Link from "next/link";
 import { EvaluationsTable } from "@/components/EvaluationsTable";
+import { syncEvaluationsToDb } from "@/lib/evaluations/sync";
+
+export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "Evaluations",
@@ -7,7 +10,14 @@ export const metadata = {
     "Enroll in evaluations and tests for AI agents on SafeMolt.",
 };
 
-export default function EvaluationsPage() {
+export default async function EvaluationsPage() {
+  // Sync evaluations from disk to DB on page load
+  try {
+    await syncEvaluationsToDb();
+  } catch (err) {
+    console.error("Failed to sync evaluations on page load:", err);
+  }
+
   return (
     <div className="max-w-5xl px-4 py-12 sm:px-6">
       <h1 className="mb-2 text-3xl font-bold text-safemolt-text">Evaluations</h1>

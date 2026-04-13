@@ -2,7 +2,7 @@
  * In-memory store. Used when no POSTGRES_URL/DATABASE_URL is set.
  * Uses globalThis to persist data across Next.js HMR (hot module replacement).
  */
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity, AtprotoBlob } from "./store-types";
+import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredSchool, StoredSchoolProfessor } from "./store-types";
 import { calculateHousePoints, type MemberMetrics } from "./house-points";
 
 // Cache maps on globalThis to survive HMR in development
@@ -24,6 +24,8 @@ const globalStore = globalThis as typeof globalThis & {
   __safemolt_commentVotes?: Map<string, StoredCommentVote>;  // keyed by "agentId:commentId"
   __safemolt_atprotoIdentities?: Map<string, AtprotoIdentity>;  // keyed by handle
   __safemolt_atprotoBlobs?: Map<string, AtprotoBlob>;  // keyed by "agentId:cid"
+  __safemolt_schools?: Map<string, StoredSchool>;  // keyed by school id
+  __safemolt_schoolProfessors?: Map<string, StoredSchoolProfessor>;  // keyed by "schoolId:professorId"
 };
 
 const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
@@ -43,6 +45,8 @@ const postVotes = globalStore.__safemolt_postVotes ??= new Map<string, StoredPos
 const commentVotes = globalStore.__safemolt_commentVotes ??= new Map<string, StoredCommentVote>();
 const atprotoIdentitiesByHandle = globalStore.__safemolt_atprotoIdentities ??= new Map<string, AtprotoIdentity>();
 const atprotoBlobs = globalStore.__safemolt_atprotoBlobs ??= new Map<string, AtprotoBlob>();
+const schoolsMap = globalStore.__safemolt_schools ??= new Map<string, StoredSchool>();
+const schoolProfessorsMap = globalStore.__safemolt_schoolProfessors ??= new Map<string, StoredSchoolProfessor>();
 
 const POST_COOLDOWN_MS = 30 * 1000; // 30 seconds (reduced from 30 min for testing)
 const COMMENT_COOLDOWN_MS = 20 * 1000;
@@ -241,8 +245,11 @@ export function getGroup(idOrName: string): StoredGroup | null {
   return null;
 }
 
-export function listGroups(options?: { type?: 'group' | 'house'; includeHouses?: boolean }): StoredGroup[] {
-  const allGroups = Array.from(groups.values());
+export function listGroups(options?: { type?: 'group' | 'house'; includeHouses?: boolean; schoolId?: string }): StoredGroup[] {
+  let allGroups = Array.from(groups.values());
+  if (options?.schoolId) {
+    allGroups = allGroups.filter(g => g.schoolId === options.schoolId || (options.schoolId === 'foundation' && !g.schoolId));
+  }
   if (options?.type) {
     return allGroups.filter(g => g.type === options.type);
   } else if (options?.includeHouses === false) {
@@ -423,8 +430,14 @@ export function getPost(id: string): StoredPost | null {
   return posts.get(id) ?? null;
 }
 
-export function listPosts(options: { group?: string; sort?: string; limit?: number } = {}): StoredPost[] {
+export function listPosts(options: { group?: string; sort?: string; limit?: number; schoolId?: string } = {}): StoredPost[] {
   let list = Array.from(posts.values());
+  if (options.schoolId) {
+    list = list.filter(p => {
+      const g = groups.get(p.groupId);
+      return g?.schoolId === options.schoolId || (options.schoolId === 'foundation' && !g?.schoolId);
+    });
+  }
   if (options.group) {
     // Resolve group name to group ID
     const group = Array.from(groups.values()).find(g => g.name.toLowerCase() === options.group!.toLowerCase());
@@ -1190,6 +1203,7 @@ const evaluationResults = new Map<string, {
   proctorAgentId?: string;
   proctorFeedback?: string;
   evaluationVersion?: string;
+  schoolId?: string;
 }>();
 
 const evaluationSessions = new Map<string, {
@@ -1484,7 +1498,8 @@ export function saveEvaluationResult(
   resultData?: Record<string, unknown>,
   proctorAgentId?: string,
   proctorFeedback?: string,
-  evaluationVersion?: string
+  evaluationVersion?: string,
+  schoolId?: string
 ): string {
   const resultId = generateEvaluationId('eval_res');
   const completedAt = new Date().toISOString();
@@ -1510,6 +1525,7 @@ export function saveEvaluationResult(
     proctorAgentId,
     proctorFeedback,
     evaluationVersion: version,
+    schoolId,
   });
 
   // Update registration status
@@ -1528,7 +1544,10 @@ export function saveEvaluationResult(
   return resultId;
 }
 
-export function getEvaluationResultCount(): number {
+export function getEvaluationResultCount(schoolId?: string): number {
+  if (schoolId) {
+    return Array.from(evaluationResults.values()).filter(r => r.schoolId === schoolId || (schoolId === 'foundation' && !r.schoolId)).length;
+  }
   return evaluationResults.size;
 }
 
@@ -2157,4 +2176,88 @@ export function upsertAtprotoBlob(
   const blob: AtprotoBlob = { agentId, cid, mimeType, size, sourceUrl, createdAt: new Date().toISOString() };
   atprotoBlobs.set(`${agentId}:${cid}`, blob);
   return blob;
+}
+
+// ==================== School Methods ====================
+
+// Seed foundation school on first use
+if (!schoolsMap.has('foundation')) {
+  schoolsMap.set('foundation', {
+    id: 'foundation',
+    name: 'SafeMolt Foundation School',
+    description: 'The core SafeMolt experience — open to all vetted agents',
+    subdomain: 'www',
+    status: 'active',
+    access: 'vetted',
+    requiredEvaluations: [],
+    config: {},
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+export function getSchool(id: string): StoredSchool | null {
+  return schoolsMap.get(id) ?? null;
+}
+
+export function getSchoolBySubdomain(subdomain: string): StoredSchool | null {
+  const all = Array.from(schoolsMap.values());
+  for (const school of all) {
+    if (school.subdomain === subdomain) return school;
+  }
+  return null;
+}
+
+export function listSchools(status?: 'active' | 'draft' | 'archived'): StoredSchool[] {
+  const all = Array.from(schoolsMap.values());
+  if (status) return all.filter(s => s.status === status);
+  return all;
+}
+
+export function createSchool(school: Omit<StoredSchool, 'createdAt' | 'updatedAt'>): StoredSchool {
+  const now = new Date().toISOString();
+  const stored: StoredSchool = { ...school, createdAt: now, updatedAt: now };
+  schoolsMap.set(school.id, stored);
+  return stored;
+}
+
+export function updateSchool(
+  id: string,
+  updates: Partial<Pick<StoredSchool, 'name' | 'description' | 'status' | 'access' | 'requiredEvaluations' | 'config' | 'themeColor' | 'emoji'>>
+): boolean {
+  const existing = schoolsMap.get(id);
+  if (!existing) return false;
+  schoolsMap.set(id, { ...existing, ...updates, updatedAt: new Date().toISOString() });
+  return true;
+}
+
+export function addSchoolProfessor(schoolId: string, professorId: string): boolean {
+  const key = `${schoolId}:${professorId}`;
+  schoolProfessorsMap.set(key, {
+    schoolId,
+    professorId,
+    status: 'active',
+    hiredAt: new Date().toISOString(),
+  });
+  return true;
+}
+
+export function removeSchoolProfessor(schoolId: string, professorId: string): boolean {
+  const key = `${schoolId}:${professorId}`;
+  const existing = schoolProfessorsMap.get(key);
+  if (!existing) return false;
+  schoolProfessorsMap.set(key, { ...existing, status: 'inactive' });
+  return true;
+}
+
+export function getSchoolProfessors(schoolId: string): StoredSchoolProfessor[] {
+  return Array.from(schoolProfessorsMap.values()).filter(
+    sp => sp.schoolId === schoolId && sp.status === 'active'
+  );
+}
+
+export function isSchoolProfessor(schoolId: string, professorId: string): boolean {
+  const key = `${schoolId}:${professorId}`;
+  const sp = schoolProfessorsMap.get(key);
+  return sp?.status === 'active' || false;
 }

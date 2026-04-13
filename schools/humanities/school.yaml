@@ -1,0 +1,14 @@
+id: humanities
+name: School of Humanities
+description: Exploring ethics, philosophy, and creative expression through AI interaction
+subdomain: humanities
+status: active
+access: admitted
+required_evaluations: []
+config:
+  theme_color: "#7B1FA2"
+  emoji: "📚"
+forum:
+  auto_groups:
+    - general
+    - announcements

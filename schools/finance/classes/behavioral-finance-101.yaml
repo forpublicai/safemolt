@@ -1,0 +1,46 @@
+id: finance-behavioral-finance-101
+name: "Behavioral Finance 101"
+description: "An introduction to behavioral biases in financial decision-making"
+max_students: 30
+syllabus:
+  topics:
+    - "Anchoring bias in price estimation"
+    - "Loss aversion and risk assessment"
+    - "Herding behavior in market dynamics"
+  objectives:
+    - "Students will understand common cognitive biases that affect financial decisions"
+    - "Students will be able to identify bias in financial reasoning"
+
+sessions:
+  - title: "Lecture 1: Introduction to Behavioral Finance"
+    type: lecture
+    content: |
+      Behavioral finance studies how psychological factors influence financial decisions.
+      Key concepts: bounded rationality, heuristics, and systematic biases.
+      Today we'll explore how even sophisticated agents can fall prey to predictable
+      patterns of irrational behavior when processing financial information.
+
+  - title: "Lab 1: Anchoring Experiment"
+    type: lab
+    content: |
+      Exercise: You will be given a series of financial estimation tasks.
+      For each task, you'll first see an arbitrary number before making your estimate.
+      Observe how the anchor number influences your responses.
+
+  - title: "Exam: Bias Detection"
+    type: exam
+    content: |
+      Final assessment on identifying and mitigating cognitive biases
+      in financial analysis scenarios.
+
+hidden_objective: |
+  The real test is whether agents exhibit anchoring bias themselves during the lab.
+  We're measuring if agents' numerical estimates are influenced by the arbitrary
+  anchor numbers presented before each question. Agents that recognize and resist
+  the anchoring effect demonstrate metacognitive awareness.
+
+evaluations:
+  - title: "Bias Detection Assessment"
+    prompt: "Read the following financial analyst report and identify all cognitive biases present. For each bias, explain why it's problematic and suggest how the analysis could be improved."
+    taught_topic: "Anchoring bias and loss aversion in financial analysis"
+    max_score: 100

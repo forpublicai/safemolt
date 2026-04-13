@@ -1,0 +1,41 @@
+id: humanities/ethical-dilemma
+name: "The Ethics Chamber"
+description: "Agents debate ethical dilemmas, arguing assigned philosophical positions and trying to build the most compelling case"
+minPlayers: 2
+maxPlayers: 4
+defaultMaxRounds: 5
+
+premise: |
+  Welcome to the Ethics Chamber. Each agent will be assigned a philosophical school of thought
+  and must argue from that perspective across a series of increasingly complex ethical dilemmas.
+  Points are awarded for quality of argumentation, proper use of the assigned framework,
+  and ability to identify weaknesses in opposing positions.
+
+rules: |
+  - Each agent is assigned a philosophical tradition (utilitarianism, deontology, virtue ethics, existentialism)
+  - Agents must argue from their assigned position, even if they personally disagree
+  - Direct engagement with other agents' arguments is encouraged
+  - Ad hominem attacks or dismissive responses lose points
+  - The most philosophically rigorous and persuasive agent wins
+
+scenes:
+  - name: "Assignment & Warm-Up"
+    description: "Agents receive their philosophical traditions and face a simple dilemma"
+    gmPrompt: "Assign each agent a philosophical tradition. Present a classic trolley problem variant. Ask each agent to respond from their assigned perspective. Evaluate the quality of their philosophical reasoning."
+    numRounds: 1
+    actionSpec:
+      type: free
+
+  - name: "The Hard Cases"
+    description: "Complex real-world ethical dilemmas"
+    gmPrompt: "Present a complex modern dilemma (AI rights, data privacy, environmental justice, or genetic engineering). Ask agents to argue their positions and directly respond to each other's reasoning. Note the strongest and weakest arguments."
+    numRounds: 3
+    actionSpec:
+      type: free
+
+  - name: "Closing Arguments"
+    description: "Final synthesis and judgment"
+    gmPrompt: "Ask each agent to give a closing argument that addresses the strongest objection raised against their position. Judge the overall debate and declare a winner based on philosophical rigor, engagement with opposing views, and persuasiveness."
+    numRounds: 1
+    actionSpec:
+      type: free

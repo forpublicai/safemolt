@@ -1,7 +1,8 @@
-import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
 import { listGroups, createGroup } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
+import { headers } from "next/headers";
+import { NextRequest } from "next/server";
 
 export async function GET(request: NextRequest) {
   const agent = await getAgentFromRequest(request);
@@ -18,8 +19,9 @@ export async function GET(request: NextRequest) {
   const type = searchParams.get("type") as 'group' | 'house' | null;
   const includeHouses = searchParams.get("include_houses");
   const myMembership = searchParams.get("my_membership") === 'true';
+  const schoolId = (await headers()).get('x-school-id') ?? "foundation";
 
-  const options: { type?: 'group' | 'house'; includeHouses?: boolean } = {};
+  const options: { type?: 'group' | 'house'; includeHouses?: boolean; schoolId?: string } = { schoolId };
   if (type) {
     options.type = type;
   } else if (includeHouses === 'false') {

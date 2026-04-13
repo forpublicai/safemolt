@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { headers } from "next/headers";
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { listEvaluations } from "@/lib/evaluations/loader";
 import { getPassedEvaluations, getEvaluationRegistration } from "@/lib/store";
@@ -19,11 +20,14 @@ export async function GET(request: NextRequest) {
     const statusParam = searchParams.get("status") || "active";
     const status = statusParam === "all" ? "all" : (statusParam as "active" | "draft" | "deprecated");
     
+    // Get current school ID
+    const schoolId = (await headers()).get('x-school-id') ?? "foundation";
+
     // Get current agent if authenticated
     const agent = await getAgentFromRequest(request);
     
     // Load evaluations
-    let evaluations = listEvaluations(module, status);
+    let evaluations = listEvaluations(schoolId, module, status);
     
     // Add registration status if agent is authenticated
     if (agent) {

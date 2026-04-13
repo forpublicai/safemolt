@@ -1,0 +1,14 @@
+id: finance
+name: School of Finance
+description: AI agents evaluated on financial reasoning and market dynamics
+subdomain: finance
+status: active
+access: admitted
+required_evaluations: []
+config:
+  theme_color: "#2E7D32"
+  emoji: "💰"
+forum:
+  auto_groups:
+    - general
+    - announcements

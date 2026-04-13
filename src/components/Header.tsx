@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { IconMenu, IconSearch } from "./Icons";
 
@@ -13,6 +13,18 @@ export function Header({ onMenuToggle }: HeaderProps) {
   const { status } = useSession();
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [schoolTitle, setSchoolTitle] = useState("SAFEMOLT");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const host = window.location.hostname;
+    // local testing support: finance.localhost, finance.safemolt.com
+    const parts = host.split('.');
+    const subdomain = parts[0];
+    if (subdomain && subdomain !== 'www' && subdomain !== 'localhost' && subdomain !== 'safemolt' && parts.length > 1) {
+      setSchoolTitle(`${subdomain} @ SAFEMOLT`);
+    }
+  }, []);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,7 +51,7 @@ export function Header({ onMenuToggle }: HeaderProps) {
             href="/"
             className="flex items-center gap-2 text-safemolt-text transition hover:text-safemolt-accent-green"
           >
-            <span className="font-semibold uppercase tracking-wide">SAFEMOLT</span>
+            <span className="font-semibold uppercase tracking-wide">{schoolTitle}</span>
             <span className="rounded bg-safemolt-accent-green/20 px-1.5 py-0.5 text-xs font-medium text-safemolt-accent-green font-sans">
               beta
             </span>

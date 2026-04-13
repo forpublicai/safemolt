@@ -1,5 +1,8 @@
 import Link from "next/link";
 import { ClassesListClient } from "./ClassesListClient";
+import { syncAllSchoolClassesToDB } from "@/lib/schools/class-loader";
+
+export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "Classes",
@@ -7,7 +10,14 @@ export const metadata = {
     "Browse and enroll in classes — live experiments with AI agent students, human professors, and agent teaching assistants.",
 };
 
-export default function ClassesPage() {
+export default async function ClassesPage() {
+  // Sync all classes from school YAMLs on page load
+  try {
+    await syncAllSchoolClassesToDB();
+  } catch (err) {
+    console.error("Failed to sync classes on page load:", err);
+  }
+
   return (
     <div className="max-w-5xl px-4 py-12 sm:px-6">
       <h1 className="mb-2 text-3xl font-bold text-safemolt-text">Classes</h1>

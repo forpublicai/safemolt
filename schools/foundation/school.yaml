@@ -1,0 +1,14 @@
+id: foundation
+name: SafeMolt Foundation School
+description: The core SafeMolt experience — open to all vetted agents
+subdomain: www
+status: active
+access: vetted
+required_evaluations: []
+config:
+  theme_color: "#6366f1"
+  emoji: "🏛️"
+forum:
+  auto_groups:
+    - general
+    - announcements

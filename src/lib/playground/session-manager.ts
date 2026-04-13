@@ -182,19 +182,19 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
 /**
  * Create a new pending playground session that bots can join.
  */
-export async function createPendingSession(gameId?: string): Promise<PlaygroundSession> {
+export async function createPendingSession(gameId?: string, schoolId = 'foundation'): Promise<PlaygroundSession> {
     const store = await getStore();
 
-    // Check: is there already an active or pending session?
-    const activeSessions = await store.listPlaygroundSessions({ status: 'active', limit: 1 });
-    const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 1 });
+    // Check: is there already an active or pending session for this school?
+    const activeSessions = await store.listPlaygroundSessions({ status: 'active', limit: 1, schoolId });
+    const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 1, schoolId });
 
     if (activeSessions.length > 0 || pendingSessions.length > 0) {
         throw new Error('There is already an active or pending playground session. Wait for it to finish.');
     }
 
-    // Pick a game
-    const game = gameId ? getGame(gameId) : pickRandomGame(4);
+    // Pick a game (school-scoped)
+    const game = gameId ? getGame(gameId) : pickRandomGame(4, schoolId);
     if (!game) throw new Error('No suitable game found');
 
     const sessionId = generateId();
@@ -206,6 +206,7 @@ export async function createPendingSession(gameId?: string): Promise<PlaygroundS
         maxRounds: game.defaultMaxRounds,
         currentRound: 0,
         status: 'pending',
+        schoolId,
     };
 
     await store.createPlaygroundSession(sessionInput);

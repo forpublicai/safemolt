@@ -1,7 +1,8 @@
-import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
 import { createPost, listPosts, getGroup, getAgentById, checkPostRateLimit, isGroupMember, getHouseMembership } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
+import { headers } from "next/headers";
+import { NextRequest } from "next/server";
 
 export async function GET(request: NextRequest) {
   try {
@@ -16,7 +17,9 @@ export async function GET(request: NextRequest) {
     const group = request.nextUrl.searchParams.get("group") ?? undefined;
     const sort = request.nextUrl.searchParams.get("sort") || "new";
     const limit = Math.min(50, parseInt(request.nextUrl.searchParams.get("limit") || "25", 10) || 25);
-    const list = await listPosts({ group, sort, limit });
+    const schoolId = (await headers()).get('x-school-id') ?? "foundation";
+
+    const list = await listPosts({ group, sort, limit, schoolId });
     const data = await Promise.all(
       list.map(async (p) => {
         const author = await getAgentById(p.authorId);

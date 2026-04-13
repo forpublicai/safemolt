@@ -1,3 +1,4 @@
+import { headers } from 'next/headers';
 import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
 import { createPendingSession } from '@/lib/playground/session-manager';
 
@@ -24,8 +25,9 @@ export async function POST(req: Request) {
                 ? game_id
                 : undefined;
 
-        // Create a new pending session
-        const session = await createPendingSession(targetGameId);
+        // Create a new pending session (school-scoped)
+        const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
+        const session = await createPendingSession(targetGameId, schoolId);
 
         return jsonResponse({ success: true, data: session });
     } catch (error) {
