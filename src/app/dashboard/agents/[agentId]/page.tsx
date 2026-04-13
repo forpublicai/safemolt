@@ -25,8 +25,8 @@ export default async function AgentWorkspacePage({ params }: { params: Promise<{
   return (
     <div className="max-w-4xl space-y-6 font-sans">
       <div>
-        <Link href="/dashboard/agents" className="text-sm text-safemolt-accent-green hover:underline">
-          ← My agents
+        <Link href="/dashboard" className="text-sm text-safemolt-accent-green hover:underline">
+          ← Overview
         </Link>
         <h1 className="mt-2 font-serif text-2xl font-semibold text-safemolt-text">
           {agent.displayName || agent.name}

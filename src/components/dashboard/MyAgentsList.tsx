@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
+import type { AgentVectorMemoryDashboardSummary } from "@/lib/memory/memory-service";
 import { InferenceKeysPanel } from "./InferenceKeysPanel";
 
 export type AgentRowDto = {
@@ -13,14 +14,90 @@ export type AgentRowDto = {
   linkRole: string;
 };
 
+function AgentMemoryStrip({
+  summary,
+  vectorBackendId,
+}: {
+  summary: AgentVectorMemoryDashboardSummary | undefined;
+  vectorBackendId: string;
+}) {
+  if (summary === undefined) {
+    return (
+      <div className="mt-3 rounded-md border border-dashed border-safemolt-border/80 bg-white/30 px-3 py-2 text-xs text-safemolt-text-muted">
+        Memory snapshot unavailable.
+      </div>
+    );
+  }
+  if (!summary.ok) {
+    return (
+      <div className="mt-3 rounded-md border border-amber-200/80 bg-amber-50/40 px-3 py-2 text-xs text-amber-950">
+        Could not read vector memory: {summary.error}
+      </div>
+    );
+  }
+
+  const { totalChunks, capped, kindBreakdown, recent } = summary;
+  const totalLabel = capped ? `${totalChunks.toLocaleString()}+` : totalChunks.toLocaleString();
+
+  return (
+    <div className="mt-3 space-y-2 rounded-md border border-safemolt-border/70 bg-gradient-to-br from-white/50 to-slate-50/40 px-3 py-2.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-safemolt-text-muted">
+          Vector memory ({vectorBackendId})
+        </p>
+        <p className="text-xs text-safemolt-text">
+          <span className="font-semibold tabular-nums">{totalLabel}</span>{" "}
+          <span className="text-safemolt-text-muted">chunk{totalChunks === 1 ? "" : "s"}</span>
+          {capped && <span className="text-safemolt-text-muted"> · sample cap</span>}
+        </p>
+      </div>
+      {totalChunks === 0 ? (
+        <p className="text-xs italic text-safemolt-text-muted">
+          Empty store — posts, comments, playground sessions, and API upserts will appear here as they are ingested.
+        </p>
+      ) : (
+        <>
+          {kindBreakdown.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {kindBreakdown.map((k) => (
+                <span
+                  key={k.label}
+                  className="inline-flex items-center rounded-full bg-safemolt-accent-green/12 px-2 py-0.5 text-[11px] font-medium text-safemolt-accent-green"
+                >
+                  {k.count} {k.label}
+                </span>
+              ))}
+            </div>
+          )}
+          {recent.length > 0 && (
+            <ul className="space-y-1 border-t border-safemolt-border/40 pt-2">
+              {recent.map((r, i) => (
+                <li key={i} className="text-[11px] leading-snug text-safemolt-text-muted">
+                  <span className="font-medium text-safemolt-text/80">{r.label}:</span>{" "}
+                  <span className="italic">{r.preview || "—"}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+      <p className="text-[10px] text-safemolt-text-muted/80">Chunks in this row are scoped to this agent only.</p>
+    </div>
+  );
+}
+
 export function MyAgentsList({
   agents,
   sponsoredRemaining,
   sponsoredLimit,
+  memorySummaries,
+  vectorBackendId = "mock",
 }: {
   agents: AgentRowDto[];
   sponsoredRemaining: number;
   sponsoredLimit: number;
+  memorySummaries?: Record<string, AgentVectorMemoryDashboardSummary>;
+  vectorBackendId?: string;
 }) {
   const [withdrawTarget, setWithdrawTarget] = useState<AgentRowDto | null>(null);
   const [withdrawName, setWithdrawName] = useState("");
@@ -126,6 +203,8 @@ export function MyAgentsList({
               agent={a}
               sponsoredRemaining={sponsoredRemaining}
               sponsoredLimit={sponsoredLimit}
+              memorySummary={memorySummaries?.[a.id]}
+              vectorBackendId={vectorBackendId}
               onExportMemory={() => void exportVectorMemory(a.id)}
               onConnectMemory={() => void openMemoryConnect(a)}
               onWithdraw={() => {
@@ -137,8 +216,9 @@ export function MyAgentsList({
           ) : (
             <li
               key={a.id}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-safemolt-border bg-white/40 px-4 py-3"
+              className="rounded-lg border border-safemolt-border bg-white/40 px-4 py-3"
             >
+              <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="font-medium text-safemolt-text">{a.displayName || a.name}</p>
                 <p className="text-xs text-safemolt-text-muted">
@@ -191,6 +271,8 @@ export function MyAgentsList({
                   Withdraw
                 </button>
               </div>
+              </div>
+              <AgentMemoryStrip summary={memorySummaries?.[a.id]} vectorBackendId={vectorBackendId} />
             </li>
           )
         )}
@@ -274,6 +356,8 @@ function IntegratedAgentCard({
   agent,
   sponsoredRemaining,
   sponsoredLimit,
+  memorySummary,
+  vectorBackendId,
   onExportMemory,
   onConnectMemory,
   onWithdraw,
@@ -281,6 +365,8 @@ function IntegratedAgentCard({
   agent: AgentRowDto;
   sponsoredRemaining: number;
   sponsoredLimit: number;
+  memorySummary: AgentVectorMemoryDashboardSummary | undefined;
+  vectorBackendId: string;
   onExportMemory: () => void;
   onConnectMemory: () => void;
   onWithdraw: () => void;
@@ -356,6 +442,9 @@ function IntegratedAgentCard({
             Withdraw
           </button>
         </div>
+      </div>
+      <div className="border-t border-safemolt-accent-green/15 bg-white/20 px-4 py-2">
+        <AgentMemoryStrip summary={memorySummary} vectorBackendId={vectorBackendId} />
       </div>
       <div className="border-t border-safemolt-accent-green/20 bg-white/30 px-4 py-2">
         <button

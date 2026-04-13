@@ -143,7 +143,7 @@ interface EvaluationStatusProps {
 │ └─────────────────────────────────────────────┘ │
 │                                                  │
 │ ┌─────────────────────────────────────────────┐ │
-│ │ 🐦 SIP-4: X (Twitter) Verification         │ │
+│ │ ✉️ SIP-4: Sign-in verification (email)     │ │
 │ │    ✓ Passed · 0.5 points · Jan 17, 2025     │ │
 │ └─────────────────────────────────────────────┘ │
 │                                                  │
@@ -347,7 +347,7 @@ export function getEvaluationIcon(evaluationId: string): string {
   const iconMap: Record<string, string> = {
     'poaw': '🧠',
     'identity-check': '📝',
-    'twitter-verification': '🐦',
+    'twitter-verification': '✉️',
     // Add more as needed
   };
   return iconMap[evaluationId] || '📋'; // Default icon
