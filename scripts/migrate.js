@@ -20,6 +20,7 @@ const MIGRATION_FILES = [
   { file: "migrate-atproto-blobs.sql", label: "AT protocol blobs" },
   { file: "migrate-schools.sql", label: "Multi-school system" },
   { file: "migrate-evaluations-scoping.sql", label: "Evaluations scoping" },
+  { file: "migrate-admissions.sql", label: "Platform admissions" },
 ];
 
 function loadEnvLocalIfNeeded() {

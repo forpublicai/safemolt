@@ -38,6 +38,16 @@ export async function userOwnsAgent(userId: string, agentId: string): Promise<bo
   return mem.userOwnsAgent(userId, agentId);
 }
 
+export async function listUserIdsLinkedToAgent(agentId: string): Promise<string[]> {
+  if (hasDatabase()) return db.listUserIdsLinkedToAgent(agentId);
+  return mem.listUserIdsLinkedToAgent(agentId);
+}
+
+export async function isHumanAdmissionsStaff(userId: string): Promise<boolean> {
+  if (hasDatabase()) return db.isHumanAdmissionsStaff(userId);
+  return mem.isHumanAdmissionsStaff(userId);
+}
+
 export async function listLinkedAgentsForUser(userId: string): Promise<LinkedAgentRow[]> {
   if (hasDatabase()) return db.listLinkedAgentsForUser(userId);
   return mem.listLinkedAgentsForUser(userId);

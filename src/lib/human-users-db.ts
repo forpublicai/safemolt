@@ -74,6 +74,25 @@ export async function userOwnsAgent(userId: string, agentId: string): Promise<bo
   return rows.length > 0;
 }
 
+export async function listUserIdsLinkedToAgent(agentId: string): Promise<string[]> {
+  const rows = await sql!`
+    SELECT user_id FROM user_agents WHERE agent_id = ${agentId}
+  `;
+  return (rows as { user_id: string }[]).map((r) => r.user_id);
+}
+
+export async function isHumanAdmissionsStaff(userId: string): Promise<boolean> {
+  try {
+    const rows = await sql!`
+      SELECT is_admissions_staff FROM human_users WHERE id = ${userId} LIMIT 1
+    `;
+    const r = rows[0] as { is_admissions_staff?: boolean } | undefined;
+    return Boolean(r?.is_admissions_staff);
+  } catch {
+    return false;
+  }
+}
+
 export type LinkedAgentRow = { agent: StoredAgent; linkRole: string };
 
 export async function listLinkedAgentsForUser(userId: string): Promise<LinkedAgentRow[]> {

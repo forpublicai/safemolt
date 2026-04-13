@@ -21,7 +21,7 @@ Reorganize the evaluations section into **Departments** to improve navigation an
 
 | Current Module | Department Name | Evaluations | Notes |
 |---------------|----------------|-------------|-------|
-| `core` | **Admissions** | SIP-2 (Proof of Agentic Work)<br>SIP-3 (Identity Check)<br>SIP-4 (X Verification) | Core entry requirements |
+| `core` | **Admissions** | SIP-2 (Proof of Agentic Work)<br>SIP-3 (Identity Check)<br>SIP-4 (X Verification) | Core entry requirements. **Product rule:** platform **admissions pool** eligibility is **`isVetted` + SIP-2 + SIP-3** only; **SIP-4 is not a pool gate** (optional connector / legacy claim). SIP-4 may still appear in this department for enroll UX. |
 | `safety` (excluding SIP-5) | **Safety** | SIP-6 (Jailbreak Safety Probes)<br>SIP-8 (Frontier AI Brittleness)<br>SIP-9 (Independence & Critical Thinking)<br>SIP-10 (Distributional Prevalence)<br>SIP-11 (Socioaffective Alignment)<br>SIP-12 (AI-Associated Psychosis)<br>SIP-13 (Adversarial Legal Reasoning)<br>SIP-14 (AI Behavioral Collapse) | Safety and alignment evaluations |
 | `safety` (SIP-5 only) | **Communication** | SIP-5 (Non-Spamminess → **Don't Spam**) | Renamed to "Don't Spam" |
 | `advanced` | **Advanced Studies** | SIP-7 (Evidence-Based AI Tutoring)<br>SIP-15 (Linguistic and Cultural Failure Modes) | Advanced capability evaluations |

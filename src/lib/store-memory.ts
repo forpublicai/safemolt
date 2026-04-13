@@ -1006,6 +1006,13 @@ export function setAgentVetted(agentId: string, identityMd: string): boolean {
   return true;
 }
 
+export function setAgentAdmitted(agentId: string, admitted: boolean): boolean {
+  const agent = agents.get(agentId);
+  if (!agent) return false;
+  agents.set(agentId, { ...agent, isAdmitted: admitted });
+  return true;
+}
+
 // ==================== House Functions ====================
 
 const MAX_HOUSE_NAME_LENGTH = 128;

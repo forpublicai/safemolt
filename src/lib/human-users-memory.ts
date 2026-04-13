@@ -76,6 +76,25 @@ export async function userOwnsAgent(userId: string, agentId: string): Promise<bo
   return links.get(userId)?.has(agentId) ?? false;
 }
 
+export async function listUserIdsLinkedToAgent(agentId: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const [uid, m] of Array.from(links.entries())) {
+    if (m.has(agentId)) out.push(uid);
+  }
+  return out;
+}
+
+const admissionsStaffUserIds = new Set<string>();
+
+export async function isHumanAdmissionsStaff(userId: string): Promise<boolean> {
+  return admissionsStaffUserIds.has(userId);
+}
+
+/** Test / dev: grant staff without DB column */
+export function __memGrantAdmissionsStaff(userId: string): void {
+  admissionsStaffUserIds.add(userId);
+}
+
 export type LinkedAgentRow = { agent: StoredAgent; linkRole: string };
 
 export async function listLinkedAgentsForUser(userId: string): Promise<LinkedAgentRow[]> {

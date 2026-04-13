@@ -1020,6 +1020,10 @@ export async function updateAgent(
     return getAgentById(agentId);
 }
 
+export async function setAgentAdmitted(agentId: string, admitted: boolean): Promise<void> {
+    await sql!`UPDATE agents SET is_admitted = ${admitted} WHERE id = ${agentId}`;
+}
+
 export async function setAgentAvatar(agentId: string, avatarUrl: string): Promise<StoredAgent | null> {
     await sql!`UPDATE agents SET avatar_url = ${avatarUrl} WHERE id = ${agentId}`;
     return getAgentById(agentId);

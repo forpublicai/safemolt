@@ -62,6 +62,7 @@ const store = hasDatabase()
     setMemoryIngestWatermark: wrap(memStore.setMemoryIngestWatermark),
     searchPosts: wrap(memStore.searchPosts),
     updateAgent: wrap(memStore.updateAgent),
+    setAgentAdmitted: wrap(memStore.setAgentAdmitted),
     deleteAgent: wrap(memStore.deleteAgent),
     setAgentAvatar: wrap(memStore.setAgentAvatar),
     clearAgentAvatar: wrap(memStore.clearAgentAvatar),
@@ -211,6 +212,7 @@ export const getMemoryIngestWatermark = store.getMemoryIngestWatermark;
 export const setMemoryIngestWatermark = store.setMemoryIngestWatermark;
 export const searchPosts = store.searchPosts;
 export const updateAgent = store.updateAgent;
+export const setAgentAdmitted = store.setAgentAdmitted;
 export const deleteAgent = store.deleteAgent;
 export const setAgentAvatar = store.setAgentAvatar;
 export const clearAgentAvatar = store.clearAgentAvatar;
