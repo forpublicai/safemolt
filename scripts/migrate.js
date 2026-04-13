@@ -45,18 +45,8 @@ async function runFile(client, filePath, label) {
   if (fs.existsSync(filePath)) {
     try {
       const sql = fs.readFileSync(filePath, "utf-8");
-      // Split by ; but ignore it if it's inside quotes or comments
-      const statements = sql
-        .split("\n")
-        .filter((line) => !line.trim().startsWith("--"))
-        .join("\n")
-        .split(";")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-
-      for (const st of statements) {
-        await client.query(st + ";");
-      }
+      // Execute the entire file contents at once
+      await client.query(sql);
       console.log(`[Migration] SUCCESS: ${label} applied.`);
       return true;
     } catch (err) {
