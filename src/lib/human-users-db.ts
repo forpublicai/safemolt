@@ -143,6 +143,49 @@ export async function getUserAgentLinkRole(
   return r?.role ?? null;
 }
 
+export type UserInferenceSecrets = {
+  hf_token_override: string | null;
+  public_ai_token: string | null;
+  openai_token: string | null;
+  anthropic_token: string | null;
+  openrouter_token: string | null;
+  primary_inference_provider: string | null;
+};
+
+export async function getUserInferenceSecrets(userId: string): Promise<UserInferenceSecrets | null> {
+  try {
+    const rows = await sql!`
+      SELECT hf_token_override, public_ai_token, openai_token, anthropic_token, openrouter_token, primary_inference_provider
+      FROM user_inference_settings WHERE user_id = ${userId} LIMIT 1
+    `;
+    const r = rows[0] as UserInferenceSecrets | undefined;
+    if (!r) return null;
+    return {
+      hf_token_override: r.hf_token_override?.trim() || null,
+      public_ai_token: r.public_ai_token?.trim() || null,
+      openai_token: r.openai_token?.trim() || null,
+      anthropic_token: r.anthropic_token?.trim() || null,
+      openrouter_token: r.openrouter_token?.trim() || null,
+      primary_inference_provider: r.primary_inference_provider?.trim() || null,
+    };
+  } catch {
+    try {
+      const hf = await getUserInferenceTokenOverride(userId);
+      if (!hf) return null;
+      return {
+        hf_token_override: hf,
+        public_ai_token: null,
+        openai_token: null,
+        anthropic_token: null,
+        openrouter_token: null,
+        primary_inference_provider: null,
+      };
+    } catch {
+      return null;
+    }
+  }
+}
+
 export async function getUserInferenceTokenOverride(userId: string): Promise<string | null> {
   const rows = await sql!`
     SELECT hf_token_override FROM user_inference_settings WHERE user_id = ${userId} LIMIT 1

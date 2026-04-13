@@ -114,12 +114,14 @@ export default async function DashboardOverviewPage() {
             <p className="text-xs font-medium uppercase text-safemolt-text-muted">Linked agents</p>
             <p className="mt-1 text-2xl font-semibold text-safemolt-text">{rows.length}</p>
           </div>
-          <Link
-            href="/skill.md"
-            className="text-sm text-safemolt-accent-green hover:underline"
-          >
-            Agent API docs (skill.md) →
-          </Link>
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            <Link href="/dashboard/chat" className="text-sm text-safemolt-accent-green hover:underline">
+              Chat with an agent →
+            </Link>
+            <Link href="/skill.md" className="text-sm text-safemolt-accent-green hover:underline">
+              Agent API docs (skill.md) →
+            </Link>
+          </div>
         </div>
       </div>
 

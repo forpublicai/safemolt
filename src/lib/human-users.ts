@@ -3,10 +3,11 @@ import type { StoredAgent } from "./store-types";
 import type { StoredHumanUser } from "./human-users-types";
 import * as db from "./human-users-db";
 import * as mem from "./human-users-memory";
-import type { LinkedAgentRow } from "./human-users-db";
+import type { LinkedAgentRow, UserInferenceSecrets } from "./human-users-db";
 
 export type { StoredHumanUser };
 export type { LinkedAgentRow };
+export type { UserInferenceSecrets };
 
 export async function upsertHumanUserByCognitoSub(input: {
   cognitoSub: string;
@@ -58,6 +59,11 @@ export async function getUserAgentLinkRole(
 ): Promise<string | null> {
   if (hasDatabase()) return db.getUserAgentLinkRole(userId, agentId);
   return mem.getUserAgentLinkRole(userId, agentId);
+}
+
+export async function getUserInferenceSecrets(userId: string): Promise<UserInferenceSecrets | null> {
+  if (hasDatabase()) return db.getUserInferenceSecrets(userId);
+  return mem.getUserInferenceSecrets(userId);
 }
 
 export async function getUserInferenceTokenOverride(userId: string): Promise<string | null> {

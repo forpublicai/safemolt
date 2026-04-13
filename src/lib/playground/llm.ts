@@ -15,33 +15,50 @@ interface ChatCompletionResponse {
     choices: { message: { content: string } }[];
 }
 
-/**
- * Call nano-gpt chat completions API.
- * @param messages - Array of chat messages
- * @param model - Model to use (defaults to chatgpt-4o-latest)
- * @returns The assistant's response text
- */
-export async function chatCompletion(
-    messages: ChatMessage[],
-    model: string = DEFAULT_MODEL
-): Promise<string> {
+export type HfRouterChatOptions = {
+    /** Bearer for router.huggingface.co; defaults to process.env.HF_TOKEN */
+    apiKey?: string;
+    model?: string;
+    /**
+     * When true, send X-HF-Bill-To: publicai (platform billing). Use for server HF_TOKEN only.
+     * When false, omit (user BYOK). Default: true only when apiKey is omitted and HF_TOKEN is used.
+     */
+    billToPublicAi?: boolean;
+};
 
-    const apiKey = process.env.HF_TOKEN;
+/**
+ * Hugging Face OpenAI-compatible router (Playground + dashboard chat).
+ */
+export async function chatCompletionHfRouter(
+    messages: ChatMessage[],
+    options?: HfRouterChatOptions
+): Promise<string> {
+    const envKey = process.env.HF_TOKEN?.trim();
+    const apiKey = options?.apiKey?.trim() || envKey;
     if (!apiKey) {
         throw new Error('HF_TOKEN environment variable is not set');
     }
 
+    const billToPublicAi =
+        options?.billToPublicAi ??
+        (!options?.apiKey?.trim() && Boolean(envKey) && apiKey === envKey);
+
+    const model = options?.model ?? DEFAULT_MODEL;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
 
     try {
+        const headers: Record<string, string> = {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+        };
+        if (billToPublicAi) {
+            headers['X-HF-Bill-To'] = 'publicai';
+        }
+
         const response = await fetch(`${BASE_URL}/chat/completions`, {
             method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'X-HF-Bill-To': 'publicai',
-                'Content-Type': 'application/json',
-            },
+            headers,
             body: JSON.stringify({
                 model,
                 messages,
@@ -52,12 +69,12 @@ export async function chatCompletion(
 
         if (!response.ok) {
             const errorText = await response.text().catch(() => 'Unknown error');
-            throw new Error(`nano-gpt API error (${response.status}): ${errorText}`);
+            throw new Error(`HF router error (${response.status}): ${errorText}`);
         }
 
-
-        const data = (await response.json()) as any;
-        // console.log('[llm] Raw response:', JSON.stringify(data, null, 2));
+        const data = (await response.json()) as ChatCompletionResponse & {
+            choices?: { message?: { content?: string }; text?: string }[];
+        };
 
         let content = data.choices?.[0]?.message?.content;
         if (!content && data.choices?.[0]?.text) {
@@ -65,15 +82,25 @@ export async function chatCompletion(
         }
 
         if (!content) {
-            throw new Error('nano-gpt returned empty response');
+            throw new Error('HF router returned empty response');
         }
 
         return content;
-    } catch (error: any) {
+    } catch (error: unknown) {
         clearTimeout(timeoutId);
-        if (error.name === 'AbortError') {
+        if (error instanceof Error && error.name === 'AbortError') {
             throw new Error('LLM request timed out after 60s');
         }
         throw error;
     }
+}
+
+/**
+ * Playground GM: platform HF_TOKEN with billing header.
+ */
+export async function chatCompletion(
+    messages: ChatMessage[],
+    model: string = DEFAULT_MODEL
+): Promise<string> {
+    return chatCompletionHfRouter(messages, { model });
 }
