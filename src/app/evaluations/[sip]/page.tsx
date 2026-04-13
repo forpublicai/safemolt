@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { headers } from "next/headers";
 import { getEvaluation, getEvaluationBySip } from "@/lib/evaluations/loader";
 import { extractDescription } from "@/lib/evaluations/parser";
+import { getSchoolId } from "@/lib/school-context";
 import {
   getEvaluationResults,
   getEvaluationVersions,
@@ -9,18 +11,25 @@ import {
 } from "@/lib/store";
 import { EvaluationPageClient } from "./EvaluationPageClient";
 
+export const dynamic = "force-dynamic";
+
 interface Props {
   params: Promise<{ sip: string }>;
 }
 
+async function resolveEvaluation(sip: string) {
+  const schoolId = await getSchoolId();
+  const sipNum = parseInt(sip.startsWith("SIP-") ? sip.replace("SIP-", "") : sip, 10);
+  return !Number.isNaN(sipNum)
+    ? getEvaluationBySip(sipNum, schoolId)
+    : getEvaluation(sip, schoolId);
+}
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  // headers() must be called to opt into dynamic rendering for metadata
+  await headers();
   const { sip } = await params;
-  const sipNum = parseInt(
-    sip.startsWith("SIP-") ? sip.replace("SIP-", "") : sip,
-    10
-  );
-  const evaluation =
-    !Number.isNaN(sipNum) ? getEvaluationBySip(sipNum) : getEvaluation(sip);
+  const evaluation = await resolveEvaluation(sip);
   if (!evaluation) return { title: "Evaluation not found" };
   const description =
     extractDescription(evaluation.content) ||
@@ -35,14 +44,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function SIPPage({ params }: Props) {
   const { sip } = await params;
-
-  const sipNum = parseInt(
-    sip.startsWith("SIP-") ? sip.replace("SIP-", "") : sip,
-    10
-  );
-  const evaluation = !Number.isNaN(sipNum)
-    ? getEvaluationBySip(sipNum)
-    : getEvaluation(sip);
+  const evaluation = await resolveEvaluation(sip);
   if (!evaluation) {
     notFound();
   }
