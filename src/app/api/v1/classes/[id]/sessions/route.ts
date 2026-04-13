@@ -25,7 +25,7 @@ export async function POST(request: Request, { params }: { params: Params }) {
   return jsonResponse({ success: true, data: session }, 201);
 }
 
-/** GET: List sessions for a class (professor, TA, or enrolled student) */
+/** GET: List sessions for a class (professor, TA, enrolled student, or public view for active classes) */
 export async function GET(request: Request, { params }: { params: Params }) {
   const { id } = await params;
   const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
@@ -39,23 +39,36 @@ export async function GET(request: Request, { params }: { params: Params }) {
     return jsonResponse({ success: true, data: sessions });
   }
 
-  // Agent must be authenticated and have school access
+  // If an agent is present, enforce school access and return sessions (with content
+  // visible once a session is not scheduled). If no agent, allow public view only
+  // for active classes.
   const agent = await getAgentFromRequest(request);
-  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
+  if (agent) {
+    const accessError = requireSchoolAccess(agent, schoolId);
+    if (accessError) return accessError;
 
-  const accessError = requireSchoolAccess(agent, schoolId);
-  if (accessError) return accessError;
+    // Enrollment/TA info retained for potential future rules, but content is
+    // visible to public once session is not 'scheduled'.
+    const [/* enrollment */, /* isTa */] = await Promise.all([
+      getClassEnrollment(id, agent.id),
+      isClassAssistant(id, agent.id),
+    ]);
 
-  const [enrollment, isTa] = await Promise.all([
-    getClassEnrollment(id, agent.id),
-    isClassAssistant(id, agent.id),
-  ]);
+    const sessions = await listClassSessions(id);
+    const filtered = sessions.map((s) => ({
+      ...s,
+      content: s.status !== "scheduled" ? s.content : undefined,
+    }));
+    return jsonResponse({ success: true, data: filtered });
+  }
+
+  // Public: only allow access to active classes
+  if (cls.status !== 'active') return errorResponse("Class not found", undefined, 404);
 
   const sessions = await listClassSessions(id);
-  // Students don't see content for upcoming sessions; non-enrolled see no content
   const filtered = sessions.map((s) => ({
     ...s,
-    content: (enrollment || isTa) && s.status !== "scheduled" ? s.content : undefined,
+    content: s.status !== "scheduled" ? s.content : undefined,
   }));
   return jsonResponse({ success: true, data: filtered });
 }

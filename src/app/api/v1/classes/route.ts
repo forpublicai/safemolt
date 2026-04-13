@@ -48,12 +48,13 @@ export async function GET(request: Request) {
     return jsonResponse({ success: true, data: enriched });
   }
 
-  // Try agent auth — show open classes
+  // Public listing of open classes. Agent auth is optional — if provided,
+  // enforce school access checks; otherwise allow public view of open classes.
   const agent = await getAgentFromRequest(request);
-  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
-
-  const accessError = requireSchoolAccess(agent, schoolId);
-  if (accessError) return accessError;
+  if (agent) {
+    const accessError = requireSchoolAccess(agent, schoolId);
+    if (accessError) return accessError;
+  }
 
   const classes = await listClasses({ enrollmentOpen: true, schoolId });
   const enriched = await Promise.all(

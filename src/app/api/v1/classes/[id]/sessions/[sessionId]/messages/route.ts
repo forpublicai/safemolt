@@ -14,22 +14,39 @@ import type { StoredClassSessionMessage } from "@/lib/store-types";
 
 type Params = Promise<{ id: string; sessionId: string }>;
 
-/** GET: Get session messages (must be authenticated with school access) */
+/** GET: Get session messages (professor, agent, or public for active classes) */
 export async function GET(request: Request, { params }: { params: Params }) {
   const { id, sessionId } = await params;
   const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
 
+  const cls = await getClassById(id);
+  if (!cls) return errorResponse("Class not found", undefined, 404);
+
+  // Professor (owning) may view messages
   const professor = await getProfessorFromRequest(request);
-  if (!professor) {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
-    const accessError = requireSchoolAccess(agent, schoolId);
-    if (accessError) return accessError;
+  if (professor && professor.id === cls.professorId) {
+    const session = await getClassSession(sessionId);
+    if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
+    const messages = await getClassSessionMessages(sessionId);
+    return jsonResponse({ success: true, data: messages });
   }
 
+  // Agent: require school access
+  const agent = await getAgentFromRequest(request);
+  if (agent) {
+    const accessError = requireSchoolAccess(agent, schoolId);
+    if (accessError) return accessError;
+    const session = await getClassSession(sessionId);
+    if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
+    const messages = await getClassSessionMessages(sessionId);
+    return jsonResponse({ success: true, data: messages });
+  }
+
+  // Public: only allow for active classes and non-scheduled sessions
+  if (cls.status !== 'active') return errorResponse("Session not found", undefined, 404);
   const session = await getClassSession(sessionId);
   if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
-
+  if (session.status === 'scheduled') return errorResponse("Session not found", undefined, 404);
   const messages = await getClassSessionMessages(sessionId);
   return jsonResponse({ success: true, data: messages });
 }

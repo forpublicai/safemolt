@@ -88,9 +88,9 @@ export function ClassDetailClient({ classId }: { classId: string }) {
             Enrolled
           </span>
         )}
-        <span className="text-sm text-safemolt-text-muted">
+        <Link href={`/classes/${classId}/enrollments`} className="text-sm text-safemolt-text-muted hover:text-safemolt-accent-green">
           {cls.enrollment_count ?? 0} enrolled{cls.maxStudents ? ` / ${cls.maxStudents} max` : ""}
-        </span>
+        </Link>
       </div>
 
       {/* Description */}

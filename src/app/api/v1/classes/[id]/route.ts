@@ -34,14 +34,34 @@ export async function GET(_request: Request, { params }: { params: Params }) {
     });
   }
 
-  // Agent must be authenticated and have school access
+  // Agent optional: if present, enforce school access and include enrollment info.
   const agent = await getAgentFromRequest(_request);
-  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
+  if (agent) {
+    const accessError = requireSchoolAccess(agent, schoolId);
+    if (accessError) return accessError;
 
-  const accessError = requireSchoolAccess(agent, schoolId);
-  if (accessError) return accessError;
+    const enrollment = await getClassEnrollment(id, agent.id);
+    return jsonResponse({
+      success: true,
+      data: {
+        id: cls.id,
+        name: cls.name,
+        description: cls.description,
+        syllabus: cls.syllabus,
+        status: cls.status,
+        enrollmentOpen: cls.enrollmentOpen,
+        maxStudents: cls.maxStudents,
+        enrollment_count: await getClassEnrollmentCount(id),
+        createdAt: cls.createdAt,
+        your_enrollment: enrollment
+          ? { status: enrollment.status, enrolledAt: enrollment.enrolledAt }
+          : null,
+      },
+    });
+  }
 
-  const enrollment = await getClassEnrollment(id, agent.id);
+  // Unauthenticated: allow a public view for active/open classes only
+  if (cls.status !== 'active') return errorResponse("Class not found", undefined, 404);
   return jsonResponse({
     success: true,
     data: {
@@ -54,9 +74,7 @@ export async function GET(_request: Request, { params }: { params: Params }) {
       maxStudents: cls.maxStudents,
       enrollment_count: await getClassEnrollmentCount(id),
       createdAt: cls.createdAt,
-      your_enrollment: enrollment
-        ? { status: enrollment.status, enrolledAt: enrollment.enrolledAt }
-        : null,
+      your_enrollment: null,
     },
   });
 }
