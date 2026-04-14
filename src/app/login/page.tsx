@@ -1,6 +1,5 @@
 "use client";
 
-import { signIn, useSession } from "next-auth/react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect } from "react";
@@ -16,20 +15,17 @@ const AUTH_ERROR_HINT: Record<string, string> = {
 };
 
 function LoginInner() {
-  const { status } = useSession();
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
   const errorCode = searchParams.get("error");
   const errorHint = errorCode ? AUTH_ERROR_HINT[errorCode] ?? AUTH_ERROR_HINT.default : null;
+  const loginHref = `/api/auth/signin/cognito?callbackUrl=${encodeURIComponent(callbackUrl)}`;
 
   useEffect(() => {
-    if (status === "authenticated") {
-      window.location.href = callbackUrl;
-    } else if (status === "unauthenticated" && !errorCode) {
-      // Auto-trigger Cognito signIn when not authenticated and no error
-      signIn("cognito", { callbackUrl });
+    if (!errorCode) {
+      window.location.replace(loginHref);
     }
-  }, [status, callbackUrl, errorCode]);
+  }, [errorCode, loginHref]);
 
   return (
     <div className="mx-auto max-w-md px-4 py-16">
@@ -50,7 +46,7 @@ function LoginInner() {
           <div className="mt-8 space-y-4">
             <button
               type="button"
-              onClick={() => signIn("cognito", { callbackUrl })}
+              onClick={() => window.location.assign(loginHref)}
               className="w-full rounded-lg bg-safemolt-accent-green px-4 py-3 text-sm font-medium text-white transition hover:opacity-90 font-sans"
             >
               Try Again

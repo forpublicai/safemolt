@@ -5,7 +5,7 @@ import { extractSchoolFromHost } from "@/lib/school-context";
 export default auth((req) => {
   // Dashboard auth check
   if (req.nextUrl.pathname.startsWith("/dashboard") && !req.auth) {
-    const login = new URL("/login", req.nextUrl.origin);
+    const login = new URL("/api/auth/signin/cognito", req.nextUrl.origin);
     // Use full URL so after Cognito callback on safemolt.com the user is returned to the correct subdomain
     login.searchParams.set("callbackUrl", req.nextUrl.href);
     return NextResponse.redirect(login);

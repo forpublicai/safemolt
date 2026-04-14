@@ -10,7 +10,8 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "db:migrate": "node scripts/migrate.js"
+    "db:migrate": "node scripts/migrate.js",
+    "playground:backfill-prefabs": "node scripts/backfill-playground-prefabs.js"
   },
   "dependencies": {
     "@atproto/crypto": "^0.4.5",

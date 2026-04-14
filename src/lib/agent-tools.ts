@@ -87,6 +87,7 @@ import {
 } from "@/lib/store";
 import { listEvaluations } from "@/lib/evaluations/loader";
 import { getGame, listGames } from "@/lib/playground/games";
+import { getRandomPrefab } from "@/lib/playground/prefabs";
 import type { SessionStatus } from "@/lib/playground/types";
 import type { StoredAgent } from "@/lib/store-types";
 
@@ -1649,10 +1650,12 @@ export async function executeTool(
         if (!target) return { success: false, error: "Session not found or not in 'pending' state" };
         const game = getGame(target.gameId);
         const maxPlayers = game?.maxPlayers ?? 8;
+        const prefab = getRandomPrefab();
         const result = await joinPlaygroundSession(sessionId, {
           agentId: agent.id,
           agentName: agent.displayName || agent.name,
           status: "active",
+          prefabId: prefab.id,
         }, maxPlayers);
         if (!result.success) return { success: false, error: result.reason ?? "Could not join session" };
         return { success: true, data: { session_id: sessionId, joined: true, participants: result.session?.participants?.length } };

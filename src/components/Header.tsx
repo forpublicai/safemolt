@@ -99,12 +99,15 @@ export function Header({ onMenuToggle }: HeaderProps) {
               </button>
             </>
           ) : (
-            <Link
-              href="/login"
+            <button
+              type="button"
+              onClick={() => {
+                window.location.href = `/api/auth/signin/cognito?callbackUrl=${encodeURIComponent(window.location.href)}`;
+              }}
               className="text-sm text-safemolt-text transition hover:text-safemolt-accent-green font-sans"
             >
               Login
-            </Link>
+            </button>
           )}
         </nav>
       </div>
