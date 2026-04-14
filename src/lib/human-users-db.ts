@@ -6,6 +6,20 @@ import type { StoredAgent } from "./store-types";
 import type { StoredHumanUser } from "./human-users-types";
 import type { InferenceSettingsUpdate, UserInferenceSettingsFlags } from "./human-users-inference-types";
 
+export type DashboardProfileSettings = {
+  username: string | null;
+  isHidden: boolean;
+};
+
+function normalizeDashboardUsername(value: string | null | undefined): string | null {
+  const trimmed = value?.trim().toLowerCase() ?? "";
+  if (!trimmed) return null;
+  if (!/^[a-z0-9_]{3,30}$/.test(trimmed)) {
+    throw new Error("invalid_username");
+  }
+  return trimmed;
+}
+
 function generateHumanId(): string {
   return `hu_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -16,6 +30,8 @@ function rowToHumanUser(r: Record<string, unknown>): StoredHumanUser {
     cognitoSub: r.cognito_sub as string,
     email: (r.email as string) ?? null,
     name: (r.name as string) ?? null,
+    dashboardUsername: (r.dashboard_username as string) ?? null,
+    isUsernameHidden: r.is_username_hidden == null ? true : Boolean(r.is_username_hidden),
     createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
   };
 }
@@ -41,12 +57,98 @@ export async function upsertHumanUserByCognitoSub(input: {
   }
   const id = generateHumanId();
   const createdAt = new Date().toISOString();
-  await sql!`
-    INSERT INTO human_users (id, cognito_sub, email, name, created_at)
-    VALUES (${id}, ${input.cognitoSub}, ${input.email ?? null}, ${input.name ?? null}, ${createdAt})
-  `;
+  try {
+    await sql!`
+      INSERT INTO human_users (id, cognito_sub, email, name, dashboard_username, is_username_hidden, created_at)
+      VALUES (${id}, ${input.cognitoSub}, ${input.email ?? null}, ${input.name ?? null}, null, true, ${createdAt})
+    `;
+  } catch {
+    // Backward compatibility when new dashboard username columns are not migrated yet.
+    await sql!`
+      INSERT INTO human_users (id, cognito_sub, email, name, created_at)
+      VALUES (${id}, ${input.cognitoSub}, ${input.email ?? null}, ${input.name ?? null}, ${createdAt})
+    `;
+  }
   const inserted = await sql!`SELECT * FROM human_users WHERE id = ${id} LIMIT 1`;
   return rowToHumanUser(inserted[0] as Record<string, unknown>);
+}
+
+export async function getDashboardProfileSettings(userId: string): Promise<DashboardProfileSettings> {
+  try {
+    const rows = await sql!`
+      SELECT dashboard_username, is_username_hidden
+      FROM human_users
+      WHERE id = ${userId}
+      LIMIT 1
+    `;
+    const r = rows[0] as { dashboard_username?: string | null; is_username_hidden?: boolean } | undefined;
+    return {
+      username: r?.dashboard_username?.trim() || null,
+      isHidden: r?.is_username_hidden == null ? true : Boolean(r.is_username_hidden),
+    };
+  } catch {
+    // Backward compatibility when new columns are not present yet.
+    return { username: null, isHidden: true };
+  }
+}
+
+export async function updateDashboardProfileSettings(
+  userId: string,
+  updates: { username?: string | null; isHidden?: boolean }
+): Promise<DashboardProfileSettings> {
+  if (!Object.prototype.hasOwnProperty.call(updates, "username") && !Object.prototype.hasOwnProperty.call(updates, "isHidden")) {
+    return getDashboardProfileSettings(userId);
+  }
+
+  const current = await getDashboardProfileSettings(userId);
+  const nextUsername = Object.prototype.hasOwnProperty.call(updates, "username")
+    ? normalizeDashboardUsername(updates.username)
+    : current.username;
+  const nextHidden = Object.prototype.hasOwnProperty.call(updates, "isHidden")
+    ? Boolean(updates.isHidden)
+    : current.isHidden;
+
+  if (nextUsername) {
+    let rows: unknown[] = [];
+    try {
+      rows = await sql!`
+        SELECT id FROM human_users
+        WHERE id <> ${userId}
+        AND dashboard_username IS NOT NULL
+        AND LOWER(dashboard_username) = LOWER(${nextUsername})
+        LIMIT 1
+      `;
+    } catch (e) {
+      const code = e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : "";
+      if (code === "42703") {
+        throw new Error("profile_columns_missing");
+      }
+      throw e;
+    }
+    if (rows.length > 0) {
+      throw new Error("username_taken");
+    }
+  }
+
+  try {
+    await sql!`
+      UPDATE human_users
+      SET dashboard_username = ${nextUsername},
+          is_username_hidden = ${nextHidden}
+      WHERE id = ${userId}
+    `;
+  } catch (e) {
+    const code = e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : "";
+    if (code === "23505") {
+      throw new Error("username_taken");
+    }
+    if (code === "42703") {
+      throw new Error("profile_columns_missing");
+    }
+    throw e;
+  }
+
+  return getDashboardProfileSettings(userId);
 }
 
 export async function getHumanUserById(id: string): Promise<StoredHumanUser | null> {

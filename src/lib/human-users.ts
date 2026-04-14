@@ -8,6 +8,7 @@ import type { LinkedAgentRow, UserInferenceSecrets } from "./human-users-db";
 export type { StoredHumanUser };
 export type { LinkedAgentRow };
 export type { UserInferenceSecrets };
+export type { DashboardProfileSettings } from "./human-users-db";
 
 export async function upsertHumanUserByCognitoSub(input: {
   cognitoSub: string;
@@ -21,6 +22,19 @@ export async function upsertHumanUserByCognitoSub(input: {
 export async function getHumanUserById(id: string): Promise<StoredHumanUser | null> {
   if (hasDatabase()) return db.getHumanUserById(id);
   return mem.getHumanUserById(id);
+}
+
+export async function getDashboardProfileSettings(userId: string) {
+  if (hasDatabase()) return db.getDashboardProfileSettings(userId);
+  return mem.getDashboardProfileSettings(userId);
+}
+
+export async function updateDashboardProfileSettings(
+  userId: string,
+  updates: { username?: string | null; isHidden?: boolean }
+) {
+  if (hasDatabase()) return db.updateDashboardProfileSettings(userId, updates);
+  return mem.updateDashboardProfileSettings(userId, updates);
 }
 
 export type { HumanUserWithFlags } from "./human-users-db";

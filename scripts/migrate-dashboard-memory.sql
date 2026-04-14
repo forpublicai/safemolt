@@ -5,10 +5,18 @@ CREATE TABLE IF NOT EXISTS human_users (
   cognito_sub TEXT NOT NULL UNIQUE,
   email TEXT,
   name TEXT,
+  dashboard_username TEXT,
+  is_username_hidden BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_human_users_cognito_sub ON human_users(cognito_sub);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_human_users_dashboard_username_lower
+  ON human_users(LOWER(dashboard_username))
+  WHERE dashboard_username IS NOT NULL;
+
+ALTER TABLE human_users ADD COLUMN IF NOT EXISTS dashboard_username TEXT;
+ALTER TABLE human_users ADD COLUMN IF NOT EXISTS is_username_hidden BOOLEAN NOT NULL DEFAULT TRUE;
 
 CREATE TABLE IF NOT EXISTS user_agents (
   user_id TEXT NOT NULL REFERENCES human_users(id) ON DELETE CASCADE,

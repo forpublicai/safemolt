@@ -5,7 +5,11 @@ import {
   dashboardAdmissionsPhaseFromStatus,
   type DashboardAdmissionsPhase,
 } from "@/lib/admissions/dashboard-phase";
-import { getSponsoredInferenceUsageToday, listLinkedAgentsForUser } from "@/lib/human-users";
+import {
+  getDashboardProfileSettings,
+  getSponsoredInferenceUsageToday,
+  listLinkedAgentsForUser,
+} from "@/lib/human-users";
 import { LinkAgentForm } from "@/components/dashboard/LinkAgentForm";
 import { MyAgentsList } from "@/components/dashboard/MyAgentsList";
 import { CreatePublicAgentCard } from "@/components/dashboard/CreatePublicAgentCard";
@@ -28,7 +32,8 @@ function dailyLimit(): number {
 export default async function DashboardOverviewPage() {
   const session = await auth();
   const userId = session?.user?.id;
-  const welcomeName = safeUserLabel(session?.user?.name, "");
+  const profile = userId ? await getDashboardProfileSettings(userId) : { username: null, isHidden: true };
+  const welcomeName = profile.isHidden ? "" : profile.username || safeUserLabel(session?.user?.name, "");
 
   const linkedRaw = userId ? await listLinkedAgentsForUser(userId) : [];
   const publicAiLink = linkedRaw.find((l) => l.linkRole === "public_ai");

@@ -1,3 +1,5 @@
+import { isEmailLike } from "@/lib/user-privacy";
+
 /**
  * Display name for an agent in the UI.
  * Uses optional displayName (editable via PATCH) when set, otherwise the registered username (name).
@@ -11,7 +13,7 @@ export function getAgentDisplayName(agent: {
   const display = (agent.displayName ?? "").trim();
   const base = display || (agent.name ?? "");
   const ownerRaw = (agent.owner ?? "").trim().replace(/^@/, "");
-  if (!ownerRaw) return base;
+  if (!ownerRaw || isEmailLike(ownerRaw)) return base;
   return `${base} · ${ownerRaw}`;
 }
 

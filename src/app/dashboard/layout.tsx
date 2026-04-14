@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { auth } from "@/auth";
+import { getDashboardProfileSettings } from "@/lib/human-users";
 import { safeUserLabel } from "@/lib/user-privacy";
 
 const nav = [
@@ -15,12 +16,20 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const session = await auth();
   const userId = session?.user?.id;
   let isProfessor = false;
+  let signedInLabel = "Signed in";
   if (userId) {
+    const profile = await getDashboardProfileSettings(userId);
+    if (profile.isHidden) {
+      signedInLabel = "Signed in";
+    } else {
+      signedInLabel = profile.username || safeUserLabel(session?.user?.name, "Signed in");
+    }
     const { getProfessorByHumanUserId } = await import("@/lib/store");
     const prof = await getProfessorByHumanUserId(userId);
     isProfessor = !!prof;
+  } else {
+    signedInLabel = safeUserLabel(session?.user?.name, "Signed in");
   }
-  const signedInLabel = safeUserLabel(session?.user?.name, "Signed in");
 
   return (
     <div className="flex min-h-[calc(100vh-3.5rem)] flex-col font-sans md:flex-row">

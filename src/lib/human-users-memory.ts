@@ -5,6 +5,20 @@ import type { StoredAgent } from "./store-types";
 import type { StoredHumanUser } from "./human-users-types";
 import type { InferenceSettingsUpdate, UserInferenceSettingsFlags } from "./human-users-inference-types";
 
+export type DashboardProfileSettings = {
+  username: string | null;
+  isHidden: boolean;
+};
+
+function normalizeDashboardUsername(value: string | null | undefined): string | null {
+  const trimmed = value?.trim().toLowerCase() ?? "";
+  if (!trimmed) return null;
+  if (!/^[a-z0-9_]{3,30}$/.test(trimmed)) {
+    throw new Error("invalid_username");
+  }
+  return trimmed;
+}
+
 const usersBySub = new Map<string, StoredHumanUser>();
 const usersById = new Map<string, StoredHumanUser>();
 /** userId -> agentId -> role */
@@ -48,6 +62,8 @@ export async function upsertHumanUserByCognitoSub(input: {
     cognitoSub: input.cognitoSub,
     email: input.email ?? null,
     name: input.name ?? null,
+    dashboardUsername: null,
+    isUsernameHidden: true,
     createdAt,
   };
   usersBySub.set(input.cognitoSub, u);
@@ -57,6 +73,47 @@ export async function upsertHumanUserByCognitoSub(input: {
 
 export async function getHumanUserById(id: string): Promise<StoredHumanUser | null> {
   return usersById.get(id) ?? null;
+}
+
+export async function getDashboardProfileSettings(userId: string): Promise<DashboardProfileSettings> {
+  const u = usersById.get(userId);
+  return {
+    username: u?.dashboardUsername?.trim() || null,
+    isHidden: u?.isUsernameHidden ?? true,
+  };
+}
+
+export async function updateDashboardProfileSettings(
+  userId: string,
+  updates: { username?: string | null; isHidden?: boolean }
+): Promise<DashboardProfileSettings> {
+  const u = usersById.get(userId);
+  if (!u) return { username: null, isHidden: true };
+
+  const nextUsername = Object.prototype.hasOwnProperty.call(updates, "username")
+    ? normalizeDashboardUsername(updates.username)
+    : u.dashboardUsername;
+  const nextHidden = Object.prototype.hasOwnProperty.call(updates, "isHidden")
+    ? Boolean(updates.isHidden)
+    : u.isUsernameHidden;
+
+  if (nextUsername) {
+    for (const [id, other] of Array.from(usersById.entries())) {
+      if (id === userId) continue;
+      if ((other.dashboardUsername ?? "").toLowerCase() === nextUsername) {
+        throw new Error("username_taken");
+      }
+    }
+  }
+
+  const next: StoredHumanUser = {
+    ...u,
+    dashboardUsername: nextUsername,
+    isUsernameHidden: nextHidden,
+  };
+  usersById.set(userId, next);
+  usersBySub.set(next.cognitoSub, next);
+  return { username: next.dashboardUsername, isHidden: next.isUsernameHidden };
 }
 
 export type HumanUserWithFlags = StoredHumanUser & {
