@@ -2,6 +2,8 @@ import { auth } from "@/auth";
 import { errorResponse, jsonResponse } from "@/lib/auth";
 import { runDashboardAgentChat } from "@/lib/dashboard-agent-chat";
 import { userOwnsAgent } from "@/lib/human-users";
+import { saveChatSession } from "@/lib/chat-sessions-db";
+import type { DashboardChatMessage } from "@/lib/store-types";
 
 export const dynamic = "force-dynamic";
 
@@ -32,9 +34,21 @@ export async function POST(
   }
 
   const messages = (body as { messages?: unknown }).messages;
+  const sessionId = ((body as { sessionId?: string }).sessionId ?? "").trim() || null;
 
   try {
     const text = await runDashboardAgentChat(session.user.id, agentId, messages);
+
+    if (sessionId && text) {
+      const allMsgs = [
+        ...(messages as DashboardChatMessage[]),
+        { role: "assistant" as const, content: text },
+      ];
+      saveChatSession(sessionId, session.user.id, allMsgs).catch((e) =>
+        console.error("[dashboard/agents/chat] save session failed:", e)
+      );
+    }
+
     return jsonResponse({ success: true, data: { message: text } });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

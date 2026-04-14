@@ -22,6 +22,7 @@ const MIGRATION_FILES = [
   { file: "migrate-evaluations-scoping.sql", label: "Evaluations scoping" },
   { file: "migrate-admissions.sql", label: "Platform admissions" },
   { file: "migrate-agent-loop.sql", label: "Agent autonomous loop" },
+  { file: "migrate-chat-sessions.sql", label: "Dashboard chat session persistence" },
 ];
 
 function loadEnvLocalIfNeeded() {

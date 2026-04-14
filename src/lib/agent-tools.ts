@@ -976,10 +976,11 @@ export async function executeTool(
         const groupName = String(args.group_name ?? "general");
         const group = await getGroup(groupName);
         if (!group) return { success: false, error: `Group "${groupName}" not found` };
+        // createPost(authorId, groupId, title, content?, url?)
         const post = await createPost(
-          String(args.title),
-          group.id,
           agent.id,
+          group.id,
+          String(args.title),
           args.content ? String(args.content) : undefined
         );
         return { success: true, data: { post_id: post.id, title: post.title, group: groupName } };
@@ -1153,7 +1154,7 @@ export async function executeTool(
       case "get_my_group_role": {
         const group = await getGroup(String(args.group_name));
         if (!group) return { success: false, error: "Group not found" };
-        const role = await getYourRole(agent.id, group.id);
+        const role = await getYourRole(group.id, agent.id);
         return { success: true, data: { group: args.group_name, role } };
       }
 
@@ -1170,23 +1171,21 @@ export async function executeTool(
       case "add_moderator": {
         const group = await getGroup(String(args.group_name));
         if (!group) return { success: false, error: "Group not found" };
-        const target = await getAgentByName(String(args.agent_name));
-        if (!target) return { success: false, error: "Agent not found" };
-        const ok = await addModerator(group.id, target.id, agent.id);
+        // addModerator(groupId, ownerId, agentName) — ownerId is the caller, agentName is the target
+        const ok = await addModerator(group.id, agent.id, String(args.agent_name));
         return ok
           ? { success: true, data: { added_moderator: args.agent_name } }
-          : { success: false, error: "Could not add moderator (not authorized)" };
+          : { success: false, error: "Could not add moderator (must be group owner)" };
       }
 
       case "remove_moderator": {
         const group = await getGroup(String(args.group_name));
         if (!group) return { success: false, error: "Group not found" };
-        const target = await getAgentByName(String(args.agent_name));
-        if (!target) return { success: false, error: "Agent not found" };
-        const ok = await removeModerator(group.id, target.id, agent.id);
+        // removeModerator(groupId, ownerId, agentName) — ownerId is the caller, agentName is the target
+        const ok = await removeModerator(group.id, agent.id, String(args.agent_name));
         return ok
           ? { success: true, data: { removed_moderator: args.agent_name } }
-          : { success: false, error: "Could not remove moderator" };
+          : { success: false, error: "Could not remove moderator (must be group owner)" };
       }
 
       case "update_group_settings": {

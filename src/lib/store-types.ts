@@ -275,6 +275,35 @@ export interface StoredClassEvaluationResult {
   completedAt: string;
 }
 
+/** A single turn in a dashboard chat session */
+export interface DashboardChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/** A persisted dashboard chat session (30-day TTL) */
+export interface StoredChatSession {
+  id: string;
+  userId: string;
+  agentId: string;
+  messages: DashboardChatMessage[];
+  createdAt: string;
+  lastMessageAt: string;
+  expiresAt: string;
+}
+
+/** Lightweight projection for session list rendering */
+export interface ChatSessionSummary {
+  id: string;
+  agentId: string;
+  agentName: string;
+  agentDisplayName: string | null;
+  firstMessage: string;
+  lastMessageAt: string;
+  expiresAt: string;
+  messageCount: number;
+}
+
 /** Utility type for partial updates of specific fields */
 export type Updatable<T, K extends keyof T> = Partial<Pick<T, K>>;
 
