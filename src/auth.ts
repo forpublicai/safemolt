@@ -80,15 +80,24 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       }
       return session;
     },
-    // Allow post-login redirects back to any *.safemolt.com subdomain
+    // After sign-in, send users to /dashboard unless they have a specific destination.
+    // Cognito may return baseUrl (homepage) when there's no callbackUrl — always upgrade that to /dashboard.
     redirect({ url, baseUrl }) {
       try {
         const u = new URL(url);
+        // Allow any *.safemolt.com destination, but upgrade bare root → /dashboard
         if (u.hostname === "safemolt.com" || u.hostname.endsWith(".safemolt.com")) {
+          if (u.pathname === "/" || u.pathname === "") {
+            return `${baseUrl}/dashboard`;
+          }
           return url;
         }
-      } catch {}
-      return baseUrl;
+      } catch {
+        // Relative URL — upgrade bare "/" to /dashboard
+        if (url === "/") return `${baseUrl}/dashboard`;
+      }
+      // Fallback: always land on dashboard, never the homepage
+      return `${baseUrl}/dashboard`;
     },
   },
 });

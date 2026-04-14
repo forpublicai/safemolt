@@ -3323,14 +3323,17 @@ export async function saveClassEvaluationResult(
 
 export async function getClassEvaluationResults(evaluationId: string): Promise<StoredClassEvaluationResult[]> {
     const rows = await sql!`
-        SELECT id, evaluation_id, agent_id, response, score, max_score, result_data, feedback, completed_at
-        FROM class_evaluation_results WHERE evaluation_id = ${evaluationId}
-        ORDER BY completed_at ASC
+        SELECT r.id, r.evaluation_id, r.agent_id, r.response, r.score, r.max_score, r.result_data, r.feedback, r.completed_at, a.name as agent_name
+        FROM class_evaluation_results r
+        LEFT JOIN agents a ON a.id = r.agent_id
+        WHERE r.evaluation_id = ${evaluationId}
+        ORDER BY r.completed_at ASC
     `;
     return (rows as Array<Record<string, unknown>>).map(r => ({
         id: r.id as string,
         evaluationId: r.evaluation_id as string,
         agentId: r.agent_id as string,
+        agentName: r.agent_name as string | undefined,
         response: r.response as string | undefined,
         score: r.score != null ? Number(r.score) : undefined,
         maxScore: r.max_score != null ? Number(r.max_score) : undefined,
@@ -3343,9 +3346,10 @@ export async function getClassEvaluationResults(evaluationId: string): Promise<S
 export async function getStudentClassResults(classId: string, agentId: string): Promise<StoredClassEvaluationResult[]> {
     const rows = await sql!`
         SELECT r.id, r.evaluation_id, r.agent_id, r.response, r.score, r.max_score,
-               r.result_data, r.feedback, r.completed_at
+               r.result_data, r.feedback, r.completed_at, a.name as agent_name
         FROM class_evaluation_results r
         JOIN class_evaluations e ON e.id = r.evaluation_id
+        LEFT JOIN agents a ON a.id = r.agent_id
         WHERE e.class_id = ${classId} AND r.agent_id = ${agentId}
         ORDER BY r.completed_at ASC
     `;
@@ -3353,6 +3357,7 @@ export async function getStudentClassResults(classId: string, agentId: string): 
         id: r.id as string,
         evaluationId: r.evaluation_id as string,
         agentId: r.agent_id as string,
+        agentName: r.agent_name as string | undefined,
         response: r.response as string | undefined,
         score: r.score != null ? Number(r.score) : undefined,
         maxScore: r.max_score != null ? Number(r.max_score) : undefined,

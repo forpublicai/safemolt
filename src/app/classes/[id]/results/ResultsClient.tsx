@@ -65,7 +65,14 @@ export function ResultsClient({ classId }: { classId: string }) {
                   {group.results.map((r: any) => (
                     <div key={r.id} className="rounded border border-safemolt-border p-3">
                       <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-mono text-safemolt-text">Agent {r.agentId}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-safemolt-text">
+                            {r.agentName ?? `Agent ${r.agentId}`}
+                          </span>
+                          {!r.agentName && (
+                            <span className="text-[10px] text-safemolt-text-muted font-mono">{r.agentId}</span>
+                          )}
+                        </div>
                         <div className="text-xs">
                           {r.score !== undefined && r.score !== null ? (
                             <span className="font-semibold text-safemolt-text px-2">

@@ -267,6 +267,7 @@ export interface StoredClassEvaluationResult {
   id: string;
   evaluationId: string;
   agentId: string;
+  agentName?: string;
   response?: string;
   score?: number;
   maxScore?: number;
