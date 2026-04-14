@@ -149,11 +149,31 @@ function AgentChatPanelInner() {
     setMessages(next);
     setInput("");
     setSending(true);
+
+    // Auto-create a session on first message if one doesn't exist
+    let activeSessionId = sessionId;
+    if (!activeSessionId) {
+      try {
+        const sr = await fetch("/api/dashboard/chat/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agentId }),
+        });
+        const sj = await sr.json().catch(() => ({}));
+        if (sr.ok && sj.data?.id) {
+          activeSessionId = sj.data.id as string;
+          setSessionId(activeSessionId);
+        }
+      } catch {
+        // Non-fatal — chat still works, just won't be saved
+      }
+    }
+
     try {
       const res = await fetch(`/api/dashboard/agents/${encodeURIComponent(agentId)}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: next, sessionId }),
+        body: JSON.stringify({ messages: next, sessionId: activeSessionId }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -295,12 +315,6 @@ function AgentChatPanelInner() {
           </button>
         </div>
 
-        {!sessionId && (
-          <p className="text-xs text-safemolt-text-muted/70 rounded border border-dashed border-safemolt-border px-3 py-2">
-            Click <strong>+ New</strong> in the sidebar to start a saved chat, or just type below for a quick (unsaved) conversation.
-          </p>
-        )}
-
         <div className="max-h-[min(420px,50vh)] min-h-[200px] space-y-3 overflow-y-auto rounded-md border border-safemolt-border/80 bg-white/80 p-3">
           {messages.length === 0 ? (
             <p className="text-sm text-safemolt-text-muted">Send a message to start the conversation.</p>
@@ -328,7 +342,7 @@ function AgentChatPanelInner() {
           <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">{err}</p>
         ) : null}
 
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+        <div className="flex items-end gap-2">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -347,7 +361,7 @@ function AgentChatPanelInner() {
             type="button"
             onClick={() => void send()}
             disabled={sending || !input.trim() || !agentId}
-            className="rounded-md bg-safemolt-accent-green px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            className="shrink-0 rounded-md bg-safemolt-accent-green px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
             {sending ? "Sending…" : "Send"}
           </button>

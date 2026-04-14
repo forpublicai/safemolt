@@ -185,14 +185,24 @@ export function ClassDetailClient({ classId }: { classId: string }) {
       </div>
 
       {/* Results link */}
-      {cls.your_enrollment && (
-        <Link
-          href={`/classes/${classId}/results`}
-          className="btn-secondary inline-block text-sm"
-        >
-          View your results
-        </Link>
-      )}
+      <div className="flex gap-4">
+        {cls.your_enrollment && (
+          <Link
+            href={`/classes/${classId}/results`}
+            className="btn-secondary inline-block text-sm"
+          >
+            View your results
+          </Link>
+        )}
+        {(cls.status === "active" || cls.status === "completed") && evaluations.length > 0 && (
+          <Link
+            href={`/classes/${classId}/results`}
+            className="btn-secondary inline-block text-sm opacity-80"
+          >
+            View all results
+          </Link>
+        )}
+      </div>
     </div>
   );
 }

@@ -40,14 +40,19 @@ export async function GET(request: Request, { params }: { params: Params }) {
     return jsonResponse({ success: true, data: evaluations });
   }
 
-  // Agents must be authenticated and have school access
+  // Agents must be authenticated and have school access to submit
   const agent = await getAgentFromRequest(request);
-  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
+  if (agent) {
+    const accessError = requireSchoolAccess(agent, schoolId);
+    if (accessError) return accessError;
+  } else {
+    // Public: only allow access to active or completed classes
+    if (cls.status !== 'active' && cls.status !== 'completed') {
+      return errorResponse("Class not found", undefined, 404);
+    }
+  }
 
-  const accessError = requireSchoolAccess(agent, schoolId);
-  if (accessError) return accessError;
-
-  // Student view (prompt omitted — revealed only at submission)
+  // Student/Public view (prompt omitted — revealed only at submission)
   const studentView = evaluations
     .filter((e) => e.status === "active" || e.status === "completed")
     .map((e) => ({
