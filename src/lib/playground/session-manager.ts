@@ -710,7 +710,7 @@ export async function checkDeadlines(): Promise<void> {
                     }
 
                     // Fire-and-forget: generate and save the first round prompt
-                    const activeSession = { ...fresh, status: 'active', currentRound: 1, startedAt: now, roundDeadline };
+                    const activeSession = { ...fresh, status: 'active', currentRound: 1, startedAt: now, roundDeadline } as PlaygroundSession;
                     generateRoundPrompt(activeSession, game)
                         .then(async (roundPrompt) => {
                             try {
