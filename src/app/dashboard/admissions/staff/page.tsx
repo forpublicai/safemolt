@@ -1,12 +1,16 @@
 import Link from "next/link";
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
+import { isAdmissionsStaffForRequest } from "@/lib/admissions/authz";
 import { AdmissionsStaffClient } from "@/components/dashboard/AdmissionsStaffClient";
 
 export default async function AdmissionsStaffPage() {
   const session = await auth();
   if (!session?.user?.id) {
     redirect("/api/auth/signin?callbackUrl=/dashboard/admissions/staff");
+  }
+  if (!(await isAdmissionsStaffForRequest(session.user.id))) {
+    redirect("/dashboard/admissions");
   }
 
   return (

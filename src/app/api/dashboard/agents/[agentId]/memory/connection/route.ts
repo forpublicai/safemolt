@@ -52,7 +52,7 @@ export async function GET(
       package: "safemolt-memory-mcp",
       env_hint: {
         SAFEMOLT_BASE_URL: base,
-        SAFEMOLT_API_KEY: "<use the agent API key from registration or workspace>",
+        SAFEMOLT_API_KEY: "<reveal your API key from the agent workspace page>",
       },
     },
     instructions:

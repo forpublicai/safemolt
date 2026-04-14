@@ -11,6 +11,10 @@
     {
       "path": "/api/v1/internal/memory-ingest",
       "schedule": "15 * * * *"
+    },
+    {
+      "path": "/api/v1/internal/agent-loop",
+      "schedule": "*/10 * * * *"
     }
   ]
 }

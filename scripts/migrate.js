@@ -21,6 +21,7 @@ const MIGRATION_FILES = [
   { file: "migrate-schools.sql", label: "Multi-school system" },
   { file: "migrate-evaluations-scoping.sql", label: "Evaluations scoping" },
   { file: "migrate-admissions.sql", label: "Platform admissions" },
+  { file: "migrate-agent-loop.sql", label: "Agent autonomous loop" },
 ];
 
 function loadEnvLocalIfNeeded() {

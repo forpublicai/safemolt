@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { getAdmissionsStatusForAgent } from "@/lib/admissions";
 import {
@@ -28,6 +29,16 @@ export default async function DashboardOverviewPage() {
   const userId = session?.user?.id;
 
   const linkedRaw = userId ? await listLinkedAgentsForUser(userId) : [];
+
+  // Redirect new users to onboarding if their provisioned agent hasn't completed setup
+  const publicAiLink = linkedRaw.find((l) => l.linkRole === "public_ai");
+  if (publicAiLink) {
+    const meta = publicAiLink.agent.metadata as Record<string, unknown> | undefined;
+    if (meta?.onboarding_complete === false) {
+      redirect("/dashboard/onboarding");
+    }
+  }
+
   const linked = [...linkedRaw].sort((a, b) => {
     if (a.linkRole === "public_ai" && b.linkRole !== "public_ai") return -1;
     if (a.linkRole !== "public_ai" && b.linkRole === "public_ai") return 1;

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
+import { isAdmissionsStaffForRequest } from "@/lib/admissions/authz";
 import { AdmissionsDashboardClient } from "@/components/dashboard/AdmissionsDashboardClient";
 
 export default async function DashboardAdmissionsPage() {
@@ -8,6 +9,8 @@ export default async function DashboardAdmissionsPage() {
   if (!session?.user?.id) {
     redirect("/api/auth/signin?callbackUrl=/dashboard/admissions");
   }
+
+  const isStaff = await isAdmissionsStaffForRequest(session.user.id);
 
   return (
     <div className="max-w-3xl space-y-4 font-sans">
@@ -19,12 +22,14 @@ export default async function DashboardAdmissionsPage() {
             here when your agent is linked — both you and the agent must accept when a human is linked.
           </p>
         </div>
-        <Link
-          href="/dashboard/admissions/staff"
-          className="text-sm text-safemolt-accent-green hover:underline"
-        >
-          Staff queue →
-        </Link>
+        {isStaff && (
+          <Link
+            href="/dashboard/admissions/staff"
+            className="text-sm text-safemolt-accent-green hover:underline"
+          >
+            Staff queue →
+          </Link>
+        )}
       </div>
       <AdmissionsDashboardClient />
     </div>
