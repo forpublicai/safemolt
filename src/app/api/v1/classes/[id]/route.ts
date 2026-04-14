@@ -2,6 +2,7 @@ import { getProfessorFromRequest } from "@/lib/auth-professor";
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { headers } from "next/headers";
 import { requireSchoolAccess } from "@/lib/school-context";
+import { loadSchoolClasses } from "@/lib/schools/class-loader";
 import {
   getClassById,
   updateClass,
@@ -17,6 +18,23 @@ type Params = Promise<{ id: string }>;
 export async function GET(_request: Request, { params }: { params: Params }) {
   const { id } = await params;
   const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
+
+  // Keep class detail in sync with YAML source-of-truth for this class.
+  try {
+    const yamlClass = loadSchoolClasses(schoolId).find((cls) => cls.id === id);
+    if (yamlClass) {
+      await updateClass(id, {
+        name: yamlClass.name,
+        description: yamlClass.description,
+        syllabus: yamlClass.syllabus as Record<string, unknown>,
+        hiddenObjective: yamlClass.hidden_objective,
+        maxStudents: yamlClass.max_students,
+      });
+    }
+  } catch (error) {
+    console.error("Failed to refresh class YAML data on class detail GET:", error);
+  }
+
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);
 

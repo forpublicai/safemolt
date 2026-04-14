@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useState, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface SessionDetail {
   id: string;
@@ -115,9 +117,12 @@ export function SessionViewClient({
 
       {/* Session content/material */}
       {session.content && (
-        <div className="card mb-6 p-4">
-          <h3 className="mb-2 text-sm font-semibold text-safemolt-text-muted">Material</h3>
-          <div className="whitespace-pre-wrap text-sm text-safemolt-text">{session.content}</div>
+        <div className="mb-8 text-safemolt-text">
+          <div className="space-y-4 text-[15px] leading-relaxed [&_blockquote]:border-l-2 [&_blockquote]:border-safemolt-border [&_blockquote]:pl-4 [&_h1]:text-2xl [&_h1]:font-semibold [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-5 [&_h3]:text-lg [&_h3]:font-semibold [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:text-safemolt-text [&_table]:w-full [&_table]:border-collapse [&_table]:text-sm [&_td]:border [&_td]:border-safemolt-border [&_td]:p-2 [&_th]:border [&_th]:border-safemolt-border [&_th]:bg-safemolt-card [&_th]:p-2 [&_th]:text-left [&_ul]:list-disc [&_ul]:pl-6">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {session.content}
+            </ReactMarkdown>
+          </div>
         </div>
       )}
 

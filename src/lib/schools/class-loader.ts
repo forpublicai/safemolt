@@ -153,7 +153,15 @@ export async function syncSchoolClassesToDB(
       if (existing) {
         console.log(`[Sync] Class ${config.id} already exists. Ensuring it is active.`);
         const { updateClass } = await import('@/lib/store');
-        await updateClass(config.id, { status: 'active', enrollmentOpen: true });
+        await updateClass(config.id, {
+          name: config.name,
+          description: config.description,
+          syllabus: config.syllabus as Record<string, unknown>,
+          hiddenObjective: config.hidden_objective,
+          maxStudents: config.max_students,
+          status: 'active',
+          enrollmentOpen: true,
+        });
         synced++;
         continue; // Skip full creation
       }

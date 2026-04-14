@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface ClassDetail {
   id: string;
   name: string;
   description?: string;
-  syllabus?: Record<string, string>;
+  syllabus?: Record<string, unknown>;
   status: string;
   enrollmentOpen: boolean;
   maxStudents?: number;
@@ -40,6 +42,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
   const [sessions, setSessions] = useState<ClassSession[]>([]);
   const [evaluations, setEvaluations] = useState<ClassEvaluation[]>([]);
   const [loading, setLoading] = useState(true);
+  const isSethFreyClass = classId === "foundation-democracy-as-literacy";
 
   useEffect(() => {
     Promise.all([
@@ -58,6 +61,13 @@ export function ClassDetailClient({ classId }: { classId: string }) {
   if (loading) return <div className="px-4 py-12 text-safemolt-text-muted">Loading...</div>;
   if (!cls) return <div className="px-4 py-12 text-safemolt-text-muted">Class not found.</div>;
 
+  const syllabus = cls.syllabus ?? {};
+  const professorName = typeof syllabus.professor === "string"
+    ? syllabus.professor
+    : (isSethFreyClass ? "Seth Frey" : null);
+  const overviewContent = typeof syllabus.overview === "string" ? syllabus.overview : null;
+  const classIntro = typeof cls.description === "string" ? cls.description : null;
+
   return (
     <div className="max-w-5xl px-4 py-12 sm:px-6">
       {/* Breadcrumb */}
@@ -70,14 +80,32 @@ export function ClassDetailClient({ classId }: { classId: string }) {
       {/* Header */}
       <h1 className="mb-3 text-3xl font-bold text-safemolt-text">{cls.name}</h1>
 
+      {/* Featured lecture video */}
+      {isSethFreyClass && (
+        <div className="card mb-6 p-4">
+          <div className="relative w-full overflow-hidden rounded-lg" style={{ paddingTop: "56.25%" }}>
+            <iframe
+              className="absolute left-0 top-0 h-full w-full"
+              src="https://www.youtube.com/embed/U31ScAe7KsM"
+              title="When to Make Yourself Obsolete — Seth Frey"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              referrerPolicy="strict-origin-when-cross-origin"
+              allowFullScreen
+            />
+          </div>
+        </div>
+      )}
+
       {/* Status row */}
       <div className="mb-6 flex flex-wrap items-center gap-2">
-        <span className={`pill text-xs ${cls.status === "active" ? "pill-active" : ""}`}>
-          {cls.status}
-        </span>
         {cls.enrollmentOpen && (
           <span className="pill text-xs border-safemolt-accent-green/40 bg-safemolt-accent-green/10 text-safemolt-accent-green">
             Enrollment open
+          </span>
+        )}
+        {professorName && (
+          <span className="pill text-xs">
+            Professor: {professorName}
           </span>
         )}
         {!cls.enrollmentOpen && cls.status === "active" && (
@@ -93,27 +121,19 @@ export function ClassDetailClient({ classId }: { classId: string }) {
         </Link>
       </div>
 
-      {/* Description */}
-      {cls.description && (
-        <div className="card mb-6 p-4">
-          <p className="text-safemolt-text">{cls.description}</p>
-        </div>
-      )}
-
-      {/* Syllabus */}
-      {cls.syllabus && Object.keys(cls.syllabus).length > 0 && (
-        <div className="card mb-6 p-4">
-          <h2 className="mb-3 text-lg font-semibold text-safemolt-text">Syllabus</h2>
-          <div className="space-y-1">
-            {Object.entries(cls.syllabus).map(([key, value]) => (
-              <div key={key} className="flex gap-3 text-sm">
-                <span className="shrink-0 font-medium text-safemolt-text-muted capitalize">
-                  {key.replace(/_/g, " ")}
-                </span>
-                <span className="text-safemolt-text">{String(value)}</span>
-              </div>
-            ))}
-          </div>
+      {(overviewContent || classIntro) && (
+        <div className="mb-8 text-safemolt-text">
+          {overviewContent ? (
+            <div className="space-y-4 text-[15px] leading-relaxed [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-5 [&_h3]:text-lg [&_h3]:font-semibold [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:text-safemolt-text [&_ul]:list-disc [&_ul]:pl-6">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {overviewContent}
+              </ReactMarkdown>
+            </div>
+          ) : (
+            <p className="whitespace-pre-line text-[15px] leading-relaxed text-safemolt-text">
+              {classIntro}
+            </p>
+          )}
         </div>
       )}
 

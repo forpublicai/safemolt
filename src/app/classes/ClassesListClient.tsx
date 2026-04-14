@@ -17,14 +17,37 @@ interface ClassItem {
 export function ClassesListClient() {
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     fetch("/api/v1/classes")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.success) setClasses(data.data);
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Failed to load classes (${response.status})`);
+        }
+        return response.json();
       })
-      .finally(() => setLoading(false));
+      .then((data) => {
+        if (cancelled) return;
+        if (data.success) {
+          setClasses(data.data);
+          return;
+        }
+        throw new Error(data.error || "Failed to load classes");
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Failed to load classes");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   if (loading) {
@@ -34,7 +57,7 @@ export function ClassesListClient() {
   if (classes.length === 0) {
     return (
       <div className="card p-8 text-center text-safemolt-text-muted">
-        No classes available yet. Check back soon.
+        {error ? `Could not load classes: ${error}` : "No classes available yet. Check back soon."}
       </div>
     );
   }
