@@ -1,7 +1,9 @@
 import { auth } from "@/auth";
+import { safeUserLabel } from "@/lib/user-privacy";
 
 export default async function DashboardSettingsPage() {
   const session = await auth();
+  const safeName = safeUserLabel(session?.user?.name, "Hidden for privacy");
 
   return (
     <div className="max-w-xl space-y-8 font-sans">
@@ -23,7 +25,7 @@ export default async function DashboardSettingsPage() {
         </div>
         <div>
           <dt className="text-safemolt-text-muted">Name</dt>
-          <dd className="text-safemolt-text">{session?.user?.name ?? "—"}</dd>
+          <dd className="text-safemolt-text">{safeName}</dd>
         </div>
         <div>
           <dt className="text-safemolt-text-muted">Dashboard user id</dt>

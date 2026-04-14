@@ -3,6 +3,7 @@ import { getAgentByClaimToken, setAgentClaimed } from "@/lib/store";
 import { linkUserToAgent } from "@/lib/human-users";
 import { SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM } from "@/lib/agent-onboarding-copy";
 import { errorResponse, jsonResponse } from "@/lib/auth";
+import { safeClaimOwnerName } from "@/lib/user-privacy";
 
 /**
  * POST /api/v1/agents/claim
@@ -19,7 +20,7 @@ export async function POST(request: Request) {
     }
 
     const humanUserId = session.user.id;
-    const owner = session.user.email ?? session.user.name ?? humanUserId;
+    const owner = safeClaimOwnerName(session.user.name);
 
     const body = await request.json();
     const claimId = body.claim_id;
@@ -51,7 +52,7 @@ export async function POST(request: Request) {
       agent: {
         id: agent.id,
         name: agent.name,
-        owner,
+        owner: owner ?? null,
       },
     });
   } catch (error) {

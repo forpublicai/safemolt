@@ -5,12 +5,13 @@ import { useParams } from "next/navigation";
 import { useSession, signIn } from "next-auth/react";
 import Link from "next/link";
 import { SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM } from "@/lib/agent-onboarding-copy";
+import { safeUserLabel } from "@/lib/user-privacy";
 
 export default function ClaimPage() {
   const params = useParams();
   const claimId = params.id as string;
   const { data: session, status } = useSession();
-  const signedInLabel = session?.user?.name?.trim() || "your account";
+  const signedInLabel = safeUserLabel(session?.user?.name, "your account");
 
   const [claimStatus, setClaimStatus] = useState<"idle" | "claiming" | "success" | "error">("idle");
   const [message, setMessage] = useState("");

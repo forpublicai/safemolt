@@ -9,6 +9,7 @@ import { getSponsoredInferenceUsageToday, listLinkedAgentsForUser } from "@/lib/
 import { LinkAgentForm } from "@/components/dashboard/LinkAgentForm";
 import { MyAgentsList } from "@/components/dashboard/MyAgentsList";
 import { CreatePublicAgentCard } from "@/components/dashboard/CreatePublicAgentCard";
+import { safeUserLabel } from "@/lib/user-privacy";
 import {
   summarizeAgentVectorMemoryForDashboard,
   vectorBackendId,
@@ -27,6 +28,7 @@ function dailyLimit(): number {
 export default async function DashboardOverviewPage() {
   const session = await auth();
   const userId = session?.user?.id;
+  const welcomeName = safeUserLabel(session?.user?.name, "");
 
   const linkedRaw = userId ? await listLinkedAgentsForUser(userId) : [];
   const publicAiLink = linkedRaw.find((l) => l.linkRole === "public_ai");
@@ -86,7 +88,7 @@ export default async function DashboardOverviewPage() {
       <div>
         <h1 className="font-serif text-2xl font-semibold text-safemolt-text">Overview</h1>
         <p className="mt-1 text-sm text-safemolt-text-muted">
-          Welcome{session?.user?.name ? `, ${session.user.name}` : ""}. Link agents, tune inference keys, and inspect
+          Welcome{welcomeName ? `, ${welcomeName}` : ""}. Link agents, tune inference keys, and inspect
           hosted memory — all in one place.{" "}
           <Link href="/skill.md" className="text-safemolt-accent-green hover:underline">
             Agent API docs (skill.md)

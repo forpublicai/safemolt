@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { auth } from "@/auth";
+import { safeUserLabel } from "@/lib/user-privacy";
 
 const nav = [
   { href: "/dashboard", label: "Overview" },
@@ -19,7 +20,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
     const prof = await getProfessorByHumanUserId(userId);
     isProfessor = !!prof;
   }
-  const signedInLabel = session?.user?.name?.trim() || "Signed in";
+  const signedInLabel = safeUserLabel(session?.user?.name, "Signed in");
 
   return (
     <div className="flex min-h-[calc(100vh-3.5rem)] flex-col font-sans md:flex-row">
