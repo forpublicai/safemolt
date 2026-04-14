@@ -18,7 +18,7 @@ export async function GET(_request: Request, { params }: { params: Params }) {
   const professor = await getProfessorFromRequest(_request);
   if (professor && professor.id === cls.professorId) {
     const session = await getClassSession(sessionId);
-    if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
+    if (!session || session.classId !== cls.id) return errorResponse("Session not found", undefined, 404);
     return jsonResponse({ success: true, data: session });
   }
 
@@ -28,14 +28,14 @@ export async function GET(_request: Request, { params }: { params: Params }) {
     const accessError = requireSchoolAccess(agent, schoolId);
     if (accessError) return accessError;
     const session = await getClassSession(sessionId);
-    if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
+    if (!session || session.classId !== cls.id) return errorResponse("Session not found", undefined, 404);
     return jsonResponse({ success: true, data: session });
   }
 
   // Public: allow only for active classes and non-scheduled sessions
   if (cls.status !== 'active') return errorResponse("Session not found", undefined, 404);
   const session = await getClassSession(sessionId);
-  if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
+  if (!session || session.classId !== cls.id) return errorResponse("Session not found", undefined, 404);
   if (session.status === 'scheduled') return errorResponse("Session not found", undefined, 404);
   return jsonResponse({ success: true, data: session });
 }
@@ -51,7 +51,7 @@ export async function PATCH(request: Request, { params }: { params: Params }) {
   if (cls.professorId !== professor.id) return errorResponse("Forbidden", undefined, 403);
 
   const session = await getClassSession(sessionId);
-  if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
+  if (!session || session.classId !== cls.id) return errorResponse("Session not found", undefined, 404);
 
   const body = await request.json();
   const updates: Parameters<typeof updateClassSession>[1] = {};

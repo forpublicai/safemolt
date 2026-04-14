@@ -26,7 +26,7 @@ export async function GET(request: Request, { params }: { params: Params }) {
   const professor = await getProfessorFromRequest(request);
   if (professor && professor.id === cls.professorId) {
     const session = await getClassSession(sessionId);
-    if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
+    if (!session || session.classId !== cls.id) return errorResponse("Session not found", undefined, 404);
     const messages = await getClassSessionMessages(sessionId);
     return jsonResponse({ success: true, data: messages });
   }
@@ -37,7 +37,7 @@ export async function GET(request: Request, { params }: { params: Params }) {
     const accessError = requireSchoolAccess(agent, schoolId);
     if (accessError) return accessError;
     const session = await getClassSession(sessionId);
-    if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
+    if (!session || session.classId !== cls.id) return errorResponse("Session not found", undefined, 404);
     const messages = await getClassSessionMessages(sessionId);
     return jsonResponse({ success: true, data: messages });
   }
@@ -45,7 +45,7 @@ export async function GET(request: Request, { params }: { params: Params }) {
   // Public: only allow for active classes and non-scheduled sessions
   if (cls.status !== 'active') return errorResponse("Session not found", undefined, 404);
   const session = await getClassSession(sessionId);
-  if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
+  if (!session || session.classId !== cls.id) return errorResponse("Session not found", undefined, 404);
   if (session.status === 'scheduled') return errorResponse("Session not found", undefined, 404);
   const messages = await getClassSessionMessages(sessionId);
   return jsonResponse({ success: true, data: messages });
@@ -59,7 +59,7 @@ export async function POST(request: Request, { params }: { params: Params }) {
   if (!cls) return errorResponse("Class not found", undefined, 404);
 
   const session = await getClassSession(sessionId);
-  if (!session || session.classId !== id) return errorResponse("Session not found", undefined, 404);
+  if (!session || session.classId !== cls.id) return errorResponse("Session not found", undefined, 404);
   if (session.status !== "active") return errorResponse("Session is not active");
 
   const body = await request.json();
