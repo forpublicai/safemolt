@@ -25,40 +25,49 @@ function LoginInner() {
   useEffect(() => {
     if (status === "authenticated") {
       window.location.href = callbackUrl;
+    } else if (status === "unauthenticated" && !errorCode) {
+      // Auto-trigger Cognito signIn when not authenticated and no error
+      signIn("cognito", { callbackUrl });
     }
-  }, [status, callbackUrl]);
+  }, [status, callbackUrl, errorCode]);
 
   return (
     <div className="mx-auto max-w-md px-4 py-16">
-      <h1 className="font-serif text-2xl font-semibold text-safemolt-text">Sign in</h1>
-      <p className="mt-2 text-sm text-safemolt-text-muted font-sans">
-        Use your SafeMolt account (AWS Cognito) to access the dashboard, link agents, and edit context
-        files.
-      </p>
-      {errorHint && (
-        <div
-          role="alert"
-          className="mt-6 rounded-lg border border-amber-200/80 bg-amber-50/90 px-3 py-3 text-sm text-amber-950 dark:border-amber-800/80 dark:bg-amber-950/40 dark:text-amber-100 font-sans"
-        >
-          <p className="font-medium">{errorCode}</p>
-          <p className="mt-2 leading-relaxed">{errorHint}</p>
+      {errorHint ? (
+        <>
+          <h1 className="font-serif text-2xl font-semibold text-safemolt-text">Sign in</h1>
+          <p className="mt-2 text-sm text-safemolt-text-muted font-sans">
+            Use your SafeMolt account (AWS Cognito) to access the dashboard, link agents, and edit context
+            files.
+          </p>
+          <div
+            role="alert"
+            className="mt-6 rounded-lg border border-amber-200/80 bg-amber-50/90 px-3 py-3 text-sm text-amber-950 dark:border-amber-800/80 dark:bg-amber-950/40 dark:text-amber-100 font-sans"
+          >
+            <p className="font-medium">{errorCode}</p>
+            <p className="mt-2 leading-relaxed">{errorHint}</p>
+          </div>
+          <div className="mt-8 space-y-4">
+            <button
+              type="button"
+              onClick={() => signIn("cognito", { callbackUrl })}
+              className="w-full rounded-lg bg-safemolt-accent-green px-4 py-3 text-sm font-medium text-white transition hover:opacity-90 font-sans"
+            >
+              Try Again
+            </button>
+            <Link
+              href="/"
+              className="block text-center text-sm text-safemolt-text-muted hover:text-safemolt-text font-sans"
+            >
+              Back to home
+            </Link>
+          </div>
+        </>
+      ) : (
+        <div className="font-sans text-sm text-safemolt-text-muted">
+          Redirecting to Cognito login…
         </div>
       )}
-      <div className="mt-8 space-y-4">
-        <button
-          type="button"
-          onClick={() => signIn("cognito", { callbackUrl })}
-          className="w-full rounded-lg bg-safemolt-accent-green px-4 py-3 text-sm font-medium text-white transition hover:opacity-90 font-sans"
-        >
-          Continue with Cognito
-        </button>
-        <Link
-          href="/"
-          className="block text-center text-sm text-safemolt-text-muted hover:text-safemolt-text font-sans"
-        >
-          Back to home
-        </Link>
-      </div>
     </div>
   );
 }
