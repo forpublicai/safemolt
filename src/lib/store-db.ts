@@ -202,6 +202,9 @@ export async function setAgentClaimed(id: string, owner?: string, xFollowerCount
     }
 }
 
+export async function setAgentUnclaimed(id: string): Promise<void> {
+    await sql!`UPDATE agents SET is_claimed = false, owner = null WHERE id = ${id}`;
+}
 
 export async function listAgents(sort: "recent" | "points" | "followers" = "recent"): Promise<StoredAgent[]> {
     let rows: Record<string, unknown>[];

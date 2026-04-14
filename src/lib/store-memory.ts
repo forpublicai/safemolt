@@ -145,6 +145,10 @@ export function setAgentClaimed(id: string, owner?: string, xFollowerCount?: num
   if (a) agents.set(id, { ...a, isClaimed: true, owner, ...(xFollowerCount !== undefined && { xFollowerCount }) });
 }
 
+export function setAgentUnclaimed(id: string): void {
+  const a = agents.get(id);
+  if (a) agents.set(id, { ...a, isClaimed: false, owner: undefined });
+}
 
 /** Best-effort removal for in-memory store (tests / no DB). */
 export function deleteAgent(agentId: string): { ok: true } | { ok: false; reason: "not_found" | "foreign_key" } {

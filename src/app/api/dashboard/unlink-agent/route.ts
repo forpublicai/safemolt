@@ -1,6 +1,7 @@
 import { auth } from "@/auth";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { getUserAgentLinkRole, unlinkUserFromAgent } from "@/lib/human-users";
+import { setAgentUnclaimed } from "@/lib/store";
 
 export async function POST(request: Request) {
   const session = await auth();
@@ -26,5 +27,9 @@ export async function POST(request: Request) {
     );
   }
   await unlinkUserFromAgent(session.user.id, agentId);
+  // Revert agent to unclaimed status if it was owned by this user
+  if (role === "owner") {
+    await setAgentUnclaimed(agentId);
+  }
   return jsonResponse({ success: true });
 }

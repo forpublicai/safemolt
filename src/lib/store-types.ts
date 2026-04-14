@@ -323,6 +323,7 @@ export interface IStore {
     verificationCode: string,
     xFollowerCount: number
   ): Promise<boolean>;
+  setAgentUnclaimed(agentId: string): Promise<void>;
   listAgents(): Promise<StoredAgent[]>;
   updateAgent(
     id: string,

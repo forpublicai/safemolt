@@ -178,6 +178,7 @@ export const getAgentByName = store.getAgentByName;
 export const getAgentByClaimToken = store.getAgentByClaimToken;
 export const cleanupStaleUnclaimedAgent = store.cleanupStaleUnclaimedAgent;
 export const setAgentClaimed = store.setAgentClaimed;
+export const setAgentUnclaimed = store.setAgentUnclaimed;
 export const listAgents = store.listAgents;
 export const createGroup = store.createGroup;
 
