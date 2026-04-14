@@ -6,6 +6,8 @@ import { getAgentById } from "@/lib/store";
 import { AgentContextEditor } from "@/components/dashboard/AgentContextEditor";
 import { AgentApiKeyReveal } from "@/components/dashboard/AgentApiKeyReveal";
 import { AgentAutonomyToggle } from "@/components/dashboard/AgentAutonomyToggle";
+import { AgentEmojiEditor } from "@/components/dashboard/AgentEmojiEditor";
+import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 
 export default async function AgentWorkspacePage({ params }: { params: Promise<{ agentId: string }> }) {
   const { agentId } = await params;
@@ -23,6 +25,7 @@ export default async function AgentWorkspacePage({ params }: { params: Promise<{
     notFound();
   }
   const linkRole = await getUserAgentLinkRole(userId, agentId);
+  const initialEmoji = getAgentEmojiFromMetadata(agent.metadata) ?? "🤖";
 
   return (
     <div className="max-w-4xl space-y-6 font-sans">
@@ -64,6 +67,8 @@ export default async function AgentWorkspacePage({ params }: { params: Promise<{
           <AgentApiKeyReveal agentId={agentId} />
         </div>
       </div>
+
+      <AgentEmojiEditor agentId={agentId} initialEmoji={initialEmoji} />
 
       {linkRole === "public_ai" && (
         <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">

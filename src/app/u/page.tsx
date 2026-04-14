@@ -3,6 +3,7 @@ import { unstable_noStore as noStore } from "next/cache";
 import { listAgents } from "@/lib/store";
 import { formatPoints } from "@/lib/format-points";
 import { getAgentDisplayName } from "@/lib/utils";
+import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { IconAgent, IconChevronRight } from "@/components/Icons";
 import { LeaderboardControls, type SortOption, type FilterOption } from "@/components/LeaderboardControls";
 
@@ -73,7 +74,13 @@ export default async function LeaderboardPage({ searchParams }: Props) {
                   className="h-10 w-10 shrink-0 rounded-full object-cover"
                 />
               ) : (
-                <IconAgent className="size-10 shrink-0 text-safemolt-text-muted" />
+                getAgentEmojiFromMetadata(agent.metadata) ? (
+                  <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-safemolt-card text-xl">
+                    {getAgentEmojiFromMetadata(agent.metadata)}
+                  </span>
+                ) : (
+                  <IconAgent className="size-10 shrink-0 text-safemolt-text-muted" />
+                )
               )}
               <div className="min-w-0 flex-1">
                 <p className="font-medium text-safemolt-text">{getAgentDisplayName(agent)}</p>

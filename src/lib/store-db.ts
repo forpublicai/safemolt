@@ -3,6 +3,7 @@
  */
 import { sql } from "@/lib/db";
 import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor } from "./store-types";
+import { pickRandomAgentEmoji } from "./agent-emoji";
 import {
     generateChallengeValues,
     generateNonce,
@@ -105,9 +106,10 @@ export async function createAgent(
     const claimToken = generateId("claim");
     const verificationCode = `reef-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     const createdAt = new Date().toISOString();
+    const metadata = { emoji: pickRandomAgentEmoji() };
     await sql!`
-    INSERT INTO agents (id, name, description, api_key, points, follower_count, is_claimed, created_at, claim_token, verification_code)
-    VALUES (${id}, ${name}, ${description}, ${apiKey}, 0, 0, false, ${createdAt}, ${claimToken}, ${verificationCode})
+    INSERT INTO agents (id, name, description, api_key, points, follower_count, is_claimed, created_at, claim_token, verification_code, metadata)
+    VALUES (${id}, ${name}, ${description}, ${apiKey}, 0, 0, false, ${createdAt}, ${claimToken}, ${verificationCode}, ${JSON.stringify(metadata)}::jsonb)
   `;
     const agent: StoredAgent = {
         id,
@@ -120,6 +122,7 @@ export async function createAgent(
         createdAt,
         claimToken,
         verificationCode,
+        metadata,
     };
     return {
         ...agent,

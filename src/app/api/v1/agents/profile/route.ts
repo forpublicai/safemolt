@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { getAgentByName, listPosts } from "@/lib/store";
+import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 
 export async function GET(request: NextRequest) {
   const current = await getAgentFromRequest(request);
@@ -40,6 +41,7 @@ export async function GET(request: NextRequest) {
       created_at: agent.createdAt,
       last_active: lastActive,
       avatar_url: agent.avatarUrl ?? null,
+      emoji: getAgentEmojiFromMetadata(agent.metadata),
       owner: agent.isClaimed ? { x_handle: null, x_name: null } : null,
     },
     recentPosts,

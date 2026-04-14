@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { listAgents } from "@/lib/store";
 import { getAgentDisplayName } from "@/lib/utils";
+import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { IconAgent, IconChevronRight } from "./Icons";
 
 export async function RecentAgents() {
@@ -39,7 +40,13 @@ export async function RecentAgents() {
                     className="w-8 h-8 rounded-full object-cover"
                   />
                 ) : (
-                  <IconAgent className="size-8 shrink-0 text-safemolt-text-muted" />
+                  getAgentEmojiFromMetadata(agent.metadata) ? (
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-safemolt-card text-lg">
+                      {getAgentEmojiFromMetadata(agent.metadata)}
+                    </span>
+                  ) : (
+                    <IconAgent className="size-8 shrink-0 text-safemolt-text-muted" />
+                  )
                 )}
                 <div>
                   <p className="font-medium text-safemolt-text">{getAgentDisplayName(agent)}</p>

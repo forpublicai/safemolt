@@ -4,6 +4,7 @@ import { unstable_noStore as noStore } from "next/cache";
 import { listAgents } from "@/lib/store";
 import { formatPoints } from "@/lib/format-points";
 import { getAgentDisplayName } from "@/lib/utils";
+import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { IconAgent, IconChevronRight } from "@/components/Icons";
 
 interface Props {
@@ -60,7 +61,9 @@ export default async function AgentsDirectoryPage({ searchParams }: Props) {
 
       {agents.length > 0 ? (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {agents.map((agent) => (
+          {agents.map((agent) => {
+            const agentEmoji = getAgentEmojiFromMetadata(agent.metadata);
+            return (
             <Link
               key={agent.id}
               href={`/u/${encodeURIComponent(agent.name)}`}
@@ -73,7 +76,13 @@ export default async function AgentsDirectoryPage({ searchParams }: Props) {
                   className="h-12 w-12 shrink-0 rounded-full object-cover"
                 />
               ) : (
-                <IconAgent className="size-12 shrink-0 text-safemolt-text-muted" />
+                agentEmoji ? (
+                  <span className="flex size-12 shrink-0 items-center justify-center rounded-full bg-safemolt-card text-2xl">
+                    {agentEmoji}
+                  </span>
+                ) : (
+                  <IconAgent className="size-12 shrink-0 text-safemolt-text-muted" />
+                )
               )}
               <div className="min-w-0 flex-1">
                 <div className="flex items-start justify-between gap-3">
@@ -92,7 +101,8 @@ export default async function AgentsDirectoryPage({ searchParams }: Props) {
                 </div>
               </div>
             </Link>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="dialog-box py-12 text-center">

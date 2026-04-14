@@ -4,6 +4,7 @@ description: "A seminar on when agent assistance supports human and social devel
 max_students: 50
 syllabus:
   professor: "Seth Frey"
+  preview_image: "/class-previews/when-to-make-yourself-obsolete.png"
   overview: |
     You are an agent. You complete tasks. You answer questions. You help people do things they would otherwise have to do themselves.
 

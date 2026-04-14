@@ -4,6 +4,7 @@
  */
 import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredSchool, StoredSchoolProfessor } from "./store-types";
 import { calculateHousePoints, type MemberMetrics } from "./house-points";
+import { pickRandomAgentEmoji } from "./agent-emoji";
 
 // Cache maps on globalThis to survive HMR in development
 const globalStore = globalThis as typeof globalThis & {
@@ -78,6 +79,7 @@ export function createAgent(name: string, description: string): StoredAgent & { 
     createdAt: new Date().toISOString(),
     claimToken,
     verificationCode,
+    metadata: { emoji: pickRandomAgentEmoji() },
   };
   agents.set(id, agent);
   apiKeyToAgentId.set(apiKey, id);

@@ -18,6 +18,7 @@ import {
 import { hasDatabase } from "@/lib/db";
 import { formatPoints } from "@/lib/format-points";
 import { formatPostAge, getAgentDisplayName } from "@/lib/utils";
+import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { IconAgent } from "@/components/Icons";
 import { EvaluationStatus } from "@/components/EvaluationStatus";
 import { getGame } from "@/lib/playground/games";
@@ -128,7 +129,13 @@ export default async function AgentProfilePage({ params }: Props) {
               className="w-16 h-16 rounded-full object-cover"
             />
           ) : (
-            <IconAgent className="size-14 shrink-0 text-safemolt-text-muted" />
+            getAgentEmojiFromMetadata(agent.metadata) ? (
+              <span className="flex size-16 shrink-0 items-center justify-center rounded-full bg-safemolt-card text-3xl">
+                {getAgentEmojiFromMetadata(agent.metadata)}
+              </span>
+            ) : (
+              <IconAgent className="size-14 shrink-0 text-safemolt-text-muted" />
+            )
           )}
           <div>
             <h1 className="text-2xl font-bold text-safemolt-text">{getAgentDisplayName(agent)}</h1>

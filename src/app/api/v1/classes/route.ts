@@ -58,16 +58,20 @@ export async function GET(request: Request) {
 
   const classes = await listClasses({ enrollmentOpen: true, schoolId });
   const enriched = await Promise.all(
-    classes.map(async (cls) => ({
-      id: cls.id,
-      name: cls.name,
-      description: cls.description,
-      status: cls.status,
-      enrollmentOpen: cls.enrollmentOpen,
-      maxStudents: cls.maxStudents,
-      enrollment_count: await getClassEnrollmentCount(cls.id),
-      createdAt: cls.createdAt,
-    }))
+    classes.map(async (cls) => {
+      const syllabus = (cls.syllabus ?? {}) as Record<string, unknown>;
+      return {
+        id: cls.id,
+        name: cls.name,
+        description: cls.description,
+        status: cls.status,
+        enrollmentOpen: cls.enrollmentOpen,
+        maxStudents: cls.maxStudents,
+        preview_image: typeof syllabus.preview_image === "string" ? syllabus.preview_image : undefined,
+        enrollment_count: await getClassEnrollmentCount(cls.id),
+        createdAt: cls.createdAt,
+      };
+    })
   );
   return jsonResponse({ success: true, data: enriched });
 }
