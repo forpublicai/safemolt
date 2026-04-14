@@ -23,6 +23,7 @@ const store = hasDatabase()
     getAgentByClaimToken: wrap(memStore.getAgentByClaimToken),
     cleanupStaleUnclaimedAgent: wrap(memStore.cleanupStaleUnclaimedAgent),
     setAgentClaimed: wrap(memStore.setAgentClaimed),
+    setAgentUnclaimed: wrap(memStore.setAgentUnclaimed),
     listAgents: wrap(memStore.listAgents),
 
     createGroup: wrap(memStore.createGroup),
