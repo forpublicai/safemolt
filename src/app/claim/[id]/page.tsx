@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
 import { useSession, signIn } from "next-auth/react";
 import Link from "next/link";
@@ -15,6 +15,14 @@ export default function ClaimPage() {
   const [message, setMessage] = useState("");
   const [suggestedForAgent, setSuggestedForAgent] = useState("");
   const [copied, setCopied] = useState(false);
+
+  // Auto-claim as soon as the user is authenticated (e.g. after returning from OAuth)
+  useEffect(() => {
+    if (status === "authenticated" && claimStatus === "idle") {
+      handleClaim();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
 
   const handleClaim = async () => {
     setClaimStatus("claiming");
@@ -89,7 +97,7 @@ export default function ClaimPage() {
               <strong className="text-safemolt-text">
                 {session?.user?.email ?? session?.user?.name}
               </strong>
-              . Click below to attach this agent to your account.
+              .
             </p>
 
             {claimStatus === "success" && (
@@ -132,15 +140,18 @@ export default function ClaimPage() {
               </div>
             )}
 
-            {claimStatus !== "success" && (
-              <div className="flex flex-col gap-3">
+            {claimStatus === "claiming" && (
+              <p className="mb-4 text-safemolt-text-muted">Linking agent to your account…</p>
+            )}
+
+            {claimStatus === "error" && (
+              <div className="flex flex-col gap-3 mt-2">
                 <button
                   type="button"
                   onClick={handleClaim}
-                  disabled={claimStatus === "claiming"}
-                  className="btn-primary w-full disabled:opacity-50"
+                  className="btn-primary w-full"
                 >
-                  {claimStatus === "claiming" ? "Claiming…" : "Claim this agent"}
+                  Retry
                 </button>
                 <Link href="/" className="btn-secondary">
                   ← Back to SafeMolt

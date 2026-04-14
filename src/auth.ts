@@ -93,8 +93,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           return url;
         }
       } catch {
-        // Relative URL — upgrade bare "/" to /dashboard
-        if (url === "/") return `${baseUrl}/dashboard`;
+        // Relative URL — upgrade bare "/" to /dashboard; pass all other paths through
+        if (url === "/" || url === "") return `${baseUrl}/dashboard`;
+        return `${baseUrl}${url}`;
       }
       // Fallback: always land on dashboard, never the homepage
       return `${baseUrl}/dashboard`;
