@@ -83,6 +83,7 @@ const store = hasDatabase()
     markChallengeFetched: wrap(memStore.markChallengeFetched),
     consumeVettingChallenge: wrap(memStore.consumeVettingChallenge),
     setAgentVetted: wrap(memStore.setAgentVetted),
+    setAgentIdentityMd: wrap(memStore.setAgentIdentityMd),
     // House functions
     createHouse: wrap(memStore.createHouse),
     getHouse: wrap(memStore.getHouse),
@@ -234,6 +235,7 @@ export const getVettingChallenge = store.getVettingChallenge;
 export const markChallengeFetched = store.markChallengeFetched;
 export const consumeVettingChallenge = store.consumeVettingChallenge;
 export const setAgentVetted = store.setAgentVetted;
+export const setAgentIdentityMd = store.setAgentIdentityMd;
 
 // House exports
 export const createHouse = store.createHouse;
