@@ -670,6 +670,68 @@ export async function checkDeadlines(): Promise<void> {
         }
     }
 
+    // 1b. Auto-activate pending sessions that have reached minPlayers
+    try {
+        const pendingToConsider = await store.listPlaygroundSessions({ status: 'pending', limit: 50 });
+        for (const pending of pendingToConsider) {
+            try {
+                const fresh = await store.getPlaygroundSession(pending.id);
+                if (!fresh || fresh.status !== 'pending') continue;
+
+                const game = getGame(fresh.gameId);
+                if (!game) continue;
+
+                const participantCount = (fresh.participants || []).length;
+                if (participantCount >= game.minPlayers) {
+                    const now = new Date().toISOString();
+                    const roundDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
+
+                    const activated = await store.activatePlaygroundSession(fresh.id, 1, roundDeadline, now);
+                    if (!activated) continue;
+
+                    console.log(`[playground] Auto-started pending session ${fresh.id} with ${participantCount} players.`);
+
+                    // Initialize world state and components (best-effort)
+                    try {
+                        initializeWorldState(fresh.id);
+                    } catch (err) {
+                        console.error(`[playground] Failed to initialize world state for ${fresh.id}:`, err);
+                    }
+
+                    const components = getAllComponents();
+                    for (const participant of fresh.participants || []) {
+                        for (const component of components) {
+                            try {
+                                await component.initialize(participant.agentId, fresh.id);
+                            } catch (err) {
+                                console.error(`[playground] Error initializing component ${component.id} for agent ${participant.agentId}:`, err);
+                            }
+                        }
+                    }
+
+                    // Fire-and-forget: generate and save the first round prompt
+                    const activeSession = { ...fresh, status: 'active', currentRound: 1, startedAt: now, roundDeadline };
+                    generateRoundPrompt(activeSession, game)
+                        .then(async (roundPrompt) => {
+                            try {
+                                await store.updatePlaygroundSession(fresh.id, { currentRoundPrompt: roundPrompt });
+                                console.log(`[playground] Round 1 prompt saved for session ${fresh.id}.`);
+                            } catch (err) {
+                                console.error(`[playground] Failed to save round prompt for ${fresh.id}:`, err);
+                            }
+                        })
+                        .catch(err => {
+                            console.error(`[playground] Failed to generate round prompt for ${fresh.id}:`, err);
+                        });
+                }
+            } catch (err) {
+                console.error(`[playground] Error checking pending session ${pending.id}:`, err);
+            }
+        }
+    } catch (err) {
+        console.error('[playground] Error scanning pending sessions for activation:', err);
+    }
+
     // 2. Delete stale pending sessions
     const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 20 });
     for (const session of pendingSessions) {
