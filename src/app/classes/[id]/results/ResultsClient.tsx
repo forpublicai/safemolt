@@ -53,7 +53,7 @@ export function ResultsClient({ classId }: { classId: string }) {
       ) : isGrouped ? (
         <div className="space-y-8">
           {data.map((group) => (
-            <div key={group.evaluation.id} className="card p-4">
+            <div key={group.evaluation.id} id={`eval-${group.evaluation.id}`} className="card p-4 scroll-mt-20">
               <h2 className="mb-1 text-lg font-semibold text-safemolt-text">{group.evaluation.title}</h2>
               {group.evaluation.description && (
                 <p className="mb-4 text-sm text-safemolt-text-muted">{group.evaluation.description}</p>

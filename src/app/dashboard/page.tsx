@@ -35,7 +35,11 @@ export default async function DashboardOverviewPage() {
   if (publicAiLink) {
     const meta = publicAiLink.agent.metadata as Record<string, unknown> | undefined;
     if (meta?.onboarding_complete === false) {
-      redirect("/dashboard/onboarding");
+      // Pass ?new=1 so the onboarding page knows to show the setup loading screen first
+      const isNew = publicAiLink.agent.createdAt
+        ? Date.now() - new Date(publicAiLink.agent.createdAt).getTime() < 5 * 60 * 1000
+        : false;
+      redirect(isNew ? "/dashboard/onboarding?new=1" : "/dashboard/onboarding");
     }
   }
 

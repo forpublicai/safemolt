@@ -40,6 +40,15 @@ const config: Config = {
       boxShadow: {
         "watercolor": "0 2px 8px rgba(139, 115, 85, 0.1), 0 1px 3px rgba(139, 115, 85, 0.05)",
       },
+      keyframes: {
+        fadeIn: {
+          "0%": { opacity: "0", transform: "translateY(4px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
+      },
+      animation: {
+        "fade-in": "fadeIn 0.35s ease forwards",
+      },
     },
   },
   plugins: [],

@@ -156,7 +156,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
         ) : (
           <div className="space-y-2">
             {evaluations.map((e) => (
-              <div key={e.id} className="card p-3">
+              <Link key={e.id} href={`/classes/${classId}/results#eval-${e.id}`} className="card block p-3 transition hover:border-safemolt-accent-green/40">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-safemolt-text">{e.title}</span>
@@ -178,7 +178,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
                 {e.description && (
                   <p className="mt-1 text-sm text-safemolt-text-muted">{e.description}</p>
                 )}
-              </div>
+              </Link>
             ))}
           </div>
         )}

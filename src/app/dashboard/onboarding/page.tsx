@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { getPublicAiAgentIdForUser } from "@/lib/human-users";
@@ -28,10 +29,12 @@ export default async function DashboardOnboardingPage() {
 
   return (
     <div className="flex min-h-[60vh] items-center justify-center font-sans">
-      <OnboardingPageClient
-        agentId={agent.id}
-        displayName={agent.displayName ?? null}
-      />
+      <Suspense>
+        <OnboardingPageClient
+          agentId={agent.id}
+          displayName={agent.displayName ?? null}
+        />
+      </Suspense>
     </div>
   );
 }
