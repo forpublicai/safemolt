@@ -59,6 +59,19 @@ export async function getHumanUserById(id: string): Promise<StoredHumanUser | nu
   return usersById.get(id) ?? null;
 }
 
+export type HumanUserWithFlags = StoredHumanUser & {
+  isAdmissionsStaff: boolean;
+};
+
+export async function listAllHumanUsers(): Promise<HumanUserWithFlags[]> {
+  return Array.from(usersById.values())
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((u) => ({
+      ...u,
+      isAdmissionsStaff: admissionsStaffUserIds.has(u.id),
+    }));
+}
+
 export async function linkUserToAgent(userId: string, agentId: string, role = "owner"): Promise<void> {
   let m = links.get(userId);
   if (!m) {

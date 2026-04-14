@@ -245,6 +245,131 @@ export function AdmissionsStaffClient() {
           </table>
         </div>
       )}
+
+      {/* ── Professors Management ── */}
+      <ProfessorsSection />
+    </div>
+  );
+}
+
+/* ─── Professors section ─── */
+
+type UserRow = {
+  id: string;
+  email: string | null;
+  name: string | null;
+  createdAt: string;
+  isProfessor: boolean;
+  professorId: string | null;
+  professorName: string | null;
+  isAdmissionsStaff: boolean;
+};
+
+function ProfessorsSection() {
+  const [users, setUsers] = useState<UserRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function loadUsers() {
+    setErr(null);
+    const res = await fetch("/api/dashboard/admissions/staff/users");
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setErr(j.error || "Failed");
+      return;
+    }
+    setUsers(j.data ?? []);
+  }
+
+  useEffect(() => {
+    void loadUsers();
+  }, []);
+
+  async function assignProfessor(userId: string, schoolId?: string) {
+    setErr(null);
+    setMsg(null);
+    const res = await fetch("/api/dashboard/admissions/staff/professors", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId, school_id: schoolId || "foundation" }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setErr(j.error || "Failed to assign");
+      return;
+    }
+    setMsg(`Professor assigned: ${j.data?.name ?? j.data?.id}`);
+    await loadUsers();
+  }
+
+  return (
+    <div className="space-y-4 border-t border-safemolt-border pt-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-safemolt-text">Professor Management</h2>
+        <button
+          type="button"
+          onClick={() => void loadUsers()}
+          className="rounded-md border border-safemolt-border px-3 py-1 text-xs"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {err && <p className="text-sm text-red-700">{err}</p>}
+      {msg && <p className="text-sm text-emerald-800">{msg}</p>}
+
+      {users === null ? (
+        <p className="text-sm text-safemolt-text-muted">Loading users…</p>
+      ) : users.length === 0 ? (
+        <p className="text-sm text-safemolt-text-muted">No users found.</p>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-safemolt-border">
+          <table className="w-full min-w-[640px] text-left text-xs">
+            <thead className="bg-safemolt-paper/80 text-safemolt-text-muted">
+              <tr>
+                <th className="p-2">User</th>
+                <th className="p-2">Email</th>
+                <th className="p-2">Professor?</th>
+                <th className="p-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.id} className="border-t border-safemolt-border/60">
+                  <td className="p-2">
+                    {u.name ?? "—"}
+                    <br />
+                    <span className="text-safemolt-text-muted font-mono text-[10px]">{u.id}</span>
+                  </td>
+                  <td className="p-2">{u.email ?? "—"}</td>
+                  <td className="p-2">
+                    {u.isProfessor ? (
+                      <span className="text-safemolt-accent-green font-medium">
+                        ✓ {u.professorName}
+                      </span>
+                    ) : (
+                      <span className="text-safemolt-text-muted">No</span>
+                    )}
+                  </td>
+                  <td className="p-2">
+                    {u.isProfessor ? (
+                      <span className="text-safemolt-text-muted">Already a professor</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void assignProfessor(u.id)}
+                        className="text-safemolt-accent-green hover:underline"
+                      >
+                        Make Professor
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

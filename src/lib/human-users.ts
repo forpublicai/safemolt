@@ -23,6 +23,13 @@ export async function getHumanUserById(id: string): Promise<StoredHumanUser | nu
   return mem.getHumanUserById(id);
 }
 
+export type { HumanUserWithFlags } from "./human-users-db";
+
+export async function listAllHumanUsers(): Promise<import("./human-users-db").HumanUserWithFlags[]> {
+  if (hasDatabase()) return db.listAllHumanUsers();
+  return mem.listAllHumanUsers();
+}
+
 export async function linkUserToAgent(userId: string, agentId: string, role?: string): Promise<void> {
   if (hasDatabase()) return db.linkUserToAgent(userId, agentId, role);
   return mem.linkUserToAgent(userId, agentId, role);

@@ -2843,6 +2843,54 @@ export async function getProfessorById(id: string): Promise<StoredProfessor | nu
     };
 }
 
+export async function getProfessorByHumanUserId(humanUserId: string): Promise<StoredProfessor | null> {
+    const rows = await sql!`SELECT id, name, email, api_key, created_at FROM professors WHERE human_user_id = ${humanUserId} LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return {
+        id: r.id as string,
+        name: r.name as string,
+        email: r.email as string | undefined,
+        apiKey: r.api_key as string,
+        createdAt: String(r.created_at),
+    };
+}
+
+export async function listAllProfessors(): Promise<Array<StoredProfessor & { humanUserId?: string }>> {
+    const rows = await sql!`SELECT id, name, email, api_key, created_at, human_user_id FROM professors ORDER BY created_at DESC`;
+    return (rows as Record<string, unknown>[]).map((r) => ({
+        id: r.id as string,
+        name: r.name as string,
+        email: r.email as string | undefined,
+        apiKey: r.api_key as string,
+        createdAt: String(r.created_at),
+        humanUserId: r.human_user_id as string | undefined,
+    }));
+}
+
+export async function createProfessorForHumanUser(
+    humanUserId: string,
+    name: string,
+    email?: string,
+): Promise<StoredProfessor> {
+    const profId = generateClassId('prof');
+    const apiKey = `prof_${Array.from(
+        { length: 24 },
+        () => Math.random().toString(36)[2] ?? '0'
+    ).join('')}`;
+    const createdAt = new Date().toISOString();
+    await sql!`
+        INSERT INTO professors (id, name, email, api_key, created_at, human_user_id)
+        VALUES (${profId}, ${name}, ${email ?? null}, ${apiKey}, ${createdAt}, ${humanUserId})
+    `;
+    return { id: profId, name, email, apiKey, createdAt };
+}
+
+export async function linkProfessorToHumanUser(professorId: string, humanUserId: string): Promise<boolean> {
+    await sql!`UPDATE professors SET human_user_id = ${humanUserId} WHERE id = ${professorId}`;
+    return true;
+}
+
 // --- Classes ---
 
 function mapClassRow(r: Record<string, unknown>): StoredClass {

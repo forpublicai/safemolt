@@ -55,6 +55,18 @@ export async function getHumanUserById(id: string): Promise<StoredHumanUser | nu
   return r ? rowToHumanUser(r) : null;
 }
 
+export type HumanUserWithFlags = StoredHumanUser & {
+  isAdmissionsStaff: boolean;
+};
+
+export async function listAllHumanUsers(): Promise<HumanUserWithFlags[]> {
+  const rows = await sql!`SELECT * FROM human_users ORDER BY created_at DESC`;
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    ...rowToHumanUser(r),
+    isAdmissionsStaff: Boolean(r.is_admissions_staff),
+  }));
+}
+
 export async function linkUserToAgent(userId: string, agentId: string, role = "owner"): Promise<void> {
   await sql!`
     INSERT INTO user_agents (user_id, agent_id, role)
