@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState, useEffect } from "react";
-import { useSession, signOut, signIn } from "next-auth/react";
+import { useSession, signIn } from "next-auth/react";
 import { IconMenu, IconSearch } from "./Icons";
 
 interface HeaderProps {
@@ -99,13 +99,12 @@ export function Header({ onMenuToggle }: HeaderProps) {
               >
                 Dashboard
               </Link>
-              <button
-                type="button"
-                onClick={() => signOut({ callbackUrl: "/" })}
+              <Link
+                href="/api/auth/signout?callbackUrl=/signed-out"
                 className="text-sm text-safemolt-text-muted hover:text-safemolt-text font-sans"
               >
                 Sign out
-              </button>
+              </Link>
             </>
           ) : (
             <button

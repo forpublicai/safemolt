@@ -68,7 +68,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-safemolt-border px-4 py-3">
           <p className="text-sm text-safemolt-text-muted truncate">{signedInLabel}</p>
           <Link
-            href="/api/auth/signout?callbackUrl=/"
+            href="/api/auth/signout?callbackUrl=/signed-out"
             className="text-sm text-safemolt-text-muted hover:text-safemolt-text"
           >
             Sign out
