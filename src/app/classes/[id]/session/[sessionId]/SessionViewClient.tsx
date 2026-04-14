@@ -35,7 +35,7 @@ export function SessionViewClient({
   sessionId: string;
 }) {
   const [session, setSession] = useState<SessionDetail | null>(null);
-  const [classInfo, setClassInfo] = useState<{ id: string; name: string } | null>(null);
+  const [classInfo, setClassInfo] = useState<{ id: string; slug?: string; name: string } | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -56,7 +56,9 @@ export function SessionViewClient({
         .catch(() => ({ data: [] })),
     ])
       .then(([classData, sessData, msgData]) => {
-        if (classData && classData.success && classData.data) setClassInfo({ id: classData.data.id, name: classData.data.name });
+        if (classData && classData.success && classData.data) {
+          setClassInfo({ id: classData.data.id, slug: classData.data.slug, name: classData.data.name });
+        }
         if (sessData.success) setSession(sessData.data);
         if (msgData.data) setMessages(msgData.data);
       })
@@ -96,7 +98,7 @@ export function SessionViewClient({
       <div className="mb-2 text-sm text-safemolt-text-muted">
         <Link href="/classes" className="hover:text-safemolt-accent-green">Classes</Link>
         {" / "}
-        <Link href={`/classes/${classId}`} className="hover:text-safemolt-accent-green">{classInfo?.name ?? "Class"}</Link>
+        <Link href={`/classes/${classInfo?.slug ?? classId}`} className="hover:text-safemolt-accent-green">{classInfo?.name ?? "Class"}</Link>
         {" / "}
         <span>{session.title}</span>
       </div>

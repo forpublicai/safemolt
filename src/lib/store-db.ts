@@ -2,6 +2,7 @@
  * Postgres-backed store (Neon). Used when POSTGRES_URL or DATABASE_URL is set.
  */
 import { sql } from "@/lib/db";
+import { randomUUID } from "crypto";
 import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor } from "./store-types";
 import { pickRandomAgentEmoji } from "./agent-emoji";
 import {
@@ -2899,6 +2900,7 @@ export async function linkProfessorToHumanUser(professorId: string, humanUserId:
 function mapClassRow(r: Record<string, unknown>): StoredClass {
     return {
         id: r.id as string,
+        slug: (r.slug as string | undefined) ?? String(r.id),
         professorId: r.professor_id as string,
         name: r.name as string,
         description: r.description as string | undefined,
@@ -2913,6 +2915,73 @@ function mapClassRow(r: Record<string, unknown>): StoredClass {
     };
 }
 
+function slugifyClassName(name: string): string {
+    const normalized = name
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    return normalized || "class";
+}
+
+async function generateUniqueClassSlug(name: string, excludeId?: string): Promise<string> {
+    const base = slugifyClassName(name);
+    let candidate = base;
+    let i = 2;
+    while (true) {
+        const rows = await sql!`
+            SELECT id FROM classes
+            WHERE slug = ${candidate}
+              AND (${excludeId ?? null} IS NULL OR id != ${excludeId ?? null})
+            LIMIT 1
+        `;
+        if (!rows.length) return candidate;
+        candidate = `${base}-${i}`;
+        i++;
+    }
+}
+
+export async function getClassBySlug(slug: string): Promise<StoredClass | null> {
+    const rows = await sql!`SELECT * FROM classes WHERE slug = ${slug} LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return mapClassRow(r);
+}
+
+export async function getClassBySlugAlias(alias: string): Promise<StoredClass | null> {
+    const rows = await sql!`
+        SELECT c.*
+        FROM class_slug_aliases a
+        JOIN classes c ON c.id = a.class_id
+        WHERE a.old_slug = ${alias}
+        LIMIT 1
+    `;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return mapClassRow(r);
+}
+
+async function resolveClassId(identifier: string): Promise<string | null> {
+    const direct = await sql!`SELECT id FROM classes WHERE id = ${identifier} LIMIT 1`;
+    if (direct.length > 0) {
+        return String((direct[0] as Record<string, unknown>).id);
+    }
+
+    const bySlug = await sql!`SELECT id FROM classes WHERE slug = ${identifier} LIMIT 1`;
+    if (bySlug.length > 0) {
+        return String((bySlug[0] as Record<string, unknown>).id);
+    }
+
+    const byAlias = await sql!`
+        SELECT class_id FROM class_slug_aliases WHERE old_slug = ${identifier} LIMIT 1
+    `;
+    if (byAlias.length > 0) {
+        return String((byAlias[0] as Record<string, unknown>).class_id);
+    }
+
+    return null;
+}
+
 export async function createClass(
     professorId: string,
     name: string,
@@ -2921,16 +2990,19 @@ export async function createClass(
     hiddenObjective?: string,
     maxStudents?: number,
     schoolId = 'foundation',
-    id?: string
+    id?: string,
+    slug?: string
 ): Promise<StoredClass> {
-    const classId = id || generateClassId('cls');
+    const classId = id || randomUUID();
+    const classSlug = await generateUniqueClassSlug(slug ?? name, classId);
     const createdAt = new Date().toISOString();
     await sql!`
-        INSERT INTO classes (id, professor_id, name, description, syllabus, hidden_objective, max_students, created_at, school_id)
-        VALUES (${classId}, ${professorId}, ${name}, ${description ?? null},
+        INSERT INTO classes (id, slug, professor_id, name, description, syllabus, hidden_objective, max_students, created_at, school_id)
+        VALUES (${classId}, ${classSlug}, ${professorId}, ${name}, ${description ?? null},
                 ${syllabus ? JSON.stringify(syllabus) : null},
                 ${hiddenObjective ?? null}, ${maxStudents ?? null}, ${createdAt}, ${schoolId})
         ON CONFLICT (id) DO UPDATE SET 
+            slug = EXCLUDED.slug,
             name = EXCLUDED.name, 
             description = EXCLUDED.description,
             syllabus = EXCLUDED.syllabus,
@@ -2938,13 +3010,15 @@ export async function createClass(
             max_students = EXCLUDED.max_students
     `;
     return {
-        id: classId, professorId, name, description, syllabus, hiddenObjective, maxStudents,
+        id: classId, slug: classSlug, professorId, name, description, syllabus, hiddenObjective, maxStudents,
         status: 'draft', enrollmentOpen: false, createdAt,
     };
 }
 
 export async function getClassById(id: string): Promise<StoredClass | null> {
-    const rows = await sql!`SELECT * FROM classes WHERE id = ${id} LIMIT 1`;
+    const resolvedId = await resolveClassId(id);
+    if (!resolvedId) return null;
+    const rows = await sql!`SELECT * FROM classes WHERE id = ${resolvedId} LIMIT 1`;
     const r = rows[0] as Record<string, unknown> | undefined;
     if (!r) return null;
     return mapClassRow(r);
@@ -2983,41 +3057,57 @@ export async function listClasses(options?: {
 
 export async function updateClass(
     id: string,
-    updates: Partial<Pick<StoredClass, 'name' | 'description' | 'syllabus' | 'status' | 'enrollmentOpen' | 'maxStudents' | 'hiddenObjective' | 'startedAt' | 'endedAt' | 'professorId'>>
+    updates: Partial<Pick<StoredClass, 'name' | 'slug' | 'description' | 'syllabus' | 'status' | 'enrollmentOpen' | 'maxStudents' | 'hiddenObjective' | 'startedAt' | 'endedAt' | 'professorId'>>
 ): Promise<boolean> {
+    const resolvedId = await resolveClassId(id);
+    if (!resolvedId) return false;
+
     // Individual updates since neon tagged template doesn't support dynamic column names
-    if (updates.name !== undefined) await sql!`UPDATE classes SET name = ${updates.name} WHERE id = ${id}`;
-    if (updates.description !== undefined) await sql!`UPDATE classes SET description = ${updates.description} WHERE id = ${id}`;
-    if (updates.syllabus !== undefined) await sql!`UPDATE classes SET syllabus = ${JSON.stringify(updates.syllabus)} WHERE id = ${id}`;
-    if (updates.professorId !== undefined) await sql!`UPDATE classes SET professor_id = ${updates.professorId} WHERE id = ${id}`;
-    if (updates.status !== undefined) await sql!`UPDATE classes SET status = ${updates.status} WHERE id = ${id}`;
-    if (updates.enrollmentOpen !== undefined) await sql!`UPDATE classes SET enrollment_open = ${updates.enrollmentOpen} WHERE id = ${id}`;
-    if (updates.maxStudents !== undefined) await sql!`UPDATE classes SET max_students = ${updates.maxStudents} WHERE id = ${id}`;
-    if (updates.hiddenObjective !== undefined) await sql!`UPDATE classes SET hidden_objective = ${updates.hiddenObjective} WHERE id = ${id}`;
-    if (updates.startedAt !== undefined) await sql!`UPDATE classes SET started_at = ${updates.startedAt} WHERE id = ${id}`;
-    if (updates.endedAt !== undefined) await sql!`UPDATE classes SET ended_at = ${updates.endedAt} WHERE id = ${id}`;
+    if (updates.name !== undefined) {
+        await sql!`UPDATE classes SET name = ${updates.name} WHERE id = ${resolvedId}`;
+        const nextSlug = await generateUniqueClassSlug(updates.slug ?? updates.name, resolvedId);
+        await sql!`UPDATE classes SET slug = ${nextSlug} WHERE id = ${resolvedId}`;
+    } else if (updates.slug !== undefined) {
+        const nextSlug = await generateUniqueClassSlug(updates.slug, resolvedId);
+        await sql!`UPDATE classes SET slug = ${nextSlug} WHERE id = ${resolvedId}`;
+    }
+    if (updates.description !== undefined) await sql!`UPDATE classes SET description = ${updates.description} WHERE id = ${resolvedId}`;
+    if (updates.syllabus !== undefined) await sql!`UPDATE classes SET syllabus = ${JSON.stringify(updates.syllabus)} WHERE id = ${resolvedId}`;
+    if (updates.professorId !== undefined) await sql!`UPDATE classes SET professor_id = ${updates.professorId} WHERE id = ${resolvedId}`;
+    if (updates.status !== undefined) await sql!`UPDATE classes SET status = ${updates.status} WHERE id = ${resolvedId}`;
+    if (updates.enrollmentOpen !== undefined) await sql!`UPDATE classes SET enrollment_open = ${updates.enrollmentOpen} WHERE id = ${resolvedId}`;
+    if (updates.maxStudents !== undefined) await sql!`UPDATE classes SET max_students = ${updates.maxStudents} WHERE id = ${resolvedId}`;
+    if (updates.hiddenObjective !== undefined) await sql!`UPDATE classes SET hidden_objective = ${updates.hiddenObjective} WHERE id = ${resolvedId}`;
+    if (updates.startedAt !== undefined) await sql!`UPDATE classes SET started_at = ${updates.startedAt} WHERE id = ${resolvedId}`;
+    if (updates.endedAt !== undefined) await sql!`UPDATE classes SET ended_at = ${updates.endedAt} WHERE id = ${resolvedId}`;
     return true;
 }
 
 // --- Class Assistants ---
 
 export async function addClassAssistant(classId: string, agentId: string): Promise<StoredClassAssistant> {
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) throw new Error("Class not found");
     const assignedAt = new Date().toISOString();
     await sql!`
         INSERT INTO class_assistants (class_id, agent_id, assigned_at)
-        VALUES (${classId}, ${agentId}, ${assignedAt})
+        VALUES (${resolvedClassId}, ${agentId}, ${assignedAt})
         ON CONFLICT (class_id, agent_id) DO NOTHING
     `;
-    return { classId, agentId, assignedAt };
+    return { classId: resolvedClassId, agentId, assignedAt };
 }
 
 export async function removeClassAssistant(classId: string, agentId: string): Promise<boolean> {
-    const result = await sql!`DELETE FROM class_assistants WHERE class_id = ${classId} AND agent_id = ${agentId}`;
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) return false;
+    const result = await sql!`DELETE FROM class_assistants WHERE class_id = ${resolvedClassId} AND agent_id = ${agentId}`;
     return (result as unknown as { count: number }).count > 0;
 }
 
 export async function getClassAssistants(classId: string): Promise<Array<{ agentId: string; assignedAt: string }>> {
-    const rows = await sql!`SELECT agent_id, assigned_at FROM class_assistants WHERE class_id = ${classId} ORDER BY assigned_at ASC`;
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) return [];
+    const rows = await sql!`SELECT agent_id, assigned_at FROM class_assistants WHERE class_id = ${resolvedClassId} ORDER BY assigned_at ASC`;
     return (rows as Array<Record<string, unknown>>).map(r => ({
         agentId: r.agent_id as string,
         assignedAt: String(r.assigned_at),
@@ -3025,34 +3115,42 @@ export async function getClassAssistants(classId: string): Promise<Array<{ agent
 }
 
 export async function isClassAssistant(classId: string, agentId: string): Promise<boolean> {
-    const rows = await sql!`SELECT 1 FROM class_assistants WHERE class_id = ${classId} AND agent_id = ${agentId} LIMIT 1`;
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) return false;
+    const rows = await sql!`SELECT 1 FROM class_assistants WHERE class_id = ${resolvedClassId} AND agent_id = ${agentId} LIMIT 1`;
     return Array.isArray(rows) && rows.length > 0;
 }
 
 // --- Class Enrollments ---
 
 export async function enrollInClass(classId: string, agentId: string): Promise<StoredClassEnrollment> {
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) throw new Error("Class not found");
     const id = generateClassId('enrl');
     const enrolledAt = new Date().toISOString();
     await sql!`
         INSERT INTO class_enrollments (id, class_id, agent_id, status, enrolled_at)
-        VALUES (${id}, ${classId}, ${agentId}, 'enrolled', ${enrolledAt})
+        VALUES (${id}, ${resolvedClassId}, ${agentId}, 'enrolled', ${enrolledAt})
     `;
-    return { id, classId, agentId, status: 'enrolled', enrolledAt };
+    return { id, classId: resolvedClassId, agentId, status: 'enrolled', enrolledAt };
 }
 
 export async function dropClass(classId: string, agentId: string): Promise<boolean> {
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) return false;
     const result = await sql!`
         UPDATE class_enrollments SET status = 'dropped'
-        WHERE class_id = ${classId} AND agent_id = ${agentId} AND status IN ('enrolled', 'active')
+        WHERE class_id = ${resolvedClassId} AND agent_id = ${agentId} AND status IN ('enrolled', 'active')
     `;
     return (result as unknown as { count: number }).count > 0;
 }
 
 export async function getClassEnrollment(classId: string, agentId: string): Promise<StoredClassEnrollment | null> {
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) return null;
     const rows = await sql!`
         SELECT id, class_id, agent_id, status, enrolled_at, completed_at
-        FROM class_enrollments WHERE class_id = ${classId} AND agent_id = ${agentId} LIMIT 1
+        FROM class_enrollments WHERE class_id = ${resolvedClassId} AND agent_id = ${agentId} LIMIT 1
     `;
     const r = rows[0] as Record<string, unknown> | undefined;
     if (!r) return null;
@@ -3067,9 +3165,11 @@ export async function getClassEnrollment(classId: string, agentId: string): Prom
 }
 
 export async function getClassEnrollments(classId: string): Promise<StoredClassEnrollment[]> {
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) return [];
     const rows = await sql!`
         SELECT id, class_id, agent_id, status, enrolled_at, completed_at
-        FROM class_enrollments WHERE class_id = ${classId} ORDER BY enrolled_at ASC
+        FROM class_enrollments WHERE class_id = ${resolvedClassId} ORDER BY enrolled_at ASC
     `;
     return (rows as Array<Record<string, unknown>>).map(r => ({
         id: r.id as string,
@@ -3082,9 +3182,11 @@ export async function getClassEnrollments(classId: string): Promise<StoredClassE
 }
 
 export async function getClassEnrollmentCount(classId: string): Promise<number> {
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) return 0;
     const rows = await sql!`
         SELECT COUNT(*)::int AS count FROM class_enrollments
-        WHERE class_id = ${classId} AND status IN ('enrolled', 'active')
+        WHERE class_id = ${resolvedClassId} AND status IN ('enrolled', 'active')
     `;
     return Number((rows[0] as Record<string, unknown>)?.count ?? 0);
 }
@@ -3111,13 +3213,15 @@ export async function createClassSession(
     content: string | undefined,
     sequence: number
 ): Promise<StoredClassSession> {
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) throw new Error("Class not found");
     const id = generateClassId('csess');
     const createdAt = new Date().toISOString();
     await sql!`
         INSERT INTO class_sessions (id, class_id, title, type, content, sequence, status, created_at)
-        VALUES (${id}, ${classId}, ${title}, ${type}, ${content ?? null}, ${sequence}, 'scheduled', ${createdAt})
+        VALUES (${id}, ${resolvedClassId}, ${title}, ${type}, ${content ?? null}, ${sequence}, 'scheduled', ${createdAt})
     `;
-    return { id, classId, title, type, content, sequence, status: 'scheduled', createdAt };
+    return { id, classId: resolvedClassId, title, type, content, sequence, status: 'scheduled', createdAt };
 }
 
 export async function getClassSession(sessionId: string): Promise<StoredClassSession | null> {
@@ -3139,7 +3243,9 @@ export async function getClassSession(sessionId: string): Promise<StoredClassSes
 }
 
 export async function listClassSessions(classId: string): Promise<StoredClassSession[]> {
-    const rows = await sql!`SELECT * FROM class_sessions WHERE class_id = ${classId} ORDER BY sequence ASC`;
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) return [];
+    const rows = await sql!`SELECT * FROM class_sessions WHERE class_id = ${resolvedClassId} ORDER BY sequence ASC`;
     return (rows as Array<Record<string, unknown>>).map(r => ({
         id: r.id as string,
         classId: r.class_id as string,
@@ -3230,14 +3336,16 @@ export async function createClassEvaluation(
     taughtTopic?: string,
     maxScore?: number
 ): Promise<StoredClassEvaluation> {
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) throw new Error("Class not found");
     const id = generateClassId('ceval');
     const createdAt = new Date().toISOString();
     await sql!`
         INSERT INTO class_evaluations (id, class_id, title, description, prompt, taught_topic, max_score, created_at)
-        VALUES (${id}, ${classId}, ${title}, ${description ?? null}, ${prompt},
+        VALUES (${id}, ${resolvedClassId}, ${title}, ${description ?? null}, ${prompt},
                 ${taughtTopic ?? null}, ${maxScore ?? null}, ${createdAt})
     `;
-    return { id, classId, title, description, prompt, taughtTopic, status: 'draft', maxScore, createdAt };
+    return { id, classId: resolvedClassId, title, description, prompt, taughtTopic, status: 'draft', maxScore, createdAt };
 }
 
 export async function getClassEvaluation(evaluationId: string): Promise<StoredClassEvaluation | null> {
@@ -3258,7 +3366,9 @@ export async function getClassEvaluation(evaluationId: string): Promise<StoredCl
 }
 
 export async function listClassEvaluations(classId: string): Promise<StoredClassEvaluation[]> {
-    const rows = await sql!`SELECT * FROM class_evaluations WHERE class_id = ${classId} ORDER BY created_at ASC`;
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) return [];
+    const rows = await sql!`SELECT * FROM class_evaluations WHERE class_id = ${resolvedClassId} ORDER BY created_at ASC`;
     return (rows as Array<Record<string, unknown>>).map(r => ({
         id: r.id as string,
         classId: r.class_id as string,
@@ -3347,13 +3457,15 @@ export async function getClassEvaluationResults(evaluationId: string): Promise<S
 }
 
 export async function getStudentClassResults(classId: string, agentId: string): Promise<StoredClassEvaluationResult[]> {
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) return [];
     const rows = await sql!`
         SELECT r.id, r.evaluation_id, r.agent_id, r.response, r.score, r.max_score,
                r.result_data, r.feedback, r.completed_at, a.name as agent_name
         FROM class_evaluation_results r
         JOIN class_evaluations e ON e.id = r.evaluation_id
         LEFT JOIN agents a ON a.id = r.agent_id
-        WHERE e.class_id = ${classId} AND r.agent_id = ${agentId}
+        WHERE e.class_id = ${resolvedClassId} AND r.agent_id = ${agentId}
         ORDER BY r.completed_at ASC
     `;
     return (rows as Array<Record<string, unknown>>).map(r => ({

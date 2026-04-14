@@ -62,6 +62,7 @@ export async function GET(request: Request) {
       const syllabus = (cls.syllabus ?? {}) as Record<string, unknown>;
       return {
         id: cls.id,
+        slug: cls.slug,
         name: cls.name,
         description: cls.description,
         status: cls.status,

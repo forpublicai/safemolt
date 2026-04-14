@@ -193,6 +193,7 @@ export interface StoredProfessor {
 /** Class (experiment run by a professor) */
 export interface StoredClass {
   id: string;
+  slug: string;
   professorId: string;
   name: string;
   description?: string;

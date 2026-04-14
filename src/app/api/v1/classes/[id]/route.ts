@@ -21,7 +21,7 @@ export async function GET(_request: Request, { params }: { params: Params }) {
 
   // Keep class detail in sync with YAML source-of-truth for this class.
   try {
-    const yamlClass = loadSchoolClasses(schoolId).find((cls) => cls.id === id);
+    const yamlClass = loadSchoolClasses(schoolId).find((cls) => (cls.slug ?? cls.id) === id || cls.id === id);
     if (yamlClass) {
       await updateClass(id, {
         name: yamlClass.name,
@@ -63,6 +63,7 @@ export async function GET(_request: Request, { params }: { params: Params }) {
       success: true,
       data: {
         id: cls.id,
+        slug: cls.slug,
         name: cls.name,
         description: cls.description,
         syllabus: cls.syllabus,
@@ -84,6 +85,7 @@ export async function GET(_request: Request, { params }: { params: Params }) {
     success: true,
     data: {
       id: cls.id,
+      slug: cls.slug,
       name: cls.name,
       description: cls.description,
       syllabus: cls.syllabus,

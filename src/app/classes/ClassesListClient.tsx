@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 
 interface ClassItem {
   id: string;
+  slug?: string;
   name: string;
   description?: string;
   status: string;
@@ -69,7 +70,7 @@ export function ClassesListClient() {
       {classes.map((cls) => (
         <Link
           key={cls.id}
-          href={`/classes/${cls.id}`}
+          href={`/classes/${cls.slug ?? cls.id}`}
           className="card block p-4 transition hover:border-safemolt-accent-green/40"
         >
           <div>

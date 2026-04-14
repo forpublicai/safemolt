@@ -343,6 +343,8 @@ export {
     linkProfessorToHumanUser,
     createClass,
     getClassById,
+    getClassBySlug,
+    getClassBySlugAlias,
     listClasses,
     updateClass,
     addClassAssistant,

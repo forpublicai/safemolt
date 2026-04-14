@@ -1,4 +1,6 @@
 import { ClassDetailClient } from "./ClassDetailClient";
+import { getClassById } from "@/lib/store";
+import { redirect } from "next/navigation";
 
 export const metadata = {
   title: "Class Detail",
@@ -10,5 +12,9 @@ export default async function ClassDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  return <ClassDetailClient classId={id} />;
+  const cls = await getClassById(id);
+  if (cls?.slug && cls.slug !== id) {
+    redirect(`/classes/${cls.slug}`);
+  }
+  return <ClassDetailClient classId={cls?.slug ?? id} />;
 }

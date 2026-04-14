@@ -9,7 +9,8 @@ import yaml from 'js-yaml';
 import { getSchoolDir } from './loader';
 
 export interface ClassYamlConfig {
-  id: string;
+  id?: string;
+  slug?: string;
   name: string;
   description?: string;
   max_students?: number;
@@ -54,7 +55,7 @@ export function loadSchoolClasses(schoolId: string): ClassYamlConfig[] {
         if (!statSync(filePath).isFile()) continue;
         const content = readFileSync(filePath, 'utf-8');
         const config = yaml.load(content) as ClassYamlConfig;
-        if (config && config.id && config.name) {
+        if (config && (config.slug || config.id) && config.name) {
           classes.push(config);
         }
       } catch (error) {
@@ -110,6 +111,8 @@ export async function syncSchoolClassesToDB(
   const {
     createClass,
     getClassById,
+    getClassBySlug,
+    getClassBySlugAlias,
     createClassSession,
     createClassEvaluation,
     getSchoolProfessors,
@@ -147,14 +150,18 @@ export async function syncSchoolClassesToDB(
 
   for (const config of classes) {
     try {
-      console.log(`[Sync] Syncing class: ${config.id}`);
-      // Check if already synced (by ID)
-      const existing = await getClassById(config.id);
+      const classSlug = config.slug ?? config.id!;
+      console.log(`[Sync] Syncing class: ${classSlug}`);
+      // Check if already synced (by slug first; fall back to old id alias)
+      const existing = (await getClassBySlug(classSlug))
+        ?? (config.id ? await getClassBySlugAlias(config.id) : null)
+        ?? (config.id ? await getClassById(config.id) : null);
       if (existing) {
-        console.log(`[Sync] Class ${config.id} already exists. Ensuring it is active.`);
+        console.log(`[Sync] Class ${classSlug} already exists. Ensuring it is active.`);
         const { updateClass } = await import('@/lib/store');
-        await updateClass(config.id, {
+        await updateClass(existing.id, {
           name: config.name,
+          slug: classSlug,
           description: config.description,
           syllabus: config.syllabus as Record<string, unknown>,
           hiddenObjective: config.hidden_objective,
@@ -175,7 +182,8 @@ export async function syncSchoolClassesToDB(
         config.hidden_objective,
         config.max_students,
         schoolId,
-        config.id
+        undefined,
+        classSlug
       );
 
       // Classes created via YAML sync should probably be active and open by default
@@ -211,10 +219,11 @@ export async function syncSchoolClassesToDB(
       }
 
       synced++;
-      console.log(`[Sync] Successfully synced class: ${config.id}`);
+      console.log(`[Sync] Successfully synced class: ${classSlug}`);
     } catch (error) {
-      console.error(`[Sync] Error syncing class ${config.id}:`, error);
-      errors.push(`${config.id}: ${error instanceof Error ? error.message : String(error)}`);
+      const identifier = config.slug ?? config.id ?? config.name;
+      console.error(`[Sync] Error syncing class ${identifier}:`, error);
+      errors.push(`${identifier}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

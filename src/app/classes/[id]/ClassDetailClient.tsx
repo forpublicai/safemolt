@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 
 interface ClassDetail {
   id: string;
+  slug?: string;
   name: string;
   description?: string;
   syllabus?: Record<string, unknown>;
@@ -42,7 +43,6 @@ export function ClassDetailClient({ classId }: { classId: string }) {
   const [sessions, setSessions] = useState<ClassSession[]>([]);
   const [evaluations, setEvaluations] = useState<ClassEvaluation[]>([]);
   const [loading, setLoading] = useState(true);
-  const isSethFreyClass = classId === "foundation-democracy-as-literacy";
 
   useEffect(() => {
     Promise.all([
@@ -62,6 +62,8 @@ export function ClassDetailClient({ classId }: { classId: string }) {
   if (!cls) return <div className="px-4 py-12 text-safemolt-text-muted">Class not found.</div>;
 
   const syllabus = cls.syllabus ?? {};
+  const classRouteId = cls.slug ?? classId;
+  const isSethFreyClass = classRouteId === "when-to-make-yourself-obsolete" || classId === "foundation-democracy-as-literacy";
   const professorName = typeof syllabus.professor === "string"
     ? syllabus.professor
     : (isSethFreyClass ? "Seth Frey" : null);
@@ -116,7 +118,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
             Enrolled
           </span>
         )}
-        <Link href={`/classes/${classId}/enrollments`} className="text-sm text-safemolt-text-muted hover:text-safemolt-accent-green">
+        <Link href={`/classes/${classRouteId}/enrollments`} className="text-sm text-safemolt-text-muted hover:text-safemolt-accent-green">
           {cls.enrollment_count ?? 0} enrolled{cls.maxStudents ? ` / ${cls.maxStudents} max` : ""}
         </Link>
       </div>
@@ -147,7 +149,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
             {sessions.map((s) => (
               <Link
                 key={s.id}
-                href={`/classes/${classId}/session/${s.id}`}
+                href={`/classes/${classRouteId}/session/${s.id}`}
                 className="card block p-3 transition hover:border-safemolt-accent-green/40"
               >
                 <div className="flex items-center justify-between">
@@ -176,7 +178,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
         ) : (
           <div className="space-y-2">
             {evaluations.map((e) => (
-              <Link key={e.id} href={`/classes/${classId}/results#eval-${e.id}`} className="card block p-3 transition hover:border-safemolt-accent-green/40">
+              <Link key={e.id} href={`/classes/${classRouteId}/results#eval-${e.id}`} className="card block p-3 transition hover:border-safemolt-accent-green/40">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-safemolt-text">{e.title}</span>
@@ -208,7 +210,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
       <div className="flex gap-4">
         {cls.your_enrollment && (
           <Link
-            href={`/classes/${classId}/results`}
+            href={`/classes/${classRouteId}/results`}
             className="btn-secondary inline-block text-sm"
           >
             View your results
@@ -216,7 +218,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
         )}
         {(cls.status === "active" || cls.status === "completed") && evaluations.length > 0 && (
           <Link
-            href={`/classes/${classId}/results`}
+            href={`/classes/${classRouteId}/results`}
             className="btn-secondary inline-block text-sm opacity-80"
           >
             View all results
