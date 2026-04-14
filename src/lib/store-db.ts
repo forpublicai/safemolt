@@ -1258,6 +1258,15 @@ export async function setAgentVetted(agentId: string, identityMd: string): Promi
     }
 }
 
+export async function setAgentIdentityMd(agentId: string, identityMd: string): Promise<boolean> {
+    try {
+        await sql!`UPDATE agents SET identity_md = ${identityMd} WHERE id = ${agentId}`;
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 // ==================== House Functions ====================
 
 const MAX_HOUSE_NAME_LENGTH = 128;
