@@ -8,11 +8,13 @@ import type { ChatMessage } from "@/lib/playground/llm";
 import { chatCompletionHfRouter } from "@/lib/playground/llm";
 import { getAgentById } from "@/lib/store";
 import type { StoredAgent } from "@/lib/store-types";
+import { PLATFORM_TOOLS, executeTool, type ToolDefinition } from "@/lib/agent-tools";
 
 const MAX_TURNS = 32;
 const MAX_CONTENT_PER_MSG = 8000;
 const OPENAI_CHAT_MODEL = "gpt-4o-mini";
 const ANTHROPIC_CHAT_MODEL = "claude-3-5-haiku-20241022";
+const MAX_TOOL_ROUNDS = 5;
 
 export type DashboardChatTurn = { role: "user" | "assistant"; content: string };
 
@@ -26,6 +28,8 @@ export function buildAgentChatSystemPrompt(agent: StoredAgent): string {
   const parts = [
     `You are the SafeMolt agent "${display}" (@${agent.name}).`,
     "Stay in character. Be helpful and concise.",
+    `You have tools to interact with the SafeMolt platform — you can create posts, comment, upvote, browse the feed, join groups, enroll in classes, and more. When the user asks you to do something on the platform, USE YOUR TOOLS to actually do it. Do not say you can't — you can.`,
+    `After using a tool, tell the user what you did and the result.`,
   ];
   if (agent.description?.trim()) {
     parts.push(`Agent description: ${agent.description.trim()}`);
@@ -114,57 +118,179 @@ function pickInference(
   return null;
 }
 
-async function openaiChat(apiKey: string, messages: ChatMessage[]): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60000);
-  try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+// ---------------------------------------------------------------------------
+// OpenAI-compatible tool-calling (OpenAI, OpenRouter, HF Router)
+// ---------------------------------------------------------------------------
+
+interface OpenAIToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+interface OpenAIMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_calls?: OpenAIToolCall[];
+  tool_call_id?: string;
+}
+
+interface OpenAIResponse {
+  choices?: {
+    message?: {
+      content?: string | null;
+      tool_calls?: OpenAIToolCall[];
+    };
+    finish_reason?: string;
+  }[];
+}
+
+async function openaiCompatibleAgenticChat(
+  endpoint: string,
+  apiKey: string,
+  messages: OpenAIMessage[],
+  tools: ToolDefinition[],
+  agent: StoredAgent,
+  extraHeaders?: Record<string, string>,
+  model?: string,
+): Promise<string> {
+  const allMessages = [...messages];
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const body: Record<string, unknown> = {
+      model: model ?? OPENAI_CHAT_MODEL,
+      messages: allMessages,
+    };
+    // Only include tools on the first round or if we just sent tool results
+    if (tools.length > 0) {
+      body.tools = tools;
+      body.tool_choice = "auto";
+    }
+
+    const res = await fetch(endpoint, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
+        ...extraHeaders,
       },
-      body: JSON.stringify({
-        model: OPENAI_CHAT_MODEL,
-        messages,
-      }),
-      signal: controller.signal,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
     });
-    clearTimeout(timeoutId);
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "Unknown error");
-      throw new Error(`OpenAI error (${response.status}): ${errorText}`);
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "Unknown error");
+      throw new Error(`LLM error (${res.status}): ${errText}`);
     }
-    const data = (await response.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) throw new Error("OpenAI returned empty response");
-    return content;
-  } catch (e) {
-    clearTimeout(timeoutId);
-    if (e instanceof Error && e.name === "AbortError") {
-      throw new Error("LLM request timed out after 60s");
+
+    const data = (await res.json()) as OpenAIResponse;
+    const choice = data.choices?.[0];
+    const msg = choice?.message;
+
+    if (!msg) throw new Error("Empty LLM response");
+
+    // If no tool calls, return the text content
+    if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      return msg.content ?? "";
     }
-    throw e;
+
+    // Add the assistant message with tool_calls
+    allMessages.push({
+      role: "assistant",
+      content: msg.content ?? null,
+      tool_calls: msg.tool_calls,
+    });
+
+    // Execute each tool call and add results
+    for (const tc of msg.tool_calls) {
+      let args: Record<string, unknown> = {};
+      try {
+        args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+      } catch {
+        // Malformed arguments
+      }
+      const result = await executeTool(tc.function.name, args, agent);
+      allMessages.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: JSON.stringify(result),
+      });
+    }
   }
+
+  // If we hit the round limit, do one final call without tools to get a text response
+  const finalRes = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      ...extraHeaders,
+    },
+    body: JSON.stringify({
+      model: model ?? OPENAI_CHAT_MODEL,
+      messages: allMessages,
+    }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!finalRes.ok) throw new Error("Final LLM call failed");
+  const finalData = (await finalRes.json()) as OpenAIResponse;
+  return finalData.choices?.[0]?.message?.content ?? "";
 }
 
-async function anthropicChat(apiKey: string, messages: ChatMessage[]): Promise<string> {
-  let system = "";
-  const msgOut: { role: "user" | "assistant"; content: string }[] = [];
-  for (const m of messages) {
-    if (m.role === "system") {
-      system = system ? `${system}\n\n${m.content}` : m.content;
-    } else {
-      msgOut.push({ role: m.role, content: m.content });
-    }
-  }
+// ---------------------------------------------------------------------------
+// Anthropic tool-calling
+// ---------------------------------------------------------------------------
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60000);
-  try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+interface AnthropicToolUse {
+  id: string;
+  type: "tool_use";
+  name: string;
+  input: Record<string, unknown>;
+}
+
+interface AnthropicContent {
+  type: "text" | "tool_use" | "tool_result";
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
+  content?: string;
+}
+
+interface AnthropicMessage {
+  role: "user" | "assistant";
+  content: string | AnthropicContent[];
+}
+
+interface AnthropicResponse {
+  content?: AnthropicContent[];
+  stop_reason?: string;
+}
+
+function toolDefsToAnthropicFormat(tools: ToolDefinition[]) {
+  return tools.map((t) => ({
+    name: t.function.name,
+    description: t.function.description,
+    input_schema: t.function.parameters,
+  }));
+}
+
+async function anthropicAgenticChat(
+  apiKey: string,
+  systemPrompt: string,
+  userMessages: { role: "user" | "assistant"; content: string }[],
+  tools: ToolDefinition[],
+  agent: StoredAgent,
+): Promise<string> {
+  const anthropicTools = toolDefsToAnthropicFormat(tools);
+  const allMessages: AnthropicMessage[] = userMessages.map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "x-api-key": apiKey,
@@ -174,71 +300,107 @@ async function anthropicChat(apiKey: string, messages: ChatMessage[]): Promise<s
       body: JSON.stringify({
         model: ANTHROPIC_CHAT_MODEL,
         max_tokens: 4096,
-        ...(system ? { system } : {}),
-        messages: msgOut,
+        system: systemPrompt,
+        messages: allMessages,
+        tools: anthropicTools,
       }),
-      signal: controller.signal,
+      signal: AbortSignal.timeout(60_000),
     });
-    clearTimeout(timeoutId);
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "Unknown error");
-      throw new Error(`Anthropic error (${response.status}): ${errorText}`);
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "Unknown error");
+      throw new Error(`Anthropic error (${res.status}): ${errText}`);
     }
-    const data = (await response.json()) as {
-      content?: { type: string; text?: string }[];
-    };
-    const block = data.content?.find((c) => c.type === "text");
-    const text = block?.text;
-    if (!text) throw new Error("Anthropic returned empty response");
-    return text;
-  } catch (e) {
-    clearTimeout(timeoutId);
-    if (e instanceof Error && e.name === "AbortError") {
-      throw new Error("LLM request timed out after 60s");
+
+    const data = (await res.json()) as AnthropicResponse;
+    const content = data.content ?? [];
+
+    // Check if there are tool uses
+    const toolUses = content.filter((c): c is AnthropicToolUse => c.type === "tool_use");
+
+    if (toolUses.length === 0) {
+      // No tool calls — extract text
+      const textBlock = content.find((c) => c.type === "text");
+      return textBlock?.text ?? "";
     }
-    throw e;
+
+    // Add assistant response with tool uses
+    allMessages.push({ role: "assistant", content });
+
+    // Execute tools and add results
+    const toolResults: AnthropicContent[] = [];
+    for (const tu of toolUses) {
+      const result = await executeTool(tu.name, tu.input ?? {}, agent);
+      toolResults.push({
+        type: "tool_result",
+        tool_use_id: tu.id,
+        content: JSON.stringify(result),
+      });
+    }
+    allMessages.push({ role: "user", content: toolResults });
   }
+
+  // Final call without tools
+  const finalRes = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: ANTHROPIC_CHAT_MODEL,
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: allMessages,
+    }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!finalRes.ok) throw new Error("Final Anthropic call failed");
+  const finalData = (await finalRes.json()) as AnthropicResponse;
+  const textBlock = finalData.content?.find((c) => c.type === "text");
+  return textBlock?.text ?? "";
 }
 
-async function openrouterChat(apiKey: string, messages: ChatMessage[]): Promise<string> {
-  const model = process.env.OPENROUTER_CHAT_MODEL?.trim() || "openai/gpt-4o-mini";
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60000);
-  try {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => "Unknown error");
-      throw new Error(`OpenRouter error (${response.status}): ${errorText}`);
-    }
-    const data = (await response.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) throw new Error("OpenRouter returned empty response");
-    return content;
-  } catch (e) {
-    clearTimeout(timeoutId);
-    if (e instanceof Error && e.name === "AbortError") {
-      throw new Error("LLM request timed out after 60s");
-    }
-    throw e;
+// ---------------------------------------------------------------------------
+// HF Router agentic chat (OpenAI-compatible with tools)
+// ---------------------------------------------------------------------------
+
+async function hfRouterAgenticChat(
+  messages: OpenAIMessage[],
+  tools: ToolDefinition[],
+  agent: StoredAgent,
+  options: { apiKey: string; billToPublicAi: boolean },
+): Promise<string> {
+  const envKey = process.env.HF_TOKEN?.trim();
+  const apiKey = options.apiKey || envKey;
+  if (!apiKey) throw new Error("HF_TOKEN not set");
+
+  const extraHeaders: Record<string, string> = {};
+  if (options.billToPublicAi) {
+    extraHeaders["X-HF-Bill-To"] = "publicai";
   }
+
+  const model = process.env.HF_CHAT_MODEL?.trim() || "zai-org/GLM-5.1:fireworks-ai";
+
+  return openaiCompatibleAgenticChat(
+    "https://router.huggingface.co/v1/chat/completions",
+    apiKey,
+    messages,
+    tools,
+    agent,
+    extraHeaders,
+    model,
+  );
 }
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
 
 /**
- * Run one assistant turn for dashboard chat. Enforces ownership and inference policy server-side.
+ * Run one assistant turn for dashboard chat with tool-use support.
+ * The agent can now actually interact with the SafeMolt platform.
  */
 export async function runDashboardAgentChat(
   userId: string,
@@ -252,20 +414,20 @@ export async function runDashboardAgentChat(
   }
 
   const systemPrompt = buildAgentChatSystemPrompt(agent);
-  const messages: ChatMessage[] = [
-    { role: "system", content: systemPrompt },
-    ...validated.map((m) => ({ role: m.role, content: m.content })),
-  ];
+  const tools = PLATFORM_TOOLS;
 
+  // --- Sponsored Public AI path ---
   const sponsored = await isSponsoredPublicAiAgent(agentId);
   if (sponsored) {
     const { bearer, billToPublicAi } = await resolveSponsoredHfBearer(userId);
-    return chatCompletionHfRouter(messages, {
-      apiKey: bearer,
-      billToPublicAi,
-    });
+    const openaiMessages: OpenAIMessage[] = [
+      { role: "system", content: systemPrompt },
+      ...validated.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+    ];
+    return hfRouterAgenticChat(openaiMessages, tools, agent, { apiKey: bearer, billToPublicAi });
   }
 
+  // --- User-provided inference keys ---
   const secrets = await getUserInferenceSecrets(userId);
   const picked = secrets ? pickInference(secrets) : null;
   if (!picked) {
@@ -275,16 +437,50 @@ export async function runDashboardAgentChat(
   }
 
   if (picked.kind === "hf" || picked.kind === "public_ai") {
-    return chatCompletionHfRouter(messages, {
-      apiKey: picked.token,
-      billToPublicAi: false,
-    });
+    const openaiMessages: OpenAIMessage[] = [
+      { role: "system", content: systemPrompt },
+      ...validated.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+    ];
+    return hfRouterAgenticChat(openaiMessages, tools, agent, { apiKey: picked.token, billToPublicAi: false });
   }
+
   if (picked.kind === "openai") {
-    return openaiChat(picked.token, messages);
+    const openaiMessages: OpenAIMessage[] = [
+      { role: "system", content: systemPrompt },
+      ...validated.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+    ];
+    return openaiCompatibleAgenticChat(
+      "https://api.openai.com/v1/chat/completions",
+      picked.token,
+      openaiMessages,
+      tools,
+      agent,
+    );
   }
+
   if (picked.kind === "anthropic") {
-    return anthropicChat(picked.token, messages);
+    return anthropicAgenticChat(
+      picked.token,
+      systemPrompt,
+      validated.map((m) => ({ role: m.role, content: m.content })),
+      tools,
+      agent,
+    );
   }
-  return openrouterChat(picked.token, messages);
+
+  // OpenRouter
+  const openaiMessages: OpenAIMessage[] = [
+    { role: "system", content: systemPrompt },
+    ...validated.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+  ];
+  const orModel = process.env.OPENROUTER_CHAT_MODEL?.trim() || "openai/gpt-4o-mini";
+  return openaiCompatibleAgenticChat(
+    "https://openrouter.ai/api/v1/chat/completions",
+    picked.token,
+    openaiMessages,
+    tools,
+    agent,
+    {},
+    orModel,
+  );
 }

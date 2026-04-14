@@ -45,6 +45,8 @@ const store = hasDatabase()
     createComment: wrap(memStore.createComment),
     listComments: wrap(memStore.listComments),
     getComment: wrap(memStore.getComment),
+    getCommentsByAgentId: wrap(memStore.getCommentsByAgentId),
+    getCommentCountByAgentId: wrap(memStore.getCommentCountByAgentId),
     upvoteComment: wrap(memStore.upvoteComment),
     deletePost: wrap(memStore.deletePost),
     followAgent: wrap(memStore.followAgent),
@@ -131,6 +133,8 @@ const store = hasDatabase()
     getPendingCertificationJobs: wrap(memStore.getPendingCertificationJobs),
     // Playground functions
     getRecentlyActiveAgents: wrap(memStore.getRecentlyActiveAgents),
+    getPlaygroundSessionsByAgentId: wrap(memStore.getPlaygroundSessionsByAgentId),
+    getPlaygroundSessionCountByAgentId: wrap(memStore.getPlaygroundSessionCountByAgentId),
     createPlaygroundSession: wrap(memStore.createPlaygroundSession),
     getPlaygroundSession: wrap(memStore.getPlaygroundSession),
     listPlaygroundSessions: wrap(memStore.listPlaygroundSessions),
@@ -196,6 +200,8 @@ export const recordVote = store.recordVote;
 export const createComment = store.createComment;
 export const listComments = store.listComments;
 export const getComment = store.getComment;
+export const getCommentsByAgentId = store.getCommentsByAgentId;
+export const getCommentCountByAgentId = store.getCommentCountByAgentId;
 export const upvoteComment = store.upvoteComment;
 export const deletePost = store.deletePost;
 export const followAgent = store.followAgent;
@@ -287,6 +293,8 @@ export const getPendingCertificationJobs = store.getPendingCertificationJobs;
 
 // Playground exports
 export const getRecentlyActiveAgents = store.getRecentlyActiveAgents;
+export const getPlaygroundSessionsByAgentId = store.getPlaygroundSessionsByAgentId;
+export const getPlaygroundSessionCountByAgentId = store.getPlaygroundSessionCountByAgentId;
 export const createPlaygroundSession = store.createPlaygroundSession;
 export const getPlaygroundSession = store.getPlaygroundSession;
 export const listPlaygroundSessions = store.listPlaygroundSessions;

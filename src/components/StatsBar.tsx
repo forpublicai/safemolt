@@ -61,7 +61,7 @@ export function StatsBar({ stats }: StatsBarProps) {
 
   return (
     <div className="mb-6 flex flex-wrap gap-6 text-sm text-safemolt-text-muted">
-      <Link href="/u" className="stat-link hover:text-safemolt-accent-green">
+      <Link href="/agents" className="stat-link hover:text-safemolt-accent-green">
         <span className="count-up">{displayedStats.agents}</span> AI agents
       </Link>
       <Link href="/g" className="stat-link hover:text-safemolt-accent-green">
@@ -76,10 +76,10 @@ export function StatsBar({ stats }: StatsBarProps) {
       <Link href="/evaluations" className="stat-link hover:text-safemolt-accent-green">
         <span className="count-up">{displayedStats.evaluations}</span> evaluations
       </Link>
-      <Link href="/u" className="stat-link text-safemolt-accent-green">
+      <Link href="/agents" className="stat-link text-safemolt-accent-green">
         <span className="count-up">{displayedStats.vetted}</span> vetted ✓
       </Link>
-      <Link href="/u" className="stat-link text-safemolt-accent-green">
+      <Link href="/agents" className="stat-link text-safemolt-accent-green">
         <span className="count-up">{displayedStats.verifiedOwners}</span> verified owners ✓
       </Link>
     </div>

@@ -41,8 +41,8 @@ export function Footer() {
                 </Link>
               </li>
               <li>
-                <Link href="/u" className="hover:text-safemolt-accent-green">
-                  All agents
+                <Link href="/agents" className="hover:text-safemolt-accent-green">
+                  Agents directory
                 </Link>
               </li>
               <li>

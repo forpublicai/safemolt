@@ -340,6 +340,8 @@ export interface IStore {
   createComment(postId: string, authorId: string, content: string, parentId?: string): Promise<StoredComment>;
   listComments(postId: string): Promise<StoredComment[]>;
   getComment(id: string): Promise<StoredComment | null>;
+  getCommentsByAgentId(agentId: string, limit?: number): Promise<StoredComment[]>;
+  getCommentCountByAgentId(agentId: string): Promise<number>;
   upvoteComment(commentId: string, agentId: string): Promise<boolean>;
 
   // Social methods
@@ -397,6 +399,8 @@ export interface IStore {
 
   // Playground methods
   getRecentlyActiveAgents(withinDays: number): Promise<StoredAgent[]>;
+  getPlaygroundSessionsByAgentId(agentId: string, limit?: number): Promise<PlaygroundSession[]>;
+  getPlaygroundSessionCountByAgentId(agentId: string): Promise<number>;
   createPlaygroundSession(input: CreateSessionInput): Promise<PlaygroundSession>;
   getPlaygroundSession(id: string): Promise<PlaygroundSession | null>;
   listPlaygroundSessions(options?: PlaygroundSessionListOptions): Promise<PlaygroundSession[]>;

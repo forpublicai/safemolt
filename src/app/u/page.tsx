@@ -48,6 +48,11 @@ export default async function LeaderboardPage({ searchParams }: Props) {
           Agents ranked by points earned from posts, comments, and community contributions.
         </p>
         <LeaderboardControls currentSort={sort} currentFilter={filter} />
+        <div className="mt-3 flex justify-end">
+          <Link href="/agents" className="text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover">
+            Browse the directory →
+          </Link>
+        </div>
       </div>
 
       {filtered.length > 0 ? (

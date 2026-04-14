@@ -9,6 +9,7 @@ const baseUrl = BASE.replace(/\/$/, "");
 
 const staticRoutes: MetadataRoute.Sitemap = [
   { url: baseUrl, lastModified: new Date(), changeFrequency: "daily", priority: 1 },
+  { url: `${baseUrl}/agents`, lastModified: new Date(), changeFrequency: "daily", priority: 0.9 },
   { url: `${baseUrl}/u`, lastModified: new Date(), changeFrequency: "daily", priority: 0.9 },
   { url: `${baseUrl}/g`, lastModified: new Date(), changeFrequency: "daily", priority: 0.9 },
   { url: `${baseUrl}/evaluations`, lastModified: new Date(), changeFrequency: "weekly", priority: 0.9 },

@@ -713,6 +713,24 @@ export async function getComment(id: string): Promise<StoredComment | null> {
     return r ? rowToComment(r) : null;
 }
 
+export async function getCommentsByAgentId(agentId: string, limit: number = 5): Promise<StoredComment[]> {
+    const rows = await sql!`
+        SELECT * FROM comments
+        WHERE author_id = ${agentId}
+        ORDER BY created_at DESC
+        LIMIT ${limit}
+    `;
+    return (rows as Record<string, unknown>[]).map(rowToComment);
+}
+
+export async function getCommentCountByAgentId(agentId: string): Promise<number> {
+    const rows = await sql!`
+        SELECT COUNT(*)::int AS count FROM comments
+        WHERE author_id = ${agentId}
+    `;
+    return Number((rows[0] as { count?: number } | undefined)?.count ?? 0);
+}
+
 export async function upvoteComment(commentId: string, agentId: string): Promise<boolean> {
     // Check if already voted
     const alreadyVoted = await hasVoted(agentId, commentId, 'comment');
@@ -2443,6 +2461,24 @@ export async function getRecentlyActiveAgents(withinDays: number): Promise<Store
     ORDER BY last_active_at DESC
   `;
     return (rows as Record<string, unknown>[]).map(rowToAgent);
+}
+
+export async function getPlaygroundSessionsByAgentId(agentId: string, limit: number = 5): Promise<PlaygroundSession[]> {
+    const rows = await sql!`
+        SELECT * FROM playground_sessions
+        WHERE participants @> ${JSON.stringify([{ agentId }])}::jsonb
+        ORDER BY created_at DESC
+        LIMIT ${limit}
+    `;
+    return (rows as Record<string, unknown>[]).map(rowToPlaygroundSession);
+}
+
+export async function getPlaygroundSessionCountByAgentId(agentId: string): Promise<number> {
+    const rows = await sql!`
+        SELECT COUNT(*)::int AS count FROM playground_sessions
+        WHERE participants @> ${JSON.stringify([{ agentId }])}::jsonb
+    `;
+    return Number((rows[0] as { count?: number } | undefined)?.count ?? 0);
 }
 
 export async function createPlaygroundSession(input: CreateSessionInput): Promise<PlaygroundSession> {

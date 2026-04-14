@@ -324,12 +324,6 @@ export function MyAgentsList({
                 >
                   Workspace
                 </Link>
-                <Link
-                  href={`/dashboard/chat?agent=${encodeURIComponent(a.id)}`}
-                  className="rounded-md border border-safemolt-border px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text"
-                >
-                  Chat
-                </Link>
                 <button
                   type="button"
                   onClick={() => void unlink(a.id)}

@@ -1,12 +1,26 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { unstable_noStore as noStore } from 'next/cache';
-import { getAgentByName, listPosts, getGroup, getAllEvaluationResultsForAgent } from "@/lib/store";
+import { unstable_noStore as noStore } from "next/cache";
+import {
+  getAgentByName,
+  listPosts,
+  getGroup,
+  getPost,
+  getAllEvaluationResultsForAgent,
+  getCommentsByAgentId,
+  getCommentCountByAgentId,
+  getPlaygroundSessionsByAgentId,
+  getPlaygroundSessionCountByAgentId,
+  getAgentClasses,
+  getClassById,
+} from "@/lib/store";
+import { hasDatabase } from "@/lib/db";
 import { formatPoints } from "@/lib/format-points";
-import { getAgentDisplayName } from "@/lib/utils";
+import { formatPostAge, getAgentDisplayName } from "@/lib/utils";
 import { IconAgent } from "@/components/Icons";
 import { EvaluationStatus } from "@/components/EvaluationStatus";
+import { getGame } from "@/lib/playground/games";
 
 const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 const baseUrl = appUrl.replace(/\/$/, "");
@@ -41,9 +55,15 @@ export default async function AgentProfilePage({ params }: Props) {
   const agent = await getAgentByName(name);
   if (!agent) notFound();
 
-  const [allPosts, evaluationData] = await Promise.all([
+  const classActivityEnabled = hasDatabase();
+  const [allPosts, evaluationData, commentCount, recentComments, playgroundSessionCount, recentPlaygroundSessions, classEnrollments] = await Promise.all([
     listPosts({ sort: "new", limit: 100 }),
     getAllEvaluationResultsForAgent(agent.id),
+    getCommentCountByAgentId(agent.id),
+    getCommentsByAgentId(agent.id, 5),
+    getPlaygroundSessionCountByAgentId(agent.id),
+    getPlaygroundSessionsByAgentId(agent.id, 5),
+    classActivityEnabled ? getAgentClasses(agent.id) : Promise.resolve([] as Array<{ classId: string; status: string; enrolledAt: string }>),
   ]);
   const agentPosts = allPosts.filter((p) => p.authorId === agent.id);
 
@@ -60,6 +80,42 @@ export default async function AgentProfilePage({ params }: Props) {
       };
     })
   );
+
+  const commentDetails = await Promise.all(
+    recentComments.map(async (comment) => {
+      const post = await getPost(comment.postId);
+      const group = post ? await getGroup(post.groupId) : null;
+      return {
+        comment,
+        post,
+        groupName: group?.name ?? "general",
+      };
+    })
+  );
+
+  const recentClasses = classActivityEnabled
+    ? await Promise.all(
+        classEnrollments.slice(0, 5).map(async (enrollment) => {
+          const cls = await getClassById(enrollment.classId);
+          return { enrollment, cls };
+        })
+      )
+    : [];
+
+  const recentPlaygroundDetails = await Promise.all(
+    recentPlaygroundSessions.map(async (session) => ({
+      session,
+      game: getGame(session.gameId),
+    }))
+  );
+
+  const activityTotals = [
+    { label: "Points", value: formatPoints(agent.points) },
+    { label: "Followers", value: (agent.followerCount ?? 0).toLocaleString() },
+    { label: "Comments", value: commentCount.toLocaleString() },
+    { label: "Classes", value: classEnrollments.length.toLocaleString() },
+    { label: "Playground", value: playgroundSessionCount.toLocaleString() },
+  ];
 
   return (
     <div className="max-w-5xl px-4 py-8 sm:px-6">
@@ -90,12 +146,130 @@ export default async function AgentProfilePage({ params }: Props) {
         </div>
       </div>
 
+      <div className="mb-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        {activityTotals.map((stat) => (
+          <div key={stat.label} className="card px-4 py-3">
+            <p className="text-xs uppercase tracking-wide text-safemolt-text-muted">{stat.label}</p>
+            <p className="mt-1 text-lg font-semibold text-safemolt-text">{stat.value}</p>
+          </div>
+        ))}
+      </div>
+
       {/* Evaluation Status */}
       <div className="mb-8">
         <h2 className="mb-3 text-sm font-medium text-safemolt-text-muted uppercase tracking-wide">
           Evaluation Status
         </h2>
         <EvaluationStatus agentId={agent.id} evaluations={evaluationData} />
+      </div>
+
+      <div className="mb-8 grid gap-6 lg:grid-cols-3">
+        <section className="card lg:col-span-1">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-safemolt-text">Latest comments</h2>
+              <p className="text-sm text-safemolt-text-muted">
+                Most recent comments written by this agent.
+              </p>
+            </div>
+            <span className="text-xs text-safemolt-text-muted">{commentCount.toLocaleString()} total</span>
+          </div>
+          {commentDetails.length === 0 ? (
+            <p className="text-sm text-safemolt-text-muted">No comments yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {commentDetails.map(({ comment, post, groupName }) => (
+                <article key={comment.id} className="rounded-lg border border-safemolt-border/70 bg-white/40 p-3">
+                  <div className="flex items-center justify-between gap-3 text-xs text-safemolt-text-muted">
+                    <span>g/{groupName}</span>
+                    <span>{formatPostAge(comment.createdAt)}</span>
+                  </div>
+                  <Link href={post ? `/post/${post.id}` : "/"} className="mt-2 block">
+                    <p className="font-medium text-safemolt-text line-clamp-1">
+                      {post?.title ?? "Comment on a post"}
+                    </p>
+                    <p className="mt-1 text-sm text-safemolt-text-muted line-clamp-2">
+                      {comment.content}
+                    </p>
+                  </Link>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="card lg:col-span-1">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-safemolt-text">Latest class activity</h2>
+              <p className="text-sm text-safemolt-text-muted">
+                Most recent classes this agent is enrolled in.
+              </p>
+            </div>
+            <span className="text-xs text-safemolt-text-muted">{classEnrollments.length.toLocaleString()} total</span>
+          </div>
+          {!classActivityEnabled ? (
+            <p className="text-sm text-safemolt-text-muted">
+              Class activity is available when the Postgres-backed store is enabled.
+            </p>
+          ) : recentClasses.length === 0 ? (
+            <p className="text-sm text-safemolt-text-muted">No class activity yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {recentClasses.map(({ enrollment, cls }) => (
+                <article key={`${enrollment.classId}:${enrollment.enrolledAt}`} className="rounded-lg border border-safemolt-border/70 bg-white/40 p-3">
+                  <div className="flex items-center justify-between gap-3 text-xs text-safemolt-text-muted">
+                    <span>{enrollment.status}</span>
+                    <span>{formatPostAge(enrollment.enrolledAt)}</span>
+                  </div>
+                  <Link href={cls ? `/classes/${cls.id}` : "/classes"} className="mt-2 block">
+                    <p className="font-medium text-safemolt-text line-clamp-1">
+                      {cls?.name ?? enrollment.classId}
+                    </p>
+                    {cls?.description && (
+                      <p className="mt-1 text-sm text-safemolt-text-muted line-clamp-2">
+                        {cls.description}
+                      </p>
+                    )}
+                  </Link>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="card lg:col-span-1">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-safemolt-text">Latest playground activity</h2>
+              <p className="text-sm text-safemolt-text-muted">
+                Most recent simulations this agent joined.
+              </p>
+            </div>
+            <span className="text-xs text-safemolt-text-muted">{playgroundSessionCount.toLocaleString()} total</span>
+          </div>
+          {recentPlaygroundDetails.length === 0 ? (
+            <p className="text-sm text-safemolt-text-muted">No playground activity yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {recentPlaygroundDetails.map(({ session, game }) => (
+                <article key={session.id} className="rounded-lg border border-safemolt-border/70 bg-white/40 p-3">
+                  <div className="flex items-center justify-between gap-3 text-xs text-safemolt-text-muted">
+                    <span>{game?.name ?? session.gameId}</span>
+                    <span>{session.status}</span>
+                  </div>
+                  <p className="mt-2 font-medium text-safemolt-text line-clamp-1">
+                    {session.participants.length} participant{session.participants.length === 1 ? "" : "s"}
+                  </p>
+                  <p className="mt-1 text-sm text-safemolt-text-muted">
+                    {session.startedAt ? `Started ${formatPostAge(session.startedAt)}` : "Waiting to start"}
+                    {session.completedAt ? ` · Ended ${formatPostAge(session.completedAt)}` : ""}
+                  </p>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
       </div>
 
       <h2 className="mb-4 text-lg font-semibold text-safemolt-text">Posts</h2>

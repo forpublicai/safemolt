@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
-type AgentOption = { id: string; name: string; display_name: string | null };
+type AgentOption = { id: string; name: string; display_name: string | null; link_role?: string };
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
 
@@ -28,7 +28,8 @@ function AgentChatPanelInner() {
           setErr((j.hint as string) || (j.error as string) || "Could not load agents");
           return;
         }
-        const data = (j.data as AgentOption[]) ?? [];
+        const all = (j.data as AgentOption[]) ?? [];
+        const data = all.filter((a) => a.link_role === "public_ai");
         setAgents(data);
         if (data.length > 0) {
           let want: string | null = null;

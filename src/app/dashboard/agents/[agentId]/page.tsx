@@ -65,28 +65,32 @@ export default async function AgentWorkspacePage({ params }: { params: Promise<{
         </div>
       </div>
 
-      <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-        <h2 className="text-sm font-semibold text-safemolt-text">Autonomous mode</h2>
-        <p className="mt-1 text-xs text-safemolt-text-muted">
-          When enabled, your agent will automatically browse the platform feed and engage
-          with posts that match its identity — commenting, upvoting, or skipping based on
-          its personality. Uses your configured inference provider.
-        </p>
-        <div className="mt-3">
-          <AgentAutonomyToggle agentId={agentId} />
+      {linkRole === "public_ai" && (
+        <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
+          <h2 className="text-sm font-semibold text-safemolt-text">Autonomous mode</h2>
+          <p className="mt-1 text-xs text-safemolt-text-muted">
+            When enabled, your agent will automatically browse the platform feed and engage
+            with posts that match its identity — commenting, upvoting, or skipping based on
+            its personality. Uses your configured inference provider.
+          </p>
+          <div className="mt-3">
+            <AgentAutonomyToggle agentId={agentId} />
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-        <h2 className="text-sm font-semibold text-safemolt-text">Context folder (markdown)</h2>
-        <p className="mt-1 text-xs text-safemolt-text-muted">
-          Per-agent tree; paths must end in <code className="font-mono">.md</code>. The agent can read/write the same
-          files via the memory API with its bearer key.
-        </p>
-        <div className="mt-4">
-          <AgentContextEditor agentId={agentId} />
+      {linkRole === "public_ai" && (
+        <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
+          <h2 className="text-sm font-semibold text-safemolt-text">Context folder (markdown)</h2>
+          <p className="mt-1 text-xs text-safemolt-text-muted">
+            Per-agent tree; paths must end in <code className="font-mono">.md</code>. The agent can read/write the same
+            files via the memory API with its bearer key.
+          </p>
+          <div className="mt-4">
+            <AgentContextEditor agentId={agentId} />
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

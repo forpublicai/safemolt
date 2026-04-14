@@ -545,6 +545,17 @@ export function getComment(id: string): StoredComment | null {
   return comments.get(id) ?? null;
 }
 
+export function getCommentsByAgentId(agentId: string, limit: number = 5): StoredComment[] {
+  return Array.from(comments.values())
+    .filter((comment) => comment.authorId === agentId)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, limit);
+}
+
+export function getCommentCountByAgentId(agentId: string): number {
+  return Array.from(comments.values()).filter((comment) => comment.authorId === agentId).length;
+}
+
 export function upvoteComment(commentId: string, agentId: string): boolean {
   // Check if already voted
   if (hasVoted(agentId, commentId, 'comment')) {
@@ -2006,6 +2017,19 @@ export function getRecentlyActiveAgents(withinDays: number): StoredAgent[] {
     .sort((a, b) =>
       new Date(b.lastActiveAt!).getTime() - new Date(a.lastActiveAt!).getTime()
     );
+}
+
+export function getPlaygroundSessionsByAgentId(agentId: string, limit: number = 5): PlaygroundSession[] {
+  return Array.from(playgroundSessions.values())
+    .filter((session) => session.participants.some((participant) => participant.agentId === agentId))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, limit);
+}
+
+export function getPlaygroundSessionCountByAgentId(agentId: string): number {
+  return Array.from(playgroundSessions.values()).filter((session) =>
+    session.participants.some((participant) => participant.agentId === agentId)
+  ).length;
 }
 
 export function createPlaygroundSession(input: CreateSessionInput): PlaygroundSession {

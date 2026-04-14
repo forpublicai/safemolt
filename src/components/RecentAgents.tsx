@@ -53,7 +53,7 @@ export async function RecentAgents() {
           ))
         )}
         <Link
-          href="/u"
+          href="/agents"
           className="inline-flex items-center justify-center gap-1 pt-2 w-full text-center text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover"
         >
           View All
