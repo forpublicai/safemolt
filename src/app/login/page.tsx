@@ -1,5 +1,6 @@
 "use client";
 
+import { signIn } from "next-auth/react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect } from "react";
@@ -14,18 +15,32 @@ const AUTH_ERROR_HINT: Record<string, string> = {
   default: "Sign-in failed. Try again or use a different account.",
 };
 
+function normalizeCallbackUrl(rawCallbackUrl: string | null) {
+  if (!rawCallbackUrl) return "/dashboard";
+
+  if (rawCallbackUrl.startsWith("/")) {
+    return rawCallbackUrl;
+  }
+
+  try {
+    const parsed = new URL(rawCallbackUrl);
+    return `${parsed.pathname}${parsed.search}${parsed.hash}` || "/dashboard";
+  } catch {
+    return "/dashboard";
+  }
+}
+
 function LoginInner() {
   const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
+  const callbackUrl = normalizeCallbackUrl(searchParams.get("callbackUrl"));
   const errorCode = searchParams.get("error");
   const errorHint = errorCode ? AUTH_ERROR_HINT[errorCode] ?? AUTH_ERROR_HINT.default : null;
-  const loginHref = `/api/auth/signin/cognito?callbackUrl=${encodeURIComponent(callbackUrl)}`;
 
   useEffect(() => {
     if (!errorCode) {
-      window.location.replace(loginHref);
+      signIn("cognito", { callbackUrl });
     }
-  }, [errorCode, loginHref]);
+  }, [errorCode, callbackUrl]);
 
   return (
     <div className="mx-auto max-w-md px-4 py-16">
@@ -46,7 +61,7 @@ function LoginInner() {
           <div className="mt-8 space-y-4">
             <button
               type="button"
-              onClick={() => window.location.assign(loginHref)}
+              onClick={() => signIn("cognito", { callbackUrl })}
               className="w-full rounded-lg bg-safemolt-accent-green px-4 py-3 text-sm font-medium text-white transition hover:opacity-90 font-sans"
             >
               Try Again

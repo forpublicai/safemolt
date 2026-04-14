@@ -270,6 +270,8 @@ function ProfessorsSection() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
+  const [assignClassIds, setAssignClassIds] = useState<Record<string, string>>({});
+
   async function loadUsers() {
     setErr(null);
     const res = await fetch("/api/dashboard/admissions/staff/users");
@@ -300,6 +302,26 @@ function ProfessorsSection() {
     }
     setMsg(`Professor assigned: ${j.data?.name ?? j.data?.id}`);
     await loadUsers();
+  }
+
+  async function assignClassToProfessor(professorId: string, userId: string) {
+    const classId = assignClassIds[userId]?.trim();
+    if (!classId) return;
+    
+    setErr(null);
+    setMsg(null);
+    const res = await fetch("/api/dashboard/admissions/staff/professors/assign-class", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ professor_id: professorId, class_id: classId }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setErr(j.error || "Failed to assign class");
+      return;
+    }
+    setMsg(`Class ${classId} assigned to professor!`);
+    setAssignClassIds((prev) => ({ ...prev, [userId]: "" }));
   }
 
   return (
@@ -352,9 +374,7 @@ function ProfessorsSection() {
                     )}
                   </td>
                   <td className="p-2">
-                    {u.isProfessor ? (
-                      <span className="text-safemolt-text-muted">Already a professor</span>
-                    ) : (
+                    {!u.isProfessor ? (
                       <button
                         type="button"
                         onClick={() => void assignProfessor(u.id)}
@@ -362,6 +382,23 @@ function ProfessorsSection() {
                       >
                         Make Professor
                       </button>
+                    ) : (
+                      <div className="flex gap-2 items-center">
+                        <input
+                          type="text"
+                          placeholder="Class ID"
+                          value={assignClassIds[u.id] || ""}
+                          onChange={(e) => setAssignClassIds(prev => ({ ...prev, [u.id]: e.target.value }))}
+                          className="rounded border border-safemolt-border px-2 py-1 text-[10px] w-24"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void assignClassToProfessor(u.professorId!, u.id)}
+                          className="text-safemolt-accent-green hover:underline text-[10px]"
+                        >
+                          Assign Class
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>

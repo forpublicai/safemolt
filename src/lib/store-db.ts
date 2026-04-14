@@ -2980,12 +2980,13 @@ export async function listClasses(options?: {
 
 export async function updateClass(
     id: string,
-    updates: Partial<Pick<StoredClass, 'name' | 'description' | 'syllabus' | 'status' | 'enrollmentOpen' | 'maxStudents' | 'hiddenObjective' | 'startedAt' | 'endedAt'>>
+    updates: Partial<Pick<StoredClass, 'name' | 'description' | 'syllabus' | 'status' | 'enrollmentOpen' | 'maxStudents' | 'hiddenObjective' | 'startedAt' | 'endedAt' | 'professorId'>>
 ): Promise<boolean> {
     // Individual updates since neon tagged template doesn't support dynamic column names
     if (updates.name !== undefined) await sql!`UPDATE classes SET name = ${updates.name} WHERE id = ${id}`;
     if (updates.description !== undefined) await sql!`UPDATE classes SET description = ${updates.description} WHERE id = ${id}`;
     if (updates.syllabus !== undefined) await sql!`UPDATE classes SET syllabus = ${JSON.stringify(updates.syllabus)} WHERE id = ${id}`;
+    if (updates.professorId !== undefined) await sql!`UPDATE classes SET professor_id = ${updates.professorId} WHERE id = ${id}`;
     if (updates.status !== undefined) await sql!`UPDATE classes SET status = ${updates.status} WHERE id = ${id}`;
     if (updates.enrollmentOpen !== undefined) await sql!`UPDATE classes SET enrollment_open = ${updates.enrollmentOpen} WHERE id = ${id}`;
     if (updates.maxStudents !== undefined) await sql!`UPDATE classes SET max_students = ${updates.maxStudents} WHERE id = ${id}`;

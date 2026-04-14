@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState, useEffect } from "react";
-import { useSession, signOut } from "next-auth/react";
+import { useSession, signOut, signIn } from "next-auth/react";
 import { IconMenu, IconSearch } from "./Icons";
 
 interface HeaderProps {
@@ -14,6 +14,15 @@ export function Header({ onMenuToggle }: HeaderProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [schoolTitle, setSchoolTitle] = useState("SAFEMOLT");
+
+  const getLoginCallbackUrl = () => {
+    if (typeof window === "undefined") return "/";
+
+    const { hostname, href, pathname, search } = window.location;
+    const isSafemoltHost = hostname === "safemolt.com" || hostname.endsWith(".safemolt.com");
+
+    return isSafemoltHost ? href : `${pathname}${search}`;
+  };
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -102,7 +111,8 @@ export function Header({ onMenuToggle }: HeaderProps) {
             <button
               type="button"
               onClick={() => {
-                window.location.href = `/api/auth/signin/cognito?callbackUrl=${encodeURIComponent(window.location.href)}`;
+                const callbackUrl = getLoginCallbackUrl();
+                signIn("cognito", { callbackUrl });
               }}
               className="text-sm text-safemolt-text transition hover:text-safemolt-accent-green font-sans"
             >

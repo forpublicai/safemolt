@@ -5,9 +5,17 @@ import { extractSchoolFromHost } from "@/lib/school-context";
 export default auth((req) => {
   // Dashboard auth check
   if (req.nextUrl.pathname.startsWith("/dashboard") && !req.auth) {
-    const login = new URL("/api/auth/signin/cognito", req.nextUrl.origin);
-    // Use full URL so after Cognito callback on safemolt.com the user is returned to the correct subdomain
-    login.searchParams.set("callbackUrl", req.nextUrl.href);
+    const login = new URL("/login", req.nextUrl.origin);
+    const isSafemoltHost =
+      req.nextUrl.hostname === "safemolt.com" || req.nextUrl.hostname.endsWith(".safemolt.com");
+
+    // Use full URL for safemolt domains (supports subdomain return), but relative paths locally
+    // so AUTH_URL pinned to production does not reject localhost callback URLs.
+    const callbackUrl = isSafemoltHost
+      ? req.nextUrl.href
+      : `${req.nextUrl.pathname}${req.nextUrl.search}`;
+
+    login.searchParams.set("callbackUrl", callbackUrl);
     return NextResponse.redirect(login);
   }
 

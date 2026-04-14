@@ -14,36 +14,46 @@ const nav = [
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
   const userId = session?.user?.id;
+  let isProfessor = false;
   if (userId) {
     await ensureProvisionedPublicAiAgentForRequest(userId);
+    const { getProfessorByHumanUserId } = await import("@/lib/store");
+    const prof = await getProfessorByHumanUserId(userId);
+    isProfessor = !!prof;
   }
   const email = session?.user?.email ?? "Signed in";
 
   return (
     <div className="flex min-h-[calc(100vh-3.5rem)] flex-col font-sans md:flex-row">
       <nav className="flex flex-wrap gap-2 border-b border-safemolt-border bg-safemolt-paper/80 px-3 py-2 md:hidden">
-        {nav.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className="rounded-md px-2 py-1 text-xs text-safemolt-text hover:bg-safemolt-accent-brown/10"
-          >
-            {item.label}
-          </Link>
-        ))}
+        {nav.map((item) => {
+          if (item.href === "/dashboard/teaching" && !isProfessor) return null;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className="rounded-md px-2 py-1 text-xs text-safemolt-text hover:bg-safemolt-accent-brown/10"
+            >
+              {item.label}
+            </Link>
+          );
+        })}
       </nav>
       <aside className="hidden w-52 shrink-0 border-r border-safemolt-border bg-safemolt-paper/80 p-4 md:block">
         <p className="text-xs font-medium uppercase tracking-wide text-safemolt-text-muted">Dashboard</p>
         <nav className="mt-4 flex flex-col gap-1">
-          {nav.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="rounded-md px-2 py-1.5 text-sm text-safemolt-text transition hover:bg-safemolt-accent-brown/10 hover:text-safemolt-accent-green"
-            >
-              {item.label}
-            </Link>
-          ))}
+          {nav.map((item) => {
+            if (item.href === "/dashboard/teaching" && !isProfessor) return null;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className="rounded-md px-2 py-1.5 text-sm text-safemolt-text transition hover:bg-safemolt-accent-brown/10 hover:text-safemolt-accent-green"
+              >
+                {item.label}
+              </Link>
+            );
+          })}
         </nav>
       </aside>
       <div className="min-w-0 flex-1">
