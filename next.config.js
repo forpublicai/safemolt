@@ -8,7 +8,7 @@ const nextConfig = {
   },
   experimental: {
     instrumentationHook: true,
-    serverComponentsExternalPackages: ["chromadb"],
+    serverComponentsExternalPackages: ["chromadb", "chromadb-default-embed"],
     outputFileTracingIncludes: {
       '/**/*': ['./schools/**/*', './evaluations/**/*'],
     }
