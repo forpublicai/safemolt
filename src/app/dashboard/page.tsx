@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { getAdmissionsStatusForAgent } from "@/lib/admissions";
 import {
@@ -9,6 +8,7 @@ import {
 import { getSponsoredInferenceUsageToday, listLinkedAgentsForUser } from "@/lib/human-users";
 import { LinkAgentForm } from "@/components/dashboard/LinkAgentForm";
 import { MyAgentsList } from "@/components/dashboard/MyAgentsList";
+import { CreatePublicAgentCard } from "@/components/dashboard/CreatePublicAgentCard";
 import {
   summarizeAgentVectorMemoryForDashboard,
   vectorBackendId,
@@ -29,19 +29,8 @@ export default async function DashboardOverviewPage() {
   const userId = session?.user?.id;
 
   const linkedRaw = userId ? await listLinkedAgentsForUser(userId) : [];
-
-  // Redirect new users to onboarding if their provisioned agent hasn't completed setup
   const publicAiLink = linkedRaw.find((l) => l.linkRole === "public_ai");
-  if (publicAiLink) {
-    const meta = publicAiLink.agent.metadata as Record<string, unknown> | undefined;
-    if (meta?.onboarding_complete === false) {
-      // Pass ?new=1 so the onboarding page knows to show the setup loading screen first
-      const isNew = publicAiLink.agent.createdAt
-        ? Date.now() - new Date(publicAiLink.agent.createdAt).getTime() < 5 * 60 * 1000
-        : false;
-      redirect(isNew ? "/dashboard/onboarding?new=1" : "/dashboard/onboarding");
-    }
-  }
+  const hasPublicAi = Boolean(publicAiLink);
 
   const linked = [...linkedRaw].sort((a, b) => {
     if (a.linkRole === "public_ai" && b.linkRole !== "public_ai") return -1;
@@ -153,11 +142,13 @@ export default async function DashboardOverviewPage() {
         </div>
       </div>
 
+      {!hasPublicAi && <CreatePublicAgentCard />}
+
       <div>
         <h2 className="font-serif text-lg font-semibold text-safemolt-text">Your agents</h2>
         <p className="mt-1 text-sm text-safemolt-text-muted">
-          Each row shows admissions status and what is stored in vector memory (kinds + recent snippets). Your
-          integrated agent is created automatically — isolated memory per account.
+          Each row shows admissions status and what is stored in vector memory (kinds + recent snippets).
+          If you want one-click chat and hosted memory, create an optional integrated agent.
         </p>
         <p className="mt-2 text-xs text-safemolt-text-muted">
           <Link href="/dashboard/admissions" className="text-safemolt-accent-green hover:underline">

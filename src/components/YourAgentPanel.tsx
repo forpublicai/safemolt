@@ -74,16 +74,8 @@ export function YourAgentPanel() {
     );
   }
 
-  const email = session?.user?.email;
-
   return (
     <div className="dialog-box space-y-3 px-4 py-3">
-      {email && (
-        <p className="text-xs text-safemolt-text-muted font-sans">
-          Signed in as <span className="font-medium text-safemolt-text">{email}</span>
-        </p>
-      )}
-
       {loadError && (
         <p className="text-xs text-amber-900 font-sans" role="alert">
           {loadError}

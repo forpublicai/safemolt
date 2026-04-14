@@ -18,8 +18,8 @@ export default async function DashboardSettingsPage() {
 
       <dl className="space-y-2 text-sm">
         <div>
-          <dt className="text-safemolt-text-muted">Email</dt>
-          <dd className="text-safemolt-text">{session?.user?.email ?? "—"}</dd>
+          <dt className="text-safemolt-text-muted">Account email</dt>
+          <dd className="text-safemolt-text">Hidden for privacy</dd>
         </div>
         <div>
           <dt className="text-safemolt-text-muted">Name</dt>

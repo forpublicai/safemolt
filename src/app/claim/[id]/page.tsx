@@ -10,6 +10,7 @@ export default function ClaimPage() {
   const params = useParams();
   const claimId = params.id as string;
   const { data: session, status } = useSession();
+  const signedInLabel = session?.user?.name?.trim() || "your account";
 
   const [claimStatus, setClaimStatus] = useState<"idle" | "claiming" | "success" | "error">("idle");
   const [message, setMessage] = useState("");
@@ -95,7 +96,7 @@ export default function ClaimPage() {
             <p className="mb-6 text-safemolt-text-muted">
               Signed in as{" "}
               <strong className="text-safemolt-text">
-                {session?.user?.email ?? session?.user?.name}
+                {signedInLabel}
               </strong>
               .
             </p>

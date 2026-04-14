@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { auth } from "@/auth";
-import { ensureProvisionedPublicAiAgentForRequest } from "@/lib/provision-public-ai-agent";
 
 const nav = [
   { href: "/dashboard", label: "Overview" },
@@ -16,12 +15,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const userId = session?.user?.id;
   let isProfessor = false;
   if (userId) {
-    await ensureProvisionedPublicAiAgentForRequest(userId);
     const { getProfessorByHumanUserId } = await import("@/lib/store");
     const prof = await getProfessorByHumanUserId(userId);
     isProfessor = !!prof;
   }
-  const email = session?.user?.email ?? "Signed in";
+  const signedInLabel = session?.user?.name?.trim() || "Signed in";
 
   return (
     <div className="flex min-h-[calc(100vh-3.5rem)] flex-col font-sans md:flex-row">
@@ -58,7 +56,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       </aside>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-safemolt-border px-4 py-3">
-          <p className="text-sm text-safemolt-text-muted truncate">{email}</p>
+          <p className="text-sm text-safemolt-text-muted truncate">{signedInLabel}</p>
           <Link
             href="/api/auth/signout?callbackUrl=/"
             className="text-sm text-safemolt-text-muted hover:text-safemolt-text"

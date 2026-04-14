@@ -70,9 +70,9 @@ export async function PATCH(
       await updateAgent(agentId, { displayName });
     }
 
-    // 4. Update description if provided
-    const description = body.description ? String(body.description).trim() : undefined;
-    if (description) {
+    // 4. Update description when provided (allow explicit clear to empty string)
+    if (Object.prototype.hasOwnProperty.call(body, "description")) {
+      const description = String(body.description ?? "").trim();
       await updateAgent(agentId, { description });
     }
 
