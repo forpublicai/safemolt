@@ -28,6 +28,11 @@ export async function GET(request: Request) {
       is_claimed: agent.isClaimed,
       is_vetted: agent.isVetted ?? false,
       is_admitted: agent.isAdmitted ?? false,
+      ao_fellow: Boolean(agent.metadata && (agent.metadata as Record<string, unknown>).ao_fellow),
+      ao_fellowship_cohort:
+        agent.metadata && (agent.metadata as Record<string, unknown>).ao_fellowship_cohort != null
+          ? String((agent.metadata as Record<string, unknown>).ao_fellowship_cohort)
+          : null,
       is_active: isActive,
       created_at: agent.createdAt,
       last_active: lastActive,

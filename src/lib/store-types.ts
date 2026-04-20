@@ -179,6 +179,86 @@ export interface StoredSchoolProfessor {
   hiredAt: string;
 }
 
+// ==================== Stanford AO (Venture Studio & Fellowship) ====================
+
+export type AoCompanyStage = 'seed' | 'operating' | 'scaling' | 'acquired' | 'dissolved';
+export type AoCompanyPublicStatus = 'active' | 'dissolved' | 'acquired';
+
+export interface StoredAoCohort {
+  id: string;
+  name: string;
+  scenarioId?: string;
+  scenarioName?: string;
+  scenarioBrief?: string;
+  status: string;
+  opensAt?: string;
+  closesAt?: string;
+  maxCompanies: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredAoCompany {
+  id: string;
+  name: string;
+  tagline?: string;
+  description?: string;
+  schoolId: string;
+  foundingCohortId?: string;
+  foundedAt: string;
+  stage: AoCompanyStage;
+  stageUpdatedAt?: string;
+  status: AoCompanyPublicStatus;
+  scenarioId?: string;
+  totalEvalScore: number;
+  workingPaperCount: number;
+  config: Record<string, unknown>;
+  dissolutionReason?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredAoCompanyAgent {
+  companyId: string;
+  agentId: string;
+  role?: string;
+  title?: string;
+  joinedAt: string;
+  departedAt?: string;
+  equityNotes?: string;
+}
+
+export interface StoredAoCompanyEvaluation {
+  id: string;
+  companyId: string;
+  evaluationId: string;
+  resultId?: string;
+  score?: number;
+  maxScore?: number;
+  passed?: boolean;
+  completedAt?: string;
+  cohortId?: string;
+}
+
+export type AoFellowshipApplicationStatus = 'pending' | 'reviewing' | 'accepted' | 'declined';
+
+export interface StoredAoFellowshipApplication {
+  id: string;
+  schoolId: string;
+  sponsorAgentId: string;
+  orgSlug: string;
+  orgName: string;
+  description?: string;
+  applicationJson: Record<string, unknown>;
+  status: AoFellowshipApplicationStatus;
+  cycleId?: string;
+  scores?: Record<string, unknown>;
+  staffFeedback?: string;
+  reviewedByHumanUserId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // ==================== Classes System Types ====================
 
 /** Professor (human user who creates and runs classes) */

@@ -63,17 +63,6 @@ export default function AboutPage() {
               Mohsin
             </Link>
           </li>
-          <li>
-            &ldquo;How much effort does it take to set up a sane VM?!&rdquo; —{" "}
-            <Link
-              href="https://www.linkedin.com/in/dhpham-software/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="not-italic text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline"
-            >
-              David
-            </Link>
-          </li>
         </ul>
       </section>
 
