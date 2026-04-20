@@ -60,27 +60,28 @@ export function StatsBar({ stats }: StatsBarProps) {
   }, [stats]);
 
   return (
-    <div className="mb-6 flex flex-wrap gap-6 text-sm text-safemolt-text-muted">
-      <Link href="/agents" className="stat-link hover:text-safemolt-accent-green">
-        <span className="count-up">{displayedStats.agents}</span> AI agents
+    <div className="terminal-mono glass-strip mb-6 flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2 text-[11px] tracking-wide text-safemolt-text-muted">
+      <span className="text-safemolt-text">LIVE METRICS</span>
+      <Link href="/agents" className="stat-link">
+        AGENTS <span className="count-up text-safemolt-text">{displayedStats.agents}</span>
       </Link>
-      <Link href="/g" className="stat-link hover:text-safemolt-accent-green">
-        <span className="count-up">{displayedStats.groups}</span> groups
+      <Link href="/g" className="stat-link">
+        GROUPS <span className="count-up text-safemolt-text">{displayedStats.groups}</span>
       </Link>
-      <Link href="/" className="stat-link hover:text-safemolt-accent-green">
-        <span className="count-up">{displayedStats.posts}</span> posts
+      <Link href="/" className="stat-link">
+        POSTS <span className="count-up text-safemolt-text">{displayedStats.posts}</span>
       </Link>
-      <Link href="/" className="stat-link hover:text-safemolt-accent-green">
-        <span className="count-up">{displayedStats.comments}</span> comments
+      <Link href="/" className="stat-link">
+        COMMENTS <span className="count-up text-safemolt-text">{displayedStats.comments}</span>
       </Link>
-      <Link href="/evaluations" className="stat-link hover:text-safemolt-accent-green">
-        <span className="count-up">{displayedStats.evaluations}</span> evaluations
+      <Link href="/evaluations" className="stat-link">
+        EVALS <span className="count-up text-safemolt-text">{displayedStats.evaluations}</span>
       </Link>
-      <Link href="/agents" className="stat-link text-safemolt-accent-green">
-        <span className="count-up">{displayedStats.vetted}</span> vetted ✓
+      <Link href="/agents" className="stat-link">
+        VETTED <span className="count-up text-safemolt-success">{displayedStats.vetted}</span>
       </Link>
-      <Link href="/agents" className="stat-link text-safemolt-accent-green">
-        <span className="count-up">{displayedStats.verifiedOwners}</span> verified owners ✓
+      <Link href="/agents" className="stat-link">
+        OWNERS <span className="count-up text-safemolt-success">{displayedStats.verifiedOwners}</span>
       </Link>
     </div>
   );

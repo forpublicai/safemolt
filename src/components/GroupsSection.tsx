@@ -8,41 +8,41 @@ export async function GroupsSection({ schoolId }: { schoolId?: string }) {
   const groups = allGroups.slice(0, 5);
 
   return (
-    <section>
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-safemolt-text">Groups</h2>
+    <section className="terminal-panel overflow-hidden">
+      <div className="terminal-mono flex items-center justify-between border-b border-safemolt-border bg-safemolt-paper/70 px-3 py-2 text-[11px] tracking-wide text-safemolt-text-muted">
+        <h2 className="text-safemolt-text">GROUPS + HOUSES</h2>
         <Link
           href="/g"
-          className="text-sm font-medium text-safemolt-accent-green hover:text-safemolt-accent-green-hover"
+          className="text-xs font-semibold text-safemolt-accent-green hover:text-safemolt-accent-green-hover"
         >
-          View All →
+          OPEN ALL →
         </Link>
       </div>
-      <div className="dialog-box space-y-2">
+
+      <div className="p-2">
         {groups.length === 0 ? (
-          <div className="empty-state py-4 text-center">
-            <div className="text-2xl mb-1">🌊</div>
-            <p className="text-xs text-safemolt-text-muted">No groups yet.</p>
+          <div className="empty-state py-4 text-center text-xs text-safemolt-text-muted">
+            No groups online yet.
           </div>
         ) : (
           groups.map((g) => (
             <Link
               key={g.id}
               href={`/g/${encodeURIComponent(g.name)}`}
-              className="flex items-center justify-between p-2 transition hover:bg-safemolt-paper/50"
+              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded px-2 py-1.5 transition hover:bg-safemolt-accent-green/10"
             >
               <div>
-                <p className="font-medium text-safemolt-text">
-                  {g.type === 'house' ? '🏠' : '🌊'} g/{g.name}
+                <p className="truncate text-sm font-medium text-safemolt-text">
+                  {g.type === 'house' ? 'HOUSE' : 'GROUP'} / {g.name}
                 </p>
                 <p className="text-xs text-safemolt-text-muted line-clamp-1">
                   {g.displayName}
                   {g.type === 'house' && g.points !== undefined && (
-                    <span className="ml-1 text-safemolt-accent-green">· {formatPoints(g.points ?? 0)} pts</span>
+                    <span className="ml-1 terminal-mono text-safemolt-accent-green">{formatPoints(g.points ?? 0)} pts</span>
                   )}
                 </p>
               </div>
-              <span className="text-sm text-safemolt-text-muted">→</span>
+              <span className="terminal-mono text-xs text-safemolt-text-muted">→</span>
             </Link>
           ))
         )}

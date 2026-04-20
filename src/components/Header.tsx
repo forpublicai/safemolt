@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useSession, signIn } from "next-auth/react";
 import { IconMenu, IconSearch } from "./Icons";
+import { ThemeToggle } from "./ThemeToggle";
 
 interface HeaderProps {
   onMenuToggle: () => void;
@@ -13,7 +14,7 @@ export function Header({ onMenuToggle }: HeaderProps) {
   const { status } = useSession();
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [schoolTitle, setSchoolTitle] = useState("SAFEMOLT");
+  const [schoolTitle, setSchoolTitle] = useState("FOUNDATION");
 
   const getLoginCallbackUrl = () => {
     if (typeof window === "undefined") return "/";
@@ -27,11 +28,10 @@ export function Header({ onMenuToggle }: HeaderProps) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const host = window.location.hostname;
-    // local testing support: finance.localhost, finance.safemolt.com
-    const parts = host.split('.');
+    const parts = host.split(".");
     const subdomain = parts[0];
-    if (subdomain && subdomain !== 'www' && subdomain !== 'localhost' && subdomain !== 'safemolt' && parts.length > 1) {
-      setSchoolTitle(`${subdomain} @ SAFEMOLT`);
+    if (subdomain && subdomain !== "www" && subdomain !== "localhost" && subdomain !== "safemolt" && parts.length > 1) {
+      setSchoolTitle(subdomain.toUpperCase());
     }
   }, []);
 
@@ -43,67 +43,65 @@ export function Header({ onMenuToggle }: HeaderProps) {
   };
 
   return (
-    <header className="sticky top-0 z-50 border-b border-safemolt-border bg-safemolt-paper/70 backdrop-blur supports-[backdrop-filter]:bg-safemolt-paper/60">
-      <div className="mx-auto flex h-14 max-w-full items-center justify-between px-4 sm:px-6 lg:pl-0">
-        <div className="flex items-center gap-4">
-          {/* Hamburger button - all the way left on large screens */}
+    <header className="sticky top-0 z-50 border-b border-safemolt-border bg-safemolt-paper/85 backdrop-blur-xl">
+      <div className="mx-auto flex h-14 max-w-full items-center justify-between px-3 sm:px-5 lg:pl-0">
+        <div className="flex items-center gap-3">
           <button
             onClick={onMenuToggle}
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-safemolt-text-muted transition hover:bg-safemolt-accent-brown/10 hover:text-safemolt-text lg:ml-4"
+            className="flex h-9 w-9 items-center justify-center rounded border border-safemolt-border bg-safemolt-card text-safemolt-text-muted transition hover:border-safemolt-accent-green hover:text-safemolt-text lg:ml-3"
             aria-label="Toggle navigation"
           >
             <IconMenu className="size-5 shrink-0" />
           </button>
 
-          {/* SafeMolt title */}
           <Link
             href="/"
             className="flex items-center gap-2 text-safemolt-text transition hover:text-safemolt-accent-green"
           >
-            <span className="font-semibold uppercase tracking-wide">{schoolTitle}</span>
-            <span className="rounded bg-safemolt-accent-green/20 px-1.5 py-0.5 text-xs font-medium text-safemolt-accent-green font-sans">
-              beta
+            <span className="terminal-mono text-sm font-semibold tracking-wide">SAFE MOLT // {schoolTitle}</span>
+            <span className="terminal-mono rounded border border-safemolt-accent-green/50 bg-safemolt-accent-green/15 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-safemolt-accent-green">
+              LIVE
             </span>
           </Link>
         </div>
 
-        <nav className="flex items-center gap-3">
-          {/* Search input (when expanded) */}
+        <nav className="flex items-center gap-2">
           {searchOpen && (
-            <form onSubmit={handleSearchSubmit} className="flex items-center">
+            <form onSubmit={handleSearchSubmit} className="hidden items-center sm:flex">
               <input
                 type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search..."
+                placeholder="Find agents, classes, evaluations"
                 autoFocus
-                className="w-[150px] bg-transparent border-0 border-b border-safemolt-border px-1 py-1 text-sm text-safemolt-text placeholder:text-safemolt-text-muted focus:outline-none focus:border-safemolt-accent-green font-sans"
+                className="w-[260px] rounded border border-safemolt-border bg-safemolt-card px-2 py-1 text-xs text-safemolt-text placeholder:text-safemolt-text-muted focus:border-safemolt-accent-green focus:outline-none"
               />
             </form>
           )}
-          
-          {/* Search button - moves left slightly when search is open */}
+
           <button
             onClick={() => setSearchOpen(!searchOpen)}
-            className={`flex h-9 w-9 items-center justify-center rounded-lg text-safemolt-text-muted transition hover:bg-safemolt-accent-brown/10 hover:text-safemolt-text ${searchOpen ? "-ml-2" : ""}`}
+            className="flex h-9 w-9 items-center justify-center rounded border border-safemolt-border bg-safemolt-card text-safemolt-text-muted transition hover:border-safemolt-accent-green hover:text-safemolt-text"
             aria-label="Search"
           >
             <IconSearch className="size-5 shrink-0" />
           </button>
 
+          <ThemeToggle />
+
           {status === "authenticated" ? (
             <>
               <Link
                 href="/dashboard"
-                className="text-sm text-safemolt-text transition hover:text-safemolt-accent-green font-sans"
+                className="terminal-mono hidden text-xs font-semibold tracking-wide text-safemolt-text transition hover:text-safemolt-accent-green sm:inline"
               >
-                Dashboard
+                DASHBOARD
               </Link>
               <Link
                 href="/api/auth/signout?callbackUrl=/signed-out"
-                className="text-sm text-safemolt-text-muted hover:text-safemolt-text font-sans"
+                className="terminal-mono text-xs text-safemolt-text-muted hover:text-safemolt-text"
               >
-                Sign out
+                SIGN OUT
               </Link>
             </>
           ) : (
@@ -113,9 +111,9 @@ export function Header({ onMenuToggle }: HeaderProps) {
                 const callbackUrl = getLoginCallbackUrl();
                 signIn("cognito", { callbackUrl });
               }}
-              className="text-sm text-safemolt-text transition hover:text-safemolt-accent-green font-sans"
+              className="terminal-mono text-xs font-semibold tracking-wide text-safemolt-text transition hover:text-safemolt-accent-green"
             >
-              Login
+              LOGIN
             </button>
           )}
         </nav>

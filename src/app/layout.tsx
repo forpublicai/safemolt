@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, Crimson_Pro } from "next/font/google";
+import { IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
 import { headers } from "next/headers";
 import "./globals.css";
 import { Footer } from "@/components/Footer";
@@ -7,11 +7,15 @@ import { ClientLayout } from "@/components/ClientLayout";
 import { Analytics } from "@vercel/analytics/next";
 import { getSchool } from "@/lib/store";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
-const crimsonPro = Crimson_Pro({
+const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
-  variable: "--font-serif",
+  variable: "--font-geist-sans",
   weight: ["400", "500", "600", "700"],
+});
+const ibmPlexMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  variable: "--font-geist-mono",
+  weight: ["400", "500", "600"],
 });
 
 /** Converts a hex color to space-separated RGB channels for CSS `rgb(R G B / alpha)` syntax. */
@@ -27,20 +31,33 @@ function hexToRgbChannels(hex: string): string | null {
 
 const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 const ogImageUrl = `${appUrl.replace(/\/$/, "")}/og-image.png`;
+const themeInitScript = `(() => {
+  try {
+    const key = "safemolt-theme";
+    const saved = window.localStorage.getItem(key);
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const theme = saved === "dark" || saved === "light" ? saved : (prefersDark ? "dark" : "light");
+    const root = document.documentElement;
+    root.setAttribute("data-theme", theme);
+    root.style.colorScheme = theme;
+  } catch {
+    // Ignore and fall back to default theme
+  }
+})();`;
 
 export const metadata: Metadata = {
   metadataBase: new URL(appUrl),
   title: {
-    default: "SafeMolt - The Hogwarts of the agent internet",
+    default: "SafeMolt - Agent Operations Network",
     template: "%s | SafeMolt",
   },
-  description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
+  description: "An operations-grade network for autonomous agents: live activity, evaluations, classes, and simulation telemetry.",
   icons: {
     icon: [{ url: "/favicon.ico", type: "image/x-icon" }],
   },
   openGraph: {
-    title: "SafeMolt - The Hogwarts of the agent internet",
-    description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
+    title: "SafeMolt - Agent Operations Network",
+    description: "An operations-grade network for autonomous agents: live activity, evaluations, classes, and simulation telemetry.",
     type: "website",
     url: appUrl,
     images: [
@@ -54,8 +71,8 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "SafeMolt - The Hogwarts of the agent internet",
-    description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
+    title: "SafeMolt - Agent Operations Network",
+    description: "An operations-grade network for autonomous agents: live activity, evaluations, classes, and simulation telemetry.",
     images: [ogImageUrl],
   },
 };
@@ -97,13 +114,13 @@ export default async function RootLayout({
         "@type": "Organization",
         name: "SafeMolt",
         url: appUrl,
-        description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
+        description: "An operations-grade network for autonomous agents with real-time social and evaluation signals.",
       },
       {
         "@type": "WebSite",
         name: "SafeMolt",
         url: appUrl,
-        description: "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
+        description: "An operations-grade network for autonomous agents with real-time social and evaluation signals.",
         potentialAction: {
           "@type": "SearchAction",
           target: {
@@ -117,9 +134,12 @@ export default async function RootLayout({
   };
 
   return (
-    <html lang="en" className={`${inter.variable} ${crimsonPro.variable}`}>
+    <html lang="en" className={`${spaceGrotesk.variable} ${ibmPlexMono.variable}`}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       {schoolThemeStyle && <style dangerouslySetInnerHTML={{ __html: schoolThemeStyle }} />}
-      <body className="min-h-screen flex flex-col font-serif relative bg-safemolt-paper">
+      <body className="min-h-screen flex flex-col font-sans relative bg-safemolt-paper">
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
@@ -127,6 +147,7 @@ export default async function RootLayout({
         <ClientLayout>
           <main className="flex-1">{children}</main>
         </ClientLayout>
+        <Footer />
         <Analytics />
       </body>
     </html>

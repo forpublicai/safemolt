@@ -30,15 +30,15 @@ const config: Config = {
       },
       fontFamily: {
         sans: ["var(--font-geist-sans)", "system-ui", "sans-serif"],
-        serif: ["var(--font-serif)", "Crimson Pro", "Georgia", "serif"],
+        serif: ["var(--font-geist-sans)", "system-ui", "sans-serif"],
         mono: ["var(--font-geist-mono)", "monospace"],
       },
       backgroundImage: {
-        "watercolor-brown": "linear-gradient(to bottom right, #f8f6f2, #f5f2ed, #f0ede6)",
-        "watercolor-green": "linear-gradient(to bottom right, #f5f2ed, #f0ede6, #e8e6df)",
+        "watercolor-brown": "linear-gradient(135deg, #d9e6fb, #eff5ff, #f8fbff)",
+        "watercolor-green": "linear-gradient(135deg, #c2ecf8, #d8f4fb, #eef9ff)",
       },
       boxShadow: {
-        "watercolor": "0 2px 8px rgba(139, 115, 85, 0.1), 0 1px 3px rgba(139, 115, 85, 0.05)",
+        "watercolor": "0 12px 35px rgba(46, 84, 130, 0.15), 0 2px 10px rgba(46, 84, 130, 0.08)",
       },
       keyframes: {
         fadeIn: {

@@ -36,16 +36,24 @@ export async function PostsSection({ schoolId }: PostsSectionProps) {
   );
 
   return (
-    <section>
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-safemolt-text">Posts</h2>
+    <section className="terminal-panel overflow-hidden">
+      <div className="terminal-mono flex items-center justify-between border-b border-safemolt-border bg-safemolt-paper/70 px-3 py-2 text-[11px] tracking-wide text-safemolt-text-muted">
+        <h2 className="text-safemolt-text">NETWORK POSTS</h2>
+        <span>{posts.length} visible</span>
       </div>
-      <div className="space-y-0.5">
+
+      <div className="terminal-mono grid grid-cols-[52px_minmax(0,1fr)_110px_70px_54px] border-b border-safemolt-border/60 px-3 py-2 text-[10px] uppercase tracking-wide text-safemolt-text-muted">
+        <span>score</span>
+        <span>title</span>
+        <span>actor</span>
+        <span>age</span>
+        <span className="text-right">comm</span>
+      </div>
+
+      <div className="space-y-0">
         {posts.length === 0 ? (
-          <div className="empty-state dialog-box py-8 text-center">
-            <div className="text-4xl mb-2">📝</div>
-            <p className="text-sm text-safemolt-text-muted mb-1">No posts yet.</p>
-            <p className="text-xs text-safemolt-text-muted/80">Be the first to share something!</p>
+          <div className="empty-state px-4 py-8 text-center">
+            <div className="terminal-mono text-sm text-safemolt-text-muted">No post events available.</div>
           </div>
         ) : (
           posts.map((post) => {
@@ -56,47 +64,31 @@ export async function PostsSection({ schoolId }: PostsSectionProps) {
               <RevealOnScroll key={post.id}>
                 <Link
                   href={`/post/${post.id}`}
-                  className="post-row dialog-box flex items-center gap-1 py-1.5 transition hover:bg-safemolt-paper/50 block"
+                  className="post-row grid grid-cols-[52px_minmax(0,1fr)_110px_70px_54px] items-center gap-2 border-b border-safemolt-border/50 px-3 py-2 transition hover:bg-safemolt-accent-green/10"
                 >
-                {/* Upvote number (left) — column widths to content; ~10px gap to title */}
-                <div className="mr-2.5 shrink-0 text-left text-sm text-safemolt-text-muted tabular-nums">
-                  {post.upvotes}
-                </div>
+                  <div className="terminal-mono shrink-0 text-left text-xs text-safemolt-text-muted tabular-nums">
+                    {post.upvotes}
+                  </div>
 
-                {/* Title */}
-                <div className="flex-1 min-w-0 flex items-center gap-2">
-                  <h3 className="font-medium text-safemolt-text line-clamp-1 text-sm">
-                    {post.title}
-                  </h3>
-                  {isNew && (
-                    <span className="new-badge inline-flex items-center rounded-full bg-safemolt-success/20 px-1.5 py-0.5 text-[10px] font-medium text-safemolt-success whitespace-nowrap">
-                      NEW
+                  <div className="min-w-0 flex items-center gap-2">
+                    <h3 className="line-clamp-1 text-sm font-medium text-safemolt-text">{post.title}</h3>
+                    {isNew && (
+                      <span className="new-badge terminal-mono inline-flex items-center rounded border border-safemolt-success/40 bg-safemolt-success/15 px-1 py-0.5 text-[10px] text-safemolt-success whitespace-nowrap">
+                        NEW
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="truncate text-xs text-safemolt-text-muted">{post.authorName}</div>
+
+                  <div className="terminal-mono text-xs text-safemolt-text-muted">{formatPostAge(post.createdAt)}</div>
+
+                  <div className="shrink-0 text-right">
+                    <span className="terminal-mono comment-bubble inline-flex items-center justify-center rounded border border-safemolt-border bg-safemolt-paper px-1.5 py-0.5 text-[11px] text-safemolt-text">
+                      {post.commentCount}
                     </span>
-                  )}
-                </div>
-
-                {/* Bot name — extra right margin for space before age */}
-                <div className="mr-2 shrink-0 text-xs text-safemolt-text-muted whitespace-nowrap">
-                  {post.authorName}
-                </div>
-
-                {/* Age — space before comment bubble */}
-                <div className="mr-1.5 shrink-0 text-xs text-safemolt-text-muted whitespace-nowrap">
-                  {formatPostAge(post.createdAt)}
-                </div>
-
-                {/* Number of replies (right) — speech bubble */}
-                <div className="shrink-0 text-right">
-                  <span className="comment-bubble relative inline-flex items-center justify-center rounded-md bg-safemolt-text-muted/25 px-2 py-0.5 text-xs text-safemolt-text">
-                    {post.commentCount}
-                    {/* Speech bubble pointer */}
-                    <span
-                      className="absolute left-1/2 top-full -translate-x-1/2 border-[3px] border-transparent border-t-safemolt-text-muted/25"
-                      aria-hidden
-                    />
-                  </span>
-                </div>
-              </Link>
+                  </div>
+                </Link>
               </RevealOnScroll>
             );
           })

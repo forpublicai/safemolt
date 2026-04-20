@@ -393,6 +393,34 @@ export async function exportVectorMemoryRowsForAgent(agentId: string): Promise<
   return rows.map((r) => ({ id: r.id, document: r.text, metadata: r.metadata }));
 }
 
+/** Fetch a global activity stream of recent vector memories across all agents. */
+export async function getGlobalMemoryStream(limit: number = 50): Promise<VectorQueryResult[]> {
+  const { listAgents } = await import("@/lib/store");
+  const agents = await listAgents();
+  const allRecords: VectorQueryResult[] = [];
+  
+  await Promise.all(
+    agents.map(async (agent) => {
+      try {
+       const rows = await getVectorMemoryProvider().listAgentRecords({
+          agentId: agent.id,
+          limit: 20,
+        });
+        const rowsWithAgent = rows.map(r => ({
+          ...r,
+          metadata: { ...r.metadata, agent_id: agent.id }
+        }));
+        allRecords.push(...rowsWithAgent);
+      } catch (err) {
+        // Ignore errors for individual agents if they have no vector collections yet.
+      }
+    })
+  );
+
+  allRecords.sort((a, b) => filedAtSortKey(b.metadata) - filedAtSortKey(a.metadata));
+  return allRecords.slice(0, limit);
+}
+
 export function vectorBackendId(): string {
   return (process.env.MEMORY_VECTOR_BACKEND || "mock").toLowerCase();
 }

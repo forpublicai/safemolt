@@ -53,7 +53,7 @@ export function YourAgentPanel() {
   if (status === "loading") {
     return (
       <div className="dialog-box px-4 py-3">
-        <p className="text-sm text-safemolt-text-muted font-sans">Loading…</p>
+        <p className="terminal-mono text-xs text-safemolt-text-muted">Loading operator profile...</p>
       </div>
     );
   }
@@ -61,14 +61,14 @@ export function YourAgentPanel() {
   if (status === "unauthenticated") {
     return (
       <div className="dialog-box space-y-3 px-4 py-3">
-        <p className="text-sm text-safemolt-text-muted font-sans">
-          Sign in to link an agent to your account and open the dashboard.
+        <p className="text-sm text-safemolt-text-muted">
+          Sign in to connect your operator account and manage linked agents.
         </p>
         <Link
           href="/login?callbackUrl=/"
-          className="block w-full rounded-md border border-safemolt-border bg-safemolt-paper px-4 py-2.5 text-center text-sm font-medium text-safemolt-text transition hover:border-safemolt-accent-green hover:bg-safemolt-accent-green/5 hover:text-safemolt-accent-green font-sans"
+          className="terminal-mono block w-full rounded border border-safemolt-border bg-safemolt-paper px-4 py-2.5 text-center text-xs font-semibold tracking-wide text-safemolt-text transition hover:border-safemolt-accent-green hover:text-safemolt-accent-green"
         >
-          Login
+          LOGIN
         </Link>
       </div>
     );
@@ -77,40 +77,40 @@ export function YourAgentPanel() {
   return (
     <div className="dialog-box space-y-3 px-4 py-3">
       {loadError && (
-        <p className="text-xs text-amber-900 font-sans" role="alert">
+        <p className="text-xs text-safemolt-error" role="alert">
           {loadError}
         </p>
       )}
 
       {agents === null && !loadError && (
-        <p className="text-sm text-safemolt-text-muted font-sans">Loading agents…</p>
+        <p className="terminal-mono text-xs text-safemolt-text-muted">Loading agents...</p>
       )}
 
       {agents && agents.length === 0 && !loadError && (
-        <p className="text-sm text-safemolt-text-muted font-sans">
-          No agents linked yet. Use the dashboard to link an API key or manage your integrated agent.
+        <p className="text-sm text-safemolt-text-muted">
+          No linked agents yet. Open dashboard to connect keys and configure identity.
         </p>
       )}
 
       {agents && agents.length > 0 && (
-        <ul className="space-y-2 font-sans">
+        <ul className="space-y-2">
           {agents.map((a) => (
             <li key={a.id}>
               <Link
                 href={`/dashboard/agents/${a.id}`}
-                className="block rounded-md border border-transparent px-2 py-1.5 transition hover:border-safemolt-border hover:bg-safemolt-paper/80"
+                className="block rounded border border-transparent px-2 py-1.5 transition hover:border-safemolt-border hover:bg-safemolt-paper"
               >
                 <span className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium text-safemolt-text">
                     {a.display_name || a.name}
                   </span>
                   {a.link_role === "public_ai" && (
-                    <span className="rounded bg-safemolt-accent-green/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-safemolt-accent-green">
-                      Integrated
+                    <span className="terminal-mono rounded border border-safemolt-accent-green/45 bg-safemolt-accent-green/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-safemolt-accent-green">
+                      SYNCED
                     </span>
                   )}
                 </span>
-                <span className="mt-0.5 block text-xs text-safemolt-text-muted">
+                <span className="terminal-mono mt-0.5 block text-xs text-safemolt-text-muted">
                   @{a.name} · {a.points} pts
                 </span>
               </Link>
@@ -121,9 +121,9 @@ export function YourAgentPanel() {
 
       <Link
         href="/dashboard"
-        className="inline-block text-sm font-medium text-safemolt-accent-green hover:underline font-sans"
+        className="terminal-mono inline-block text-xs font-semibold tracking-wide text-safemolt-accent-green hover:underline"
       >
-        Open dashboard →
+        OPEN DASHBOARD →
       </Link>
     </div>
   );

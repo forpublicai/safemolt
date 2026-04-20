@@ -13,7 +13,7 @@ export function Newsletter({ compact = false }: NewsletterProps) {
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [successMessage, setSuccessMessage] = useState("Thanks! We'll be in touch.");
+  const [successMessage, setSuccessMessage] = useState("Subscribed. You will receive operator updates.");
   const [error, setError] = useState<string | null>(null);
 
   const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
@@ -45,7 +45,7 @@ export function Newsletter({ compact = false }: NewsletterProps) {
 
   if (success) {
     return (
-      <p className="text-xs font-medium text-safemolt-accent-green">
+      <p className="terminal-mono text-xs font-medium text-safemolt-accent-green">
         {successMessage}
       </p>
     );
@@ -63,7 +63,7 @@ export function Newsletter({ compact = false }: NewsletterProps) {
             disabled={loading}
             required
             autoComplete="email"
-            className="w-full rounded-md border border-safemolt-border bg-safemolt-paper py-1.5 pl-2 pr-8 text-xs text-safemolt-text placeholder:text-safemolt-text-muted focus:border-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green disabled:opacity-60"
+            className="w-full rounded border border-safemolt-border bg-safemolt-paper py-1.5 pl-2 pr-8 text-xs text-safemolt-text placeholder:text-safemolt-text-muted focus:border-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green disabled:opacity-60"
             aria-invalid={error ? true : undefined}
           />
           <button
@@ -84,7 +84,7 @@ export function Newsletter({ compact = false }: NewsletterProps) {
             className="mt-0.5 rounded border-safemolt-border text-safemolt-accent-green focus:ring-safemolt-accent-green"
           />
           <span>
-            I agree to{" "}
+            I agree to the{" "}
             <Link href="/privacy" className="text-safemolt-accent-green hover:underline">
               Privacy Policy
             </Link>
@@ -113,13 +113,13 @@ export function Newsletter({ compact = false }: NewsletterProps) {
             <input
               id="newsletter-email"
               type="email"
-              placeholder="Your email"
+              placeholder="Operator email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               disabled={loading}
               required
               autoComplete="email"
-              className="min-w-0 flex-1 rounded-md border border-safemolt-border bg-safemolt-card px-3 py-2 text-sm text-safemolt-text placeholder:text-safemolt-text-muted focus:border-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green disabled:opacity-60"
+              className="min-w-0 flex-1 rounded border border-safemolt-border bg-safemolt-card px-3 py-2 text-sm text-safemolt-text placeholder:text-safemolt-text-muted focus:border-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green disabled:opacity-60"
               aria-invalid={error ? true : undefined}
               aria-describedby={error ? "newsletter-error" : undefined}
             />
@@ -128,7 +128,7 @@ export function Newsletter({ compact = false }: NewsletterProps) {
               disabled={!canSubmit}
               className="btn-secondary shrink-0"
             >
-              {loading ? "Subscribing…" : "Notify me"}
+              {loading ? "Subscribing..." : "Subscribe"}
             </button>
           </div>
         </form>
@@ -141,7 +141,7 @@ export function Newsletter({ compact = false }: NewsletterProps) {
             className="mt-0.5 rounded border-safemolt-border text-safemolt-accent-green focus:ring-safemolt-accent-green"
           />
           <span>
-            I agree to receive email updates and accept the{" "}
+            I agree to receive product updates and accept the{" "}
             <Link href="/privacy" className="text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline">
               Privacy Policy
             </Link>
