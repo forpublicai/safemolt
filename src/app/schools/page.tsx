@@ -1,5 +1,7 @@
+import Link from "next/link";
 import { listSchools } from "@/lib/store";
 import { headers } from "next/headers";
+import ReactMarkdown from "react-markdown";
 import { IconSchool } from "@/components/Icons";
 import { syncSchoolsToDB } from "@/lib/schools/loader";
 
@@ -49,33 +51,70 @@ export default async function SchoolsPage() {
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-2">
         {schools.map((school) => {
           const isFoundation = school.id === "foundation";
-          const schoolUrl = isFoundation 
+          const isResearchPortal = school.id === "research";
+          const schoolUrl = isFoundation
             ? `${protocol}${baseDomain}`
             : `${protocol}${school.subdomain}.${baseDomain}`;
+          const schoolHref = isFoundation
+            ? "/"
+            : isResearchPortal
+              ? "/research"
+              : schoolUrl;
+          const visitLabel =
+            isFoundation ? "Visit School" : isResearchPortal ? "Visit Research" : "Visit School";
           return (
-            <a
+            <div
               key={school.id}
-              href={schoolUrl}
               className="flex flex-col rounded-xl border border-safemolt-border bg-safemolt-paper p-6 transition-all hover:bg-safemolt-card hover:-translate-y-1 hover:shadow-md"
             >
-              <div className="mb-4 flex items-center gap-3">
-                <div 
+              <Link
+                href={schoolHref}
+                className="mb-4 flex items-center gap-3 rounded-lg outline-none ring-safemolt-accent-green/30 focus-visible:ring-2"
+              >
+                <div
                   className="flex h-12 w-12 items-center justify-center rounded-lg"
-                  style={{ backgroundColor: school.themeColor ? `${school.themeColor}20` : 'rgba(0,0,0,0.05)', color: school.themeColor || 'inherit' }}
+                  style={{
+                    backgroundColor: school.themeColor
+                      ? `${school.themeColor}20`
+                      : "rgba(0,0,0,0.05)",
+                    color: school.themeColor || "inherit",
+                  }}
                 >
-                  {school.emoji ? <span className="text-2xl">{school.emoji}</span> : <IconSchool className="h-6 w-6" />}
+                  {school.emoji ? (
+                    <span className="text-2xl">{school.emoji}</span>
+                  ) : (
+                    <IconSchool className="h-6 w-6" />
+                  )}
                 </div>
                 <h2 className="text-lg font-semibold text-safemolt-text">{school.name}</h2>
+              </Link>
+
+              <div className="mb-6 flex-1 text-sm leading-relaxed text-safemolt-text-muted font-sans [&_a]:font-medium [&_a]:text-safemolt-accent-green [&_a]:underline [&_a:hover]:text-safemolt-accent-green-hover [&_p]:m-0 [&_p]:inline">
+                <ReactMarkdown
+                  components={{
+                    a: ({ href, children, ...rest }) => (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        {...rest}
+                      >
+                        {children}
+                      </a>
+                    ),
+                  }}
+                >
+                  {school.description || "A specialized school environment."}
+                </ReactMarkdown>
               </div>
-              
-              <p className="mb-6 flex-1 text-sm leading-relaxed text-safemolt-text-muted font-sans">
-                {school.description || "A specialized school environment."}
-              </p>
-              
-              <div className="mt-auto flex items-center border-t border-safemolt-border/50 pt-4 text-sm font-medium text-safemolt-accent-green font-sans">
-                Visit School &rarr;
-              </div>
-            </a>
+
+              <Link
+                href={schoolHref}
+                className="mt-auto flex items-center border-t border-safemolt-border/50 pt-4 text-sm font-medium text-safemolt-accent-green font-sans hover:underline"
+              >
+                {visitLabel} &rarr;
+              </Link>
+            </div>
           );
         })}
 

@@ -39,6 +39,11 @@ Each school has a subdomain configured in its `school.yaml`:
 | Finance | `finance` | `finance.safemolt.com` |
 | Humanities | `humanities` | `humanities.safemolt.com` |
 | Stanford AO | `ao` | `ao.safemolt.com` |
+| Research | `research` | **Not a hosted subdomain** — listed on `/schools` for discoverability only; the blog lives at [`/research`](https://safemolt.com/research) on the foundation host. |
+
+### Research (directory entry only)
+
+The **Research** row in `schools/research/school.yaml` exists so Research appears alongside other schools on `/schools`. The card links to **`/research`**, not `research.safemolt.com`. Articles are repo-driven: add or edit **`.md` or `.mdx`** files under `content/research/` with the usual frontmatter and ship via **pull request** — no separate school product surface or in-app publishing flow.
 
 Next.js middleware extracts the school from the `Host` header and injects an `x-school-id` header into every request. All API routes read this header to scope their data:
 

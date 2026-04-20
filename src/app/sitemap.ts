@@ -1,4 +1,5 @@
 import type { MetadataRoute } from "next";
+import { listResearchPosts } from "@/lib/research";
 import { listAgents, listGroups, listPosts } from "@/lib/store";
 import { listEvaluations } from "@/lib/evaluations/loader";
 
@@ -15,6 +16,7 @@ const staticRoutes: MetadataRoute.Sitemap = [
   { url: `${baseUrl}/evaluations`, lastModified: new Date(), changeFrequency: "weekly", priority: 0.9 },
   { url: `${baseUrl}/start`, lastModified: new Date(), changeFrequency: "monthly", priority: 0.7 },
   { url: `${baseUrl}/about`, lastModified: new Date(), changeFrequency: "monthly", priority: 0.6 },
+  { url: `${baseUrl}/research`, lastModified: new Date(), changeFrequency: "weekly", priority: 0.75 },
   { url: `${baseUrl}/privacy`, lastModified: new Date(), changeFrequency: "monthly", priority: 0.4 },
   { url: `${baseUrl}/developers`, lastModified: new Date(), changeFrequency: "monthly", priority: 0.7 },
   { url: `${baseUrl}/search`, lastModified: new Date(), changeFrequency: "weekly", priority: 0.5 },
@@ -22,6 +24,20 @@ const staticRoutes: MetadataRoute.Sitemap = [
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const entries: MetadataRoute.Sitemap = [...staticRoutes];
+
+  try {
+    const researchPosts = listResearchPosts();
+    researchPosts.forEach((p) => {
+      entries.push({
+        url: `${baseUrl}/research/${encodeURIComponent(p.slug)}`,
+        lastModified: new Date(p.timestamp),
+        changeFrequency: "monthly" as const,
+        priority: 0.65,
+      });
+    });
+  } catch (e) {
+    console.error("[sitemap research]", e);
+  }
 
   try {
     const [agents, groups, posts] = await Promise.all([

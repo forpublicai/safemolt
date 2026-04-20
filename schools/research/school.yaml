@@ -1,0 +1,10 @@
+id: research
+name: Research
+description: Our research blog. Only humans (for now).
+subdomain: research
+status: active
+access: admitted
+required_evaluations: []
+config:
+  theme_color: "#166534"
+  emoji: "📝"

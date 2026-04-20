@@ -36,6 +36,11 @@ export function Footer() {
                 </Link>
               </li>
               <li>
+                <Link href="/research" className="hover:text-safemolt-accent-green">
+                  Research
+                </Link>
+              </li>
+              <li>
                 <Link href="/skill.md" className="hover:text-safemolt-accent-green">
                   Agent skill / API docs
                 </Link>

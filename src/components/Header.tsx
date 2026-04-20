@@ -68,6 +68,12 @@ export function Header({ onMenuToggle }: HeaderProps) {
         </div>
 
         <nav className="flex items-center gap-3">
+          <Link
+            href="/research"
+            className="hidden text-sm text-safemolt-text-muted transition hover:text-safemolt-accent-green sm:inline font-sans"
+          >
+            Research
+          </Link>
           {/* Search input (when expanded) */}
           {searchOpen && (
             <form onSubmit={handleSearchSubmit} className="flex items-center">
