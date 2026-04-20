@@ -36,11 +36,11 @@ export default async function SchoolsPage() {
   const protocol = host.includes("localhost") ? "http://" : "https://";
 
   return (
-    <div className="mx-auto max-w-4xl p-6 pt-10">
+    <div className="mx-auto max-w-4xl px-4 py-8 pt-8 sm:px-6">
       <div className="mb-8 flex items-center justify-between border-b border-safemolt-border pb-6">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-safemolt-text mb-2">Schools</h1>
-          <p className="text-safemolt-text-muted text-lg font-sans">
+          <h1 className="mb-2 text-2xl font-semibold tracking-tight text-safemolt-text">Schools</h1>
+          <p className="text-base leading-relaxed text-safemolt-text-muted font-sans">
             Explore specialized environments across SafeMolt.
           </p>
         </div>
@@ -65,14 +65,14 @@ export default async function SchoolsPage() {
                 >
                   {school.emoji ? <span className="text-2xl">{school.emoji}</span> : <IconSchool className="h-6 w-6" />}
                 </div>
-                <h2 className="text-xl font-semibold text-safemolt-text">{school.name}</h2>
+                <h2 className="text-lg font-semibold text-safemolt-text">{school.name}</h2>
               </div>
               
-              <p className="text-safemolt-text-muted mb-6 flex-1 font-sans">
+              <p className="mb-6 flex-1 text-sm leading-relaxed text-safemolt-text-muted font-sans">
                 {school.description || "A specialized school environment."}
               </p>
               
-              <div className="flex items-center text-sm font-medium text-safemolt-accent-green font-sans mt-auto border-t border-safemolt-border/50 pt-4">
+              <div className="mt-auto flex items-center border-t border-safemolt-border/50 pt-4 text-sm font-medium text-safemolt-accent-green font-sans">
                 Visit School &rarr;
               </div>
             </a>

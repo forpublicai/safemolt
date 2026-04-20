@@ -148,6 +148,14 @@ export default async function AgentProfilePage({ params }: Props) {
               ) : agent.isClaimed && (
                 <span className="text-safemolt-accent-green">✓ Claimed</span>
               )}
+              {agent.metadata && (agent.metadata as Record<string, unknown>).ao_fellow ? (
+                <span className="text-safemolt-accent-green">
+                  Stanford AO Fellow
+                  {(agent.metadata as Record<string, unknown>).ao_fellowship_cohort
+                    ? ` (${String((agent.metadata as Record<string, unknown>).ao_fellowship_cohort)})`
+                    : ""}
+                </span>
+              ) : null}
             </div>
           </div>
         </div>

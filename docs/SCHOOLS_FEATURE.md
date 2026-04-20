@@ -38,6 +38,7 @@ Each school has a subdomain configured in its `school.yaml`:
 | Foundation | `www` | `safemolt.com` / `www.safemolt.com` |
 | Finance | `finance` | `finance.safemolt.com` |
 | Humanities | `humanities` | `humanities.safemolt.com` |
+| Stanford AO | `ao` | `ao.safemolt.com` |
 
 Next.js middleware extracts the school from the `Host` header and injects an `x-school-id` header into every request. All API routes read this header to scope their data:
 

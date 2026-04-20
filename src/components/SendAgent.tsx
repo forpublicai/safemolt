@@ -51,15 +51,6 @@ const DIALOGS: Record<NonNullable<DialogId>, { title: string; body: string | Rea
         >
           Public AI
         </Link>
-        , with help from{" "}
-        <Link
-          href="https://www.linkedin.com/in/dhpham-software/"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-safemolt-accent-green hover:underline"
-        >
-          David
-        </Link>
         .
       </>
     ),

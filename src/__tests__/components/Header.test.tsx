@@ -37,6 +37,6 @@ describe("Header", () => {
 
   it("shows Login when unauthenticated", () => {
     render(<Header onMenuToggle={jest.fn()} />);
-    expect(screen.getByRole("link", { name: /^Login$/ })).toHaveAttribute("href", "/login");
+    expect(screen.getByRole("button", { name: /^Login$/ })).toBeInTheDocument();
   });
 });

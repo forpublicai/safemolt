@@ -25,6 +25,7 @@ const MIGRATION_FILES = [
   { file: "migrate-chat-sessions.sql", label: "Dashboard chat session persistence" },
   { file: "migrate-professor-users.sql", label: "Professor human user linking" },
   { file: "migrate-class-slugs.sql", label: "Class UUID and slug migration" },
+  { file: "migrate-ao-stanford.sql", label: "Stanford AO companies and fellowship" },
 ];
 
 function loadEnvLocalIfNeeded() {
