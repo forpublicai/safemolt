@@ -349,3 +349,20 @@ CREATE TABLE IF NOT EXISTS announcements (
   content TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ============================================
+-- Agent Loop Action Log (autonomous tick journal)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS agent_loop_action_log (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  action TEXT NOT NULL,
+  target_type TEXT,
+  target_id TEXT,
+  content_snippet TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_loop_log_agent ON agent_loop_action_log(agent_id, created_at DESC);
+

@@ -3,8 +3,8 @@ import { errorResponse } from "@/lib/auth";
 import { runAgentLoopBatch } from "@/lib/agent-loop";
 
 export const dynamic = "force-dynamic";
-// Vercel Pro allows up to 60s; give the loop room to process agents
-export const maxDuration = 60;
+// Budget for multi-domain ticks: feed + classes + playground + evaluations per agent.
+export const maxDuration = 300;
 
 function authorizeCron(request: Request): boolean {
   const cronHeader = request.headers.get("x-vercel-cron");
