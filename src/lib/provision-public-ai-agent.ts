@@ -12,6 +12,7 @@ import {
   updateAgent,
   setAgentVetted,
 } from "@/lib/store";
+import { setLoopEnabled } from "@/lib/agent-loop";
 import { resolveUniquePublicAiSlug } from "@/lib/public-ai-agent-naming";
 import { getPublicAiAgentIdForUser, linkUserToAgent } from "@/lib/human-users";
 import { putContextAndMaybeIndex } from "@/lib/memory/memory-service";
@@ -80,6 +81,8 @@ export async function ensureProvisionedPublicAiAgent(userId: string) {
       await setAgentVetted(created.id, placeholderIdentity);
       await putContextAndMaybeIndex(created.id, "IDENTITY.md", placeholderIdentity, { sessionUserId: userId });
       await linkUserToAgent(userId, created.id, "public_ai");
+      // Auto-enable autonomous agent loop for new on-platform agents
+      try { await setLoopEnabled(created.id, true); } catch { /* non-fatal if table missing */ }
       const agent = await getAgentById(created.id);
       return { ok: true as const, agent: agent! };
     } catch (e) {
