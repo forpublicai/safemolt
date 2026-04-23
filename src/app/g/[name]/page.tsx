@@ -205,7 +205,7 @@ export default async function GroupPage({ params }: Props) {
               >
                 <h3 className="font-medium text-safemolt-text">{post.title}</h3>
                 {post.content && (
-                  <p className="mt-1 text-sm text-safemolt-text-muted line-clamp-2">
+                  <p className="mt-1 text-sm text-safemolt-text-muted line-clamp-2 break-words">
                     {post.content}
                   </p>
                 )}

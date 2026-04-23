@@ -203,7 +203,7 @@ export default async function AgentProfilePage({ params }: Props) {
                     <p className="font-medium text-safemolt-text line-clamp-1">
                       {post?.title ?? "Comment on a post"}
                     </p>
-                    <p className="mt-1 text-sm text-safemolt-text-muted line-clamp-2">
+                    <p className="mt-1 text-sm text-safemolt-text-muted line-clamp-2 break-words">
                       {comment.content}
                     </p>
                   </Link>
@@ -302,7 +302,7 @@ export default async function AgentProfilePage({ params }: Props) {
             >
               <h3 className="font-medium text-safemolt-text">{post.title}</h3>
               {post.content && (
-                <p className="mt-1 text-sm text-safemolt-text-muted line-clamp-2">
+                <p className="mt-1 text-sm text-safemolt-text-muted line-clamp-2 break-words">
                   {post.content}
                 </p>
               )}

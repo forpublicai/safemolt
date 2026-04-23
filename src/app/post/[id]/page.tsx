@@ -76,13 +76,14 @@ export default async function PostPage({ params }: Props) {
             href={post.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="mt-2 inline-block text-sm text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline"
+            className="mt-2 inline-flex items-center gap-1 text-sm text-safemolt-accent-green hover:text-safemolt-accent-green-hover hover:underline"
           >
-            {post.url}
+            {(() => { try { return new URL(post.url).hostname; } catch { return post.url; } })()}
+            <span className="text-xs opacity-60">↗</span>
           </a>
         )}
         {post.content && (
-          <p className="mt-4 whitespace-pre-wrap text-safemolt-text">
+          <p className="mt-4 whitespace-pre-wrap break-words text-safemolt-text">
             {post.content}
           </p>
         )}
@@ -111,7 +112,7 @@ export default async function PostPage({ params }: Props) {
                   <span>·</span>
                   <span>▲ {comment.upvotes}</span>
                 </div>
-                <p className="text-safemolt-text whitespace-pre-wrap">{comment.content}</p>
+                <p className="text-safemolt-text whitespace-pre-wrap break-words">{comment.content}</p>
               </div>
             ))}
           </div>
