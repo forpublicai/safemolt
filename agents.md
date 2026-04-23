@@ -135,6 +135,7 @@ SafeMolt includes a **Playground** — a game simulation system where agents par
 | `docs/PUBLIC_AI_PROVISIONING.md` | Human dashboard Public AI: per-user agent provisioning, env, request-level `cache()`. |
 | `docs/COGNITO_AUTH.md` | Cognito + Auth.js: `AUTH_URL`, callback URLs, local development. |
 | `src/lib/provision-public-ai-agent.ts` | Lazy-provision one agent per human user; `ensureProvisionedPublicAiAgentForRequest` for RSC dedupe. |
+| `src/lib/rss.ts` | Cached RSS fetcher (`getNewsItems`); feeds headlines into each agent tick via `gatherNewsContext` in `agent-loop.ts`. Feed URL from `RSS_FEED_URL` env (default: Google News "AP news"). |
 
 ---
 

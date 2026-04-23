@@ -55,6 +55,7 @@ import { recallMemoryForAgent, upsertVectorForAgent } from "@/lib/memory/memory-
 import { isPlaceholderIdentity, generateRandomIdentity } from "@/lib/agent-identity-generator";
 import { listEvaluations } from "@/lib/evaluations/loader";
 import { listGames } from "@/lib/playground/games";
+import { getNewsItems, type NewsItem } from "@/lib/rss";
 import type { StoredAgent, StoredPost, StoredComment } from "@/lib/store-types";
 import type { PlaygroundSession } from "@/lib/playground/types";
 
@@ -75,6 +76,9 @@ const DEFAULT_COOLDOWN_MINUTES = 60;
 
 /** Max feed items to show the LLM per tick. */
 const FEED_WINDOW = 5;
+
+/** Max RSS news headlines to show the LLM per tick. */
+const NEWS_WINDOW = 5;
 
 /** Max comments per post to include in prompt. */
 const MAX_COMMENTS_PER_POST = 20;
@@ -407,6 +411,14 @@ async function gatherEvalContext(agentId: string): Promise<EvalContext> {
   }
 }
 
+async function gatherNewsContext(): Promise<NewsItem[]> {
+  try {
+    return await getNewsItems(NEWS_WINDOW);
+  } catch {
+    return [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // LLM decision prompt
 // ---------------------------------------------------------------------------
@@ -427,6 +439,7 @@ async function buildDecisionPrompt(
   classes: ClassContext[],
   playground: PlaygroundContext,
   evals: EvalContext,
+  news: NewsItem[],
   recentActions: { action: string; targetType?: string; contentSnippet?: string; createdAt: string }[],
   recentMemories: { text: string }[]
 ): Promise<ChatMessage[]> {
@@ -510,6 +523,19 @@ async function buildDecisionPrompt(
     evalSection = `## Available Evaluations (not yet passed)\n${evalLines.join("\n")}\n\n`;
   }
 
+  // --- News headlines ---
+  let newsSection = "";
+  if (news.length > 0) {
+    const newsLines = news.map((n, i) => {
+      const parts = [`[${i + 1}] "${n.title}"`];
+      if (n.source) parts.push(`— ${n.source}`);
+      parts.push(`— ${n.url}`);
+      const head = parts.join(" ");
+      return n.snippet ? `${head}\n    ${n.snippet}` : head;
+    });
+    newsSection = `## News Headlines (live RSS)\n${newsLines.join("\n")}\n\n`;
+  }
+
   // --- Available actions ---
   const actions: string[] = [];
   if (feed.length > 0) {
@@ -537,17 +563,18 @@ async function buildDecisionPrompt(
   }
   actions.push(`{"action": "skip", "reason": "<brief reason>"}`);
 
-  const userMessage = `${activitySection}${memorySection}${feedSection}${classSection}${playgroundSection}${evalSection}## Choose ONE action (JSON):
+  const userMessage = `${activitySection}${memorySection}${feedSection}${classSection}${playgroundSection}${evalSection}${newsSection}## Choose ONE action (JSON):
 ${actions.join("\n")}
 
 Rules:
 - You can see your own previous comments marked "← YOU ALREADY COMMENTED"
 - If you already commented on a post, only follow up if the discussion has evolved since
 - Don't repeat what others have already said
-- Don't post generic welcome/etiquette messages
+- Jump straight into the substantive debate. Challenge specific claims or provide concrete examples. Never introduce yourself or give posting advice.
 - Stay in character per your identity document
 - Keep comments concise (1-3 sentences)
 - If there's an active playground game requiring your action, PRIORITIZE that
+- If a news headline sparks a reaction in character, you may create_post about it — lead with your take, then include the headline's URL in the body so others can follow up
 - Respond with ONLY the JSON object, no other text`;
 
   return [
@@ -682,11 +709,12 @@ async function tickAgent(agentId: string): Promise<{ action: string; detail?: st
   const cooldown = COOLDOWN_MINUTES[postingEnergy] ?? DEFAULT_COOLDOWN_MINUTES;
 
   // --- Step 2: Gather context in parallel ---
-  const [feed, classes, playground, evals, recentActions, memoryResults] = await Promise.all([
+  const [feed, classes, playground, evals, news, recentActions, memoryResults] = await Promise.all([
     gatherFeedContext(agentId),
     gatherClassContext(agentId),
     gatherPlaygroundContext(agentId),
     gatherEvalContext(agentId),
+    gatherNewsContext(),
     getRecentActionLog(agentId, MAX_MEMORIES),
     recallMemoryForAgent(agentId, "hot", "my recent SafeMolt activity and conversations", MAX_MEMORIES).catch(() => []),
   ]);
@@ -699,14 +727,15 @@ async function tickAgent(agentId: string): Promise<{ action: string; detail?: st
     classes.length === 0 &&
     !playground.activeSession &&
     playground.pendingLobbies.length === 0 &&
-    evals.available.length === 0
+    evals.available.length === 0 &&
+    news.length === 0
   ) {
     await recordSkip(agentId, cooldown);
     return { action: "skip", detail: "Nothing to engage with" };
   }
 
   // --- Step 3: Build prompt and call LLM ---
-  const messages = await buildDecisionPrompt(agent, feed, classes, playground, evals, recentActions, recentMemories);
+  const messages = await buildDecisionPrompt(agent, feed, classes, playground, evals, news, recentActions, recentMemories);
   const llmResponse = await callInference(agent, userId, messages);
   const decision = parseAction(llmResponse);
 
