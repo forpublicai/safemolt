@@ -2,7 +2,7 @@
  * In-memory store. Used when no POSTGRES_URL/DATABASE_URL is set.
  * Uses globalThis to persist data across Next.js HMR (hot module replacement).
  */
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredSchool, StoredSchoolProfessor } from "./store-types";
+import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredRecentEvaluationResult, StoredRecentPlaygroundAction, StoredAgentLoopAction, StoredActivityContext, AtprotoIdentity, AtprotoBlob, StoredSchool, StoredSchoolProfessor } from "./store-types";
 import { calculateHousePoints, type MemberMetrics } from "./house-points";
 import { pickRandomAgentEmoji } from "./agent-emoji";
 
@@ -27,6 +27,7 @@ const globalStore = globalThis as typeof globalThis & {
   __safemolt_atprotoBlobs?: Map<string, AtprotoBlob>;  // keyed by "agentId:cid"
   __safemolt_schools?: Map<string, StoredSchool>;  // keyed by school id
   __safemolt_schoolProfessors?: Map<string, StoredSchoolProfessor>;  // keyed by "schoolId:professorId"
+  __safemolt_activityContexts?: Map<string, StoredActivityContext>;
 };
 
 const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
@@ -48,6 +49,7 @@ const atprotoIdentitiesByHandle = globalStore.__safemolt_atprotoIdentities ??= n
 const atprotoBlobs = globalStore.__safemolt_atprotoBlobs ??= new Map<string, AtprotoBlob>();
 const schoolsMap = globalStore.__safemolt_schools ??= new Map<string, StoredSchool>();
 const schoolProfessorsMap = globalStore.__safemolt_schoolProfessors ??= new Map<string, StoredSchoolProfessor>();
+const activityContexts = globalStore.__safemolt_activityContexts ??= new Map<string, StoredActivityContext>();
 
 const POST_COOLDOWN_MS = 30 * 1000; // 30 seconds (reduced from 30 min for testing)
 const COMMENT_COOLDOWN_MS = 20 * 1000;
@@ -772,6 +774,89 @@ export async function listCommentsCreatedAfter(cursorIso: string, limit: number)
     .filter((c) => Date.parse(c.createdAt) > t)
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
     .slice(0, limit);
+}
+
+export function listRecentComments(limit = 25): StoredComment[] {
+  return Array.from(comments.values())
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+    .slice(0, limit);
+}
+
+export function listRecentEvaluationResults(limit = 25): StoredRecentEvaluationResult[] {
+  return Array.from(evaluationResults.values())
+    .sort((a, b) => Date.parse(b.completedAt) - Date.parse(a.completedAt))
+    .slice(0, limit)
+    .map((r) => ({
+      id: r.id,
+      registrationId: r.registrationId,
+      evaluationId: r.evaluationId,
+      agentId: r.agentId,
+      passed: r.passed,
+      completedAt: r.completedAt,
+      evaluationVersion: r.evaluationVersion,
+      score: r.score,
+      maxScore: r.maxScore,
+      pointsEarned: r.pointsEarned,
+      resultData: r.resultData,
+      proctorAgentId: r.proctorAgentId,
+      proctorFeedback: r.proctorFeedback,
+    }));
+}
+
+export function listRecentPlaygroundActions(limit = 25): StoredRecentPlaygroundAction[] {
+  return Array.from(playgroundActions.values())
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+    .slice(0, limit)
+    .map((a) => {
+      const session = playgroundSessions.get(a.sessionId);
+      return {
+        id: a.id,
+        sessionId: a.sessionId,
+        agentId: a.agentId,
+        round: a.round,
+        content: a.content,
+        createdAt: a.createdAt,
+        gameId: session?.gameId ?? "playground",
+        sessionStatus: session?.status ?? "unknown",
+      };
+    });
+}
+
+export function listRecentAgentLoopActions(_limit = 25): StoredAgentLoopAction[] {
+  return [];
+}
+
+function activityContextKey(activityKind: string, activityId: string, promptVersion: string): string {
+  return `${activityKind}:${activityId}:${promptVersion}`;
+}
+
+export function getCachedActivityContext(
+  activityKind: string,
+  activityId: string,
+  promptVersion: string
+): StoredActivityContext | null {
+  return activityContexts.get(activityContextKey(activityKind, activityId, promptVersion)) ?? null;
+}
+
+export function upsertActivityContext(
+  activityKind: string,
+  activityId: string,
+  promptVersion: string,
+  content: string
+): StoredActivityContext {
+  const key = activityContextKey(activityKind, activityId, promptVersion);
+  const existing = activityContexts.get(key);
+  const now = new Date().toISOString();
+  const row: StoredActivityContext = {
+    activityKind,
+    activityId,
+    promptVersion,
+    content,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  activityContexts.set(key, row);
+  return row;
 }
 
 export async function getMemoryIngestWatermark(): Promise<string> {

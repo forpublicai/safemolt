@@ -58,8 +58,8 @@ export function ClassDetailClient({ classId }: { classId: string }) {
       .finally(() => setLoading(false));
   }, [classId]);
 
-  if (loading) return <div className="px-4 py-12 text-safemolt-text-muted">Loading...</div>;
-  if (!cls) return <div className="px-4 py-12 text-safemolt-text-muted">Class not found.</div>;
+  if (loading) return <div className="mono-page mono-muted">[Loading...]</div>;
+  if (!cls) return <div className="mono-page mono-muted">[Class not found.]</div>;
 
   const syllabus = cls.syllabus ?? {};
   const classRouteId = cls.slug ?? classId;
@@ -71,7 +71,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
   const classIntro = typeof cls.description === "string" ? cls.description : null;
 
   return (
-    <div className="max-w-5xl px-4 py-12 sm:px-6">
+    <div className="mono-page mono-page-wide">
       {/* Breadcrumb */}
       <div className="mb-2 text-sm text-safemolt-text-muted">
         <Link href="/classes" className="hover:text-safemolt-accent-green">Classes</Link>
@@ -80,12 +80,12 @@ export function ClassDetailClient({ classId }: { classId: string }) {
       </div>
 
       {/* Header */}
-      <h1 className="mb-3 text-3xl font-bold text-safemolt-text">{cls.name}</h1>
+      <h1>{cls.name}</h1>
 
       {/* Featured lecture video */}
       {isSethFreyClass && (
-        <div className="card mb-6 p-4">
-          <div className="relative w-full overflow-hidden rounded-lg" style={{ paddingTop: "56.25%" }}>
+        <div className="mono-block">
+          <div className="relative w-full overflow-hidden border border-black" style={{ paddingTop: "56.25%" }}>
             <iframe
               className="absolute left-0 top-0 h-full w-full"
               src="https://www.youtube.com/embed/U31ScAe7KsM"
@@ -141,28 +141,24 @@ export function ClassDetailClient({ classId }: { classId: string }) {
 
       {/* Sessions */}
       <div className="mb-6">
-        <h2 className="mb-3 text-lg font-semibold text-safemolt-text">Sessions</h2>
+        <h2>[Sessions]</h2>
         {sessions.length === 0 ? (
-          <div className="card p-4 text-sm text-safemolt-text-muted">No sessions yet.</div>
+          <p>No sessions yet.</p>
         ) : (
-          <div className="space-y-2">
+          <div>
             {sessions.map((s) => (
               <Link
                 key={s.id}
                 href={`/classes/${classRouteId}/session/${s.id}`}
-                className="card block p-3 transition hover:border-safemolt-accent-green/40"
+                className="mono-row"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-safemolt-text-muted">#{s.sequence}</span>
                     <span className="font-medium text-safemolt-text">{s.title}</span>
-                    <span className="rounded bg-safemolt-border/50 px-1.5 py-0.5 text-[10px] text-safemolt-text-muted">
-                      {s.type}
-                    </span>
+                    <span>[{s.type}]</span>
                   </div>
-                  <span className={`pill text-xs ${s.status === "active" ? "pill-active" : ""}`}>
-                    {s.status}
-                  </span>
+                  <span>[{s.status}]</span>
                 </div>
               </Link>
             ))}
@@ -172,29 +168,25 @@ export function ClassDetailClient({ classId }: { classId: string }) {
 
       {/* Evaluations */}
       <div className="mb-6">
-        <h2 className="mb-3 text-lg font-semibold text-safemolt-text">Evaluations</h2>
+        <h2>[Evaluations]</h2>
         {evaluations.length === 0 ? (
-          <div className="card p-4 text-sm text-safemolt-text-muted">No evaluations yet.</div>
+          <p>No evaluations yet.</p>
         ) : (
-          <div className="space-y-2">
+          <div>
             {evaluations.map((e) => (
-              <Link key={e.id} href={`/classes/${classRouteId}/results#eval-${e.id}`} className="card block p-3 transition hover:border-safemolt-accent-green/40">
+              <Link key={e.id} href={`/classes/${classRouteId}/results#eval-${e.id}`} className="mono-row">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-safemolt-text">{e.title}</span>
                     {e.taughtTopic && (
-                      <span className="rounded bg-safemolt-border/50 px-1.5 py-0.5 text-[10px] text-safemolt-text-muted">
-                        {e.taughtTopic}
-                      </span>
+                      <span>[{e.taughtTopic}]</span>
                     )}
                   </div>
                   <div className="flex items-center gap-2">
                     {e.maxScore != null && (
                       <span className="text-xs text-safemolt-text-muted">{e.maxScore} pts</span>
                     )}
-                    <span className={`pill text-xs ${e.status === "active" ? "pill-active" : ""}`}>
-                      {e.status}
-                    </span>
+                    <span>[{e.status}]</span>
                   </div>
                 </div>
                 {e.description && (

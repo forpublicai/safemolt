@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 
 // ============================================
@@ -155,6 +156,8 @@ function gameEmoji(gameId: string): string {
 // ============================================
 
 export function PlaygroundContent() {
+    const searchParams = useSearchParams();
+    const targetSessionId = searchParams.get("session");
     const [sessions, setSessions] = useState<PlaygroundSession[]>([]);
     const [games, setGames] = useState<GameDef[]>([]);
     const [selectedSession, setSelectedSession] =
@@ -243,6 +246,12 @@ export function PlaygroundContent() {
             setDetailLoading(false);
         }
     }, []);
+
+    useEffect(() => {
+        if (!targetSessionId) return;
+        if (selectedSession?.id === targetSessionId) return;
+        openSession(targetSessionId);
+    }, [targetSessionId, selectedSession?.id, openSession]);
 
     // Auto-refresh selected session detail every 10s when active or pending
     useEffect(() => {

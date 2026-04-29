@@ -3,7 +3,7 @@
  */
 import { sql } from "@/lib/db";
 import { randomUUID } from "crypto";
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor, StoredAoCohort, StoredAoCompany, StoredAoCompanyAgent, StoredAoCompanyEvaluation, StoredAoFellowshipApplication, AoFellowshipApplicationStatus } from "./store-types";
+import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredRecentEvaluationResult, StoredRecentPlaygroundAction, StoredAgentLoopAction, StoredActivityContext, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor, StoredAoCohort, StoredAoCompany, StoredAoCompanyAgent, StoredAoCompanyEvaluation, StoredAoFellowshipApplication, AoFellowshipApplicationStatus } from "./store-types";
 import { pickRandomAgentEmoji } from "./agent-emoji";
 import {
     generateChallengeValues,
@@ -932,6 +932,132 @@ export async function listCommentsCreatedAfter(cursorIso: string, limit: number)
     LIMIT ${limit}
   `;
     return (rows as Record<string, unknown>[]).map(rowToComment);
+}
+
+export async function listRecentComments(limit = 25): Promise<StoredComment[]> {
+    const rows = await sql!`
+    SELECT * FROM comments
+    ORDER BY created_at DESC
+    LIMIT ${limit}
+  `;
+    return (rows as Record<string, unknown>[]).map(rowToComment);
+}
+
+export async function listRecentEvaluationResults(limit = 25): Promise<StoredRecentEvaluationResult[]> {
+    const rows = await sql!`
+    SELECT id, registration_id, evaluation_id, agent_id, passed, completed_at, evaluation_version,
+      score, max_score, points_earned, result_data, proctor_agent_id, proctor_feedback
+    FROM evaluation_results
+    ORDER BY completed_at DESC
+    LIMIT ${limit}
+  `;
+    return (rows as Record<string, unknown>[]).map((r) => ({
+        id: r.id as string,
+        registrationId: r.registration_id as string,
+        evaluationId: r.evaluation_id as string,
+        agentId: r.agent_id as string,
+        passed: Boolean(r.passed),
+        completedAt: r.completed_at instanceof Date ? r.completed_at.toISOString() : String(r.completed_at),
+        evaluationVersion: r.evaluation_version as string | undefined,
+        score: r.score != null ? Number(r.score) : undefined,
+        maxScore: r.max_score != null ? Number(r.max_score) : undefined,
+        pointsEarned: r.points_earned != null ? Number(r.points_earned) : undefined,
+        resultData: r.result_data as Record<string, unknown> | undefined,
+        proctorAgentId: r.proctor_agent_id as string | undefined,
+        proctorFeedback: r.proctor_feedback as string | undefined,
+    }));
+}
+
+export async function listRecentPlaygroundActions(limit = 25): Promise<StoredRecentPlaygroundAction[]> {
+    const rows = await sql!`
+    SELECT a.id, a.session_id, a.agent_id, a.round, a.content, a.created_at,
+      s.game_id, s.status AS session_status
+    FROM playground_actions a
+    LEFT JOIN playground_sessions s ON s.id = a.session_id
+    ORDER BY a.created_at DESC
+    LIMIT ${limit}
+  `;
+    return (rows as Record<string, unknown>[]).map((r) => ({
+        id: r.id as string,
+        sessionId: r.session_id as string,
+        agentId: r.agent_id as string,
+        round: Number(r.round),
+        content: r.content as string,
+        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        gameId: (r.game_id as string | undefined) ?? "playground",
+        sessionStatus: (r.session_status as string | undefined) ?? "unknown",
+    }));
+}
+
+export async function listRecentAgentLoopActions(limit = 25): Promise<StoredAgentLoopAction[]> {
+    try {
+        const rows = await sql!`
+      SELECT id, agent_id, action, target_type, target_id, content_snippet, created_at
+      FROM agent_loop_action_log
+      ORDER BY created_at DESC
+      LIMIT ${limit}
+    `;
+        return (rows as Record<string, unknown>[]).map((r) => ({
+            id: r.id as string,
+            agentId: r.agent_id as string,
+            action: r.action as string,
+            targetType: r.target_type as string | undefined,
+            targetId: r.target_id as string | undefined,
+            contentSnippet: r.content_snippet as string | undefined,
+            createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        }));
+    } catch {
+        return [];
+    }
+}
+
+export async function getCachedActivityContext(
+    activityKind: string,
+    activityId: string,
+    promptVersion: string
+): Promise<StoredActivityContext | null> {
+    const rows = await sql!`
+    SELECT activity_kind, activity_id, prompt_version, content, created_at, updated_at
+    FROM activity_contexts
+    WHERE activity_kind = ${activityKind}
+      AND activity_id = ${activityId}
+      AND prompt_version = ${promptVersion}
+    LIMIT 1
+  `;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return {
+        activityKind: r.activity_kind as string,
+        activityId: r.activity_id as string,
+        promptVersion: r.prompt_version as string,
+        content: r.content as string,
+        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+    };
+}
+
+export async function upsertActivityContext(
+    activityKind: string,
+    activityId: string,
+    promptVersion: string,
+    content: string
+): Promise<StoredActivityContext> {
+    const rows = await sql!`
+    INSERT INTO activity_contexts (activity_kind, activity_id, prompt_version, content)
+    VALUES (${activityKind}, ${activityId}, ${promptVersion}, ${content})
+    ON CONFLICT (activity_kind, activity_id, prompt_version)
+    DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()
+    RETURNING activity_kind, activity_id, prompt_version, content, created_at, updated_at
+  `;
+    const r = rows[0] as Record<string, unknown>;
+    return {
+        activityKind: r.activity_kind as string,
+        activityId: r.activity_id as string,
+        promptVersion: r.prompt_version as string,
+        content: r.content as string,
+        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+    };
 }
 
 const MEMORY_INGEST_WATERMARK_ID = "global";

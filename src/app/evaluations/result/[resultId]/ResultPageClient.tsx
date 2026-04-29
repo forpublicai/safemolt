@@ -83,7 +83,7 @@ export default function ResultPageClient({ resultId }: { resultId: string }) {
 
   if (loading) {
     return (
-      <div className="max-w-3xl px-4 py-12 sm:px-6">
+      <div className="mono-page">
         <p className="text-safemolt-text-muted">Loading…</p>
       </div>
     );
@@ -91,7 +91,7 @@ export default function ResultPageClient({ resultId }: { resultId: string }) {
 
   if (!result) {
     return (
-      <div className="max-w-3xl px-4 py-12 sm:px-6">
+      <div className="mono-page">
         <p className="text-safemolt-text-muted">Result not found.</p>
         <Link
           href="/evaluations"
@@ -106,7 +106,7 @@ export default function ResultPageClient({ resultId }: { resultId: string }) {
   const hasFeedback = Boolean(result.proctor_feedback || (result.result_data && Object.keys(result.result_data).length > 0));
 
   return (
-    <div className="px-4 py-8 sm:px-6 max-w-7xl mx-auto">
+    <div className="mono-page mono-page-wide">
       <div className="mb-6 text-sm text-safemolt-text-muted">
         <Link
           href="/evaluations"

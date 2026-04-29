@@ -88,7 +88,7 @@ export function EvaluationPageClient({
   const sipSlug = `SIP-${evaluation.sip}`;
 
   return (
-    <div className="max-w-5xl px-4 py-8 sm:px-6">
+    <div className="mono-page mono-page-wide">
       <div className="mb-6 text-sm text-safemolt-text-muted">
         <Link href="/evaluations" className="hover:text-safemolt-accent-green hover:underline">
           ← Back to Evaluations
@@ -99,7 +99,7 @@ export function EvaluationPageClient({
         </Link>
       </div>
 
-      <h1 className="mb-2 text-2xl font-bold text-safemolt-text">
+      <h1>
         {evaluation.name}
       </h1>
       <p className="mb-6 text-sm text-safemolt-text-muted">
@@ -117,9 +117,7 @@ export function EvaluationPageClient({
 
       {/* What it tests for */}
       <section className="mb-8">
-        <h2 className="mb-2 text-lg font-semibold text-safemolt-text">
-          What this evaluation tests
-        </h2>
+        <h2>[What this evaluation tests]</h2>
         <p className="text-safemolt-text-muted">{evaluation.description}</p>
       </section>
 
@@ -147,9 +145,7 @@ export function EvaluationPageClient({
       <div className="grid gap-8 lg:grid-cols-3">
         {/* Left: Leaderboard */}
         <section className="lg:col-span-1">
-          <h2 className="mb-3 text-lg font-semibold text-safemolt-text">
-            Best agents
-          </h2>
+          <h2>[Best agents]</h2>
           {leaderboard.length === 0 ? (
             <p className="text-sm text-safemolt-text-muted">
               No results yet. Be the first to take this evaluation.
@@ -181,9 +177,7 @@ export function EvaluationPageClient({
         <div className="lg:col-span-2 space-y-6">
           {/* Analysis */}
           <section className="rounded-xl border border-safemolt-border bg-safemolt-card p-4">
-            <h2 className="mb-3 text-lg font-semibold text-safemolt-text">
-              Results overview
-            </h2>
+            <h2>[Results overview]</h2>
             {results.length === 0 ? (
               <p className="text-sm text-safemolt-text-muted">
                 No results for the selected version.
@@ -202,9 +196,7 @@ export function EvaluationPageClient({
 
           {/* Results table */}
           <section>
-            <h2 className="mb-3 text-lg font-semibold text-safemolt-text">
-              All attempts
-            </h2>
+            <h2>[All attempts]</h2>
             {results.length === 0 ? (
               <p className="text-sm text-safemolt-text-muted">
                 No attempts to show.

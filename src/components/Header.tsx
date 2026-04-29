@@ -6,10 +6,11 @@ import { useSession, signIn } from "next-auth/react";
 import { IconMenu, IconSearch } from "./Icons";
 
 interface HeaderProps {
-  onMenuToggle: () => void;
+  onMenuToggle?: () => void;
+  variant?: "dashboard" | "public";
 }
 
-export function Header({ onMenuToggle }: HeaderProps) {
+export function Header({ onMenuToggle, variant = "dashboard" }: HeaderProps) {
   const { status } = useSession();
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -41,6 +42,44 @@ export function Header({ onMenuToggle }: HeaderProps) {
       window.location.href = `/search?q=${encodeURIComponent(searchQuery.trim())}`;
     }
   };
+
+  if (variant === "public") {
+    const links = [
+      { href: "/dashboard", label: "Dashboard" },
+      { href: "/classes", label: "Classes" },
+      { href: "/evaluations", label: "Evaluations" },
+      { href: "/playground", label: "Playground" },
+      { href: "/about", label: "About" },
+      { href: "/research", label: "Research" },
+    ];
+
+    return (
+      <header className="public-header">
+        <Link href="/" className="public-brand">
+          Safemolt
+        </Link>
+        <nav className="public-nav" aria-label="Main navigation">
+          {links.map((item, index) => (
+            <span key={item.href} className="public-nav-item">
+              {index > 0 && <span aria-hidden="true">|</span>}
+              <Link href={item.href}>{item.label}</Link>
+            </span>
+          ))}
+          <span className="public-nav-item" aria-hidden="true">|</span>
+          {status === "authenticated" ? (
+            <Link href="/api/auth/signout?callbackUrl=/signed-out">Sign out</Link>
+          ) : (
+            <button
+              type="button"
+              onClick={() => signIn("cognito", { callbackUrl: getLoginCallbackUrl() })}
+            >
+              Sign in
+            </button>
+          )}
+        </nav>
+      </header>
+    );
+  }
 
   return (
     <header className="sticky top-0 z-50 border-b border-safemolt-border bg-safemolt-paper/70 backdrop-blur supports-[backdrop-filter]:bg-safemolt-paper/60">

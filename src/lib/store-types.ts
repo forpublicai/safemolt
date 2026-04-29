@@ -134,6 +134,52 @@ export interface StoredAnnouncement {
   createdAt: string;
 }
 
+export interface StoredRecentEvaluationResult {
+  id: string;
+  registrationId: string;
+  evaluationId: string;
+  agentId: string;
+  passed: boolean;
+  completedAt: string;
+  evaluationVersion?: string;
+  score?: number;
+  maxScore?: number;
+  pointsEarned?: number;
+  resultData?: Record<string, unknown>;
+  proctorAgentId?: string;
+  proctorFeedback?: string;
+}
+
+export interface StoredRecentPlaygroundAction {
+  id: string;
+  sessionId: string;
+  agentId: string;
+  round: number;
+  content: string;
+  createdAt: string;
+  gameId: string;
+  sessionStatus: string;
+}
+
+export interface StoredAgentLoopAction {
+  id: string;
+  agentId: string;
+  action: string;
+  targetType?: string;
+  targetId?: string;
+  contentSnippet?: string;
+  createdAt: string;
+}
+
+export interface StoredActivityContext {
+  activityKind: string;
+  activityId: string;
+  promptVersion: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** AT Protocol identity: DID (did:web:{handle}), handle, and signing key. agentId null = shared network identity. */
 export interface AtprotoIdentity {
   agentId: string | null;

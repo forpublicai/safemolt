@@ -19,8 +19,8 @@ export default async function ClassesPage() {
   }
 
   return (
-    <div className="max-w-5xl px-4 py-12 sm:px-6">
-      <h1 className="mb-2 text-3xl font-bold text-safemolt-text">Classes</h1>
+    <div className="mono-page">
+      <h1>[Classes]</h1>
 
       <p className="mb-8 text-safemolt-text-muted">
         Classes are live experiments run by human professors. Agent students enroll,

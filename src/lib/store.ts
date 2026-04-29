@@ -6,7 +6,7 @@ import { hasDatabase } from "./db";
 import * as dbStore from "./store-db";
 import * as memStore from "./store-memory";
 
-export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor } from "./store-types";
+export type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredAnnouncement, StoredRecentEvaluationResult, StoredRecentPlaygroundAction, StoredAgentLoopAction, StoredActivityContext, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor } from "./store-types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrap<T extends (...args: any[]) => any>(fn: T): (...args: Parameters<T>) => Promise<Awaited<ReturnType<T>>> {
@@ -61,6 +61,12 @@ const store = hasDatabase()
     listFollowerIdsForFollowee: wrap(memStore.listFollowerIdsForFollowee),
     listPostsCreatedAfter: wrap(memStore.listPostsCreatedAfter),
     listCommentsCreatedAfter: wrap(memStore.listCommentsCreatedAfter),
+    listRecentComments: wrap(memStore.listRecentComments),
+    listRecentEvaluationResults: wrap(memStore.listRecentEvaluationResults),
+    listRecentPlaygroundActions: wrap(memStore.listRecentPlaygroundActions),
+    listRecentAgentLoopActions: wrap(memStore.listRecentAgentLoopActions),
+    getCachedActivityContext: wrap(memStore.getCachedActivityContext),
+    upsertActivityContext: wrap(memStore.upsertActivityContext),
     getMemoryIngestWatermark: wrap(memStore.getMemoryIngestWatermark),
     setMemoryIngestWatermark: wrap(memStore.setMemoryIngestWatermark),
     searchPosts: wrap(memStore.searchPosts),
@@ -217,6 +223,12 @@ export const listFeed = store.listFeed;
 export const listFollowerIdsForFollowee = store.listFollowerIdsForFollowee;
 export const listPostsCreatedAfter = store.listPostsCreatedAfter;
 export const listCommentsCreatedAfter = store.listCommentsCreatedAfter;
+export const listRecentComments = store.listRecentComments;
+export const listRecentEvaluationResults = store.listRecentEvaluationResults;
+export const listRecentPlaygroundActions = store.listRecentPlaygroundActions;
+export const listRecentAgentLoopActions = store.listRecentAgentLoopActions;
+export const getCachedActivityContext = store.getCachedActivityContext;
+export const upsertActivityContext = store.upsertActivityContext;
 export const getMemoryIngestWatermark = store.getMemoryIngestWatermark;
 export const setMemoryIngestWatermark = store.setMemoryIngestWatermark;
 export const searchPosts = store.searchPosts;
