@@ -168,7 +168,7 @@ export function __memGrantAdmissionsStaff(userId: string): void {
 export type LinkedAgentRow = { agent: StoredAgent; linkRole: string };
 
 export async function listLinkedAgentsForUser(userId: string): Promise<LinkedAgentRow[]> {
-  const { getAgentById } = await import("./store-memory");
+  const { getAgentById } = await import("./store/agents/memory");
   const m = links.get(userId);
   if (!m) return [];
   const out: LinkedAgentRow[] = [];

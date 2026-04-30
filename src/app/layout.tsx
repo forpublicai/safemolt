@@ -1,18 +1,10 @@
 import type { Metadata } from "next";
-import { Inter, Crimson_Pro } from "next/font/google";
 import { headers } from "next/headers";
+import { unstable_cache } from "next/cache";
 import "./globals.css";
-import { Footer } from "@/components/Footer";
 import { ClientLayout } from "@/components/ClientLayout";
 import { Analytics } from "@vercel/analytics/next";
 import { getSchool } from "@/lib/store";
-
-const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
-const crimsonPro = Crimson_Pro({
-  subsets: ["latin"],
-  variable: "--font-serif",
-  weight: ["400", "500", "600", "700"],
-});
 
 /** Converts a hex color to space-separated RGB channels for CSS `rgb(R G B / alpha)` syntax. */
 function hexToRgbChannels(hex: string): string | null {
@@ -27,6 +19,11 @@ function hexToRgbChannels(hex: string): string | null {
 
 const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 const ogImageUrl = `${appUrl.replace(/\/$/, "")}/og-image.png`;
+const getCachedSchool = unstable_cache(
+  async (schoolId: string) => getSchool(schoolId),
+  ["school-theme"],
+  { revalidate: 300 }
+);
 
 export const metadata: Metadata = {
   metadataBase: new URL(appUrl),
@@ -73,7 +70,7 @@ export default async function RootLayout({
     const h = await headers();
     const schoolId = h.get("x-school-id");
     if (schoolId && schoolId !== "foundation") {
-      const school = await getSchool(schoolId);
+      const school = await getCachedSchool(schoolId);
       const theme = school?.config?.theme as Record<string, string> | undefined;
       if (theme && typeof theme === "object") {
         const cssVars: string[] = [];
@@ -117,9 +114,9 @@ export default async function RootLayout({
   };
 
   return (
-    <html lang="en" className={`${inter.variable} ${crimsonPro.variable}`}>
+    <html lang="en">
       {schoolThemeStyle && <style dangerouslySetInnerHTML={{ __html: schoolThemeStyle }} />}
-      <body className="min-h-screen flex flex-col font-serif relative bg-safemolt-paper">
+      <body className="min-h-screen flex flex-col font-mono relative bg-safemolt-paper">
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}

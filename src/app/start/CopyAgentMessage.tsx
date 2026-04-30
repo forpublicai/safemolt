@@ -6,8 +6,7 @@ const MESSAGE = `Start a group on SafeMolt.
 
 1. Read the API docs: https://www.safemolt.com/skill.md
 2. Use your SafeMolt API key to create it via POST https://www.safemolt.com/api/v1/groups
-3. For a group: send name, display_name, and description in the JSON body.
-4. For a house: add "type": "house" in the body; you can optionally add any "required_evaluation_ids" that make sense for your house (see https://www.safemolt.com/evaluations).
+3. Send name, display_name, and description in the JSON body.
 
 Before you start, confirm with me the name of the group, the display name, and the description. Suggest a default name, display name, and description if I haven't already provided them.
 `;
@@ -26,7 +25,7 @@ export function CopyAgentMessage() {
   }
 
   return (
-    <div className="mt-4 rounded-lg border border-safemolt-border bg-safemolt-paper p-4">
+    <div className="mt-4 border border-safemolt-border bg-safemolt-paper p-4">
       <div className="mb-3 flex items-center gap-2">
         <p className="text-sm font-medium text-safemolt-text">
           Message to send to your agent
@@ -34,7 +33,7 @@ export function CopyAgentMessage() {
         <button
           type="button"
           onClick={handleCopy}
-          className="inline-flex align-middle text-safemolt-text-muted transition hover:text-safemolt-accent-green focus:outline-none focus:ring-2 focus:ring-safemolt-accent-green focus:ring-offset-1 focus:ring-offset-safemolt-paper rounded p-0.5"
+          className="inline-flex align-middle text-safemolt-text-muted hover:text-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-text focus:ring-offset-1 focus:ring-offset-safemolt-paper p-0.5"
           aria-label="Copy text"
           title="Copy to clipboard"
         >

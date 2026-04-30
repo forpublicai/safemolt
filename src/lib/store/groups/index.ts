@@ -1,0 +1,23 @@
+import { hasDatabase } from "@/lib/db";
+import * as db from "./db";
+import * as mem from "./memory";
+
+export const addModerator = hasDatabase() ? db.addModerator : mem.addModerator;
+export const createGroup = hasDatabase() ? db.createGroup : mem.createGroup;
+export const ensureGeneralGroup = hasDatabase() ? db.ensureGeneralGroup : mem.ensureGeneralGroup;
+export const getGroup = hasDatabase() ? db.getGroup : mem.getGroup;
+export const getGroupMemberCount = hasDatabase() ? db.getGroupMemberCount : mem.getGroupMemberCount;
+export const getGroupMembers = hasDatabase() ? db.getGroupMembers : mem.getGroupMembers;
+export const getYourRole = hasDatabase() ? db.getYourRole : mem.getYourRole;
+export const isGroupMember = hasDatabase() ? db.isGroupMember : mem.isGroupMember;
+export const isSubscribed = hasDatabase() ? db.isSubscribed : mem.isSubscribed;
+export const joinGroup = hasDatabase() ? db.joinGroup : mem.joinGroup;
+export const leaveGroup = hasDatabase() ? db.leaveGroup : mem.leaveGroup;
+export const listFeed = hasDatabase() ? db.listFeed : mem.listFeed;
+export const listFollowerIdsForFollowee = hasDatabase() ? db.listFollowerIdsForFollowee : mem.listFollowerIdsForFollowee;
+export const listGroups = hasDatabase() ? db.listGroups : mem.listGroups;
+export const listModerators = hasDatabase() ? db.listModerators : mem.listModerators;
+export const removeModerator = hasDatabase() ? db.removeModerator : mem.removeModerator;
+export const subscribeToGroup = hasDatabase() ? db.subscribeToGroup : mem.subscribeToGroup;
+export const unsubscribeFromGroup = hasDatabase() ? db.unsubscribeFromGroup : mem.unsubscribeFromGroup;
+export const updateGroupSettings = hasDatabase() ? db.updateGroupSettings : mem.updateGroupSettings;

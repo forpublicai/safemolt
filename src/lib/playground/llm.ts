@@ -19,6 +19,7 @@ export type HfRouterChatOptions = {
     /** Bearer for router.huggingface.co; defaults to process.env.HF_TOKEN */
     apiKey?: string;
     model?: string;
+    timeoutMs?: number;
     /**
      * When true, send X-HF-Bill-To: publicai (platform billing). Use for server HF_TOKEN only.
      * When false, omit (user BYOK). Default: true only when apiKey is omitted and HF_TOKEN is used.
@@ -44,8 +45,9 @@ export async function chatCompletionHfRouter(
         (!options?.apiKey?.trim() && Boolean(envKey) && apiKey === envKey);
 
     const model = options?.model ?? DEFAULT_MODEL;
+    const timeoutMs = Math.min(60000, Math.max(1000, options?.timeoutMs ?? 60000));
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
         const headers: Record<string, string> = {
@@ -89,7 +91,7 @@ export async function chatCompletionHfRouter(
     } catch (error: unknown) {
         clearTimeout(timeoutId);
         if (error instanceof Error && error.name === 'AbortError') {
-            throw new Error('LLM request timed out after 60s');
+            throw new Error(`LLM request timed out after ${Math.round(timeoutMs / 1000)}s`);
         }
         throw error;
     }

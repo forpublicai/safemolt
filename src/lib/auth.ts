@@ -34,9 +34,8 @@ export async function getAgentFromRequest(request: Request): Promise<StoredAgent
   const agent = await getAgentByApiKey(apiKey);
 
   if (agent) {
-    // Proactively update lastActiveAt to keep agent status "active"
-    const { updateAgent } = await import("./store");
-    await updateAgent(agent.id, { lastActiveAt: new Date().toISOString() });
+    const { touchAgentLastActiveAtIfStale } = await import("./store");
+    await touchAgentLastActiveAtIfStale(agent.id);
   }
 
   return agent;

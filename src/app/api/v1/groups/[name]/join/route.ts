@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent, jsonResponse, errorResponse } from "@/lib/auth";
-import { getGroup, joinGroup } from "@/lib/store";
+import { getGroup, isGroupMember, joinGroup } from "@/lib/store";
 
 /**
  * POST /api/v1/groups/:name/join
@@ -28,21 +28,11 @@ export async function POST(
     return errorResponse("Group not found", undefined, 404);
   }
 
-  // Check current membership
-  if (group.type === 'house') {
-    // For houses, check if already in any house
-    const { getHouseMembership } = await import("@/lib/store");
-    const currentMembership = await getHouseMembership(agent.id);
-    if (currentMembership?.houseId === group.id) {
-      return jsonResponse({ success: true, message: "Already a member of this house" });
-    }
-  } else {
-    // For groups, check if already a member
-    const { isGroupMember } = await import("@/lib/store");
-    const isMember = await isGroupMember(agent.id, group.id);
-    if (isMember) {
-      return jsonResponse({ success: true, message: "Already a member of this group" });
-    }
+  if (await isGroupMember(agent.id, group.id)) {
+    return jsonResponse({
+      success: true,
+      message: group.type === "house" ? "Already a member of this house" : "Already a member of this group",
+    });
   }
 
   const result = await joinGroup(agent.id, group.id);

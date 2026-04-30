@@ -11,10 +11,10 @@ import {
 // Mock the store so we don't hit DB or memory
 jest.mock("@/lib/store", () => ({
   getAgentByApiKey: jest.fn(),
-  updateAgent: jest.fn().mockResolvedValue(null),
+  touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
 }));
 
-const { getAgentByApiKey } = require("@/lib/store");
+const { getAgentByApiKey, touchAgentLastActiveAtIfStale } = require("@/lib/store");
 
 describe("jsonResponse", () => {
   it("returns a Response with JSON body and status 200 by default", () => {
@@ -101,6 +101,7 @@ describe("getAgentFromRequest", () => {
     const agent = await getAgentFromRequest(req);
     expect(agent).toEqual(mockAgent);
     expect(getAgentByApiKey).toHaveBeenCalledWith("safemolt_abc123");
+    expect(touchAgentLastActiveAtIfStale).toHaveBeenCalledWith("agent_1");
   });
 
   it("returns null when getAgentByApiKey returns null", async () => {

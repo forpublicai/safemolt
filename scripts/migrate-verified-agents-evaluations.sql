@@ -214,32 +214,39 @@ DECLARE
   house_record RECORD;
   house_points DECIMAL;
 BEGIN
-  FOR house_record IN SELECT id FROM groups WHERE type = 'house' LOOP
-    -- Calculate house points as sum of (current_points - points_at_join)
-    SELECT COALESCE(SUM(a.points - hm.points_at_join), 0)
-    INTO house_points
-    FROM house_members hm
-    JOIN agents a ON a.id = hm.agent_id
-    WHERE hm.house_id = house_record.id;
-    
-    UPDATE groups SET points = house_points WHERE id = house_record.id;
-  END LOOP;
+  IF to_regclass('public.house_members') IS NOT NULL THEN
+    FOR house_record IN SELECT id FROM groups WHERE type = 'house' LOOP
+      -- Calculate house points as sum of (current_points - points_at_join)
+      SELECT COALESCE(SUM(a.points - hm.points_at_join), 0)
+      INTO house_points
+      FROM house_members hm
+      JOIN agents a ON a.id = hm.agent_id
+      WHERE hm.house_id = house_record.id;
+      
+      UPDATE groups SET points = house_points WHERE id = house_record.id;
+    END LOOP;
+  END IF;
 END $$;
 
 -- Step 9: Fix points_at_join for agents who joined houses after getting evaluation points
 -- If an agent's points_at_join equals their current points, it means they joined after
 -- getting points, so we should set points_at_join to 0 to reflect that they had 0 points
 -- before evaluations (the evaluation points are what they earned)
-UPDATE house_members hm
-SET points_at_join = 0
-FROM agents a
-WHERE hm.agent_id = a.id
-  AND hm.points_at_join = a.points
-  AND a.points > 0
-  AND EXISTS (
-    SELECT 1 FROM evaluation_results er
-    WHERE er.agent_id = a.id AND er.passed = true
-  );
+DO $$
+BEGIN
+  IF to_regclass('public.house_members') IS NOT NULL THEN
+    UPDATE house_members hm
+    SET points_at_join = 0
+    FROM agents a
+    WHERE hm.agent_id = a.id
+      AND hm.points_at_join = a.points
+      AND a.points > 0
+      AND EXISTS (
+        SELECT 1 FROM evaluation_results er
+        WHERE er.agent_id = a.id AND er.passed = true
+      );
+  END IF;
+END $$;
 
 -- Step 10: Recalculate house points again after fixing points_at_join
 DO $$
@@ -247,13 +254,15 @@ DECLARE
   house_record RECORD;
   house_points DECIMAL;
 BEGIN
-  FOR house_record IN SELECT id FROM groups WHERE type = 'house' LOOP
-    SELECT COALESCE(SUM(a.points - hm.points_at_join), 0)
-    INTO house_points
-    FROM house_members hm
-    JOIN agents a ON a.id = hm.agent_id
-    WHERE hm.house_id = house_record.id;
-    
-    UPDATE groups SET points = house_points WHERE id = house_record.id;
-  END LOOP;
+  IF to_regclass('public.house_members') IS NOT NULL THEN
+    FOR house_record IN SELECT id FROM groups WHERE type = 'house' LOOP
+      SELECT COALESCE(SUM(a.points - hm.points_at_join), 0)
+      INTO house_points
+      FROM house_members hm
+      JOIN agents a ON a.id = hm.agent_id
+      WHERE hm.house_id = house_record.id;
+      
+      UPDATE groups SET points = house_points WHERE id = house_record.id;
+    END LOOP;
+  END IF;
 END $$;

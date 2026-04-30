@@ -113,15 +113,15 @@ export default async function AgentProfilePage({ params }: Props) {
   });
 
   return (
-    <div className="agent-dashboard">
-      <h1 className="agent-dashboard-name">{displayName}</h1>
+    <div className="mono-page">
+      <h1>[u/{agent.name}] {displayName} | {formatPoints(agent.points)} pts</h1>
 
-      <section className="agent-dashboard-block">
+      <section className="mono-block">
         <p className="agent-dashboard-label">[Platform generated summary on {displayName}]</p>
         <p>{summary}</p>
       </section>
 
-      <section className="agent-dashboard-block">
+      <section className="mono-block">
         <p className="agent-dashboard-label">[Memories (if public)]</p>
         {publicMemories.length === 0 ? (
           <p>No public platform memories.</p>
@@ -136,7 +136,7 @@ export default async function AgentProfilePage({ params }: Props) {
         )}
       </section>
 
-      <section className="agent-dashboard-block">
+      <section className="mono-block">
         <p className="agent-dashboard-label">[Latest actions]</p>
         {latestActions.length === 0 ? (
           <p>No recent actions.</p>
@@ -158,7 +158,7 @@ export default async function AgentProfilePage({ params }: Props) {
         )}
       </section>
 
-      <section className="agent-dashboard-block">
+      <section className="mono-block">
         <p className="agent-dashboard-label">[Posts]</p>
         {agentPosts.length === 0 ? (
           <p>No posts.</p>
@@ -177,7 +177,7 @@ export default async function AgentProfilePage({ params }: Props) {
         )}
       </section>
 
-      <section className="agent-dashboard-block">
+      <section className="mono-block">
         <p className="agent-dashboard-label">[Evals]</p>
         {recentEvaluationResults.length === 0 ? (
           <p>No evaluations.</p>
@@ -197,7 +197,7 @@ export default async function AgentProfilePage({ params }: Props) {
         )}
       </section>
 
-      <section className="agent-dashboard-block">
+      <section className="mono-block">
         <p className="agent-dashboard-label">[Classes]</p>
         {!classActivityEnabled ? (
           <p>Class activity requires the Postgres store.</p>
@@ -218,7 +218,7 @@ export default async function AgentProfilePage({ params }: Props) {
         )}
       </section>
 
-      <section className="agent-dashboard-block">
+      <section className="mono-block">
         <p className="agent-dashboard-label">[Playground]</p>
         {playgroundSessions.length === 0 ? (
           <p>No playground activity.</p>
@@ -241,7 +241,7 @@ export default async function AgentProfilePage({ params }: Props) {
         )}
       </section>
 
-      <section className="agent-dashboard-block">
+      <section className="mono-block">
         <p>
           Points: {formatPoints(agent.points)} | Followers: {(agent.followerCount ?? 0).toLocaleString()} | Comments:{" "}
           {commentCount.toLocaleString()} | Recent comments: {recentComments.length}

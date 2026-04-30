@@ -468,7 +468,7 @@ export function PlaygroundContent() {
                 </Link>
                 {" · "}
                 <Link
-                    href="/u"
+                    href="/agents"
                     className="hover:text-safemolt-accent-green hover:underline"
                 >
                     Leaderboard

@@ -23,10 +23,14 @@ const MIGRATION_FILES = [
   { file: "migrate-admissions.sql", label: "Platform admissions" },
   { file: "migrate-agent-loop.sql", label: "Agent autonomous loop" },
   { file: "migrate-activity-contexts.sql", label: "Activity context cache" },
+  { file: "migrate-activity-feed-indexes.sql", label: "Activity feed indexes" },
+  { file: "migrate-activity-feed-indexes-2.sql", label: "Activity feed covering indexes" },
+  { file: "migrate-activity-events.sql", label: "Activity events denormalized feed" },
   { file: "migrate-chat-sessions.sql", label: "Dashboard chat session persistence" },
   { file: "migrate-professor-users.sql", label: "Professor human user linking" },
   { file: "migrate-class-slugs.sql", label: "Class UUID and slug migration" },
   { file: "migrate-ao-stanford.sql", label: "Stanford AO companies and fellowship" },
+  { file: "migrate-drop-houses.sql", label: "Drop legacy houses tables" },
 ];
 
 function loadEnvLocalIfNeeded() {
@@ -91,7 +95,36 @@ function isIgnorableMigrationError(err) {
   );
 }
 
-async function runFile(client, filePath, label) {
+async function ensureMigrationTable(client) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS _migrations (
+      filename text PRIMARY KEY,
+      label text NOT NULL,
+      applied_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+}
+
+async function hasMigrationRun(client, filename) {
+  const result = await client.query("SELECT 1 FROM _migrations WHERE filename = $1 LIMIT 1", [filename]);
+  return result.rowCount > 0;
+}
+
+async function recordMigration(client, filename, label) {
+  await client.query(
+    "INSERT INTO _migrations (filename, label) VALUES ($1, $2) ON CONFLICT (filename) DO NOTHING",
+    [filename, label]
+  );
+}
+
+async function runFile(client, migration) {
+  const { file, label } = migration;
+  const filePath = path.join(__dirname, file);
+  if (await hasMigrationRun(client, file)) {
+    console.log(`[Migration] SKIP: ${label} (already recorded)`);
+    return;
+  }
+
   if (!fs.existsSync(filePath)) {
     console.log(`[Migration] SKIP: ${label} (file missing)`);
     return;
@@ -105,9 +138,11 @@ async function runFile(client, filePath, label) {
 
   try {
     await client.query(sql);
+    await recordMigration(client, file, label);
     console.log(`[Migration] SUCCESS: ${label}`);
   } catch (err) {
     if (isIgnorableMigrationError(err)) {
+      await recordMigration(client, file, label);
       console.log(`[Migration] SKIP: ${label} (already applied or not needed)`);
       return;
     }
@@ -130,10 +165,10 @@ async function migrate() {
     console.log(`[Migration] Connecting to: ${maskedConnectionTarget(connectionString)}`);
     await client.connect();
     console.log("[Migration] Database connected.");
+    await ensureMigrationTable(client);
 
     for (const migration of MIGRATION_FILES) {
-      const filePath = path.join(__dirname, migration.file);
-      await runFile(client, filePath, migration.label);
+      await runFile(client, migration);
     }
 
     console.log("[Migration] All migrations completed.");

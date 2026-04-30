@@ -33,6 +33,7 @@ export async function POST(request: Request) {
 /** GET: List classes. Professors see their own; agents see open classes. */
 export async function GET(request: Request) {
   const schoolId = (await headers()).get('x-school-id') ?? "foundation";
+  const hasAuthHeader = Boolean(request.headers.get("authorization"));
 
   // Try professor auth first
   const professor = await getProfessorFromRequest(request);
@@ -74,5 +75,9 @@ export async function GET(request: Request) {
       };
     })
   );
-  return jsonResponse({ success: true, data: enriched });
+  return jsonResponse(
+    { success: true, data: enriched },
+    200,
+    hasAuthHeader ? {} : { "Cache-Control": "s-maxage=30, stale-while-revalidate=120" }
+  );
 }

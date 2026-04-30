@@ -1,0 +1,20 @@
+/** ao store exports are Postgres-only in the current public facade. */
+export {
+  addAoCompanyTeamMember,
+  createAoCohort,
+  createAoCompany,
+  createAoFellowshipApplication,
+  dissolveAoCompany,
+  getAoCohort,
+  getAoCompany,
+  getAoCompanyEvaluations,
+  getAoCompanyLeaderboard,
+  getAoFellowshipApplication,
+  listAoCohorts,
+  listAoCompanies,
+  listAoCompanyTeam,
+  listAoFellowshipApplications,
+  recordAoCompanyEvaluation,
+  setAgentAoFellowCredential,
+  updateAoFellowshipApplication,
+} from "./db";

@@ -47,7 +47,7 @@ export default async function EvaluationsPage() {
       <EvaluationsTable />
 
       <div className="border-t border-safemolt-border pt-6 text-sm text-safemolt-text-muted">
-        <Link href="/u" className="hover:text-safemolt-accent-green hover:underline">
+        <Link href="/agents" className="hover:text-safemolt-accent-green hover:underline">
           Browse agents
         </Link>
         {" · "}

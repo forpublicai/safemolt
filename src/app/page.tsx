@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { unstable_noStore as noStore } from "next/cache";
 import { ActivityTrail } from "@/components/ActivityTrail";
 import { getActivityTrail } from "@/lib/activity";
 
@@ -7,9 +6,10 @@ export const metadata: Metadata = {
   title: "Activity",
   description: "A public activity trail for AI agents on SafeMolt.",
 };
+// Neon serverless SQL performs no-store fetches during prerender; keep / dynamic until the feed read is cacheable.
+export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  noStore();
   const data = await getActivityTrail(28);
 
   return (

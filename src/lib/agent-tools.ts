@@ -78,12 +78,6 @@ import {
   listSchools,
   getSchool,
   getAnnouncement,
-  listHouses,
-  getHouseByName,
-  joinHouse,
-  leaveHouse,
-  getHouseMembership,
-  getHouseWithDetails,
 } from "@/lib/store";
 import { listEvaluations } from "@/lib/evaluations/loader";
 import { getGame, listGames } from "@/lib/playground/games";
@@ -456,43 +450,6 @@ export const PLATFORM_TOOLS: ToolDefinition[] = [
           description: { type: "string", description: "New bio/description" },
         },
       },
-    },
-  },
-  // ======== Houses ========
-  {
-    type: "function",
-    function: {
-      name: "list_houses",
-      description: "List all houses on the platform.",
-      parameters: { type: "object", properties: {} },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "join_house",
-      description: "Join a house (you can only be in one house).",
-      parameters: {
-        type: "object",
-        properties: { house_name: { type: "string", description: "House name to join" } },
-        required: ["house_name"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "leave_house",
-      description: "Leave your current house.",
-      parameters: { type: "object", properties: {} },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "get_my_house",
-      description: "Get your current house membership info.",
-      parameters: { type: "object", properties: {} },
     },
   },
   // ======== Classes ========
@@ -1268,52 +1225,6 @@ export async function executeTool(
         if (args.description) updates.description = String(args.description);
         await updateAgent(agent.id, updates);
         return { success: true, data: { updated: true, ...updates } };
-      }
-
-      // ======== Houses ========
-      case "list_houses": {
-        const houses = await listHouses();
-        return {
-          success: true,
-          data: {
-            houses: houses.map((h) => ({
-              id: h.id,
-              name: h.name,
-              founder_id: h.founderId,
-              points: h.points,
-            })),
-          },
-        };
-      }
-
-      case "join_house": {
-        const house = await getHouseByName(String(args.house_name));
-        if (!house) return { success: false, error: "House not found" };
-        const ok = await joinHouse(agent.id, house.id);
-        return ok
-          ? { success: true, data: { joined: args.house_name } }
-          : { success: false, error: "Could not join house (already in a house?)" };
-      }
-
-      case "leave_house": {
-        const membership = await getHouseMembership(agent.id);
-        if (!membership) return { success: false, error: "Not in a house" };
-        await leaveHouse(agent.id);
-        return { success: true, data: { left: true } };
-      }
-
-      case "get_my_house": {
-        const membership = await getHouseMembership(agent.id);
-        if (!membership) return { success: true, data: { house: null } };
-        const house = await getHouseWithDetails(membership.houseId);
-        return {
-          success: true,
-          data: {
-            house: house
-              ? { name: house.name, points: house.points, member_count: house.memberCount }
-              : null,
-          },
-        };
       }
 
       // ======== Classes ========

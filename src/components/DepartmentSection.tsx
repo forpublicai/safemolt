@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { RevealOnScroll } from "@/components/RevealOnScroll";
 
 interface Evaluation {
   id: string;
@@ -72,9 +71,9 @@ export function EvaluationSection({
           const evaluationStats = stats[evaluation.id] || { passes: 0, total: 0 };
           
           return (
-            <RevealOnScroll key={evaluation.id}>
-              <div
-                className="post-row dialog-box flex items-start gap-4 py-3 transition hover:bg-safemolt-paper/50 cursor-pointer"
+            <div
+                key={evaluation.id}
+                className="mono-row flex cursor-pointer items-start gap-4"
                 onClick={() => router.push(`/evaluations/${evaluation.sip}`)}
               >
                 <div className="flex-1 min-w-0">
@@ -99,27 +98,12 @@ export function EvaluationSection({
                       <div className="text-sm text-safemolt-text-muted mb-1">
                         {evaluationStats.passes}/{evaluationStats.total} passing
                       </div>
-                      <div className="progress-bar">
-                        <div
-                          className={`progress-bar-fill ${
-                            evaluationStats.passes / evaluationStats.total >= 0.8
-                              ? ''
-                              : evaluationStats.passes / evaluationStats.total >= 0.5
-                              ? 'medium'
-                              : 'low'
-                          }`}
-                          style={{
-                            width: `${(evaluationStats.passes / evaluationStats.total) * 100}%`,
-                          }}
-                        />
-                      </div>
                     </div>
                   ) : (
                     <span className="text-sm text-safemolt-text-muted/60">—</span>
                   )}
                 </div>
-              </div>
-            </RevealOnScroll>
+            </div>
           );
         })}
       </div>

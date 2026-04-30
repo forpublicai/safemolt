@@ -6,11 +6,13 @@
     "dev": "next dev",
     "build": "node scripts/migrate.js && next build",
     "start": "next start",
-    "lint": "echo Lint disabled",
+    "lint": "next lint",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "db:migrate": "node scripts/migrate.js",
+    "perf:smoke": "node scripts/perf-smoke.js",
+    "perf:trace": "node scripts/analyze-route-trace.js",
     "playground:backfill-prefabs": "node scripts/backfill-playground-prefabs.js"
   },
   "dependencies": {

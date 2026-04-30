@@ -27,17 +27,17 @@ const linkClass: Record<ActivityLinkType, string> = {
 
 export function ActivityTrail({ activities: initialActivities }: ActivityTrailProps) {
   const [activities, setActivities] = useState<ActivityItem[]>(() => sortAscending(initialActivities));
-  const [expanded, setExpanded] = useState<string | null>(() => {
-    const sorted = sortAscending(initialActivities);
-    const newest = sorted[sorted.length - 1];
-    return newest ? activityKey(newest) : null;
-  });
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const streamRef = useRef<HTMLDivElement | null>(null);
   const debounceRef = useRef<number | null>(null);
+  const requestSeq = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const didMountRef = useRef(false);
 
   useEffect(() => {
     const stream = streamRef.current;
@@ -45,25 +45,34 @@ export function ActivityTrail({ activities: initialActivities }: ActivityTrailPr
   }, []);
 
   useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      if (!query && activeFilters.length === 0) return;
+    }
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    const q = query;
+    const types = [...activeFilters];
     debounceRef.current = window.setTimeout(() => {
-      void loadFresh();
+      loadFreshFireAndForget(q, types);
     }, 180);
     return () => {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
   }, [query, activeFilters.join(",")]);
 
-  const oldest = activities[0]?.occurredAt;
+  const oldest = activities[0];
 
-  async function fetchActivities(options: { before?: string } = {}) {
+  async function fetchActivities(options: { before?: string; beforeId?: string; query?: string; types?: string[]; signal?: AbortSignal } = {}) {
     const params = new URLSearchParams();
     params.set("limit", "40");
     if (options.before) params.set("before", options.before);
-    if (query.trim()) params.set("q", query.trim());
-    if (activeFilters.length > 0) params.set("types", activeFilters.join(","));
+    if (options.beforeId) params.set("before_id", options.beforeId);
+    const q = options.query ?? query;
+    const types = options.types ?? activeFilters;
+    if (q.trim()) params.set("q", q.trim());
+    if (types.length > 0) params.set("types", types.join(","));
 
-    const response = await fetch(`/api/activity?${params.toString()}`, { cache: "no-store" });
+    const response = await fetch(`/api/activity?${params.toString()}`, { signal: options.signal });
     const data = await response.json();
     if (!response.ok || !data.success) throw new Error(data.error ?? "Could not load activity");
     return {
@@ -72,15 +81,35 @@ export function ActivityTrail({ activities: initialActivities }: ActivityTrailPr
     };
   }
 
-  async function loadFresh() {
+  async function loadFresh(q = query, types = activeFilters) {
+    const seq = ++requestSeq.current;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     const stream = streamRef.current;
-    const { items, hasMore: more } = await fetchActivities();
-    setActivities(items);
-    setHasMore(more);
-    const newest = items[items.length - 1];
-    setExpanded(newest ? activityKey(newest) : null);
-    requestAnimationFrame(() => {
-      if (stream) stream.scrollTop = stream.scrollHeight;
+    try {
+      const { items, hasMore: more } = await fetchActivities({ query: q, types, signal: controller.signal });
+      if (seq !== requestSeq.current) return;
+      setLoadError(null);
+      setActivities(items);
+      setHasMore(more);
+      setExpanded(null);
+      requestAnimationFrame(() => {
+        if (stream) stream.scrollTop = stream.scrollHeight;
+      });
+    } catch (err) {
+      if (seq !== requestSeq.current) return;
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setLoadError(err instanceof Error ? err.message : "Could not load activity");
+      setHasMore(false);
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
+    }
+  }
+
+  function loadFreshFireAndForget(q = query, types = activeFilters): void {
+    loadFresh(q, types).catch((err) => {
+      setLoadError(err instanceof Error ? err.message : "Could not load activity");
     });
   }
 
@@ -90,7 +119,12 @@ export function ActivityTrail({ activities: initialActivities }: ActivityTrailPr
     const previousHeight = stream?.scrollHeight ?? 0;
     setLoadingOlder(true);
     try {
-      const { items, hasMore: more } = await fetchActivities({ before: oldest });
+      const { items, hasMore: more } = await fetchActivities({
+        before: oldest.occurredAt,
+        beforeId: oldest.cursorId,
+        query,
+        types: activeFilters,
+      });
       setHasMore(more);
       if (items.length > 0) {
         setActivities((current) => mergeActivities(items, current));
@@ -103,10 +137,16 @@ export function ActivityTrail({ activities: initialActivities }: ActivityTrailPr
     }
   }
 
+  function loadOlderFireAndForget(): void {
+    loadOlder().catch((err) => {
+      setLoadError(err instanceof Error ? err.message : "Could not load activity");
+    });
+  }
+
   function onStreamScroll() {
     const stream = streamRef.current;
     if (!stream || stream.scrollTop > 28) return;
-    void loadOlder();
+    loadOlderFireAndForget();
   }
 
   function toggleFilter(id: string) {
@@ -124,7 +164,10 @@ export function ActivityTrail({ activities: initialActivities }: ActivityTrailPr
     <div className="activity-frame">
       <div ref={streamRef} className="activity-stream" onScroll={onStreamScroll}>
         {loadingOlder && <p className="activity-load-state">[Loading earlier activity...]</p>}
-        {activities.length === 0 ? (
+        {loadError && activities.length > 0 && <p className="activity-load-state">[{loadError}]</p>}
+        {loadError && activities.length === 0 ? (
+          <p className="activity-empty">[{loadError}]</p>
+        ) : activities.length === 0 ? (
           <p className="activity-empty">{emptyLabel}</p>
         ) : (
           activities.map((activity) => (
@@ -177,12 +220,19 @@ function ActivityRow({
   const [context, setContext] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const enrichTimerRef = useRef<number | null>(null);
 
-  async function toggle() {
-    onToggle();
-    if (context || loading) return;
-    setLoading(true);
-    setError(null);
+  useEffect(() => {
+    return () => {
+      if (enrichTimerRef.current) window.clearTimeout(enrichTimerRef.current);
+    };
+  }, []);
+
+  async function fetchContext(quiet = false) {
+    if (!quiet) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const res = await fetch(
         `/api/activity/${encodeURIComponent(activity.kind)}/${encodeURIComponent(activity.id)}/context`,
@@ -191,11 +241,28 @@ function ActivityRow({
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error ?? "Context unavailable");
       setContext(String(data.content ?? ""));
+      if (!data.enriched && !quiet) {
+        enrichTimerRef.current = window.setTimeout(() => {
+          fetchContextFireAndForget(true);
+        }, 1800);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Context unavailable");
+      if (!quiet) setError(err instanceof Error ? err.message : "Context unavailable");
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
+  }
+
+  function fetchContextFireAndForget(quiet = false): void {
+    fetchContext(quiet).catch((err) => {
+      if (!quiet) setError(err instanceof Error ? err.message : "Context unavailable");
+    });
+  }
+
+  function toggle() {
+    onToggle();
+    if (context || loading) return;
+    fetchContextFireAndForget();
   }
 
   return (
@@ -230,7 +297,7 @@ function ActivityRow({
       </div>
       {isExpanded && (
         <div className="activity-context">
-          {loading ? "[Generating context...]" : error ? `[${error}]` : context || activity.summary}
+          {loading ? "[Generating context...]" : error ? `[${error}]` : context || "[Open activity context]"}
         </div>
       )}
     </div>

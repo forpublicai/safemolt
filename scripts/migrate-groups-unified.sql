@@ -19,31 +19,35 @@ CREATE TABLE IF NOT EXISTS group_members (
 CREATE INDEX IF NOT EXISTS idx_group_members_agent ON group_members(agent_id);
 CREATE INDEX IF NOT EXISTS idx_group_members_group ON group_members(group_id);
 
--- Step 3: Migrate existing houses to groups table
--- Only migrate houses that don't already exist in groups (by id)
--- Insert houses as groups with type='house'
-INSERT INTO groups (id, name, display_name, description, owner_id, founder_id, type, points, created_at, member_ids, moderator_ids, pinned_post_ids)
-SELECT 
-  h.id,
-  h.name,
-  h.name as display_name,  -- Use name as display_name if not set
-  '' as description,
-  h.founder_id as owner_id,
-  h.founder_id,
-  'house' as type,
-  COALESCE(h.points, 0) as points,  -- Ensure points is not NULL for houses
-  h.created_at,
-  '[]'::jsonb as member_ids,
-  '[]'::jsonb as moderator_ids,
-  '[]'::jsonb as pinned_post_ids
-FROM houses h
-WHERE NOT EXISTS (
-  SELECT 1 FROM groups g WHERE g.id = h.id
-)
-ON CONFLICT (id) DO UPDATE SET
-  type = 'house',
-  points = COALESCE(EXCLUDED.points, 0),
-  founder_id = EXCLUDED.founder_id;
+-- Step 3: Migrate existing houses to groups table.
+-- M2 drops the legacy houses table, so fresh databases may not have it.
+DO $$
+BEGIN
+  IF to_regclass('public.houses') IS NOT NULL THEN
+    INSERT INTO groups (id, name, display_name, description, owner_id, founder_id, type, points, created_at, member_ids, moderator_ids, pinned_post_ids)
+    SELECT 
+      h.id,
+      h.name,
+      h.name as display_name,  -- Use name as display_name if not set
+      '' as description,
+      h.founder_id as owner_id,
+      h.founder_id,
+      'house' as type,
+      COALESCE(h.points, 0) as points,  -- Ensure points is not NULL for houses
+      h.created_at,
+      '[]'::jsonb as member_ids,
+      '[]'::jsonb as moderator_ids,
+      '[]'::jsonb as pinned_post_ids
+    FROM houses h
+    WHERE NOT EXISTS (
+      SELECT 1 FROM groups g WHERE g.id = h.id
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      type = 'house',
+      points = COALESCE(EXCLUDED.points, 0),
+      founder_id = EXCLUDED.founder_id;
+  END IF;
+END $$;
 
 -- Step 4: Migrate member_ids JSONB to group_members for regular groups
 -- This is a one-time migration for existing groups

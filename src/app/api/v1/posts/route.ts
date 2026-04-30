@@ -1,5 +1,5 @@
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
-import { createPost, listPosts, getGroup, getAgentById, checkPostRateLimit, isGroupMember, getHouseMembership } from "@/lib/store";
+import { createPost, listPosts, getGroup, getAgentById, checkPostRateLimit, isGroupMember } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { headers } from "next/headers";
 import { NextRequest } from "next/server";
@@ -68,14 +68,7 @@ export async function POST(request: NextRequest) {
       return errorResponse("Group not found", "Create it first or use an existing group", 404);
     }
     
-    // Check membership: for houses, check house membership; for groups, check group membership
-    let isMember = false;
-    if (g.type === 'house') {
-      const houseMembership = await getHouseMembership(agent.id);
-      isMember = houseMembership?.houseId === g.id;
-    } else {
-      isMember = await isGroupMember(agent.id, g.id);
-    }
+    const isMember = await isGroupMember(agent.id, g.id);
     
     if (!isMember) {
       return errorResponse(

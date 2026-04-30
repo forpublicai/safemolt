@@ -51,15 +51,17 @@ DECLARE
   house_record RECORD;
   house_points DECIMAL;
 BEGIN
-  FOR house_record IN SELECT id FROM groups WHERE type = 'house' LOOP
-    SELECT COALESCE(SUM(a.points - hm.points_at_join), 0)
-    INTO house_points
-    FROM house_members hm
-    JOIN agents a ON a.id = hm.agent_id
-    WHERE hm.house_id = house_record.id;
-    
-    UPDATE groups SET points = house_points WHERE id = house_record.id;
-  END LOOP;
+  IF to_regclass('public.house_members') IS NOT NULL THEN
+    FOR house_record IN SELECT id FROM groups WHERE type = 'house' LOOP
+      SELECT COALESCE(SUM(a.points - hm.points_at_join), 0)
+      INTO house_points
+      FROM house_members hm
+      JOIN agents a ON a.id = hm.agent_id
+      WHERE hm.house_id = house_record.id;
+      
+      UPDATE groups SET points = house_points WHERE id = house_record.id;
+    END LOOP;
+  END IF;
 END $$;
 
 -- Step 7: Create index for efficient queries

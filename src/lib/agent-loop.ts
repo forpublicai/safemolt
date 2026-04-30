@@ -58,6 +58,7 @@ import { listGames } from "@/lib/playground/games";
 import { getNewsItems, type NewsItem } from "@/lib/rss";
 import type { StoredAgent, StoredPost, StoredComment } from "@/lib/store-types";
 import type { PlaygroundSession } from "@/lib/playground/types";
+import { recordAgentLoopActivityEvent } from "@/lib/store/activity/events";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -179,10 +180,13 @@ async function logAction(
   contentSnippet?: string
 ): Promise<void> {
   try {
-    await sql!`
+    const rows = await sql!`
       INSERT INTO agent_loop_action_log (agent_id, action, target_type, target_id, content_snippet)
       VALUES (${agentId}, ${action}, ${targetType ?? null}, ${targetId ?? null}, ${contentSnippet?.slice(0, 500) ?? null})
+      RETURNING id
     `;
+    const row = rows[0] as Record<string, unknown> | undefined;
+    if (row?.id) await recordAgentLoopActivityEvent(String(row.id));
   } catch {
     // Table might not exist yet — non-fatal
   }

@@ -4,38 +4,54 @@
 
 :root {
   /* Hex values (used in non-Tailwind CSS like box-shadow, gradients) */
-  --safemolt-paper: #f8f6f2;
-  --safemolt-card: #f5f2ed;
-  --safemolt-border: #d4c9b8;
-  --safemolt-text: #2d2418;
-  --safemolt-text-muted: #6b5d4a;
-  --safemolt-accent-green: #7a8b6f;
-  --safemolt-accent-green-hover: #5f6d55;
-  --safemolt-accent-brown: #8b7355;
-  --safemolt-success: #6b8e6b;
-  --safemolt-error: #a67c7c;
+  --safemolt-paper: #ffffff;
+  --safemolt-card: #f7f7f7;
+  --safemolt-border: #222222;
+  --safemolt-text: #050505;
+  --safemolt-text-muted: #555555;
+  --safemolt-accent-green: #005f32;
+  --safemolt-accent-green-hover: #003d20;
+  --safemolt-accent-brown: #444444;
+  --safemolt-success: #006b35;
+  --safemolt-error: #9d0000;
+  --safemolt-activity-agent: #008ed6;
+  --safemolt-activity-evaluation: #538700;
+  --safemolt-activity-post: #d04d00;
+  --safemolt-activity-playground: #b0008a;
+  --safemolt-activity-class: #a06a00;
+  --safemolt-activity-group: #005a9c;
   /* Legacy aliases */
   --safemolt-bg: #f8f6f2;
   --safemolt-accent: #7a8b6f;
 
   /* RGB channel triplets — used by Tailwind so opacity modifiers (bg-color/10) keep working.
      Must be kept in sync with hex values above (and overridden together per-school). */
-  --safemolt-paper-rgb: 248 246 242;
-  --safemolt-card-rgb: 245 242 237;
-  --safemolt-border-rgb: 212 201 184;
-  --safemolt-text-rgb: 45 36 24;
-  --safemolt-text-muted-rgb: 107 93 74;
-  --safemolt-accent-green-rgb: 122 139 111;
-  --safemolt-accent-green-hover-rgb: 95 109 85;
-  --safemolt-accent-brown-rgb: 139 115 85;
-  --safemolt-success-rgb: 107 142 107;
-  --safemolt-error-rgb: 166 124 124;
+  --safemolt-paper-rgb: 255 255 255;
+  --safemolt-card-rgb: 247 247 247;
+  --safemolt-border-rgb: 34 34 34;
+  --safemolt-text-rgb: 5 5 5;
+  --safemolt-text-muted-rgb: 85 85 85;
+  --safemolt-accent-green-rgb: 0 95 50;
+  --safemolt-accent-green-hover-rgb: 0 61 32;
+  --safemolt-accent-brown-rgb: 68 68 68;
+  --safemolt-success-rgb: 0 107 53;
+  --safemolt-error-rgb: 157 0 0;
+  --safemolt-activity-agent-rgb: 0 142 214;
+  --safemolt-activity-evaluation-rgb: 83 135 0;
+  --safemolt-activity-post-rgb: 208 77 0;
+  --safemolt-activity-playground-rgb: 176 0 138;
+  --safemolt-activity-class-rgb: 160 106 0;
+  --safemolt-activity-group-rgb: 0 90 156;
 }
 
 body {
   @apply bg-safemolt-paper text-safemolt-text antialiased;
-  font-family: var(--font-serif), "Crimson Pro", Georgia, serif;
-  line-height: 1.7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  line-height: 1.55;
+}
+
+* {
+  letter-spacing: 0;
 }
 
 .public-layout {
@@ -228,41 +244,17 @@ body {
   color: #444;
 }
 
-.activity-link-agent {
-  color: #008ed6;
-  font-weight: 700;
-  text-decoration: none;
-}
+.activity-link-agent { @apply text-safemolt-activity-agent font-bold; text-decoration: none; }
 
-.activity-link-evaluation {
-  color: #538700;
-  font-weight: 700;
-  text-decoration: none;
-}
+.activity-link-evaluation { @apply text-safemolt-activity-evaluation font-bold; text-decoration: none; }
 
-.activity-link-post {
-  color: #d04d00;
-  font-weight: 700;
-  text-decoration: none;
-}
+.activity-link-post { @apply text-safemolt-activity-post font-bold; text-decoration: none; }
 
-.activity-link-playground {
-  color: #b0008a;
-  font-weight: 700;
-  text-decoration: none;
-}
+.activity-link-playground { @apply text-safemolt-activity-playground font-bold; text-decoration: none; }
 
-.activity-link-class {
-  color: #a06a00;
-  font-weight: 700;
-  text-decoration: none;
-}
+.activity-link-class { @apply text-safemolt-activity-class font-bold; text-decoration: none; }
 
-.activity-link-group {
-  color: #005a9c;
-  font-weight: 700;
-  text-decoration: none;
-}
+.activity-link-group { @apply text-safemolt-activity-group font-bold; text-decoration: none; }
 
 .activity-link-agent:hover,
 .activity-link-evaluation:hover,
@@ -442,56 +434,35 @@ body {
 
 /* Button base */
 .btn-primary {
-  @apply inline-flex items-center justify-center rounded-lg bg-safemolt-accent-green px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-safemolt-accent-green-hover focus:outline-none focus:ring-2 focus:ring-safemolt-accent-green focus:ring-offset-2 focus:ring-offset-safemolt-paper;
+  @apply inline-flex items-center justify-center rounded-none border border-safemolt-border bg-safemolt-text px-4 py-2 text-sm font-medium text-white shadow-none transition-none hover:bg-safemolt-accent-green-hover focus:outline-none focus:ring-1 focus:ring-safemolt-text focus:ring-offset-1 focus:ring-offset-safemolt-paper;
 }
 
 .btn-secondary {
-  @apply inline-flex items-center justify-center rounded-lg border border-safemolt-border bg-safemolt-card px-4 py-2.5 text-sm font-medium text-safemolt-text transition-colors hover:bg-safemolt-accent-brown/10 hover:border-safemolt-accent-brown focus:outline-none focus:ring-2 focus:ring-safemolt-accent-brown focus:ring-offset-2 focus:ring-offset-safemolt-paper;
+  @apply inline-flex items-center justify-center rounded-none border border-safemolt-border bg-white px-4 py-2 text-sm font-medium text-safemolt-text shadow-none transition-none hover:bg-safemolt-card focus:outline-none focus:ring-1 focus:ring-safemolt-text focus:ring-offset-1 focus:ring-offset-safemolt-paper;
 }
 
 /* Card */
 .card {
-  @apply rounded-xl border border-safemolt-border bg-safemolt-card p-4 shadow-watercolor;
+  @apply rounded-none border border-safemolt-border bg-white p-4 shadow-none;
 }
 
 /* Dialog box - white background, sharp corners for main content */
 .dialog-box {
-  @apply bg-white p-4;
+  @apply rounded-none border border-safemolt-border bg-white p-4 shadow-none;
 }
 
 /* Pill tabs */
 .pill {
-  @apply rounded-full border border-safemolt-border bg-safemolt-card px-3 py-1.5 text-sm text-safemolt-text-muted transition-colors hover:bg-safemolt-accent-brown/10 hover:text-safemolt-text;
+  @apply rounded-none border border-safemolt-border bg-white px-3 py-1 text-sm text-safemolt-text-muted transition-none hover:bg-safemolt-card hover:text-safemolt-text;
 }
 
 .pill-active {
-  @apply border-safemolt-accent-green bg-safemolt-accent-green/10 text-safemolt-accent-green;
+  @apply border-safemolt-text bg-safemolt-text text-white;
 }
 
 /* Watercolor utilities */
 .bg-watercolor {
-  @apply bg-watercolor-brown;
-}
-
-/* Magical details: animations and micro-interactions */
-@keyframes pulse-subtle {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.05); }
-}
-
-@keyframes slide-in-left {
-  from { transform: translateX(-4px); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
-}
-
-@keyframes fade-in-up {
-  from { transform: translateY(4px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
-}
-
-@keyframes glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(122, 139, 111, 0); }
-  50% { box-shadow: 0 0 8px 2px rgba(122, 139, 111, 0.3); }
+  @apply bg-white;
 }
 
 /* Respect reduced motion preference */
@@ -505,291 +476,8 @@ body {
   }
 }
 
-/* Stat hover shadow (subtle) */
 .stat-link:hover {
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-
-/* Post row hover border */
-.post-row {
-  position: relative;
-  transition: all 0.2s ease-out;
-}
-
-.post-row::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 0;
-  background-color: var(--safemolt-accent-green);
-  transition: width 0.2s ease-out;
-}
-
-.post-row:hover::before {
-  width: 2px;
-}
-
-/* Comment bubble hover */
-.comment-bubble {
-  transition: transform 0.15s ease-out;
-}
-
-.comment-bubble:hover {
-  transform: scale(1.05);
-}
-
-/* New badge pulse */
-.new-badge {
-  animation: pulse-subtle 2s ease-in-out infinite;
-}
-
-/* Skeleton loading */
-@keyframes skeleton-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-
-.skeleton {
-  animation: skeleton-pulse 1.5s ease-in-out infinite;
-  background: linear-gradient(
-    90deg,
-    var(--safemolt-card) 0%,
-    var(--safemolt-paper) 50%,
-    var(--safemolt-card) 100%
-  );
-  background-size: 200% 100%;
-  animation: skeleton-pulse 1.5s ease-in-out infinite,
-    skeleton-shimmer 1.5s ease-in-out infinite;
-}
-
-@keyframes skeleton-shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
-
-/* Empty state animation */
-.empty-state {
-  animation: fade-in-up 0.4s ease-out;
-}
-
-/* Link underline slide - only for SendAgent dialog */
-.link-slide {
-  position: relative;
   text-decoration: none;
-}
-
-.link-slide::after {
-  content: '';
-  position: absolute;
-  bottom: -2px;
-  left: 0;
-  width: 0;
-  height: 1px;
-  background-color: currentColor;
-  transition: width 0.2s ease-out;
-}
-
-.link-slide:hover::after {
-  width: 100%;
-}
-
-/* Active link indicator */
-.nav-link-active {
-  position: relative;
-  background-color: var(--safemolt-accent-brown/10);
-}
-
-.nav-link-active::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  top: 0;
-  width: 3px;
-  background-color: var(--safemolt-accent-green);
-  animation: slide-in-left 0.3s ease-out;
-}
-
-/* Page transition fade */
-.page-transition {
-  animation: fade-in-up 0.3s ease-out;
-}
-
-/* Just now pulsing dot */
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-
-.just-now-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: var(--safemolt-success);
-  margin-left: 4px;
-  animation: pulse-dot 1.5s ease-in-out infinite;
-}
-
-/* Activity indicator pulse */
-@keyframes activity-pulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.2); opacity: 0.7; }
-}
-
-.activity-indicator {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background-color: var(--safemolt-success);
-  margin-left: 6px;
-  animation: activity-pulse 2s ease-in-out infinite;
-}
-
-/* Konami code owl animation */
-@keyframes owl-fly {
-  0% {
-    transform: translateX(-100px) translateY(0) rotate(0deg);
-    opacity: 0;
-  }
-  20% {
-    opacity: 1;
-  }
-  80% {
-    opacity: 1;
-  }
-  100% {
-    transform: translateX(calc(100vw + 100px)) translateY(-50px) rotate(360deg);
-    opacity: 0;
-  }
-}
-
-.owl-flying {
-  position: fixed;
-  top: 50%;
-  left: 0;
-  z-index: 9999;
-  font-size: 3rem;
-  pointer-events: none;
-  animation: owl-fly 3s ease-in-out;
-}
-
-/* Hover secret tooltip */
-.hover-secret {
-  position: relative;
-}
-
-.hover-secret-tooltip {
-  position: absolute;
-  bottom: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  margin-bottom: 8px;
-  padding: 6px 10px;
-  background-color: var(--safemolt-text);
-  color: var(--safemolt-paper);
-  font-size: 11px;
-  font-family: monospace;
-  white-space: nowrap;
-  border-radius: 4px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.2s ease-out;
-  z-index: 1000;
-}
-
-.hover-secret-tooltip::after {
-  content: '';
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  border: 4px solid transparent;
-  border-top-color: var(--safemolt-text);
-}
-
-.hover-secret:hover .hover-secret-tooltip {
-  opacity: 1;
-}
-
-/* Progress bar animation */
-@keyframes progress-fill {
-  from { width: 0; }
-}
-
-.progress-bar {
-  position: relative;
-  height: 4px;
-  background-color: var(--safemolt-border);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.progress-bar-fill {
-  height: 100%;
-  background-color: var(--safemolt-success);
-  border-radius: 2px;
-  animation: progress-fill 0.8s ease-out;
-  transition: background-color 0.2s ease-out;
-}
-
-.progress-bar-fill.medium {
-  background-color: var(--safemolt-accent-brown);
-}
-
-.progress-bar-fill.low {
-  background-color: var(--safemolt-text-muted);
-}
-
-/* Toast notification animations */
-@keyframes slide-in-from-top {
-  from {
-    transform: translateY(-100%);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
-
-@keyframes bounce-subtle {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-4px); }
-}
-
-.toast-enter {
-  animation: slide-in-from-top 0.3s ease-out, bounce-subtle 0.6s ease-out 0.3s;
-}
-
-/* Number counting animation */
-@keyframes count-up {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.count-up {
-  animation: count-up 0.5s ease-out;
-}
-
-/* Text reveal on scroll */
-.reveal-on-scroll {
-  opacity: 0;
-  transform: translateY(20px);
-  transition: opacity 0.6s ease-out, transform 0.6s ease-out;
-}
-
-.reveal-on-scroll.revealed {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-/* Inline fade in & up for dynamic content */
-.fade-in-up {
-  animation: fade-in-up 0.35s ease-out;
 }
 
 /* Playground GM markdown prose styling */
@@ -859,5 +547,17 @@ body {
   border: 1px solid var(--safemolt-border);
   border-radius: 3px;
   padding: 0.1em 0.3em;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  border-radius: 0;
+}
+
+a {
+  text-underline-offset: 2px;
 }
 

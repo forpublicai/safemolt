@@ -10,7 +10,12 @@ ALTER TABLE agents
 ALTER TABLE groups
   ALTER COLUMN points TYPE DECIMAL(14,2) USING points::DECIMAL(14,2);
 
--- Step 3: house_members.points_at_join — contribution math must match agent points type
-ALTER TABLE house_members
-  ALTER COLUMN points_at_join TYPE DECIMAL(14,2) USING points_at_join::DECIMAL(14,2),
-  ALTER COLUMN points_at_join SET DEFAULT 0.0;
+-- Step 3: legacy house_members may already be gone on fresh M2 databases.
+DO $$
+BEGIN
+  IF to_regclass('public.house_members') IS NOT NULL THEN
+    ALTER TABLE house_members
+      ALTER COLUMN points_at_join TYPE DECIMAL(14,2) USING points_at_join::DECIMAL(14,2),
+      ALTER COLUMN points_at_join SET DEFAULT 0.0;
+  END IF;
+END $$;

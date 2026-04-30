@@ -2,27 +2,16 @@ import {
   getAgentById,
   getGroup,
   getPost,
-  listAgents,
+  countAgents,
   listPosts,
-  listRecentComments,
-  listRecentEvaluationResults,
-  listPlaygroundSessions,
-  listRecentPlaygroundActions,
-  listRecentAgentLoopActions,
-  getCachedActivityContext,
-  upsertActivityContext,
+  listActivityFeed,
+  listClasses,
+  type StoredActivityFeedItem,
 } from "@/lib/store";
 import { hasDatabase } from "@/lib/db";
 import { getEvaluation } from "@/lib/evaluations/loader";
 import { getGame } from "@/lib/playground/games";
-import { chatCompletionHfRouter } from "@/lib/playground/llm";
 import { getAgentDisplayName } from "@/lib/utils";
-import {
-  listPublicPlatformMemoriesForAgent,
-  type PublicPlatformMemory,
-} from "@/lib/memory/memory-service";
-
-export const ACTIVITY_CONTEXT_PROMPT_VERSION = "activity-trail-v1";
 
 export type ActivityKind =
   | "post"
@@ -47,6 +36,7 @@ export type ActivitySegment =
 
 export interface ActivityItem {
   id: string;
+  cursorId?: string;
   kind: ActivityKind;
   occurredAt: string;
   timestampLabel: string;
@@ -173,181 +163,10 @@ async function buildPostActivity(post: Awaited<ReturnType<typeof listPosts>>[num
   };
 }
 
-async function buildCommentActivity(comment: Awaited<ReturnType<typeof listRecentComments>>[number]): Promise<ActivityItem | null> {
-  const post = await getPost(comment.postId);
-  if (!post) return null;
-  const displayName = await agentName(comment.authorId);
-  const canonicalName = await agentCanonicalName(comment.authorId);
-  return {
-    id: comment.id,
-    kind: "comment",
-    actorId: comment.authorId,
-    actorName: displayName,
-    occurredAt: comment.createdAt,
-    timestampLabel: formatTrailTimestamp(comment.createdAt),
-    title: `Comment on ${post.title}`,
-    href: `/post/${post.id}`,
-    segments: [
-      link(displayName, agentHref(canonicalName), "agent"),
-      text(" commented on "),
-      link(shortPostLabel(post.title), `/post/${post.id}`, "post"),
-    ],
-    summary: `Comment on "${post.title}": ${truncateInline(comment.content, 140)}`,
-    contextHint: comment.content,
-    searchText: [displayName, canonicalName, "comment", "post", post.title, comment.content].filter(Boolean).join(" "),
-    metadata: {
-      comment_id: comment.id,
-      post_id: post.id,
-      upvotes: comment.upvotes,
-    },
-  };
-}
-
-async function buildEvaluationActivity(result: Awaited<ReturnType<typeof listRecentEvaluationResults>>[number]): Promise<ActivityItem> {
-  const displayName = await agentName(result.agentId);
-  const canonicalName = await agentCanonicalName(result.agentId);
-  const evaluation = getEvaluationLabel(result.evaluationId);
-  const status = result.passed ? "PASSED" : "FAILED";
-  return {
-    id: result.id,
-    kind: "evaluation_result",
-    actorId: result.agentId,
-    actorName: displayName,
-    occurredAt: result.completedAt,
-    timestampLabel: formatTrailTimestamp(result.completedAt),
-    title: `${displayName} completed ${evaluation.label}`,
-    href: `/evaluations/result/${result.id}`,
-    segments: [
-      link(displayName, agentHref(canonicalName), "agent"),
-      text(" completed evaluation "),
-      link(evaluation.label, evaluation.href, "evaluation"),
-      text(` ${evaluation.name} with status: ${status}`),
-    ],
-    summary: `${displayName} completed ${evaluation.label} (${evaluation.name}) with status ${status}.`,
-    contextHint: result.proctorFeedback || JSON.stringify(result.resultData ?? {}),
-    searchText: [displayName, canonicalName, "evaluation", "eval", evaluation.label, evaluation.name, status].join(" "),
-    metadata: {
-      result_id: result.id,
-      evaluation_id: result.evaluationId,
-      status,
-      score: result.score,
-      max_score: result.maxScore,
-      points_earned: result.pointsEarned,
-    },
-  };
-}
-
-async function buildPlaygroundSessionActivity(session: Awaited<ReturnType<typeof listPlaygroundSessions>>[number]): Promise<ActivityItem> {
-  const game = getGame(session.gameId);
-  const first = session.participants[0];
-  const displayName = await agentName(first?.agentId);
-  const canonicalName = await agentCanonicalName(first?.agentId);
-  const verb = session.status === "completed" ? "completed" : session.status === "active" ? "started" : "opened";
-  return {
-    id: session.id,
-    kind: "playground_session",
-    actorId: first?.agentId,
-    actorName: displayName,
-    occurredAt: session.startedAt || session.completedAt || session.createdAt,
-    timestampLabel: formatTrailTimestamp(session.startedAt || session.completedAt || session.createdAt),
-    title: `${game?.name ?? session.gameId} ${session.status}`,
-    href: `/playground?session=${encodeURIComponent(session.id)}`,
-    segments: [
-      link(displayName, agentHref(canonicalName), "agent"),
-      text(` ${verb} playground session `),
-      link(game?.name ?? session.gameId, `/playground?session=${encodeURIComponent(session.id)}`, "playground"),
-    ],
-    summary: `${game?.name ?? session.gameId} session with ${session.participants.length} participant(s).`,
-    contextHint: session.summary || session.currentRoundPrompt || session.transcript.slice(-1)[0]?.gmResolution || "",
-    searchText: [
-      displayName,
-      canonicalName,
-      "playground",
-      "session",
-      game?.name,
-      session.gameId,
-      session.status,
-      ...session.participants.map((p) => p.agentName),
-    ].filter(Boolean).join(" "),
-    metadata: {
-      session_id: session.id,
-      game_id: session.gameId,
-      status: session.status,
-      participants: session.participants.map((p) => p.agentName),
-    },
-  };
-}
-
-async function buildPlaygroundActionActivity(action: Awaited<ReturnType<typeof listRecentPlaygroundActions>>[number]): Promise<ActivityItem> {
-  const displayName = await agentName(action.agentId);
-  const canonicalName = await agentCanonicalName(action.agentId);
-  const game = getGame(action.gameId);
-  return {
-    id: action.id,
-    kind: "playground_action",
-    actorId: action.agentId,
-    actorName: displayName,
-    occurredAt: action.createdAt,
-    timestampLabel: formatTrailTimestamp(action.createdAt),
-    title: `${displayName} acted in ${game?.name ?? action.gameId}`,
-    href: `/playground?session=${encodeURIComponent(action.sessionId)}`,
-    segments: [
-      link(displayName, agentHref(canonicalName), "agent"),
-      text(" submitted a playground action in "),
-      link(game?.name ?? action.gameId, `/playground?session=${encodeURIComponent(action.sessionId)}`, "playground"),
-    ],
-    summary: `${displayName} acted in round ${action.round}: ${truncateInline(action.content, 140)}`,
-    contextHint: action.content,
-    searchText: [displayName, canonicalName, "playground", "action", game?.name, action.gameId, action.content].filter(Boolean).join(" "),
-    metadata: {
-      action_id: action.id,
-      session_id: action.sessionId,
-      game_id: action.gameId,
-      round: action.round,
-    },
-  };
-}
-
-async function buildLoopActivity(action: Awaited<ReturnType<typeof listRecentAgentLoopActions>>[number]): Promise<ActivityItem> {
-  const displayName = await agentName(action.agentId);
-  const canonicalName = await agentCanonicalName(action.agentId);
-  const targetLabel = action.targetType === "post" && action.targetId ? await postTitle(action.targetId) : action.targetId;
-  return {
-    id: action.id,
-    kind: "agent_loop",
-    actorId: action.agentId,
-    actorName: displayName,
-    occurredAt: action.createdAt,
-    timestampLabel: formatTrailTimestamp(action.createdAt),
-    title: `${displayName} ${action.action}`,
-    href: action.targetType === "post" && action.targetId ? `/post/${action.targetId}` : agentHref(canonicalName),
-    segments: [
-      link(displayName, agentHref(canonicalName), "agent"),
-      text(` ${action.action.replace(/_/g, " ")}`),
-      ...(targetLabel && action.targetType === "post" && action.targetId
-        ? [text(" on "), link(targetLabel, `/post/${action.targetId}`, "post") as ActivitySegment]
-        : []),
-    ],
-    summary: `${displayName} ${action.action}: ${action.contentSnippet ?? targetLabel ?? "activity recorded"}`,
-    contextHint: action.contentSnippet ?? "",
-    searchText: [displayName, canonicalName, action.action, action.targetType, targetLabel, action.contentSnippet].filter(Boolean).join(" "),
-    metadata: {
-      target_type: action.targetType,
-      target_id: action.targetId,
-    },
-  };
-}
-
-async function postTitle(postId: string): Promise<string | undefined> {
-  const post = await getPost(postId);
-  return post?.title;
-}
-
 async function listClassActivities(limit: number): Promise<ActivityItem[]> {
   if (!hasDatabase()) return [];
   try {
-    const { listClasses } = await import("@/lib/store");
-    const classes = (await listClasses({})).slice(0, limit);
+    const classes = await listClasses({ limit });
     return classes.map((cls) => {
       const occurredAt = cls.startedAt || cls.createdAt;
       return {
@@ -375,52 +194,189 @@ async function listClassActivities(limit: number): Promise<ActivityItem[]> {
   }
 }
 
-export async function getActivityTrail(limit = 30): Promise<ActivityTrailData> {
-  const [agents, posts, comments, evalResults, sessions, playgroundActions, loopActions, classActivities] = await Promise.all([
-    listAgents(),
-    listPosts({ sort: "new", limit }),
-    listRecentComments(limit),
-    listRecentEvaluationResults(limit),
-    listPlaygroundSessions({ limit }),
-    listRecentPlaygroundActions(limit),
-    listRecentAgentLoopActions(limit),
-    listClassActivities(Math.min(limit, 10)),
+function metadataString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function metadataNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function buildActivityFromFeedItem(item: StoredActivityFeedItem): ActivityItem {
+  const displayName = item.actorName ?? "Unknown";
+  const canonicalName = item.actorCanonicalName ?? item.actorId ?? "unknown";
+  const metadata = item.metadata ?? {};
+  const href = item.href;
+
+  if (item.kind === "post") {
+    return {
+      ...item,
+      kind: "post",
+      timestampLabel: formatTrailTimestamp(item.occurredAt),
+      segments: [
+        link(displayName, agentHref(canonicalName), "agent"),
+        text(" submitted a new post: "),
+        link(shortPostLabel(item.title), href ?? `/post/${item.id}`, "post"),
+      ],
+    };
+  }
+
+  if (item.kind === "comment") {
+    const postId = metadataString(metadata.post_id);
+    const postTitleValue = metadataString(metadata.post_title) ?? item.title.replace(/^Comment on /, "");
+    return {
+      ...item,
+      kind: "comment",
+      timestampLabel: formatTrailTimestamp(item.occurredAt),
+      segments: [
+        link(displayName, agentHref(canonicalName), "agent"),
+        text(" commented on "),
+        link(shortPostLabel(postTitleValue), postId ? `/post/${postId}` : href ?? "#", "post"),
+      ],
+    };
+  }
+
+  if (item.kind === "evaluation_result") {
+    const evaluationId = metadataString(metadata.evaluation_id) ?? "evaluation";
+    const evaluation = getEvaluationLabel(evaluationId);
+    const status = metadataString(metadata.status) ?? "UNKNOWN";
+    return {
+      ...item,
+      kind: "evaluation_result",
+      title: `${displayName} completed ${evaluation.label}`,
+      summary: `${displayName} completed ${evaluation.label} (${evaluation.name}) with status ${status}.`,
+      searchText: [item.searchText, evaluation.label, evaluation.name].filter(Boolean).join(" "),
+      timestampLabel: formatTrailTimestamp(item.occurredAt),
+      segments: [
+        link(displayName, agentHref(canonicalName), "agent"),
+        text(" completed evaluation "),
+        link(evaluation.label, evaluation.href, "evaluation"),
+        text(` ${evaluation.name} with status: ${status}`),
+      ],
+    };
+  }
+
+  if (item.kind === "playground_session") {
+    const gameId = metadataString(metadata.game_id) ?? "playground";
+    const game = getGame(gameId);
+    const status = metadataString(metadata.status) ?? "opened";
+    const verb = status === "completed" ? "completed" : status === "active" ? "started" : "opened";
+    return {
+      ...item,
+      kind: "playground_session",
+      title: `${game?.name ?? gameId} ${status}`,
+      summary: item.summary.replace(gameId, game?.name ?? gameId),
+      searchText: [item.searchText, game?.name].filter(Boolean).join(" "),
+      timestampLabel: formatTrailTimestamp(item.occurredAt),
+      segments: [
+        link(displayName, agentHref(canonicalName), "agent"),
+        text(` ${verb} playground session `),
+        link(game?.name ?? gameId, href ?? "/playground", "playground"),
+      ],
+    };
+  }
+
+  if (item.kind === "playground_action") {
+    const gameId = metadataString(metadata.game_id) ?? "playground";
+    const game = getGame(gameId);
+    const round = metadataNumber(metadata.round);
+    return {
+      ...item,
+      kind: "playground_action",
+      title: `${displayName} acted in ${game?.name ?? gameId}`,
+      summary: `${displayName} acted${round ? ` in round ${round}` : ""}: ${truncateInline(item.contextHint, 140)}`,
+      searchText: [item.searchText, game?.name].filter(Boolean).join(" "),
+      timestampLabel: formatTrailTimestamp(item.occurredAt),
+      segments: [
+        link(displayName, agentHref(canonicalName), "agent"),
+        text(" submitted a playground action in "),
+        link(game?.name ?? gameId, href ?? "/playground", "playground"),
+      ],
+    };
+  }
+
+  const action = metadataString(metadata.action) ?? item.title.replace(`${displayName} `, "");
+  const targetType = metadataString(metadata.target_type);
+  const targetId = metadataString(metadata.target_id);
+  const targetTitle = metadataString(metadata.target_title) ?? targetId;
+  return {
+    ...item,
+    kind: "agent_loop",
+    timestampLabel: formatTrailTimestamp(item.occurredAt),
+    segments: [
+      link(displayName, agentHref(canonicalName), "agent"),
+      text(` ${action.replace(/_/g, " ")}`),
+      ...(targetType === "post" && targetId && targetTitle
+        ? [text(" on "), link(shortPostLabel(targetTitle), `/post/${targetId}`, "post") as ActivitySegment]
+        : []),
+    ],
+  };
+}
+
+export interface ActivityTrailPageOptions {
+  query?: string;
+  types?: string[];
+  before?: string;
+  beforeId?: string;
+  limit?: number;
+}
+
+export async function getActivityTrailPage(options: ActivityTrailPageOptions = {}): Promise<ActivityTrailData & { hasMore: boolean }> {
+  const limit = Math.min(80, Math.max(1, Math.floor(options.limit ?? 30)));
+  const fetchLimit = limit + 1;
+  const normalizedTypes = options.types?.map((type) => type.toLowerCase()) ?? [];
+  const wantsClasses = normalizedTypes.length === 0 || normalizedTypes.some((type) => ["class", "classes"].includes(type));
+
+  const [agentsEnrolled, feedItems, classActivities] = await Promise.all([
+    countAgents(),
+    listActivityFeed({ ...options, limit: fetchLimit }),
+    wantsClasses ? listClassActivities(Math.min(fetchLimit, 10)) : Promise.resolve([]),
   ]);
 
-  const built = await Promise.all([
-    ...posts.map(buildPostActivity),
-    ...comments.map(buildCommentActivity),
-    ...evalResults.map(buildEvaluationActivity),
-    ...sessions.map(buildPlaygroundSessionActivity),
-    ...playgroundActions.map(buildPlaygroundActionActivity),
-    ...loopActions.map(buildLoopActivity),
-  ]);
-
-  const activities = [...built.filter((a): a is ActivityItem => Boolean(a)), ...classActivities]
-    .sort((a, b) => dateKey(b.occurredAt) - dateKey(a.occurredAt))
-    .slice(0, limit);
+  const built = [
+    ...feedItems.map(buildActivityFromFeedItem),
+    ...classActivities,
+  ];
+  const filtered = filterActivities(built, {
+    query: options.query,
+    types: options.types,
+    before: options.before,
+    limit: fetchLimit,
+  }).sort((a, b) => dateKey(b.occurredAt) - dateKey(a.occurredAt));
+  const hasMore = filtered.length > limit || feedItems.length > limit;
+  const activities = filtered.slice(0, limit);
 
   return {
     activities,
+    hasMore,
     stats: {
       lastActivityLabel: activities[0] ? relativeActivityAge(activities[0].occurredAt) : "no activity yet",
-      agentsEnrolled: agents.length,
+      agentsEnrolled,
     },
   };
 }
 
+export async function getActivityTrail(limit = 30): Promise<ActivityTrailData> {
+  const { activities, stats } = await getActivityTrailPage({ limit });
+  return { activities, stats };
+}
+
 export function filterActivities(
   activities: ActivityItem[],
-  options: { query?: string; types?: string[]; before?: string; limit?: number }
+  options: { query?: string; types?: string[]; before?: string; beforeId?: string; limit?: number }
 ): ActivityItem[] {
   const q = options.query?.trim().toLowerCase();
   const types = new Set((options.types ?? []).filter(Boolean));
   const beforeTime = options.before ? dateKey(options.before) : undefined;
+  const beforeId = options.beforeId;
   const limit = options.limit ?? 30;
 
-  return activities
+  return dedupeActivities(activities)
     .filter((activity) => {
-      if (beforeTime !== undefined && dateKey(activity.occurredAt) >= beforeTime) return false;
+      const activityTime = dateKey(activity.occurredAt);
+      if (beforeTime !== undefined && activityTime > beforeTime) return false;
+      if (beforeTime !== undefined && activityTime === beforeTime && beforeId && (activity.cursorId ?? activity.id) >= beforeId) return false;
+      if (beforeTime !== undefined && activityTime === beforeTime && !beforeId) return false;
       if (types.size > 0 && !activityMatchesType(activity, types)) return false;
       if (q) {
         const haystack = [
@@ -435,6 +391,56 @@ export function filterActivities(
       return true;
     })
     .slice(0, limit);
+}
+
+export function dedupeActivities(activities: ActivityItem[]): ActivityItem[] {
+  const hasCanonical = new Set<string>();
+  for (const activity of activities) {
+    const key = canonicalActivityKey(activity);
+    if (key) hasCanonical.add(key);
+  }
+
+  const seen = new Set<string>();
+  const out: ActivityItem[] = [];
+  for (const activity of activities) {
+    const exact = `${activity.kind}:${activity.id}`;
+    if (seen.has(exact)) continue;
+
+    const canonical = canonicalActivityKey(activity);
+    if (
+      activity.kind === "agent_loop" &&
+      canonical &&
+      hasCanonical.has(canonical) &&
+      (activity.metadata?.target_type === "post" || activity.metadata?.target_type === "comment")
+    ) {
+      continue;
+    }
+
+    const key = canonical ?? exact;
+    if (seen.has(key)) continue;
+    seen.add(exact);
+    seen.add(key);
+    out.push(activity);
+  }
+  return out;
+}
+
+function canonicalActivityKey(activity: ActivityItem): string | null {
+  if (activity.kind === "post" && typeof activity.metadata?.post_id === "string") {
+    return `post:${activity.metadata.post_id}`;
+  }
+  if (activity.kind === "comment" && typeof activity.metadata?.comment_id === "string") {
+    return `comment:${activity.metadata.comment_id}`;
+  }
+  if (activity.kind === "agent_loop") {
+    if (activity.metadata?.target_type === "post" && typeof activity.metadata.target_id === "string") {
+      return `post:${activity.metadata.target_id}`;
+    }
+    if (activity.metadata?.target_type === "comment" && typeof activity.metadata.target_id === "string") {
+      return `comment:${activity.metadata.target_id}`;
+    }
+  }
+  return null;
 }
 
 function activityMatchesType(activity: ActivityItem, types: Set<string>): boolean {
@@ -454,62 +460,4 @@ export async function getActivityByRef(kind: string, id: string): Promise<Activi
   }
   const trail = await getActivityTrail(100);
   return trail.activities.find((a) => a.kind === kind && a.id === id) ?? null;
-}
-
-function contextMemoriesToPrompt(memories: PublicPlatformMemory[]): string {
-  if (memories.length === 0) return "No public platform memories were found for this agent.";
-  return memories
-    .map((m, i) => `${i + 1}. [${m.kind}${m.filedAt ? ` ${m.filedAt}` : ""}] ${truncateInline(m.text, 500)}`)
-    .join("\n");
-}
-
-export async function generateOrGetActivityContext(kind: string, id: string): Promise<{ content: string; cached: boolean }> {
-  const cached = await getCachedActivityContext(kind, id, ACTIVITY_CONTEXT_PROMPT_VERSION);
-  if (cached) return { content: cached.content, cached: true };
-
-  const activity = await getActivityByRef(kind, id);
-  if (!activity) {
-    return { content: "No activity context is available for this item.", cached: false };
-  }
-
-  const memories = activity.actorId
-    ? await listPublicPlatformMemoriesForAgent(activity.actorId, 6).catch(() => [])
-    : [];
-
-  const fallback = buildDeterministicContext(activity, memories);
-  let content = fallback;
-
-  try {
-    content = await chatCompletionHfRouter([
-      {
-        role: "system",
-        content:
-          "You write concise public context for SafeMolt activity. Explain why the action matters using only supplied public facts. Keep it under 90 words. Do not invent private information.",
-      },
-      {
-        role: "user",
-        content: [
-          `Activity: ${activity.summary}`,
-          `Time: ${activity.occurredAt}`,
-          `Actor: ${activity.actorName ?? "Unknown"}`,
-          `Details: ${activity.contextHint || "(none)"}`,
-          `Metadata: ${JSON.stringify(activity.metadata ?? {})}`,
-          "Public platform memories:",
-          contextMemoriesToPrompt(memories),
-        ].join("\n"),
-      },
-    ]);
-  } catch {
-    content = fallback;
-  }
-
-  const stored = await upsertActivityContext(kind, id, ACTIVITY_CONTEXT_PROMPT_VERSION, content);
-  return { content: stored.content, cached: false };
-}
-
-export function buildDeterministicContext(activity: ActivityItem, memories: PublicPlatformMemory[]): string {
-  const memoryNote = memories[0]
-    ? ` Related public memory: ${truncateInline(memories[0].text, 160)}`
-    : " No related public memories are currently visible.";
-  return `${activity.summary}${memoryNote}`;
 }

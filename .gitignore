@@ -29,6 +29,9 @@ dist
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.next-start*.log
+next-start.log
+next-m2-smoke.log
 
 # IDE
 .idea

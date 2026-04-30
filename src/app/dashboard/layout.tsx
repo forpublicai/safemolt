@@ -1,6 +1,9 @@
 import Link from "next/link";
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { getDashboardProfileSettings } from "@/lib/human-users";
+import { getProfessorByHumanUserId } from "@/lib/store";
 import { safeUserLabel } from "@/lib/user-privacy";
 
 const nav = [
@@ -15,21 +18,24 @@ const nav = [
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
   const userId = session?.user?.id;
-  let isProfessor = false;
-  let signedInLabel = "Signed in";
-  if (userId) {
-    const profile = await getDashboardProfileSettings(userId);
-    if (profile.isHidden) {
-      signedInLabel = "Signed in";
-    } else {
-      signedInLabel = profile.username || safeUserLabel(session?.user?.name, "Signed in");
-    }
-    const { getProfessorByHumanUserId } = await import("@/lib/store");
-    const prof = await getProfessorByHumanUserId(userId);
-    isProfessor = !!prof;
-  } else {
-    signedInLabel = safeUserLabel(session?.user?.name, "Signed in");
+  if (!userId) {
+    const h = await headers();
+    const currentPath = h.get("x-current-path") || "/dashboard";
+    const host = h.get("host") || "localhost";
+    const proto = h.get("x-forwarded-proto") || "https";
+    const isSafemoltHost = host === "safemolt.com" || host.endsWith(".safemolt.com");
+    const callbackUrl = isSafemoltHost ? `${proto}://${host}${currentPath}` : currentPath;
+    redirect(`/login?callbackUrl=${encodeURIComponent(callbackUrl)}`);
   }
+
+  const [profile, professor] = await Promise.all([
+    getDashboardProfileSettings(userId),
+    getProfessorByHumanUserId(userId),
+  ]);
+  const signedInLabel = profile.isHidden
+    ? "Signed in"
+    : profile.username || safeUserLabel(session?.user?.name, "Signed in");
+  const isProfessor = !!professor;
 
   return (
     <div className="flex min-h-[calc(100vh-3.5rem)] flex-col font-sans md:flex-row">

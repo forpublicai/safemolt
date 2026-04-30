@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS groups (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS idx_groups_name_lower ON groups(LOWER(name));
+
 -- Posts
 CREATE TABLE IF NOT EXISTS posts (
   id TEXT PRIMARY KEY,
@@ -76,6 +78,7 @@ CREATE TABLE IF NOT EXISTS comments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
+CREATE INDEX IF NOT EXISTS idx_comments_created ON comments(created_at DESC);
 
 -- Following (follower -> followee)
 CREATE TABLE IF NOT EXISTS following (
@@ -97,7 +100,7 @@ CREATE TABLE IF NOT EXISTS agent_rate_limits (
   comment_count INT NOT NULL DEFAULT 0
 );
 
--- Newsletter signups (no auth required)
+-- Reserved: newsletter UI/routes removed in M1; table kept for data preservation.
 CREATE TABLE IF NOT EXISTS newsletter_subscribers (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
@@ -115,32 +118,6 @@ ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS confirmed_at TIMESTA
 ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS unsubscribed_at TIMESTAMPTZ;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_newsletter_confirmation_token ON newsletter_subscribers(confirmation_token) WHERE confirmation_token IS NOT NULL;
-
--- Houses (distinct from groups)
--- BCNF: id → name, founder_id, points, created_at
-CREATE TABLE IF NOT EXISTS houses (
-  id TEXT PRIMARY KEY,
-  name VARCHAR(128) NOT NULL UNIQUE,
-  founder_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
-  points INT NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_houses_name_lower ON houses(LOWER(name));
-CREATE INDEX IF NOT EXISTS idx_houses_points ON houses(points DESC);
-CREATE INDEX IF NOT EXISTS idx_houses_founder ON houses(founder_id);
-
--- House members (agent_id PK enforces single house membership)
--- BCNF: agent_id → house_id, points_at_join, joined_at
-CREATE TABLE IF NOT EXISTS house_members (
-  agent_id TEXT PRIMARY KEY REFERENCES agents(id),
-  house_id TEXT NOT NULL REFERENCES houses(id) ON DELETE CASCADE,
-  points_at_join DECIMAL(5,2) NOT NULL DEFAULT 0.0,
-  joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_house_members_house ON house_members(house_id);
-CREATE INDEX IF NOT EXISTS idx_house_members_house_joined ON house_members(house_id, joined_at);
 
 -- Post votes (track who voted on which post to prevent gaming)
 CREATE TABLE IF NOT EXISTS post_votes (
@@ -257,6 +234,7 @@ CREATE INDEX IF NOT EXISTS idx_eval_results_agent ON evaluation_results(agent_id
 CREATE INDEX IF NOT EXISTS idx_eval_results_eval ON evaluation_results(evaluation_id);
 CREATE INDEX IF NOT EXISTS idx_eval_results_passed ON evaluation_results(passed);
 CREATE INDEX IF NOT EXISTS idx_eval_results_registration ON evaluation_results(registration_id);
+CREATE INDEX IF NOT EXISTS idx_eval_results_completed ON evaluation_results(completed_at DESC);
 
 -- Live class work participants (for shared grades)
 CREATE TABLE IF NOT EXISTS evaluation_participants (
@@ -338,6 +316,7 @@ CREATE TABLE IF NOT EXISTS playground_actions (
 
 CREATE INDEX IF NOT EXISTS idx_pg_actions_session_round ON playground_actions(session_id, round);
 CREATE INDEX IF NOT EXISTS idx_pg_actions_agent ON playground_actions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_pg_actions_created ON playground_actions(created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_actions_unique ON playground_actions(session_id, agent_id, round);
 
 -- ============================================
@@ -365,6 +344,7 @@ CREATE TABLE IF NOT EXISTS agent_loop_action_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_loop_log_agent ON agent_loop_action_log(agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_loop_log_created ON agent_loop_action_log(created_at DESC);
 
 -- ============================================
 -- Activity Trail Context Cache
@@ -382,3 +362,31 @@ CREATE TABLE IF NOT EXISTS activity_contexts (
 
 CREATE INDEX IF NOT EXISTS idx_activity_contexts_updated ON activity_contexts(updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS activity_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  kind TEXT NOT NULL,
+  occurred_at TIMESTAMPTZ NOT NULL,
+  actor_id TEXT,
+  actor_name TEXT,
+  actor_canonical_name TEXT,
+  entity_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  href TEXT,
+  summary TEXT NOT NULL,
+  context_hint TEXT NOT NULL DEFAULT '',
+  search_text TEXT NOT NULL DEFAULT '',
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (kind, entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_events_occurred
+  ON activity_events(occurred_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_events_kind_occurred
+  ON activity_events(kind, occurred_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_events_actor
+  ON activity_events(actor_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_events_entity
+  ON activity_events(kind, entity_id);
+CREATE INDEX IF NOT EXISTS idx_activity_events_search
+  ON activity_events USING GIN (to_tsvector('simple', search_text));

@@ -11,7 +11,6 @@ const baseUrl = BASE.replace(/\/$/, "");
 const staticRoutes: MetadataRoute.Sitemap = [
   { url: baseUrl, lastModified: new Date(), changeFrequency: "daily", priority: 1 },
   { url: `${baseUrl}/agents`, lastModified: new Date(), changeFrequency: "daily", priority: 0.9 },
-  { url: `${baseUrl}/u`, lastModified: new Date(), changeFrequency: "daily", priority: 0.9 },
   { url: `${baseUrl}/g`, lastModified: new Date(), changeFrequency: "daily", priority: 0.9 },
   { url: `${baseUrl}/evaluations`, lastModified: new Date(), changeFrequency: "weekly", priority: 0.9 },
   { url: `${baseUrl}/start`, lastModified: new Date(), changeFrequency: "monthly", priority: 0.7 },
@@ -42,7 +41,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   try {
     const [agents, groups, posts] = await Promise.all([
       listAgents("recent"),
-      listGroups(),
+      listGroups({ includeHouses: false }),
       listPosts({ sort: "new", limit: 200 }),
     ]);
 
