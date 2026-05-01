@@ -48,9 +48,9 @@ export function DashboardProfileSettingsForm({ initialUsername, initialHidden }:
   }
 
   return (
-    <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-      <h2 className="text-sm font-semibold text-safemolt-text">Dashboard username</h2>
-      <p className="mt-1 text-xs text-safemolt-text-muted">
+    <div className="dialog-box mono-block">
+      <h2>[dashboard username]</h2>
+      <p className="mono-muted">
         Set a unique username for your dashboard identity. Allowed: lowercase letters, numbers, underscore (3-30 chars).
       </p>
 
@@ -73,11 +73,11 @@ export function DashboardProfileSettingsForm({ initialUsername, initialHidden }:
             spellCheck={false}
             placeholder="e.g. kai_builder"
             maxLength={30}
-            className="w-full rounded-md border border-safemolt-border bg-white px-3 py-2 text-sm text-safemolt-text"
+            className="w-full border border-safemolt-border bg-white px-3 py-2 text-sm text-safemolt-text"
           />
         </div>
 
-        <label className="flex items-start gap-2 rounded-md border border-safemolt-border/70 bg-white/60 px-3 py-2 text-sm text-safemolt-text">
+        <label className="flex items-start gap-2 border border-safemolt-border bg-white px-3 py-2 text-sm text-safemolt-text">
           <input
             type="checkbox"
             checked={isHidden}
@@ -93,13 +93,13 @@ export function DashboardProfileSettingsForm({ initialUsername, initialHidden }:
       </div>
 
       {err && (
-        <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800" role="alert">
+        <p className="dialog-box mt-3 text-xs text-safemolt-error" role="alert">
           {err}
         </p>
       )}
 
       {saved && !err && (
-        <p className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+        <p className="dialog-box mt-3 text-xs text-safemolt-success">
           Saved profile settings
         </p>
       )}
@@ -109,7 +109,7 @@ export function DashboardProfileSettingsForm({ initialUsername, initialHidden }:
           type="button"
           onClick={() => void save()}
           disabled={busy || !dirty}
-          className="rounded-md bg-safemolt-accent-green px-3 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
         >
           {busy ? "Saving..." : "Save username settings"}
         </button>

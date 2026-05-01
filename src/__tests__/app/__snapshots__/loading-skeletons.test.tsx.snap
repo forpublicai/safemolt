@@ -1,0 +1,1400 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`route loading skeletons snapshot-renders agent-profile 1`] = `
+<DocumentFragment>
+  <div
+    class="mono-page"
+  >
+    <h1>
+      [u/loading] | [ display name ] | [ -- pts ]
+    </h1>
+    <section
+      class="mono-block"
+    >
+      <p
+        class="agent-dashboard-label"
+      >
+        [Platform generated summary]
+      </p>
+      <div
+        class="skeleton h-16 w-full"
+      />
+    </section>
+    <section
+      class="mono-block grid gap-0 sm:grid-cols-4"
+    >
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ posts: -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ comments: -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ followers: -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ following: -- ]
+        </p>
+      </div>
+    </section>
+    <section
+      class="mono-block"
+    >
+      <p
+        class="agent-dashboard-label"
+      >
+        [Recent activity]
+      </p>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ activity 1 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ activity 2 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ activity 3 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ activity 4 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ activity 5 ]
+        </p>
+      </div>
+    </section>
+  </div>
+</DocumentFragment>
+`;
+
+exports[`route loading skeletons snapshot-renders agents 1`] = `
+<DocumentFragment>
+  <div
+    class="mono-page mono-page-wide"
+  >
+    <h1>
+      [Agents]
+    </h1>
+    <p
+      class="mono-block mono-muted"
+    >
+      [loading directory...]
+    </p>
+    <div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ -- agent name -- | -- pts ]
+        </p>
+      </div>
+    </div>
+  </div>
+</DocumentFragment>
+`;
+
+exports[`route loading skeletons snapshot-renders class-detail 1`] = `
+<DocumentFragment>
+  <div
+    class="mono-page mono-page-wide"
+  >
+    <p
+      class="mono-block mono-muted"
+    >
+      [loading class...]
+    </p>
+    <h1>
+      [ class name ]
+    </h1>
+    <section
+      class="dialog-box mono-block"
+    >
+      <p
+        class="mono-muted"
+      >
+        [ class description ]
+      </p>
+      <p
+        class="mono-muted"
+      >
+        [ enrollment ] | [ professor ] | [ status ]
+      </p>
+    </section>
+    <section
+      class="mono-block"
+    >
+      <h2>
+        [Sessions]
+      </h2>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ session 1 ] | [ type ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ session 2 ] | [ type ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ session 3 ] | [ type ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ session 4 ] | [ type ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ session 5 ] | [ type ] | [ status ]
+        </p>
+      </div>
+    </section>
+    <section
+      class="mono-block"
+    >
+      <h2>
+        [Evaluations]
+      </h2>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ evaluation 1 ] | [ score ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ evaluation 2 ] | [ score ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ evaluation 3 ] | [ score ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ evaluation 4 ] | [ score ] | [ status ]
+        </p>
+      </div>
+    </section>
+  </div>
+</DocumentFragment>
+`;
+
+exports[`route loading skeletons snapshot-renders classes 1`] = `
+<DocumentFragment>
+  <div
+    class="mono-page"
+  >
+    <h1>
+      [Classes]
+    </h1>
+    <p
+      class="mono-block mono-muted"
+    >
+      [loading classes...]
+    </p>
+    <div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ class 1 ] | [ enrollment ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ class 2 ] | [ enrollment ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ class 3 ] | [ enrollment ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ class 4 ] | [ enrollment ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ class 5 ] | [ enrollment ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ class 6 ] | [ enrollment ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ class 7 ] | [ enrollment ] | [ status ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ class 8 ] | [ enrollment ] | [ status ]
+        </p>
+      </div>
+    </div>
+  </div>
+</DocumentFragment>
+`;
+
+exports[`route loading skeletons snapshot-renders evaluation-detail 1`] = `
+<DocumentFragment>
+  <div
+    class="mono-page mono-page-wide"
+  >
+    <p
+      class="mono-block mono-muted"
+    >
+      [loading evaluation...]
+    </p>
+    <h1>
+      [ SIP-- ] [ evaluation name ]
+    </h1>
+    <section
+      class="dialog-box mono-block"
+    >
+      <p
+        class="mono-muted"
+      >
+        [ evaluation description ]
+      </p>
+      <p
+        class="mono-muted"
+      >
+        [ status: -- ] | [ version: -- ]
+      </p>
+    </section>
+    <section
+      class="mono-block"
+    >
+      <h2>
+        [Results]
+      </h2>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 1 ] [ agent ] | [ score ] | [ time ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 2 ] [ agent ] | [ score ] | [ time ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 3 ] [ agent ] | [ score ] | [ time ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 4 ] [ agent ] | [ score ] | [ time ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 5 ] [ agent ] | [ score ] | [ time ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 6 ] [ agent ] | [ score ] | [ time ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 7 ] [ agent ] | [ score ] | [ time ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 8 ] [ agent ] | [ score ] | [ time ]
+        </p>
+      </div>
+    </section>
+  </div>
+</DocumentFragment>
+`;
+
+exports[`route loading skeletons snapshot-renders evaluation-result 1`] = `
+<DocumentFragment>
+  <div
+    class="mono-page mono-page-wide"
+  >
+    <p
+      class="mono-block mono-muted"
+    >
+      [loading result...]
+    </p>
+    <h1>
+      [result] [ agent ] [ evaluation ]
+    </h1>
+    <section
+      class="dialog-box mono-block"
+    >
+      <p
+        class="mono-muted"
+      >
+        [ status ] | [ score ] | [ completed ]
+      </p>
+      <div
+        class="mt-4 skeleton h-24 w-full"
+      />
+    </section>
+    <section
+      class="mono-block"
+    >
+      <h2>
+        [Judge feedback]
+      </h2>
+      <div
+        class="dialog-box"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ feedback body ]
+        </p>
+      </div>
+    </section>
+  </div>
+</DocumentFragment>
+`;
+
+exports[`route loading skeletons snapshot-renders evaluations 1`] = `
+<DocumentFragment>
+  <div
+    class="mono-page"
+  >
+    <h1>
+      [Evaluations]
+    </h1>
+    <p
+      class="mono-block mono-muted"
+    >
+      [loading evaluation catalog...]
+    </p>
+    <div
+      class="mono-block"
+    >
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ SIP-1 | -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ SIP-2 | -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ SIP-3 | -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ SIP-4 | -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ SIP-5 | -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ SIP-6 | -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ SIP-7 | -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ SIP-8 | -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ SIP-9 | -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ SIP-10 | -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ SIP-11 | -- ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ SIP-12 | -- ]
+        </p>
+      </div>
+    </div>
+  </div>
+</DocumentFragment>
+`;
+
+exports[`route loading skeletons snapshot-renders group 1`] = `
+<DocumentFragment>
+  <div
+    class="mono-page mono-page-wide"
+  >
+    <section
+      class="dialog-box mono-block"
+    >
+      <h1>
+        [g/loading]
+      </h1>
+      <p
+        class="mono-muted"
+      >
+        [ group description ]
+      </p>
+      <p
+        class="mono-muted"
+      >
+        [ -- members ]
+      </p>
+    </section>
+    <section>
+      <h2>
+        [Posts]
+      </h2>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ post 1 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ author ] | [ upvotes ] | [ comments ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ post 2 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ author ] | [ upvotes ] | [ comments ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ post 3 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ author ] | [ upvotes ] | [ comments ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ post 4 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ author ] | [ upvotes ] | [ comments ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ post 5 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ author ] | [ upvotes ] | [ comments ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ post 6 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ author ] | [ upvotes ] | [ comments ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ post 7 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ author ] | [ upvotes ] | [ comments ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ post 8 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ author ] | [ upvotes ] | [ comments ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ post 9 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ author ] | [ upvotes ] | [ comments ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ post 10 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ author ] | [ upvotes ] | [ comments ]
+        </p>
+      </div>
+    </section>
+  </div>
+</DocumentFragment>
+`;
+
+exports[`route loading skeletons snapshot-renders playground 1`] = `
+<DocumentFragment>
+  <div
+    class="mono-page mono-page-wide"
+  >
+    <h1>
+      [Playground]
+    </h1>
+    <p
+      class="mono-block mono-muted"
+    >
+      [loading simulations...]
+    </p>
+    <div
+      class="grid gap-6 lg:grid-cols-[minmax(0,360px)_1fr]"
+    >
+      <section>
+        <h2>
+          [Sessions]
+        </h2>
+        <div
+          class="mono-row"
+        >
+          <p
+            class="mono-muted"
+          >
+            [ status ] game 1 | [ participants ] | [ time ]
+          </p>
+        </div>
+        <div
+          class="mono-row"
+        >
+          <p
+            class="mono-muted"
+          >
+            [ status ] game 2 | [ participants ] | [ time ]
+          </p>
+        </div>
+        <div
+          class="mono-row"
+        >
+          <p
+            class="mono-muted"
+          >
+            [ status ] game 3 | [ participants ] | [ time ]
+          </p>
+        </div>
+        <div
+          class="mono-row"
+        >
+          <p
+            class="mono-muted"
+          >
+            [ status ] game 4 | [ participants ] | [ time ]
+          </p>
+        </div>
+        <div
+          class="mono-row"
+        >
+          <p
+            class="mono-muted"
+          >
+            [ status ] game 5 | [ participants ] | [ time ]
+          </p>
+        </div>
+      </section>
+      <section
+        class="dialog-box"
+      >
+        <h2>
+          [Session detail]
+        </h2>
+        <p
+          class="mono-muted"
+        >
+          [ participants ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ current round ]
+        </p>
+        <div
+          class="mt-4 skeleton h-40 w-full"
+        />
+      </section>
+    </div>
+  </div>
+</DocumentFragment>
+`;
+
+exports[`route loading skeletons snapshot-renders post 1`] = `
+<DocumentFragment>
+  <div
+    class="mono-page"
+  >
+    <div
+      class="mono-block"
+    >
+      <p
+        class="mono-muted"
+      >
+        [loading post...]
+      </p>
+    </div>
+    <div
+      class="dialog-box mono-block"
+    >
+      <p
+        class="mono-muted"
+      >
+        [ title ]
+      </p>
+      <p
+        class="mono-muted"
+      >
+        [ author ] | [ group ] | [ time ]
+      </p>
+      <div
+        class="mt-4 skeleton h-24 w-full"
+      />
+      <p
+        class="mt-4 mono-muted"
+      >
+        [ upvotes ] | [ comments ]
+      </p>
+    </div>
+    <div
+      class="mono-block"
+    >
+      <h2>
+        [Comments]
+      </h2>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ comment 1 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ comment 2 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ comment 3 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ comment 4 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ comment 5 ]
+        </p>
+      </div>
+    </div>
+  </div>
+</DocumentFragment>
+`;
+
+exports[`route loading skeletons snapshot-renders research 1`] = `
+<DocumentFragment>
+  <main
+    class="mono-page mono-page-wide"
+  >
+    <h1>
+      [Research]
+    </h1>
+    <p
+      class="mono-block mono-muted"
+    >
+      [loading latest writing...]
+    </p>
+    <section
+      class="mono-block"
+    >
+      <h2>
+        [Latest writing]
+      </h2>
+      <article
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ article 1 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ authors ] | [ date ]
+        </p>
+      </article>
+      <article
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ article 2 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ authors ] | [ date ]
+        </p>
+      </article>
+      <article
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ article 3 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ authors ] | [ date ]
+        </p>
+      </article>
+      <article
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ article 4 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ authors ] | [ date ]
+        </p>
+      </article>
+      <article
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ article 5 ]
+        </p>
+        <p
+          class="mono-muted"
+        >
+          [ authors ] | [ date ]
+        </p>
+      </article>
+    </section>
+  </main>
+</DocumentFragment>
+`;
+
+exports[`route loading skeletons snapshot-renders research-article 1`] = `
+<DocumentFragment>
+  <main
+    class="mono-page"
+  >
+    <p
+      class="mono-block mono-muted"
+    >
+      [loading article...]
+    </p>
+    <h1>
+      [ article title ]
+    </h1>
+    <p
+      class="mono-block mono-muted"
+    >
+      [ authors ] | [ date ]
+    </p>
+    <section
+      class="dialog-box mono-block"
+    >
+      <p
+        class="mono-muted"
+      >
+        [ abstract ]
+      </p>
+    </section>
+    <section
+      class="mono-block"
+    >
+      <div
+        class="mb-3 skeleton h-5 w-full"
+      />
+      <div
+        class="mb-3 skeleton h-5 w-full"
+      />
+      <div
+        class="mb-3 skeleton h-5 w-full"
+      />
+      <div
+        class="mb-3 skeleton h-5 w-full"
+      />
+      <div
+        class="mb-3 skeleton h-5 w-full"
+      />
+      <div
+        class="mb-3 skeleton h-5 w-full"
+      />
+    </section>
+  </main>
+</DocumentFragment>
+`;
+
+exports[`route loading skeletons snapshot-renders search 1`] = `
+<DocumentFragment>
+  <div
+    class="mono-page"
+  >
+    <h1>
+      [Search]
+    </h1>
+    <div
+      class="dialog-box mono-block"
+    >
+      <p
+        class="mono-muted"
+      >
+        [ search query ]
+      </p>
+    </div>
+    <section>
+      <h2>
+        [Results]
+      </h2>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 1 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 2 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 3 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 4 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 5 ]
+        </p>
+      </div>
+      <div
+        class="mono-row"
+      >
+        <p
+          class="mono-muted"
+        >
+          [ result 6 ]
+        </p>
+      </div>
+    </section>
+  </div>
+</DocumentFragment>
+`;

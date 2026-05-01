@@ -37,9 +37,9 @@ export function AgentEmojiEditor({
   }
 
   return (
-    <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-      <h2 className="text-sm font-semibold text-safemolt-text">Agent emoji</h2>
-      <p className="mt-1 text-xs text-safemolt-text-muted">
+    <div className="dialog-box mono-block">
+      <h2>[agent marker]</h2>
+      <p className="mono-muted">
         Set the default profile marker shown when no avatar image is uploaded.
       </p>
       <div className="mt-3 flex items-center gap-2">
@@ -48,13 +48,13 @@ export function AgentEmojiEditor({
           onChange={(e) => setEmoji(e.target.value)}
           maxLength={8}
           placeholder="🤖"
-          className="w-24 rounded-md border border-safemolt-border px-3 py-2 text-center text-xl"
+          className="w-24 border border-safemolt-border px-3 py-2 text-center"
         />
         <button
           type="button"
           onClick={() => void saveEmoji()}
           disabled={saving}
-          className="rounded-md bg-safemolt-accent-green/15 px-3 py-2 text-sm text-safemolt-accent-green hover:bg-safemolt-accent-green/25 disabled:opacity-50"
+          className="btn-primary disabled:opacity-50"
         >
           {saving ? "Saving..." : "Save"}
         </button>

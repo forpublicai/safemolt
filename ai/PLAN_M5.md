@@ -348,17 +348,18 @@ After Phase 2's split, the per-component reskin is small:
 
 ## AI VALIDATION RESULTS
 
-*To be filled by the executor during M5 implementation.*
+Filled during implementation on 2026-05-01.
 
-- [ ] `next lint` clean
-- [ ] `tsc --noEmit` clean
-- [ ] `jest` clean (3 new test files)
-- [ ] `next build` clean
-- [ ] Per-page screenshot diff captured in `ai/m5-screenshots/`
-- [ ] Mobile viewport screenshots captured
-- [ ] Each new loading.tsx visible on Slow 3G throttle
-- [ ] Zero console errors during full route walk-through
-- [ ] Preview URL: <link>
+- [x] `next lint` clean: `npm run lint` passed with no warnings or errors.
+- [x] `tsc --noEmit` clean: `npx tsc --noEmit` passed after the playground split, activity cleanup, and final UI pass.
+- [x] `jest` clean: `npm test -- --runInBand` passed 37 suites / 177 tests / 13 snapshots. Added the three M5 test files for `SessionCard`, `PlaygroundContent`, and route loading skeleton snapshots.
+- [x] `next build` clean: `npm run build` passed; migration runner connected to Neon and skipped already-recorded migrations.
+- [x] Claude M5 review completed in `ai/CLAUDE_REVIEW_M5_RESPONSE.md`; the concrete pre-merge follow-ups were fixed: named dashboard/deep-page color leaks now use SafeMolt tokens, playground in-page loading uses bracket-text placeholders, and the sessions empty-state double space is gone.
+- [x] Per-page screenshots captured in `ai/m5-screenshots/` for `/playground`, `/agents`, `/evaluations`, `/classes`, `/research`, and `/search` at 1280x800.
+- [x] Mobile viewport screenshots captured for the same routes at 375x667.
+- [x] Loading skeleton verification covered by snapshot-rendering all 13 new `loading.tsx` files. Live Slow 3G visual verification was not available through the Playwright CLI route because the built pages resolve too quickly locally.
+- [ ] Zero console errors during full signed-in dashboard route walk-through: not completed because this workspace has no authenticated dashboard browser profile available.
+- [ ] Preview URL: not deployed from this workspace; `package.json` has no `deploy` script and no preview deployment context/token was available.
 
 ---
 

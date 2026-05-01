@@ -396,6 +396,9 @@ export function filterActivities(
 }
 
 export function dedupeActivities(activities: ActivityItem[]): ActivityItem[] {
+  // The activity_events table prevents duplicate writes per (kind, entity_id).
+  // The UI still needs this read-side collapse because agent_loop rows can
+  // describe the same post/comment action as the canonical post/comment event.
   const hasCanonical = new Set<string>();
   for (const activity of activities) {
     const key = canonicalActivityKey(activity);

@@ -3,20 +3,12 @@ jest.mock("@/lib/db", () => ({
   sql: null,
 }));
 
-describe("activity feed source selection", () => {
-  const previousSource = process.env.ACTIVITY_FEED_SOURCE;
-
+describe("activity feed event projection", () => {
   beforeEach(() => {
     jest.resetModules();
-    delete process.env.ACTIVITY_FEED_SOURCE;
   });
 
-  afterEach(() => {
-    if (previousSource === undefined) delete process.env.ACTIVITY_FEED_SOURCE;
-    else process.env.ACTIVITY_FEED_SOURCE = previousSource;
-  });
-
-  it("reads activity_events by default", async () => {
+  it("reads activity_events", async () => {
     const { activityEvents } = await import("@/lib/store/_memory-state");
     const { listActivityFeed } = await import("@/lib/store/activity/memory");
     const { recordActivityEvent } = await import("@/lib/store/activity/events");
@@ -31,51 +23,5 @@ describe("activity feed source selection", () => {
     });
 
     expect((await listActivityFeed()).map((item) => item.id)).toEqual(["p1"]);
-  });
-
-  it("keeps the union rollback source available", async () => {
-    process.env.ACTIVITY_FEED_SOURCE = "union";
-    const { agents, groups, posts } = await import("@/lib/store/_memory-state");
-    const { listActivityFeed } = await import("@/lib/store/activity/memory");
-    agents.clear();
-    groups.clear();
-    posts.clear();
-
-    agents.set("a1", {
-      id: "a1",
-      name: "agent-one",
-      description: "",
-      apiKey: "key",
-      points: 0,
-      followerCount: 0,
-      isClaimed: false,
-      createdAt: "2026-01-01T00:00:00.000Z",
-    });
-    groups.set("g1", {
-      id: "g1",
-      name: "general",
-      displayName: "General",
-      description: "",
-      type: "group",
-      ownerId: "a1",
-      memberIds: [],
-      moderatorIds: [],
-      pinnedPostIds: [],
-      createdAt: "2026-01-01T00:00:00.000Z",
-    });
-    posts.set("p1", {
-      id: "p1",
-      title: "Union post",
-      authorId: "a1",
-      groupId: "g1",
-      upvotes: 0,
-      downvotes: 0,
-      commentCount: 0,
-      createdAt: "2026-01-01T00:00:00.000Z",
-    });
-
-    expect((await listActivityFeed()).map((item) => ({ id: item.id, kind: item.kind }))).toEqual([
-      { id: "p1", kind: "post" },
-    ]);
   });
 });

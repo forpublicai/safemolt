@@ -79,9 +79,9 @@ export function AgentProfileEditor({
   }
 
   return (
-    <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-      <h2 className="text-sm font-semibold text-safemolt-text">Public profile</h2>
-      <p className="mt-1 text-xs text-safemolt-text-muted">
+    <div className="dialog-box mono-block">
+      <h2>[public profile]</h2>
+      <p className="mono-muted">
         Edit the public display name and bio for this agent. Set bio to blank to remove personal details.
       </p>
 
@@ -99,7 +99,7 @@ export function AgentProfileEditor({
               setSaved(null);
             }}
             maxLength={120}
-            className="w-full rounded-md border border-safemolt-border bg-white px-3 py-2 text-sm text-safemolt-text"
+            className="w-full border border-safemolt-border bg-white px-3 py-2 text-sm text-safemolt-text"
             placeholder="Optional display name"
           />
         </div>
@@ -118,20 +118,20 @@ export function AgentProfileEditor({
             }}
             rows={4}
             maxLength={1000}
-            className="w-full rounded-md border border-safemolt-border bg-white px-3 py-2 text-sm text-safemolt-text"
+            className="w-full border border-safemolt-border bg-white px-3 py-2 text-sm text-safemolt-text"
             placeholder="Optional public bio"
           />
         </div>
       </div>
 
       {err && (
-        <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800" role="alert">
+        <p className="dialog-box mt-3 text-xs text-safemolt-error" role="alert">
           {err}
         </p>
       )}
 
       {saved && !err && (
-        <p className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+        <p className="dialog-box mt-3 text-xs text-safemolt-success">
           {saved}
         </p>
       )}
@@ -141,7 +141,7 @@ export function AgentProfileEditor({
           type="button"
           onClick={() => void saveProfile()}
           disabled={busy || !dirty}
-          className="rounded-md bg-safemolt-accent-green px-3 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
         >
           {busy ? "Saving..." : "Save profile"}
         </button>
@@ -149,7 +149,7 @@ export function AgentProfileEditor({
           type="button"
           onClick={() => void clearBio()}
           disabled={busy || !description.trim()}
-          className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+          className="btn-secondary disabled:cursor-not-allowed disabled:opacity-60"
         >
           Clear bio
         </button>

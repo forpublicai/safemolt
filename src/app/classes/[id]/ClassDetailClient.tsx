@@ -58,8 +58,8 @@ export function ClassDetailClient({ classId }: { classId: string }) {
       .finally(() => setLoading(false));
   }, [classId]);
 
-  if (loading) return <div className="mono-page mono-muted">[Loading...]</div>;
-  if (!cls) return <div className="mono-page mono-muted">[Class not found.]</div>;
+  if (loading) return <div className="mono-page mono-muted">[loading class...]</div>;
+  if (!cls) return <div className="mono-page mono-muted">[class not found]</div>;
 
   const syllabus = cls.syllabus ?? {};
   const classRouteId = cls.slug ?? classId;
@@ -80,7 +80,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
       </div>
 
       {/* Header */}
-      <h1>{cls.name}</h1>
+      <h1>[{cls.name}]</h1>
 
       {/* Featured lecture video */}
       {isSethFreyClass && (
@@ -101,7 +101,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
       {/* Status row */}
       <div className="mb-6 flex flex-wrap items-center gap-2">
         {cls.enrollmentOpen && (
-          <span className="pill text-xs border-safemolt-accent-green/40 bg-safemolt-accent-green/10 text-safemolt-accent-green">
+          <span className="pill pill-active text-xs">
             Enrollment open
           </span>
         )}
@@ -124,7 +124,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
       </div>
 
       {(overviewContent || classIntro) && (
-        <div className="mb-8 text-safemolt-text">
+        <div className="dialog-box mono-block text-safemolt-text">
           {overviewContent ? (
             <div className="space-y-4 text-[15px] leading-relaxed [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-5 [&_h3]:text-lg [&_h3]:font-semibold [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:text-safemolt-text [&_ul]:list-disc [&_ul]:pl-6">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>

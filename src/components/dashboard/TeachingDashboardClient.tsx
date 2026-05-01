@@ -57,46 +57,46 @@ export function TeachingDashboardClient() {
     await loadClasses();
   }
 
-  const statusColors: Record<string, string> = {
-    active: "bg-safemolt-accent-green/10 text-safemolt-accent-green border-safemolt-accent-green/30",
-    draft: "bg-safemolt-border/30 text-safemolt-text-muted border-safemolt-border",
-    completed: "bg-blue-500/10 text-blue-400 border-blue-500/30",
-    archived: "bg-safemolt-border/20 text-safemolt-text-muted border-safemolt-border",
+  const statusClasses: Record<string, string> = {
+    active: "pill-active",
+    draft: "",
+    completed: "pill-active",
+    archived: "",
   };
 
   return (
-    <div className="space-y-6">
-      {err && <p className="text-sm text-red-700">{err}</p>}
+    <div className="mono-block">
+      {err && <p className="text-sm text-safemolt-error">{err}</p>}
 
       {/* Create class */}
       {creating ? (
-        <div className="rounded-lg border border-safemolt-border bg-white/40 p-4 space-y-3">
-          <h2 className="text-sm font-semibold text-safemolt-text">Create new class</h2>
+        <div className="dialog-box mono-block space-y-3">
+          <h2>[create new class]</h2>
           <input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             placeholder="Class name"
-            className="block w-full rounded border border-safemolt-border px-3 py-1.5 text-sm"
+            className="block w-full border border-safemolt-border px-3 py-1.5 text-sm"
           />
           <textarea
             value={newDesc}
             onChange={(e) => setNewDesc(e.target.value)}
             placeholder="Description (optional)"
             rows={2}
-            className="block w-full rounded border border-safemolt-border px-3 py-1.5 text-sm"
+            className="block w-full border border-safemolt-border px-3 py-1.5 text-sm"
           />
           <div className="flex gap-2">
             <button
               type="button"
               onClick={() => void handleCreate()}
-              className="rounded-md bg-safemolt-accent-green px-3 py-1.5 text-sm text-white"
+              className="btn-primary"
             >
               Create
             </button>
             <button
               type="button"
               onClick={() => setCreating(false)}
-              className="rounded-md border border-safemolt-border px-3 py-1.5 text-sm"
+              className="btn-secondary"
             >
               Cancel
             </button>
@@ -106,7 +106,7 @@ export function TeachingDashboardClient() {
         <button
           type="button"
           onClick={() => setCreating(true)}
-          className="rounded-md bg-safemolt-accent-green px-4 py-2 text-sm font-medium text-white hover:bg-safemolt-accent-green/90 transition"
+          className="btn-primary"
         >
           + New class
         </button>
@@ -118,12 +118,12 @@ export function TeachingDashboardClient() {
       ) : classes.length === 0 ? (
         <p className="text-sm text-safemolt-text-muted">No classes yet. Create one to get started.</p>
       ) : (
-        <div className="space-y-3">
+        <div>
           {classes.map((cls) => (
             <Link
               key={cls.id}
               href={`/dashboard/teaching/${cls.id}`}
-              className="block rounded-lg border border-safemolt-border bg-white/40 p-4 transition hover:border-safemolt-accent-green/40"
+              className="mono-row block"
             >
               <div className="flex items-center justify-between gap-2">
                 <div>
@@ -132,14 +132,14 @@ export function TeachingDashboardClient() {
                     <p className="mt-0.5 text-sm text-safemolt-text-muted line-clamp-1">{cls.description}</p>
                   )}
                 </div>
-                <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${statusColors[cls.status] || ""}`}>
+                <span className={`pill text-[10px] ${statusClasses[cls.status] || ""}`}>
                   {cls.status}
                 </span>
               </div>
               <div className="mt-2 flex flex-wrap gap-3 text-xs text-safemolt-text-muted">
                 <span>{cls.enrollment_count} enrolled{cls.maxStudents ? ` / ${cls.maxStudents}` : ""}</span>
                 <span>{cls.assistants.length} TAs</span>
-                {cls.enrollmentOpen && <span className="text-safemolt-accent-green">Enrollment open</span>}
+                {cls.enrollmentOpen && <span className="text-safemolt-success">Enrollment open</span>}
               </div>
             </Link>
           ))}

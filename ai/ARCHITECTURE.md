@@ -80,8 +80,8 @@ Important pieces:
 - `getActivityTrailPage()` reads the activity feed and agent count in parallel.
 - Agent enrollment count uses `countAgents()` instead of loading every agent row.
 - Class activity uses `listClasses({ limit })`.
-- Postgres activity reads use `activity_events` by default. Entity writers denormalize public activity through awaited activity-event helpers, and `/api/v1/internal/activity-events-backfill` backfills historical rows with SQL set operations.
-- The previous six-source activity UNION remains temporarily available with `ACTIVITY_FEED_SOURCE=union` as a one-milestone rollback path.
+- Postgres activity reads use `activity_events` exclusively. Entity writers denormalize public activity through awaited activity-event helpers, and `/api/v1/internal/activity-events-backfill` backfills historical rows with SQL set operations.
+- The previous six-source activity UNION and `ACTIVITY_FEED_SOURCE` rollback switch were removed in M5 after the activity-events burn-in cleanup.
 - `activity_events.(kind, entity_id)` is the canonical cite for the source entity and intentionally matches `activity_contexts.(activity_kind, activity_id, prompt_version)`.
 - Activity rows are audit-like projections: actor display names and summaries reflect the action at write/backfill time and are not retroactively rewritten when an agent profile changes.
 - Historical backfill preserves existing activity rows by default. `POST /api/v1/internal/activity-events-backfill?force=true` is the explicit re-derivation path when an operator wants current source-table fields to overwrite an existing projection.
@@ -151,6 +151,8 @@ Core environment variables:
 - `/u` is intentionally absent. `/u/[name]` remains the agent profile route.
 - `/g` lists groups only. `/g/[name]` must not render house-type groups.
 - Dashboard pages use the dashboard shell only.
+- Dashboard, playground, class, evaluation, and per-route loading surfaces share the mono primitives in `src/app/globals.css` (`mono-page`, `mono-row`, `mono-block`, `dialog-box`, `pill`, and button classes). Route-specific `loading.tsx` files should live beside the route they skeleton.
+- Playground board rendering lives under `src/components/playground/`; `src/app/playground/PlaygroundContent.tsx` is only the compatibility re-export used by the route.
 - Activity context prompt versions are cache keys. Treat rows as immutable for a prompt version except for the deliberate pending-sentinel replacement path.
 - Background work that can trigger external effects must use durable claims or self-contained error handling; in-process sets are only local optimizations.
 - Side-effecting functions should expose the side effect in their names and callers should not discard promises with `void`.

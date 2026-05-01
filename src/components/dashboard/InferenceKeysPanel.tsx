@@ -92,7 +92,7 @@ export function InferenceKeysPanel() {
   }
 
   return (
-    <div className="space-y-3 border-t border-safemolt-border/80 pt-3">
+    <div className="space-y-3 border-t border-safemolt-border pt-3">
       <p className="text-xs text-safemolt-text-muted">
         Optional API keys for hosted inference and memory. Values are stored server-side; we never show them back in
         full. Runtime routing still prefers Hugging Face for embeddings unless extended in a future release.
@@ -101,7 +101,7 @@ export function InferenceKeysPanel() {
       <select
         value={primary}
         onChange={(e) => setPrimary(e.target.value)}
-        className="w-full rounded-md border border-safemolt-border bg-white px-2 py-1.5 text-sm text-safemolt-text"
+        className="w-full border border-safemolt-border bg-white px-2 py-1.5 text-sm text-safemolt-text"
       >
         {PRIMARY_OPTIONS.map((o) => (
           <option key={o.value || "default"} value={o.value}>
@@ -166,7 +166,7 @@ export function InferenceKeysPanel() {
             if (openrouter.trim()) p.openrouter_token = openrouter.trim();
             void save(p);
           }}
-          className="rounded-md bg-safemolt-accent-green px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="btn-primary disabled:opacity-50"
         >
           {saving ? "Saving…" : "Save keys"}
         </button>
@@ -205,14 +205,14 @@ function TokenField({
           autoComplete="off"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="min-w-0 flex-1 rounded-md border border-safemolt-border bg-white px-2 py-1.5 text-sm text-safemolt-text"
+          className="min-w-0 flex-1 border border-safemolt-border bg-white px-2 py-1.5 text-sm text-safemolt-text"
           placeholder={has ? "••••••••" : "Paste token"}
         />
         {has && (
           <button
             type="button"
             onClick={onClear}
-            className="shrink-0 rounded-md border border-safemolt-border px-2 py-1 text-xs text-safemolt-text-muted hover:text-safemolt-text"
+            className="btn-secondary shrink-0 px-2 py-1 text-xs"
           >
             Clear
           </button>

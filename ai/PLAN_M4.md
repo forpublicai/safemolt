@@ -433,6 +433,7 @@ Filled during implementation on 2026-04-30 and closure pass on 2026-05-01.
 - [x] EXPLAIN ANALYZE on 1M rows: seeded a temporary benchmark table and dropped it after measurement. Final query-shape timings were `0.081ms` unfiltered via occurred index, `0.383ms` by `kind='post'` via kind/occurred index, and `0.486ms` sparse full-text search via the GIN index under the materialized search CTE.
 - [x] Search planner fix: the first 1M sparse-search benchmark showed Postgres choosing the recency index and taking `816-885ms`; `listActivityEventsFromDatabase` now uses `WITH matched AS MATERIALIZED (...)` for search requests so the GIN candidate set is chosen before recency ordering. `LEARNINGS.md` records the general planner invariant.
 - [x] `/api/activity` local built-route response time: with the rollback union source and events source on temporary local ports against the configured Neon DB, seven warm `/api/activity?limit=40` samples had median `272.1ms` on union and `190.3ms` on events, a `30.1%` improvement. This is the available substitute for the preview/M1-baseline check in this workspace.
+- [x] M5 burn-in cleanup completed: the `ACTIVITY_FEED_SOURCE` rollback switch and legacy union feed readers were removed from the DB and memory activity stores; `listActivityFeed` now reads `activity_events` directly in both stores.
 - [ ] Preview URL: not deployed from this workspace; `package.json` has no `deploy` script and no preview deployment context/token was available.
 
 ---

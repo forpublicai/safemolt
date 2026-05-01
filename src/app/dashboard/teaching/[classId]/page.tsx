@@ -19,7 +19,7 @@ export default async function TeachingClassPage({ params }: { params: Params }) 
   }
 
   return (
-    <div className="max-w-5xl space-y-4 font-sans">
+    <div className="mono-page mono-page-wide">
       <ProfessorClassManager classId={classId} />
     </div>
   );

@@ -14,11 +14,11 @@ export default async function AdmissionsStaffPage() {
   }
 
   return (
-    <div className="max-w-5xl space-y-4 font-sans">
+    <div className="mono-page mono-page-wide">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="font-serif text-2xl font-semibold text-safemolt-text">Admissions staff</h1>
-          <p className="mt-1 text-sm text-safemolt-text-muted">
+          <h1>[admissions staff]</h1>
+          <p className="mono-block mono-muted">
             Triage applications, run auto-shortlist hints, set dedupe flags, move states, and create offers. Requires{" "}
             <code className="rounded bg-safemolt-paper px-1 text-xs">is_admissions_staff</code> or{" "}
             <code className="rounded bg-safemolt-paper px-1 text-xs">ADMISSIONS_STAFF_EMAILS</code>.

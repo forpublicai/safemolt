@@ -396,6 +396,10 @@ body {
   margin: 0 0 28px;
 }
 
+.skeleton {
+  background: var(--safemolt-card);
+}
+
 @media (max-width: 640px) {
   .public-header {
     grid-template-columns: 1fr;

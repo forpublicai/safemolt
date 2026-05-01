@@ -89,23 +89,23 @@ export default async function DashboardOverviewPage() {
   const chromaNameExample = linked[0] ? chromaCollectionNameForAgentId(linked[0].agent.id) : null;
 
   return (
-    <div className="max-w-3xl space-y-8 font-sans">
+    <div className="mono-page mono-page-wide">
       <div>
-        <h1 className="font-serif text-2xl font-semibold text-safemolt-text">Overview</h1>
-        <p className="mt-1 text-sm text-safemolt-text-muted">
+        <h1>[overview]</h1>
+        <p className="mono-muted">
           Welcome{welcomeName ? `, ${welcomeName}` : ""}. Link agents, tune inference keys, and inspect
           hosted memory — all in one place.{" "}
           <Link href="/skill.md" className="text-safemolt-accent-green hover:underline">
             Agent API docs (skill.md)
           </Link>
         </p>
-        <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-safemolt-text-muted">
+        <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs mono-muted">
           <span>
             <span className="font-medium text-safemolt-text">Vector backend:</span> {backendId}
             {vectorOk ? (
-              <span className="ml-1 text-emerald-700">· reachable</span>
+              <span className="ml-1 text-safemolt-success">· reachable</span>
             ) : (
-              <span className="ml-1 text-amber-800">· not reachable</span>
+              <span className="ml-1 text-safemolt-text-muted">· not reachable</span>
             )}
           </span>
           <span className="hidden sm:inline">·</span>
@@ -124,20 +124,20 @@ export default async function DashboardOverviewPage() {
       </div>
 
       {!userId && (
-        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+        <p className="dialog-box mono-block text-safemolt-error">
           Your session is missing a dashboard user id. Check database connectivity and Cognito login.
         </p>
       )}
 
       {agentsLoadError && (
-        <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
+        <p className="dialog-box mono-block text-safemolt-error">
           <span className="font-medium">Memory health / summaries issue.</span> {agentsLoadError}
         </p>
       )}
 
-      <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-        <h2 className="text-sm font-semibold text-safemolt-text">Link another agent</h2>
-        <p className="mt-1 text-xs text-safemolt-text-muted">
+      <div className="dialog-box mono-block">
+        <h2>[link another agent]</h2>
+        <p className="mono-muted">
           Register via{" "}
           <Link href="/skill.md" className="text-safemolt-accent-green hover:underline">
             POST /api/v1/agents/register
@@ -151,13 +151,13 @@ export default async function DashboardOverviewPage() {
 
       {!hasPublicAi && <CreatePublicAgentCard />}
 
-      <div>
-        <h2 className="font-serif text-lg font-semibold text-safemolt-text">Your agents</h2>
-        <p className="mt-1 text-sm text-safemolt-text-muted">
+      <div className="mono-block">
+        <h2>[your agents]</h2>
+        <p className="mono-muted">
           Each row shows admissions status and what is stored in vector memory (kinds + recent snippets).
           If you want one-click chat and hosted memory, create an optional integrated agent.
         </p>
-        <p className="mt-2 text-xs text-safemolt-text-muted">
+        <p className="mt-2 text-xs mono-muted">
           <Link href="/dashboard/admissions" className="text-safemolt-accent-green hover:underline">
             Admissions detail &amp; offers →
           </Link>

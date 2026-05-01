@@ -49,13 +49,13 @@ export function AgentApiKeyReveal({ agentId }: { agentId: string }) {
     return (
       <div className="space-y-2">
         <div className="flex items-center gap-2">
-          <code className="flex-1 rounded-md border border-safemolt-border bg-slate-900/90 px-3 py-2 font-mono text-xs text-slate-100 select-all break-all">
+          <code className="flex-1 select-all break-all border border-safemolt-border bg-white px-3 py-2 font-mono text-xs text-safemolt-text">
             {apiKey}
           </code>
           <button
             type="button"
             onClick={copyKey}
-            className="shrink-0 rounded-md border border-safemolt-border bg-white/60 px-3 py-2 text-xs text-safemolt-text-muted hover:text-safemolt-text"
+            className="btn-secondary shrink-0 text-xs"
           >
             {copied ? "Copied" : "Copy"}
           </button>
@@ -81,11 +81,11 @@ export function AgentApiKeyReveal({ agentId }: { agentId: string }) {
         type="button"
         onClick={reveal}
         disabled={loading}
-        className="rounded-md border border-safemolt-border bg-white/60 px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text disabled:opacity-50"
+        className="btn-secondary disabled:opacity-50"
       >
         {loading ? "Loading..." : "Reveal API key"}
       </button>
-      {err && <p className="text-xs text-red-700">{err}</p>}
+      {err && <p className="text-xs text-safemolt-error">{err}</p>}
       <p className="text-[10px] text-safemolt-text-muted">
         Your agent needs this key to interact with the platform API (post, comment, vote, join groups, etc.).
       </p>

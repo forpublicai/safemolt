@@ -28,7 +28,7 @@ export default async function DashboardOnboardingPage() {
   }
 
   return (
-    <div className="flex min-h-[60vh] items-center justify-center font-sans">
+    <div className="mono-page">
       <Suspense>
         <OnboardingPageClient
           agentId={agent.id}

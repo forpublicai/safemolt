@@ -212,9 +212,9 @@ function AgentChatPanelInner() {
   const sessionSummariesForAgent = sessions.filter((s) => s.agentId === agentId);
 
   return (
-    <div className="flex gap-3 items-start">
+    <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
       {/* LEFT: Sessions sidebar */}
-      <aside className="hidden sm:flex flex-col w-60 shrink-0 gap-2 rounded-lg border border-safemolt-border bg-safemolt-paper/60 p-3 self-stretch">
+      <aside className="dialog-box hidden w-60 shrink-0 flex-col gap-2 self-stretch sm:flex">
         <div className="flex items-center justify-between gap-1">
           <span className="text-xs font-semibold uppercase tracking-wide text-safemolt-text-muted">
             Past chats
@@ -222,13 +222,13 @@ function AgentChatPanelInner() {
           <button
             onClick={() => void startNewSession()}
             disabled={!agentId}
-            className="rounded px-2 py-1 text-xs font-medium bg-safemolt-accent-green text-white disabled:opacity-50 hover:opacity-90 transition-opacity"
+            className="btn-primary px-2 py-1 text-xs disabled:opacity-50"
           >
-            + New
+            [new]
           </button>
         </div>
 
-        <p className="text-[10px] leading-snug text-safemolt-text-muted/70 border border-safemolt-border/50 rounded px-1.5 py-1 bg-amber-50/60">
+        <p className="border border-safemolt-border px-1.5 py-1 text-[10px] leading-snug text-safemolt-text-muted">
           Chats are kept for <strong>30 days</strong>, then permanently deleted.
         </p>
 
@@ -249,10 +249,10 @@ function AgentChatPanelInner() {
                 <button
                   onClick={() => void resumeSession(s)}
                   className={[
-                    "w-full text-left rounded-md px-2 py-1.5 text-xs transition-colors pr-6",
+                    "w-full pr-6 text-left text-xs",
                     isActive
-                      ? "bg-safemolt-accent-green/15 text-safemolt-text"
-                      : "hover:bg-safemolt-border/40 text-safemolt-text-muted",
+                      ? "text-safemolt-text underline"
+                      : "text-safemolt-text-muted hover:text-safemolt-text",
                   ].join(" ")}
                 >
                   <p className="font-medium truncate">
@@ -264,10 +264,10 @@ function AgentChatPanelInner() {
                       className={[
                         "rounded px-1 text-[9px] font-semibold",
                         days <= 3
-                          ? "bg-red-100 text-red-700"
+                          ? "text-safemolt-error"
                           : days <= 7
-                          ? "bg-amber-100 text-amber-700"
-                          : "bg-gray-100 text-gray-500",
+                          ? "text-safemolt-text"
+                          : "text-safemolt-text-muted",
                       ].join(" ")}
                     >
                       {days}d left
@@ -277,7 +277,7 @@ function AgentChatPanelInner() {
                 <button
                   onClick={() => void deleteSession(s)}
                   title="Delete chat"
-                  className="absolute right-1 top-1.5 hidden group-hover:flex items-center justify-center w-4 h-4 rounded text-safemolt-text-muted/50 hover:text-red-500 transition-colors text-[10px]"
+                  className="absolute right-1 top-1.5 hidden h-4 w-4 items-center justify-center text-[10px] text-safemolt-text-muted/50 hover:text-safemolt-error group-hover:flex"
                 >
                   ×
                 </button>
@@ -288,7 +288,7 @@ function AgentChatPanelInner() {
       </aside>
 
       {/* RIGHT: Chat panel */}
-      <div className="flex flex-col flex-1 gap-3 rounded-lg border border-safemolt-border bg-safemolt-paper/60 p-4 min-w-0">
+      <div className="dialog-box flex min-w-0 flex-1 flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <label htmlFor="chat-agent" className="text-xs font-medium text-safemolt-text-muted">
             Agent
@@ -297,7 +297,7 @@ function AgentChatPanelInner() {
             id="chat-agent"
             value={agentId}
             onChange={(e) => setAgentId(e.target.value)}
-            className="rounded-md border border-safemolt-border bg-white px-2 py-1.5 text-sm text-safemolt-text"
+            className="border border-safemolt-border bg-white px-2 py-1.5 text-sm text-safemolt-text"
           >
             {agents.map((a) => (
               <option key={a.id} value={a.id}>
@@ -309,13 +309,13 @@ function AgentChatPanelInner() {
           <button
             onClick={() => void startNewSession()}
             disabled={!agentId}
-            className="sm:hidden ml-auto rounded px-2 py-1.5 text-xs font-medium bg-safemolt-accent-green text-white disabled:opacity-50"
+            className="btn-primary ml-auto px-2 py-1.5 text-xs disabled:opacity-50 sm:hidden"
           >
             + New Chat
           </button>
         </div>
 
-        <div className="max-h-[min(420px,50vh)] min-h-[200px] space-y-3 overflow-y-auto rounded-md border border-safemolt-border/80 bg-white/80 p-3">
+        <div className="max-h-[min(420px,50vh)] min-h-[200px] space-y-3 overflow-y-auto border border-safemolt-border bg-white p-3">
           {messages.length === 0 ? (
             <p className="text-sm text-safemolt-text-muted">Send a message to start the conversation.</p>
           ) : (
@@ -324,8 +324,8 @@ function AgentChatPanelInner() {
                 key={i}
                 className={
                   m.role === "user"
-                    ? "ml-6 rounded-lg bg-safemolt-accent-brown/10 px-3 py-2 text-sm text-safemolt-text"
-                    : "mr-6 rounded-lg bg-safemolt-accent-green/10 px-3 py-2 text-sm text-safemolt-text"
+                    ? "ml-6 border border-safemolt-border px-3 py-2 text-sm text-safemolt-text"
+                    : "mr-6 border border-safemolt-border px-3 py-2 text-sm text-safemolt-text"
                 }
               >
                 <p className="text-[10px] font-medium uppercase tracking-wide text-safemolt-text-muted">
@@ -339,7 +339,7 @@ function AgentChatPanelInner() {
         </div>
 
         {err ? (
-          <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">{err}</p>
+          <p className="dialog-box text-xs text-safemolt-error">{err}</p>
         ) : null}
 
         <div className="flex items-end gap-2">
@@ -355,13 +355,13 @@ function AgentChatPanelInner() {
             placeholder="Message… (Enter to send, Shift+Enter for newline)"
             rows={3}
             disabled={sending || !agentId}
-            className="min-h-[80px] flex-1 resize-y rounded-md border border-safemolt-border bg-white px-3 py-2 text-sm text-safemolt-text placeholder:text-safemolt-text-muted/70"
+            className="min-h-[80px] flex-1 resize-y border border-safemolt-border bg-white px-3 py-2 text-sm text-safemolt-text placeholder:text-safemolt-text-muted/70"
           />
           <button
             type="button"
             onClick={() => void send()}
             disabled={sending || !input.trim() || !agentId}
-            className="shrink-0 rounded-md bg-safemolt-accent-green px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            className="btn-primary shrink-0 disabled:opacity-50"
           >
             {sending ? "Sending…" : "Send"}
           </button>
