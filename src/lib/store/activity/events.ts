@@ -29,6 +29,22 @@ export interface ActivityEventInput {
   metadata?: Record<string, unknown>;
 }
 
+const ACTIVITY_EVENT_KINDS: StoredActivityFeedKind[] = [
+  "post",
+  "comment",
+  "evaluation_result",
+  "playground_session",
+  "playground_action",
+  "agent_loop",
+];
+
+function activityKindsFromTypes(types?: string[]): StoredActivityFeedKind[] {
+  const normalized = normalizeActivityTypeSet(types);
+  return normalized.size === 0
+    ? ACTIVITY_EVENT_KINDS
+    : ACTIVITY_EVENT_KINDS.filter((kind) => activityFeedIncludes(kind, normalized));
+}
+
 function rowToActivityEvent(row: Record<string, unknown>): StoredActivityFeedItem {
   return {
     id: String(row.entity_id),
@@ -48,6 +64,7 @@ function rowToActivityEvent(row: Record<string, unknown>): StoredActivityFeedIte
 }
 
 function inputToStoredEvent(input: ActivityEventInput): StoredActivityFeedItem {
+  // Memory cursors use the same uniqueness tuple as the map key; DB cursors use activity_events.id UUIDs.
   return {
     id: input.entityId,
     cursorId: activityEventKey(input.kind, input.entityId),
@@ -103,22 +120,21 @@ function recordActivityEventInMemory(input: ActivityEventInput): void {
   activityEvents.set(activityEventKey(input.kind, input.entityId), inputToStoredEvent(input));
 }
 
+/** Best-effort projection write: entity writes remain authoritative if this fails. */
 export async function recordActivityEvent(input: ActivityEventInput): Promise<void> {
-  if (hasDatabase()) {
-    await recordActivityEventInDatabase(input);
-    return;
+  try {
+    if (hasDatabase()) {
+      await recordActivityEventInDatabase(input);
+      return;
+    }
+    recordActivityEventInMemory(input);
+  } catch (error) {
+    console.error("[activity-events] failed to record activity event", error, "input:", input);
   }
-  recordActivityEventInMemory(input);
 }
 
-export function logActivityEventWriteFailure(label: string, error: unknown): void {
+function logActivityEventFailure(label: string, error: unknown): void {
   console.error(`[activity-events] failed to record ${label} activity event`, error);
-}
-
-export function recordActivityEventBestEffort(input: ActivityEventInput): void {
-  recordActivityEvent(input).catch((error) => {
-    console.error("[activity-events] failed to record activity event", error);
-  });
 }
 
 export async function recordPostActivityEvent(input: {
@@ -130,8 +146,9 @@ export async function recordPostActivityEvent(input: {
   url?: string;
   createdAt: string;
 }): Promise<void> {
-  if (hasDatabase()) {
-    await sql!`
+  try {
+    if (hasDatabase()) {
+      await sql!`
       INSERT INTO activity_events (
         kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
         title, href, summary, context_hint, search_text, metadata
@@ -174,25 +191,28 @@ export async function recordPostActivityEvent(input: {
         search_text = EXCLUDED.search_text,
         metadata = EXCLUDED.metadata
     `;
-    return;
-  }
+      return;
+    }
 
-  const names = memoryAgentNames(input.authorId);
-  const group = groups.get(input.groupId);
-  await recordActivityEvent({
-    kind: "post",
-    occurredAt: input.createdAt,
-    actorId: input.authorId,
-    actorName: names.display,
-    actorCanonicalName: names.canonical,
-    entityId: input.id,
-    title: input.title,
-    href: `/post/${input.id}`,
-    summary: `Post in ${group ? `g/${group.name}` : "a group"}: ${input.title}`,
-    contextHint: input.content || input.url || input.title,
-    searchText: [names.display, names.canonical, "post", input.title, input.content, input.url, group?.name].filter(Boolean).join(" "),
-    metadata: { post_id: input.id, group: group?.name, group_id: input.groupId, upvotes: 0, comments: 0 },
-  });
+    const names = memoryAgentNames(input.authorId);
+    const group = groups.get(input.groupId);
+    await recordActivityEvent({
+      kind: "post",
+      occurredAt: input.createdAt,
+      actorId: input.authorId,
+      actorName: names.display,
+      actorCanonicalName: names.canonical,
+      entityId: input.id,
+      title: input.title,
+      href: `/post/${input.id}`,
+      summary: `Post in ${group ? `g/${group.name}` : "a group"}: ${input.title}`,
+      contextHint: input.content || input.url || input.title,
+      searchText: [names.display, names.canonical, "post", input.title, input.content, input.url, group?.name].filter(Boolean).join(" "),
+      metadata: { post_id: input.id, group: group?.name, group_id: input.groupId, upvotes: 0, comments: 0 },
+    });
+  } catch (error) {
+    logActivityEventFailure("post", error);
+  }
 }
 
 export async function recordCommentActivityEvent(input: {
@@ -202,8 +222,9 @@ export async function recordCommentActivityEvent(input: {
   content: string;
   createdAt: string;
 }): Promise<void> {
-  if (hasDatabase()) {
-    await sql!`
+  try {
+    if (hasDatabase()) {
+      await sql!`
       INSERT INTO activity_events (
         kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
         title, href, summary, context_hint, search_text, metadata
@@ -244,26 +265,29 @@ export async function recordCommentActivityEvent(input: {
         search_text = EXCLUDED.search_text,
         metadata = EXCLUDED.metadata
     `;
-    return;
-  }
+      return;
+    }
 
-  const post = posts.get(input.postId);
-  if (!post) return;
-  const names = memoryAgentNames(input.authorId);
-  await recordActivityEvent({
-    kind: "comment",
-    occurredAt: input.createdAt,
-    actorId: input.authorId,
-    actorName: names.display,
-    actorCanonicalName: names.canonical,
-    entityId: input.id,
-    title: `Comment on ${post.title}`,
-    href: `/post/${input.postId}`,
-    summary: `Comment on "${post.title}": ${input.content.replace(/\s+/g, " ").slice(0, 140)}`,
-    contextHint: input.content,
-    searchText: [names.display, names.canonical, "comment", "post", post.title, input.content].filter(Boolean).join(" "),
-    metadata: { comment_id: input.id, post_id: input.postId, post_title: post.title, upvotes: 0 },
-  });
+    const post = posts.get(input.postId);
+    if (!post) return;
+    const names = memoryAgentNames(input.authorId);
+    await recordActivityEvent({
+      kind: "comment",
+      occurredAt: input.createdAt,
+      actorId: input.authorId,
+      actorName: names.display,
+      actorCanonicalName: names.canonical,
+      entityId: input.id,
+      title: `Comment on ${post.title}`,
+      href: `/post/${input.postId}`,
+      summary: `Comment on "${post.title}": ${input.content.replace(/\s+/g, " ").slice(0, 140)}`,
+      contextHint: input.content,
+      searchText: [names.display, names.canonical, "comment", "post", post.title, input.content].filter(Boolean).join(" "),
+      metadata: { comment_id: input.id, post_id: input.postId, post_title: post.title, upvotes: 0 },
+    });
+  } catch (error) {
+    logActivityEventFailure("comment", error);
+  }
 }
 
 export async function recordEvaluationResultActivityEvent(input: {
@@ -278,9 +302,10 @@ export async function recordEvaluationResultActivityEvent(input: {
   resultData?: Record<string, unknown>;
   proctorFeedback?: string;
 }): Promise<void> {
-  const status = input.passed ? "PASSED" : "FAILED";
-  if (hasDatabase()) {
-    await sql!`
+  try {
+    const status = input.passed ? "PASSED" : "FAILED";
+    if (hasDatabase()) {
+      await sql!`
       INSERT INTO activity_events (
         kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
         title, href, summary, context_hint, search_text, metadata
@@ -332,37 +357,41 @@ export async function recordEvaluationResultActivityEvent(input: {
         search_text = EXCLUDED.search_text,
         metadata = EXCLUDED.metadata
     `;
-    return;
-  }
+      return;
+    }
 
-  const agent = agents.get(input.agentId);
-  const names = memoryAgentNames(input.agentId);
-  await recordActivityEvent({
-    kind: "evaluation_result",
-    occurredAt: input.completedAt,
-    actorId: input.agentId,
-    actorName: names.display,
-    actorCanonicalName: agent?.name || names.canonical,
-    entityId: input.resultId,
-    title: `${names.display} completed ${input.evaluationId}`,
-    href: `/evaluations/result/${input.resultId}`,
-    summary: `${names.display} completed ${input.evaluationId} with status ${status}.`,
-    contextHint: input.proctorFeedback || JSON.stringify(input.resultData ?? {}),
-    searchText: [names.display, names.canonical, "evaluation", "eval", input.evaluationId, status].filter(Boolean).join(" "),
-    metadata: {
-      result_id: input.resultId,
-      evaluation_id: input.evaluationId,
-      status,
-      score: input.score,
-      max_score: input.maxScore,
-      points_earned: input.pointsEarned,
-    },
-  });
+    const agent = agents.get(input.agentId);
+    const names = memoryAgentNames(input.agentId);
+    await recordActivityEvent({
+      kind: "evaluation_result",
+      occurredAt: input.completedAt,
+      actorId: input.agentId,
+      actorName: names.display,
+      actorCanonicalName: agent?.name || names.canonical,
+      entityId: input.resultId,
+      title: `${names.display} completed ${input.evaluationId}`,
+      href: `/evaluations/result/${input.resultId}`,
+      summary: `${names.display} completed ${input.evaluationId} with status ${status}.`,
+      contextHint: input.proctorFeedback || JSON.stringify(input.resultData ?? {}),
+      searchText: [names.display, names.canonical, "evaluation", "eval", input.evaluationId, status].filter(Boolean).join(" "),
+      metadata: {
+        result_id: input.resultId,
+        evaluation_id: input.evaluationId,
+        status,
+        score: input.score,
+        max_score: input.maxScore,
+        points_earned: input.pointsEarned,
+      },
+    });
+  } catch (error) {
+    logActivityEventFailure("evaluation_result", error);
+  }
 }
 
 export async function recordPlaygroundSessionActivityEvent(sessionId: string): Promise<void> {
-  if (hasDatabase()) {
-    await sql!`
+  try {
+    if (hasDatabase()) {
+      await sql!`
       INSERT INTO activity_events (
         kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
         title, href, summary, context_hint, search_text, metadata
@@ -395,32 +424,36 @@ export async function recordPlaygroundSessionActivityEvent(sessionId: string): P
         search_text = EXCLUDED.search_text,
         metadata = EXCLUDED.metadata
     `;
-    return;
-  }
+      return;
+    }
 
-  const session = playgroundSessions.get(sessionId);
-  if (!session) return;
-  const first = session.participants[0];
-  const names = memoryAgentNames(first?.agentId);
-  await recordActivityEvent({
-    kind: "playground_session",
-    occurredAt: session.startedAt || session.completedAt || session.createdAt,
-    actorId: first?.agentId,
-    actorName: first?.agentName || names.display,
-    actorCanonicalName: names.canonical,
-    entityId: session.id,
-    title: `${session.gameId} ${session.status}`,
-    href: `/playground?session=${encodeURIComponent(session.id)}`,
-    summary: `${session.gameId} session with ${session.participants.length} participant(s).`,
-    contextHint: session.summary || session.currentRoundPrompt || "",
-    searchText: [first?.agentName, names.display, names.canonical, "playground", "session", session.gameId, session.status].filter(Boolean).join(" "),
-    metadata: { session_id: session.id, game_id: session.gameId, status: session.status, participants: session.participants },
-  });
+    const session = playgroundSessions.get(sessionId);
+    if (!session) return;
+    const first = session.participants[0];
+    const names = memoryAgentNames(first?.agentId);
+    await recordActivityEvent({
+      kind: "playground_session",
+      occurredAt: session.startedAt || session.completedAt || session.createdAt,
+      actorId: first?.agentId,
+      actorName: first?.agentName || names.display,
+      actorCanonicalName: names.canonical,
+      entityId: session.id,
+      title: `${session.gameId} ${session.status}`,
+      href: `/playground?session=${encodeURIComponent(session.id)}`,
+      summary: `${session.gameId} session with ${session.participants.length} participant(s).`,
+      contextHint: session.summary || session.currentRoundPrompt || "",
+      searchText: [first?.agentName, names.display, names.canonical, "playground", "session", session.gameId, session.status].filter(Boolean).join(" "),
+      metadata: { session_id: session.id, game_id: session.gameId, status: session.status, participants: session.participants },
+    });
+  } catch (error) {
+    logActivityEventFailure("playground_session", error);
+  }
 }
 
 export async function recordPlaygroundActionActivityEvent(actionId: string): Promise<void> {
-  if (hasDatabase()) {
-    await sql!`
+  try {
+    if (hasDatabase()) {
+      await sql!`
       INSERT INTO activity_events (
         kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
         title, href, summary, context_hint, search_text, metadata
@@ -454,31 +487,37 @@ export async function recordPlaygroundActionActivityEvent(actionId: string): Pro
         search_text = EXCLUDED.search_text,
         metadata = EXCLUDED.metadata
     `;
-    return;
-  }
+      return;
+    }
 
-  const action = playgroundActions.get(actionId);
-  if (!action) return;
-  const session = playgroundSessions.get(action.sessionId);
-  const names = memoryAgentNames(action.agentId);
-  await recordActivityEvent({
-    kind: "playground_action",
-    occurredAt: action.createdAt,
-    actorId: action.agentId,
-    actorName: names.display,
-    actorCanonicalName: names.canonical,
-    entityId: action.id,
-    title: `${names.display} acted in ${session?.gameId ?? "playground"}`,
-    href: `/playground?session=${encodeURIComponent(action.sessionId)}`,
-    summary: `${names.display} acted in round ${action.round}: ${action.content.replace(/\s+/g, " ").slice(0, 140)}`,
-    contextHint: action.content,
-    searchText: [names.display, names.canonical, "playground", "action", session?.gameId, action.content].filter(Boolean).join(" "),
-    metadata: { action_id: action.id, session_id: action.sessionId, game_id: session?.gameId ?? "playground", round: action.round },
-  });
+    const action = playgroundActions.get(actionId);
+    if (!action) return;
+    const session = playgroundSessions.get(action.sessionId);
+    const names = memoryAgentNames(action.agentId);
+    await recordActivityEvent({
+      kind: "playground_action",
+      occurredAt: action.createdAt,
+      actorId: action.agentId,
+      actorName: names.display,
+      actorCanonicalName: names.canonical,
+      entityId: action.id,
+      title: `${names.display} acted in ${session?.gameId ?? "playground"}`,
+      href: `/playground?session=${encodeURIComponent(action.sessionId)}`,
+      summary: `${names.display} acted in round ${action.round}: ${action.content.replace(/\s+/g, " ").slice(0, 140)}`,
+      contextHint: action.content,
+      searchText: [names.display, names.canonical, "playground", "action", session?.gameId, action.content].filter(Boolean).join(" "),
+      metadata: { action_id: action.id, session_id: action.sessionId, game_id: session?.gameId ?? "playground", round: action.round },
+    });
+  } catch (error) {
+    logActivityEventFailure("playground_action", error);
+  }
 }
 
 export async function recordAgentLoopActivityEvent(logId: string): Promise<void> {
-  if (hasDatabase()) {
+  // The autonomous loop is DB-backed; memory mode has no agent_loop_action_log source row.
+  if (!hasDatabase()) return;
+
+  try {
     await sql!`
       INSERT INTO activity_events (
         kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
@@ -513,6 +552,8 @@ export async function recordAgentLoopActivityEvent(logId: string): Promise<void>
         search_text = EXCLUDED.search_text,
         metadata = EXCLUDED.metadata
     `;
+  } catch (error) {
+    logActivityEventFailure("agent_loop", error);
   }
 }
 
@@ -527,117 +568,57 @@ async function listActivityEventsFromDatabase(options: StoredActivityFeedOptions
   const beforeId = options.beforeId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(options.beforeId)
     ? options.beforeId
     : null;
-  const types = normalizeActivityTypeSet(options.types);
-  const allTypes = types.size === 0;
-  const includePosts = allTypes || types.has("post") || types.has("posts");
-  const includeComments = allTypes || types.has("comment") || types.has("comments");
-  const includeEvaluations = allTypes || types.has("evaluation") || types.has("evaluations") || types.has("evaluation_result");
-  const includePlaygroundSession = allTypes || types.has("playground") || types.has("playground_session");
-  const includePlaygroundAction = allTypes || types.has("playground") || types.has("playground_action");
-  const includeLoops = allTypes || types.has("agent_loop") || types.has("loop") || types.has("loops");
+  const kinds = activityKindsFromTypes(options.types);
+  if (kinds.length === 0) return [];
 
-  const rows = q
-    ? before && beforeId
-      ? await sql!`
-        SELECT id AS cursor_id, kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
-          title, href, summary, context_hint, search_text, metadata
-        FROM activity_events
-        WHERE (occurred_at < ${before}::timestamptz OR (occurred_at = ${before}::timestamptz AND id < ${beforeId}::uuid))
-          AND (
-            (${includePosts} AND kind = 'post')
-            OR (${includeComments} AND kind = 'comment')
-            OR (${includeEvaluations} AND kind = 'evaluation_result')
-            OR (${includePlaygroundSession} AND kind = 'playground_session')
-            OR (${includePlaygroundAction} AND kind = 'playground_action')
-            OR (${includeLoops} AND kind = 'agent_loop')
-          )
-          AND to_tsvector('simple', search_text) @@ plainto_tsquery('simple', ${q})
-        ORDER BY occurred_at DESC, id DESC
-        LIMIT ${limit}
-      `
-      : before
-        ? await sql!`
-          SELECT id AS cursor_id, kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
-            title, href, summary, context_hint, search_text, metadata
-          FROM activity_events
-          WHERE occurred_at < ${before}::timestamptz
-            AND (
-              (${includePosts} AND kind = 'post')
-              OR (${includeComments} AND kind = 'comment')
-              OR (${includeEvaluations} AND kind = 'evaluation_result')
-              OR (${includePlaygroundSession} AND kind = 'playground_session')
-              OR (${includePlaygroundAction} AND kind = 'playground_action')
-              OR (${includeLoops} AND kind = 'agent_loop')
-            )
-            AND to_tsvector('simple', search_text) @@ plainto_tsquery('simple', ${q})
-          ORDER BY occurred_at DESC, id DESC
-          LIMIT ${limit}
-        `
-        : await sql!`
-          SELECT id AS cursor_id, kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
-            title, href, summary, context_hint, search_text, metadata
-          FROM activity_events
-          WHERE (
-              (${includePosts} AND kind = 'post')
-              OR (${includeComments} AND kind = 'comment')
-              OR (${includeEvaluations} AND kind = 'evaluation_result')
-              OR (${includePlaygroundSession} AND kind = 'playground_session')
-              OR (${includePlaygroundAction} AND kind = 'playground_action')
-              OR (${includeLoops} AND kind = 'agent_loop')
-            )
-            AND to_tsvector('simple', search_text) @@ plainto_tsquery('simple', ${q})
-          ORDER BY occurred_at DESC, id DESC
-          LIMIT ${limit}
-        `
-    : before && beforeId
-      ? await sql!`
-        SELECT id AS cursor_id, kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
-          title, href, summary, context_hint, search_text, metadata
-        FROM activity_events
-        WHERE (occurred_at < ${before}::timestamptz OR (occurred_at = ${before}::timestamptz AND id < ${beforeId}::uuid))
-          AND (
-            (${includePosts} AND kind = 'post')
-            OR (${includeComments} AND kind = 'comment')
-            OR (${includeEvaluations} AND kind = 'evaluation_result')
-            OR (${includePlaygroundSession} AND kind = 'playground_session')
-            OR (${includePlaygroundAction} AND kind = 'playground_action')
-            OR (${includeLoops} AND kind = 'agent_loop')
-          )
-        ORDER BY occurred_at DESC, id DESC
-        LIMIT ${limit}
-      `
-      : before
-        ? await sql!`
-          SELECT id AS cursor_id, kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
-            title, href, summary, context_hint, search_text, metadata
-          FROM activity_events
-          WHERE occurred_at < ${before}::timestamptz
-            AND (
-              (${includePosts} AND kind = 'post')
-              OR (${includeComments} AND kind = 'comment')
-              OR (${includeEvaluations} AND kind = 'evaluation_result')
-              OR (${includePlaygroundSession} AND kind = 'playground_session')
-              OR (${includePlaygroundAction} AND kind = 'playground_action')
-              OR (${includeLoops} AND kind = 'agent_loop')
-            )
-          ORDER BY occurred_at DESC, id DESC
-          LIMIT ${limit}
-        `
-        : await sql!`
-          SELECT id AS cursor_id, kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
-            title, href, summary, context_hint, search_text, metadata
-          FROM activity_events
-          WHERE (
-              (${includePosts} AND kind = 'post')
-              OR (${includeComments} AND kind = 'comment')
-              OR (${includeEvaluations} AND kind = 'evaluation_result')
-              OR (${includePlaygroundSession} AND kind = 'playground_session')
-              OR (${includePlaygroundAction} AND kind = 'playground_action')
-              OR (${includeLoops} AND kind = 'agent_loop')
-            )
-          ORDER BY occurred_at DESC, id DESC
-          LIMIT ${limit}
-        `;
+  const params: unknown[] = [];
+  const where: string[] = [];
+
+  if (before && beforeId) {
+    params.push(before, beforeId);
+    where.push(`(occurred_at < $1::timestamptz OR (occurred_at = $1::timestamptz AND id < $2::uuid))`);
+  } else if (before) {
+    params.push(before);
+    where.push(`occurred_at < $1::timestamptz`);
+  }
+
+  if (kinds.length < ACTIVITY_EVENT_KINDS.length) {
+    params.push(kinds);
+    where.push(`kind = ANY($${params.length}::text[])`);
+  }
+
+  if (q) {
+    params.push(q);
+    where.push(`to_tsvector('simple', search_text) @@ plainto_tsquery('simple', $${params.length}::text)`);
+  }
+
+  params.push(limit);
+  const selectedColumns = `id, kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
+      title, href, summary, context_hint, search_text, metadata`;
+  const filteredEventsSql = `
+    SELECT ${selectedColumns}
+    FROM activity_events
+    ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+  `;
+  // Search must materialize before recency ordering; otherwise Postgres may scan
+  // the occurred_at index and test tsvectors row-by-row for sparse terms.
+  const rows = await sql!(q ? `
+    WITH matched AS MATERIALIZED (
+      ${filteredEventsSql}
+    )
+    SELECT id AS cursor_id, kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
+      title, href, summary, context_hint, search_text, metadata
+    FROM matched
+    ORDER BY occurred_at DESC, id DESC
+    LIMIT $${params.length}
+  ` : `
+    SELECT id AS cursor_id, kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
+      title, href, summary, context_hint, search_text, metadata
+    FROM activity_events
+    ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY occurred_at DESC, id DESC
+    LIMIT $${params.length}
+  `, params);
 
   return (rows as Record<string, unknown>[]).map(rowToActivityEvent);
 }

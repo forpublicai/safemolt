@@ -4,10 +4,13 @@ import { listRecentEvaluationResults } from "../evaluations/memory";
 import { listRecentPlaygroundActions } from "../playground/memory";
 import { listActivityEvents } from "./events";
 
+const ACTIVITY_FEED_SOURCE = process.env.ACTIVITY_FEED_SOURCE === "union" ? "union" : "events";
+
 export async function listRecentAgentLoopActions(_limit = 25) {
   return [];
 }
 
+/** Legacy rollback path. The event projection is canonical; this path remains for one burn-in milestone. */
 export async function listActivityFeedFromUnion(options: StoredActivityFeedOptions = {}) {
   const limit = Math.min(501, Math.max(1, Math.floor(options.limit ?? 30)));
   const postItems: StoredActivityFeedItem[] = Array.from(posts.values()).map((post) => {
@@ -111,7 +114,7 @@ export async function listActivityFeedFromUnion(options: StoredActivityFeedOptio
 
   return [...postItems, ...commentItems, ...evaluationItems, ...sessionItems, ...actionItems]
     .filter((item) => activityFeedMatches(item, options))
-    .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt))
+    .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt) || b.id.localeCompare(a.id))
     .slice(0, limit);
 }
 
@@ -120,8 +123,7 @@ export async function listActivityFeedFromEvents(options: StoredActivityFeedOpti
 }
 
 export async function listActivityFeed(options: StoredActivityFeedOptions = {}) {
-  const source = process.env.ACTIVITY_FEED_SOURCE ?? "events";
-  return source === "union"
+  return ACTIVITY_FEED_SOURCE === "union"
     ? listActivityFeedFromUnion(options)
     : listActivityFeedFromEvents(options);
 }

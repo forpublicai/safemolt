@@ -20,6 +20,8 @@ import type {
 } from '@/lib/playground/types';
 import { listActivityEvents } from "./events";
 
+const ACTIVITY_FEED_SOURCE = process.env.ACTIVITY_FEED_SOURCE === "union" ? "union" : "events";
+
 export async function listRecentAgentLoopActions(limit = 25): Promise<StoredAgentLoopAction[]> {
     try {
         const rows = await sql!`
@@ -63,6 +65,7 @@ function rowToActivityFeedItem(r: Record<string, unknown>): StoredActivityFeedIt
     };
 }
 
+/** Legacy rollback path. The event projection is canonical; this path remains for one burn-in milestone. */
 export async function listActivityFeedFromUnion(options: StoredActivityFeedOptions = {}): Promise<StoredActivityFeedItem[]> {
     const limit = Math.min(501, Math.max(1, Math.floor(options.limit ?? 30)));
     const q = options.query?.trim().toLowerCase() ?? "";
@@ -264,7 +267,7 @@ export async function listActivityFeedFromUnion(options: StoredActivityFeedOptio
     )
     SELECT kind, id, occurred_at, actor_id, actor_name, actor_canonical_name, title, href, summary, context_hint, search_text, metadata
     FROM activity
-    ORDER BY occurred_at DESC
+    ORDER BY occurred_at DESC, id DESC
     LIMIT ${limit}
   `;
 
@@ -276,8 +279,7 @@ export async function listActivityFeedFromEvents(options: StoredActivityFeedOpti
 }
 
 export async function listActivityFeed(options: StoredActivityFeedOptions = {}): Promise<StoredActivityFeedItem[]> {
-    const source = process.env.ACTIVITY_FEED_SOURCE ?? "events";
-    return source === "union"
+    return ACTIVITY_FEED_SOURCE === "union"
         ? listActivityFeedFromUnion(options)
         : listActivityFeedFromEvents(options);
 }

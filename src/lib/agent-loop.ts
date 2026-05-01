@@ -13,38 +13,33 @@
  */
 
 import { sql } from "@/lib/db";
+import { PLATFORM_TOOLS, type ToolCallResult } from "@/lib/agent-tools";
+import { makeHfRouterCallLLM, makeOpenAiCallLLM } from "@/lib/agent-runtime/adapters/openai-compatible";
+import {
+  loopToolsFrom,
+  runAgenticTurn,
+  type CallLLM,
+  type NormalizedMessage,
+  type NormalizedToolCall,
+} from "@/lib/agent-runtime";
 import {
   getAgentById,
-  getGroup,
   listPosts,
   listComments,
-  createComment,
-  upvotePost,
-  createPost,
   getAgentClasses,
   getClassById,
   listClassSessions,
   listClassEvaluations,
-  addClassSessionMessage,
-  enrollInClass,
   listClasses,
   setAgentVetted,
   setAgentIdentityMd,
   listPlaygroundSessions,
-  joinPlaygroundSession,
-  getPlaygroundSession,
   getPlaygroundActions,
-  createPlaygroundAction,
   getPassedEvaluations,
-  registerForEvaluation,
-  startEvaluation,
-  getEvaluationRegistration,
   ensureGeneralGroup,
 } from "@/lib/store";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
 import { buildAgentChatSystemPrompt } from "@/lib/dashboard-agent-chat";
-import type { ChatMessage } from "@/lib/playground/llm";
-import { chatCompletionHfRouter } from "@/lib/playground/llm";
 import {
   getUserInferenceSecrets,
   getUserInferenceTokenOverride,
@@ -179,6 +174,7 @@ async function logAction(
   targetId?: string,
   contentSnippet?: string
 ): Promise<void> {
+  let logId: string | undefined;
   try {
     const rows = await sql!`
       INSERT INTO agent_loop_action_log (agent_id, action, target_type, target_id, content_snippet)
@@ -186,10 +182,13 @@ async function logAction(
       RETURNING id
     `;
     const row = rows[0] as Record<string, unknown> | undefined;
-    if (row?.id) await recordAgentLoopActivityEvent(String(row.id));
-  } catch {
-    // Table might not exist yet — non-fatal
+    logId = row?.id ? String(row.id) : undefined;
+  } catch (error) {
+    console.error("[agent-loop] failed to log action", error);
+    return;
   }
+
+  if (logId) await recordAgentLoopActivityEvent(logId);
 }
 
 async function getRecentActionLog(agentId: string, limit = 10): Promise<{ action: string; targetType?: string; targetId?: string; contentSnippet?: string; createdAt: string }[]> {
@@ -217,38 +216,26 @@ async function getRecentActionLog(agentId: string, limit = 10): Promise<{ action
 // Inference
 // ---------------------------------------------------------------------------
 
-async function callInference(
-  agent: StoredAgent,
-  userId: string,
-  messages: ChatMessage[]
-): Promise<string> {
+async function makeLoopCallLLM(agent: StoredAgent, userId: string): Promise<CallLLM> {
   const sponsored = await isSponsoredPublicAiAgent(agent.id);
   if (sponsored) {
     const override = await getUserInferenceTokenOverride(userId);
     if (override) {
-      return chatCompletionHfRouter(messages, { apiKey: override, billToPublicAi: false });
+      return makeHfRouterCallLLM({ apiKey: override, billToPublicAi: false });
     }
     const platform = process.env.HF_TOKEN?.trim();
     if (!platform) throw new Error("HF_TOKEN not configured");
     const { count, limit } = await incrementSponsoredInferenceUsage(userId);
     if (count > limit) throw new Error("Sponsored daily limit reached");
-    return chatCompletionHfRouter(messages, { apiKey: platform, billToPublicAi: true });
+    return makeHfRouterCallLLM({ apiKey: platform, billToPublicAi: true });
   }
 
   const secrets = await getUserInferenceSecrets(userId);
   if (secrets?.hf_token_override) {
-    return chatCompletionHfRouter(messages, { apiKey: secrets.hf_token_override, billToPublicAi: false });
+    return makeHfRouterCallLLM({ apiKey: secrets.hf_token_override, billToPublicAi: false });
   }
   if (secrets?.openai_token) {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${secrets.openai_token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "gpt-4o-mini", messages }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!res.ok) throw new Error(`OpenAI ${res.status}`);
-    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    return data.choices?.[0]?.message?.content ?? "";
+    return makeOpenAiCallLLM(secrets.openai_token);
   }
   throw new Error("No inference provider configured for agent owner");
 }
@@ -446,8 +433,12 @@ async function buildDecisionPrompt(
   news: NewsItem[],
   recentActions: { action: string; targetType?: string; contentSnippet?: string; createdAt: string }[],
   recentMemories: { text: string }[]
-): Promise<ChatMessage[]> {
-  const systemPrompt = buildAgentChatSystemPrompt(agent);
+): Promise<NormalizedMessage[]> {
+  const systemPrompt = [
+    buildAgentChatSystemPrompt(agent),
+    "You are running autonomously from the SafeMolt agent loop.",
+    "Use at most one available tool if there is a timely, useful platform action to take. If nothing is worth doing, do not call a tool.",
+  ].join("\n\n");
 
   // --- Recent activity ---
   let activitySection = "";
@@ -469,7 +460,7 @@ async function buildDecisionPrompt(
   let feedSection = "";
   if (feed.length > 0) {
     const postBlocks = feed.map((p, i) => {
-      const header = `[${i + 1}] "${p.post.title}" by @${p.authorName} (${p.post.upvotes} upvotes, ${p.comments.length} comments)`;
+      const header = `[${i + 1}] "${p.post.title}" (post_id: ${p.post.id}) by @${p.authorName} (${p.post.upvotes} upvotes, ${p.comments.length} comments)`;
       const content = p.post.content ? `    ${p.post.content.slice(0, 300)}` : "";
 
       let commentsBlock = "";
@@ -540,46 +531,27 @@ async function buildDecisionPrompt(
     newsSection = `## News Headlines (live RSS)\n${newsLines.join("\n")}\n\n`;
   }
 
-  // --- Available actions ---
-  const actions: string[] = [];
-  if (feed.length > 0) {
-    actions.push(`{"action": "comment", "post_index": <1-${feed.length}>, "content": "<your comment>"}`);
-    actions.push(`{"action": "upvote", "post_index": <1-${feed.length}>}`);
-  }
-  actions.push(`{"action": "create_post", "title": "<title>", "content": "<body>"}`);
-  if (playground.activeSession?.needsAction) {
-    actions.push(`{"action": "playground_action", "session_id": "${playground.activeSession.id}", "content": "<your action>"}`);
-  }
-  if (playground.pendingLobbies.length > 0) {
-    actions.push(`{"action": "join_lobby", "session_id": "<session_id>"}`);
-  }
-  if (classes.some((c: ClassContext) => c.activeSessions.length > 0)) {
-    actions.push(`{"action": "class_message", "session_id": "<session_id>", "content": "<message>"}`);
-  }
-  if (evals.available.length > 0) {
-    actions.push(`{"action": "register_eval", "evaluation_id": "<id>"}`);
-  }
   const openClasses = await listClasses({ enrollmentOpen: true });
   const enrolledClassIds = new Set(classes.map((c) => c.classId));
   const unenrolledClasses = openClasses.filter((c) => !enrolledClassIds.has(c.id));
-  if (unenrolledClasses.length > 0) {
-    actions.push(`{"action": "enroll_class", "class_id": "<id>"}`);
-  }
-  actions.push(`{"action": "skip", "reason": "<brief reason>"}`);
+  const openClassSection = unenrolledClasses.length > 0
+    ? `## Classes Open For Enrollment\n${unenrolledClasses.slice(0, 5).map((c) => `- ${c.name || c.id} (class_id: ${c.id})`).join("\n")}\n\n`
+    : "";
 
-  const userMessage = `${activitySection}${memorySection}${feedSection}${classSection}${playgroundSection}${evalSection}${newsSection}## Choose ONE action (JSON):
-${actions.join("\n")}
+  const userMessage = `${activitySection}${memorySection}${feedSection}${classSection}${openClassSection}${playgroundSection}${evalSection}${newsSection}## Tool guidance
+Available autonomous tools: ${loopToolsFrom(PLATFORM_TOOLS).map((t) => t.function.name).join(", ")}
 
 Rules:
-- You can see your own previous comments marked "← YOU ALREADY COMMENTED"
+- You can see your own previous comments marked "YOU ALREADY COMMENTED"
 - If you already commented on a post, only follow up if the discussion has evolved since
 - Don't repeat what others have already said
 - Jump straight into the substantive debate. Challenge specific claims or provide concrete examples. Never introduce yourself or give posting advice.
 - Stay in character per your identity document
 - Keep comments concise (1-3 sentences)
 - If there's an active playground game requiring your action, PRIORITIZE that
-- If a news headline sparks a reaction in character, you may create_post about it — lead with your take, then include the headline's URL in the body so others can follow up
-- Respond with ONLY the JSON object, no other text`;
+- If a news headline sparks a reaction in character, you may create_post about it; lead with your take, then include the headline's URL in the body so others can follow up
+- Use the exact IDs shown above when calling tools
+- If no action is worthwhile, respond with a short explanation and do not call a tool`;
 
   return [
     { role: "system", content: systemPrompt },
@@ -588,77 +560,41 @@ Rules:
 }
 
 // ---------------------------------------------------------------------------
-// Parse LLM response
+// Runtime action summaries
 // ---------------------------------------------------------------------------
 
-type AgentAction =
-  | { action: "comment"; postIndex: number; content: string }
-  | { action: "upvote"; postIndex: number }
-  | { action: "create_post"; title: string; content: string }
-  | { action: "playground_action"; sessionId: string; content: string }
-  | { action: "join_lobby"; sessionId: string }
-  | { action: "class_message"; sessionId: string; content: string }
-  | { action: "enroll_class"; classId: string }
-  | { action: "register_eval"; evaluationId: string }
-  | { action: "skip"; reason: string };
-
-function parseAction(raw: string): AgentAction {
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error("No JSON in LLM response");
-
-  const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
-  const action = String(parsed.action ?? "");
-
-  switch (action) {
-    case "comment": {
-      const postIndex = Number(parsed.post_index);
-      const content = String(parsed.content ?? "").trim();
-      if (!postIndex || !content) throw new Error("Invalid comment action");
-      return { action: "comment", postIndex, content };
-    }
-    case "upvote": {
-      const postIndex = Number(parsed.post_index);
-      if (!postIndex) throw new Error("Invalid upvote action");
-      return { action: "upvote", postIndex };
-    }
-    case "create_post": {
-      const title = String(parsed.title ?? "").trim();
-      const content = String(parsed.content ?? "").trim();
-      if (!title) throw new Error("Invalid create_post action");
-      return { action: "create_post", title, content };
-    }
-    case "playground_action": {
-      const sessionId = String(parsed.session_id ?? "").trim();
-      const content = String(parsed.content ?? "").trim();
-      if (!sessionId || !content) throw new Error("Invalid playground_action");
-      return { action: "playground_action", sessionId, content };
-    }
-    case "join_lobby": {
-      const sessionId = String(parsed.session_id ?? "").trim();
-      if (!sessionId) throw new Error("Invalid join_lobby");
-      return { action: "join_lobby", sessionId };
-    }
-    case "class_message": {
-      const sessionId = String(parsed.session_id ?? "").trim();
-      const content = String(parsed.content ?? "").trim();
-      if (!sessionId || !content) throw new Error("Invalid class_message");
-      return { action: "class_message", sessionId, content };
-    }
-    case "enroll_class": {
-      const classId = String(parsed.class_id ?? "").trim();
-      if (!classId) throw new Error("Invalid enroll_class");
-      return { action: "enroll_class", classId };
-    }
-    case "register_eval": {
-      const evaluationId = String(parsed.evaluation_id ?? "").trim();
-      if (!evaluationId) throw new Error("Invalid register_eval");
-      return { action: "register_eval", evaluationId };
-    }
-    default:
-      return { action: "skip", reason: String(parsed.reason ?? "No relevant actions") };
-  }
+function toolResultData(result: ToolCallResult): Record<string, unknown> {
+  return result.data && typeof result.data === "object" && !Array.isArray(result.data)
+    ? result.data as Record<string, unknown>
+    : {};
 }
 
+function inferTargetType(call: NormalizedToolCall): string | undefined {
+  if (call.name === "create_post" || call.name === "create_comment" || call.name === "upvote_post") return "post";
+  if (call.name === "submit_playground_action" || call.name === "join_playground_session") return "playground";
+  if (call.name === "send_class_session_message" || call.name === "enroll_in_class") return "class";
+  if (call.name === "register_for_evaluation") return "evaluation";
+  return undefined;
+}
+
+function inferTargetId(call: NormalizedToolCall, result: ToolCallResult): string | undefined {
+  const data = toolResultData(result);
+  const value = data.post_id ?? call.arguments.post_id ?? call.arguments.session_id ?? call.arguments.class_id ?? call.arguments.evaluation_id;
+  return value == null ? undefined : String(value);
+}
+
+function summarizeArgs(args: Record<string, unknown>): string | undefined {
+  const value = args.content ?? args.title ?? args.group_name ?? args.session_id ?? args.class_id ?? args.evaluation_id;
+  return value == null ? undefined : String(value);
+}
+
+function summarizeResult(call: NormalizedToolCall, result: ToolCallResult): string {
+  if (!result.success) return `${call.name} failed: ${result.error ?? "unknown error"}`;
+  const data = toolResultData(result);
+  const id = inferTargetId(call, result);
+  const note = data.title ?? data.class_name ?? data.registration_id ?? data.action_id ?? data.message_id;
+  return [call.name, note ? String(note) : undefined, id ? `(target: ${id})` : undefined].filter(Boolean).join(" ");
+}
 // ---------------------------------------------------------------------------
 // Store action as memory
 // ---------------------------------------------------------------------------
@@ -681,7 +617,7 @@ async function storeActionMemory(agentId: string, action: string, detail: string
 // Single agent tick
 // ---------------------------------------------------------------------------
 
-async function tickAgent(agentId: string): Promise<{ action: string; detail?: string }> {
+export async function tickAgent(agentId: string): Promise<{ action: string; detail?: string }> {
   const agent = await getAgentById(agentId);
   if (!agent) throw new Error("Agent not found");
 
@@ -738,117 +674,46 @@ async function tickAgent(agentId: string): Promise<{ action: string; detail?: st
     return { action: "skip", detail: "Nothing to engage with" };
   }
 
-  // --- Step 3: Build prompt and call LLM ---
+  // --- Step 3: Build prompt and let the shared runtime execute one loop-safe tool. ---
+  await ensureGeneralGroup(agentId);
   const messages = await buildDecisionPrompt(agent, feed, classes, playground, evals, news, recentActions, recentMemories);
-  const llmResponse = await callInference(agent, userId, messages);
-  const decision = parseAction(llmResponse);
-
-  // --- Step 4: Execute decision ---
-  let actionDetail = "";
-
-  switch (decision.action) {
-    case "comment": {
-      const targetPost = feed[decision.postIndex - 1];
-      if (!targetPost) throw new Error(`Invalid post_index ${decision.postIndex}`);
-      await createComment(targetPost.post.id, agentId, decision.content);
-      actionDetail = `Commented on "${targetPost.post.title}" by @${targetPost.authorName}: "${decision.content.slice(0, 100)}"`;
-      await logAction(agentId, "comment", "post", targetPost.post.id, decision.content);
-      await storeActionMemory(agentId, "comment", actionDetail);
-      await recordAction(agentId, cooldown);
-      return { action: "comment", detail: actionDetail };
-    }
-
-    case "upvote": {
-      const targetPost = feed[decision.postIndex - 1];
-      if (!targetPost) throw new Error(`Invalid post_index ${decision.postIndex}`);
-      await upvotePost(targetPost.post.id, agentId);
-      actionDetail = `Upvoted "${targetPost.post.title}" by @${targetPost.authorName}`;
-      await logAction(agentId, "upvote", "post", targetPost.post.id);
-      await storeActionMemory(agentId, "upvote", actionDetail);
-      await recordAction(agentId, cooldown);
-      return { action: "upvote", detail: actionDetail };
-    }
-
-    case "create_post": {
-      await ensureGeneralGroup(agentId);
-      const group = await getGroup("general");
-      if (!group) throw new Error("General group not found");
-      const post = await createPost(agentId, group.id, decision.title, decision.content);
-      actionDetail = `Created post "${decision.title}"`;
-      await logAction(agentId, "create_post", "post", post.id, decision.title);
-      await storeActionMemory(agentId, "create_post", actionDetail);
-      await recordAction(agentId, cooldown);
-      return { action: "create_post", detail: actionDetail };
-    }
-
-    case "playground_action": {
-      const actionId = `pa_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const session = await getPlaygroundSession(decision.sessionId);
-      if (!session) throw new Error("Playground session not found");
-      await createPlaygroundAction({
-        id: actionId,
-        sessionId: decision.sessionId,
-        agentId,
-        round: session.currentRound,
-        content: decision.content,
-      });
-      actionDetail = `Submitted playground action in session ${decision.sessionId}: "${decision.content.slice(0, 100)}"`;
-      await logAction(agentId, "playground_action", "playground", decision.sessionId, decision.content);
-      await storeActionMemory(agentId, "playground_action", actionDetail);
-      await recordAction(agentId, cooldown);
-      return { action: "playground_action", detail: actionDetail };
-    }
-
-    case "join_lobby": {
-      const participant = { agentId, agentName: agent.name, status: "active" as const };
-      const session = await getPlaygroundSession(decision.sessionId);
-      const maxPlayers = session?.participants ? Math.max(session.participants.length + 2, 4) : 4;
-      const joined = await joinPlaygroundSession(decision.sessionId, participant, maxPlayers);
-      if (!joined.success) throw new Error(joined.reason || "Failed to join lobby");
-      actionDetail = `Joined playground lobby ${decision.sessionId}`;
-      await logAction(agentId, "join_lobby", "playground", decision.sessionId);
-      await storeActionMemory(agentId, "join_lobby", actionDetail);
-      await recordAction(agentId, cooldown);
-      return { action: "join_lobby", detail: actionDetail };
-    }
-
-    case "class_message": {
-      await addClassSessionMessage(decision.sessionId, agentId, "student", decision.content);
-      actionDetail = `Sent class message in session ${decision.sessionId}: "${decision.content.slice(0, 100)}"`;
-      await logAction(agentId, "class_message", "class", decision.sessionId, decision.content);
-      await storeActionMemory(agentId, "class_message", actionDetail);
-      await recordAction(agentId, cooldown);
-      return { action: "class_message", detail: actionDetail };
-    }
-
-    case "enroll_class": {
-      await enrollInClass(decision.classId, agentId);
-      actionDetail = `Enrolled in class ${decision.classId}`;
-      await logAction(agentId, "enroll_class", "class", decision.classId);
-      await storeActionMemory(agentId, "enroll_class", actionDetail);
-      await recordAction(agentId, cooldown);
-      return { action: "enroll_class", detail: actionDetail };
-    }
-
-    case "register_eval": {
-      // Check if already registered
-      const existing = await getEvaluationRegistration(agentId, decision.evaluationId);
-      if (!existing) {
-        await registerForEvaluation(agentId, decision.evaluationId);
+  const result = await runAgenticTurn({
+    agent,
+    messages,
+    tools: loopToolsFrom(PLATFORM_TOOLS),
+    callLLM: await makeLoopCallLLM(agent, userId),
+    maxToolCalls: 1,
+    requireFinalText: false,
+    onToolExecuted: async (call, toolResult) => {
+      if (toolResult.success) {
+        await logAction(
+          agentId,
+          call.name,
+          inferTargetType(call),
+          inferTargetId(call, toolResult),
+          summarizeArgs(call.arguments)
+        );
       }
-      actionDetail = `Registered for evaluation ${decision.evaluationId}`;
-      await logAction(agentId, "register_eval", "evaluation", decision.evaluationId);
-      await storeActionMemory(agentId, "register_eval", actionDetail);
-      await recordAction(agentId, cooldown);
-      return { action: "register_eval", detail: actionDetail };
-    }
+      await storeActionMemory(agentId, call.name, summarizeResult(call, toolResult));
+    },
+  });
 
-    case "skip":
-    default: {
-      await recordSkip(agentId, cooldown);
-      return { action: "skip", detail: decision.reason };
-    }
+  if (result.noOp) {
+    await recordSkip(agentId, cooldown);
+    return { action: "skip", detail: result.finalContent ?? "LLM declined to act" };
   }
+
+  const first = result.toolCallsExecuted[0];
+  if (!first) {
+    await recordSkip(agentId, cooldown);
+    return { action: "skip", detail: result.finalContent ?? "No tool executed" };
+  }
+  if (!first.result.success) {
+    throw new Error(summarizeResult(first.call, first.result));
+  }
+
+  await recordAction(agentId, cooldown);
+  return { action: first.call.name, detail: summarizeResult(first.call, first.result) };
 }
 
 // ---------------------------------------------------------------------------

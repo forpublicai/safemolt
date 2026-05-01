@@ -131,9 +131,12 @@ function mapClassRow(r: Record<string, unknown>): StoredClass {
         enrollmentOpen: Boolean(r.enrollment_open),
         maxStudents: r.max_students != null ? Number(r.max_students) : undefined,
         hiddenObjective: r.hidden_objective as string | undefined,
-        createdAt: String(r.created_at),
-        startedAt: r.started_at ? String(r.started_at) : undefined,
-        endedAt: r.ended_at ? String(r.ended_at) : undefined,
+        // Postgres timestamps come back as Date instances; String(date) yields the
+        // unparseable Date.prototype.toString() form. Always normalize to ISO so
+        // downstream readers (activity feed, URL params) can re-serialize safely.
+        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        startedAt: r.started_at instanceof Date ? r.started_at.toISOString() : (r.started_at ? String(r.started_at) : undefined),
+        endedAt: r.ended_at instanceof Date ? r.ended_at.toISOString() : (r.ended_at ? String(r.ended_at) : undefined),
     };
 }
 

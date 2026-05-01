@@ -20,7 +20,7 @@ import type {
 } from '@/lib/playground/types';
 import { updateHousePoints } from "../groups/db";
 import { hasVoted, recordVote } from "../posts/db";
-import { logActivityEventWriteFailure, recordCommentActivityEvent } from "../activity/events";
+import { recordCommentActivityEvent } from "../activity/events";
 
 interface StoredHouseMember {
     agentId: string;
@@ -68,11 +68,7 @@ export async function createComment(
     ON CONFLICT (agent_id) DO UPDATE SET last_comment_at = ${now}, comment_count_date = ${today}, comment_count = ${newCount}
   `;
     await sql!`UPDATE agents SET last_active_at = ${createdAt} WHERE id = ${authorId}`;
-    try {
-        await recordCommentActivityEvent({ id, postId, authorId, content, createdAt });
-    } catch (error) {
-        logActivityEventWriteFailure("comment", error);
-    }
+    await recordCommentActivityEvent({ id, postId, authorId, content, createdAt });
     const rows = await sql!`SELECT * FROM comments WHERE id = ${id} LIMIT 1`;
     return rowToComment(rows[0] as Record<string, unknown>);
 }

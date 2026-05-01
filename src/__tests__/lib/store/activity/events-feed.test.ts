@@ -3,18 +3,11 @@ jest.mock("@/lib/db", () => ({
   sql: null,
 }));
 
-import { activityEvents, agents, groups, posts } from "@/lib/store/_memory-state";
-import { listActivityFeed } from "@/lib/store/activity/memory";
-import { recordActivityEvent } from "@/lib/store/activity/events";
-
 describe("activity feed source selection", () => {
   const previousSource = process.env.ACTIVITY_FEED_SOURCE;
 
   beforeEach(() => {
-    activityEvents.clear();
-    agents.clear();
-    groups.clear();
-    posts.clear();
+    jest.resetModules();
     delete process.env.ACTIVITY_FEED_SOURCE;
   });
 
@@ -24,6 +17,11 @@ describe("activity feed source selection", () => {
   });
 
   it("reads activity_events by default", async () => {
+    const { activityEvents } = await import("@/lib/store/_memory-state");
+    const { listActivityFeed } = await import("@/lib/store/activity/memory");
+    const { recordActivityEvent } = await import("@/lib/store/activity/events");
+    activityEvents.clear();
+
     await recordActivityEvent({
       kind: "post",
       entityId: "p1",
@@ -37,6 +35,12 @@ describe("activity feed source selection", () => {
 
   it("keeps the union rollback source available", async () => {
     process.env.ACTIVITY_FEED_SOURCE = "union";
+    const { agents, groups, posts } = await import("@/lib/store/_memory-state");
+    const { listActivityFeed } = await import("@/lib/store/activity/memory");
+    agents.clear();
+    groups.clear();
+    posts.clear();
+
     agents.set("a1", {
       id: "a1",
       name: "agent-one",

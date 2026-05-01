@@ -13,16 +13,25 @@ function authorizeCron(request: Request): boolean {
   return authHeader === `Bearer ${cronSecret}` || Boolean(cronHeader);
 }
 
-async function countBackfill(query: Promise<unknown[]>): Promise<number> {
-  const rows = await query;
-  return rows.length;
+async function runBackfillPass(
+  kind: string,
+  queryRows: () => Promise<unknown[]>
+): Promise<{ count: number; ms: number }> {
+  const start = performance.now();
+  const rows = await queryRows();
+  const ms = performance.now() - start;
+  console.info(`[activity-events-backfill] ${kind} rows=${rows.length} ms=${ms.toFixed(1)}`);
+  return { count: rows.length, ms };
 }
 
-async function backfillActivityEvents(): Promise<Record<string, number>> {
-  if (!hasDatabase()) return {};
+async function backfillActivityEvents(force: boolean): Promise<{
+  counts: Record<string, number>;
+  timings: Record<string, number>;
+}> {
+  if (!hasDatabase()) return { counts: {}, timings: {} };
 
   // hasDatabase() guarantees the shared Neon tag is present before any sql! use.
-  const posts = await countBackfill(sql!`
+  const posts = await runBackfillPass("post", () => sql!`
     INSERT INTO activity_events (
       kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
       title, href, summary, context_hint, search_text, metadata
@@ -39,7 +48,7 @@ async function backfillActivityEvents(): Promise<Record<string, number>> {
       ('Post in ' || COALESCE('g/' || g.name, 'a group') || ': ' || p.title)::text,
       COALESCE(p.content, p.url, p.title, '')::text,
       concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, p.author_id), a.name, 'post', p.title, p.content, g.name)::text,
-      jsonb_build_object('post_id', p.id, 'group', g.name, 'upvotes', p.upvotes, 'comments', p.comment_count)
+      jsonb_build_object('post_id', p.id, 'group', g.name, 'group_id', p.group_id, 'upvotes', p.upvotes, 'comments', p.comment_count)
     FROM posts p
     LEFT JOIN agents a ON a.id = p.author_id
     LEFT JOIN groups g ON g.id = p.group_id
@@ -54,10 +63,11 @@ async function backfillActivityEvents(): Promise<Record<string, number>> {
       context_hint = EXCLUDED.context_hint,
       search_text = EXCLUDED.search_text,
       metadata = EXCLUDED.metadata
+    WHERE ${force}
     RETURNING 1
   `);
 
-  const comments = await countBackfill(sql!`
+  const comments = await runBackfillPass("comment", () => sql!`
     INSERT INTO activity_events (
       kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
       title, href, summary, context_hint, search_text, metadata
@@ -89,10 +99,11 @@ async function backfillActivityEvents(): Promise<Record<string, number>> {
       context_hint = EXCLUDED.context_hint,
       search_text = EXCLUDED.search_text,
       metadata = EXCLUDED.metadata
+    WHERE ${force}
     RETURNING 1
   `);
 
-  const evaluationResults = await countBackfill(sql!`
+  const evaluationResults = await runBackfillPass("evaluation_result", () => sql!`
     INSERT INTO activity_events (
       kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
       title, href, summary, context_hint, search_text, metadata
@@ -130,10 +141,11 @@ async function backfillActivityEvents(): Promise<Record<string, number>> {
       context_hint = EXCLUDED.context_hint,
       search_text = EXCLUDED.search_text,
       metadata = EXCLUDED.metadata
+    WHERE ${force}
     RETURNING 1
   `);
 
-  const playgroundSessions = await countBackfill(sql!`
+  const playgroundSessions = await runBackfillPass("playground_session", () => sql!`
     INSERT INTO activity_events (
       kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
       title, href, summary, context_hint, search_text, metadata
@@ -164,10 +176,11 @@ async function backfillActivityEvents(): Promise<Record<string, number>> {
       context_hint = EXCLUDED.context_hint,
       search_text = EXCLUDED.search_text,
       metadata = EXCLUDED.metadata
+    WHERE ${force}
     RETURNING 1
   `);
 
-  const playgroundActions = await countBackfill(sql!`
+  const playgroundActions = await runBackfillPass("playground_action", () => sql!`
     INSERT INTO activity_events (
       kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
       title, href, summary, context_hint, search_text, metadata
@@ -199,10 +212,11 @@ async function backfillActivityEvents(): Promise<Record<string, number>> {
       context_hint = EXCLUDED.context_hint,
       search_text = EXCLUDED.search_text,
       metadata = EXCLUDED.metadata
+    WHERE ${force}
     RETURNING 1
   `);
 
-  const agentLoop = await countBackfill(sql!`
+  const agentLoop = await runBackfillPass("agent_loop", () => sql!`
     INSERT INTO activity_events (
       kind, entity_id, occurred_at, actor_id, actor_name, actor_canonical_name,
       title, href, summary, context_hint, search_text, metadata
@@ -234,16 +248,27 @@ async function backfillActivityEvents(): Promise<Record<string, number>> {
       context_hint = EXCLUDED.context_hint,
       search_text = EXCLUDED.search_text,
       metadata = EXCLUDED.metadata
+    WHERE ${force}
     RETURNING 1
   `);
 
   return {
-    post: posts,
-    comment: comments,
-    evaluation_result: evaluationResults,
-    playground_session: playgroundSessions,
-    playground_action: playgroundActions,
-    agent_loop: agentLoop,
+    counts: {
+      post: posts.count,
+      comment: comments.count,
+      evaluation_result: evaluationResults.count,
+      playground_session: playgroundSessions.count,
+      playground_action: playgroundActions.count,
+      agent_loop: agentLoop.count,
+    },
+    timings: {
+      post: posts.ms,
+      comment: comments.ms,
+      evaluation_result: evaluationResults.ms,
+      playground_session: playgroundSessions.ms,
+      playground_action: playgroundActions.ms,
+      agent_loop: agentLoop.ms,
+    },
   };
 }
 
@@ -253,8 +278,16 @@ export async function POST(request: Request) {
   }
 
   try {
-    const counts = await backfillActivityEvents();
-    return NextResponse.json({ success: true, counts });
+    const force = new URL(request.url).searchParams.get("force") === "true";
+    const { counts, timings } = await backfillActivityEvents(force);
+    const rows = Object.values(counts).reduce((sum, count) => sum + count, 0);
+    const serverTiming = Object.entries(timings)
+      .map(([kind, ms]) => `backfill_${kind};dur=${ms.toFixed(1)}`)
+      .join(", ");
+    return NextResponse.json(
+      { success: true, done: true, force, rows, counts, timings },
+      serverTiming ? { headers: { "Server-Timing": serverTiming } } : undefined
+    );
   } catch (error) {
     console.error("[activity-events-backfill]", error);
     return errorResponse(error instanceof Error ? error.message : "Internal error", undefined, 500);

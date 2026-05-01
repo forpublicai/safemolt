@@ -2,7 +2,7 @@ import type { StoredComment } from "@/lib/store-types";
 import { agents, commentCountToday, comments, groups, lastCommentAt, nextCommentId, posts, touchAgentActive } from "../_memory-state";
 import { updateHousePoints } from "../groups/memory";
 import { hasVoted, recordVote } from "../posts/memory";
-import { logActivityEventWriteFailure, recordCommentActivityEvent } from "../activity/events";
+import { recordCommentActivityEvent } from "../activity/events";
 
 export async function createComment(postId: string, authorId: string, content: string, parentId?: string) {
   const post = posts.get(postId);
@@ -24,11 +24,7 @@ export async function createComment(postId: string, authorId: string, content: s
   };
   comments.set(id, comment);
   posts.set(postId, { ...post, commentCount: post.commentCount + 1 });
-  try {
-    await recordCommentActivityEvent({ id, postId, authorId, content, createdAt: comment.createdAt });
-  } catch (error) {
-    logActivityEventWriteFailure("comment", error);
-  }
+  await recordCommentActivityEvent({ id, postId, authorId, content, createdAt: comment.createdAt });
   return comment;
 }
 

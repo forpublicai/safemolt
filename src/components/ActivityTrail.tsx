@@ -119,8 +119,11 @@ export function ActivityTrail({ activities: initialActivities }: ActivityTrailPr
     const previousHeight = stream?.scrollHeight ?? 0;
     setLoadingOlder(true);
     try {
+      // SSR-passed activities can carry Date instances (RSC flight format preserves
+      // Dates); URLSearchParams would stringify those via Date.toString(), which
+      // Postgres can't parse. Normalize to ISO regardless of input shape.
       const { items, hasMore: more } = await fetchActivities({
-        before: oldest.occurredAt,
+        before: new Date(oldest.occurredAt).toISOString(),
         beforeId: oldest.cursorId,
         query,
         types: activeFilters,

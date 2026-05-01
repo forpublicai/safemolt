@@ -341,6 +341,7 @@ export async function getActivityTrailPage(options: ActivityTrailPageOptions = {
     query: options.query,
     types: options.types,
     before: options.before,
+    beforeId: options.beforeId,
     limit: fetchLimit,
   }).sort((a, b) => dateKey(b.occurredAt) - dateKey(a.occurredAt));
   const hasMore = filtered.length > limit || feedItems.length > limit;
@@ -375,6 +376,7 @@ export function filterActivities(
     .filter((activity) => {
       const activityTime = dateKey(activity.occurredAt);
       if (beforeTime !== undefined && activityTime > beforeTime) return false;
+      // Event-source cursors are activity_events UUIDs; legacy union cursors fall back to entity IDs.
       if (beforeTime !== undefined && activityTime === beforeTime && beforeId && (activity.cursorId ?? activity.id) >= beforeId) return false;
       if (beforeTime !== undefined && activityTime === beforeTime && !beforeId) return false;
       if (types.size > 0 && !activityMatchesType(activity, types)) return false;

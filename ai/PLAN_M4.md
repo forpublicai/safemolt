@@ -419,18 +419,21 @@ Not part of M4 itself. M5 (the next milestone after M4) deletes the union SQL bl
 
 ## AI VALIDATION RESULTS
 
-*To be filled by the executor during M4 implementation.*
+Filled during implementation on 2026-04-30 and closure pass on 2026-05-01.
 
-- [ ] `next lint` clean
-- [ ] `tsc --noEmit` clean
-- [ ] `jest` clean (4 new test files)
-- [ ] `next build` clean
-- [ ] `\d activity_events` shows all 5 indexes + UNIQUE constraint
-- [ ] Backfill on preview completes
-- [ ] Behavioral parity test (union vs events) deep-equal
-- [ ] EXPLAIN ANALYZE on 1M rows: < 5ms unfiltered, < 5ms by-kind, < 30ms by-search
-- [ ] `/api/activity` response time on preview is ≥ 30% lower than M1 baseline
-- [ ] Preview URL: <link>
+- [x] `next lint` clean: `npm run lint` passed with no warnings or errors.
+- [x] `tsc --noEmit` clean: `npx tsc --noEmit` passed.
+- [x] `jest` clean: `npm test -- --runInBand` passed 34 suites / 162 tests. M4 coverage includes activity event memory writer/filtering, DB writer SQL shape, projection failure swallowing, events-feed source selection, the materialized search query branch, and the backfill route.
+- [x] `next build` clean: `npm run build` passed. The migration runner loaded `.env.local`, connected to Neon, and skipped `migrate-activity-events.sql` because it was already recorded.
+- [x] `activity_events` schema check: read-only `pg_indexes`/`pg_constraint` query showed the primary key, `UNIQUE (kind, entity_id)`, and the five M4 indexes: `idx_activity_events_occurred`, `idx_activity_events_kind_occurred`, `idx_activity_events_actor`, `idx_activity_events_entity`, and GIN `idx_activity_events_search`.
+- [x] Claude review follow-up: default backfill now preserves existing rows and only re-derives on `?force=true`; post backfill metadata includes `group_id`; projection helpers own their error logging and swallow failures; dead best-effort/log wrapper exports were removed; legacy union fallback has an id tie-break; backfill returns/logs per-kind timings and emits `Server-Timing`.
+- [x] Backfill route completed against the configured Neon DB via a built local `next start`: `POST /api/v1/internal/activity-events-backfill` returned `200`, `done=true`, `force=false`, `rows=0`, all per-kind counts `0` because the projection was already current, and `Server-Timing` was present (`post=274.7ms`, `comment=563.9ms`, `evaluation_result=212.4ms`, `playground_session=223.3ms`, `playground_action=199.4ms`, `agent_loop=312.8ms`).
+- [x] Projection cleanup and count parity: removed 1,000,000 synthetic benchmark rows that matched the guarded pattern `entity_[0-9]+` / `Activity [0-9]+` / `Summary [0-9]+` / `benchmark word`. After cleanup, source counts exactly matched `activity_events` counts and stale counts were zero for every kind: `post=379`, `comment=1712`, `evaluation_result=109`, `playground_session=17`, `playground_action=98`, `agent_loop=911`.
+- [x] Behavioral parity test (union vs events): built local `next start` servers with `ACTIVITY_FEED_SOURCE=union` and `ACTIVITY_FEED_SOURCE=events`; normalized responses were deep-equal for `/api/activity?limit=100` (`51/51` activities), `/api/activity?types=post,comment&q=hello&limit=20` (`20/20`), and `/api/activity?limit=40` (`31/31`). Normalization ignored only the intentional event-source `cursorId` UUID and relative `timestampLabel`.
+- [x] EXPLAIN ANALYZE on 1M rows: seeded a temporary benchmark table and dropped it after measurement. Final query-shape timings were `0.081ms` unfiltered via occurred index, `0.383ms` by `kind='post'` via kind/occurred index, and `0.486ms` sparse full-text search via the GIN index under the materialized search CTE.
+- [x] Search planner fix: the first 1M sparse-search benchmark showed Postgres choosing the recency index and taking `816-885ms`; `listActivityEventsFromDatabase` now uses `WITH matched AS MATERIALIZED (...)` for search requests so the GIN candidate set is chosen before recency ordering. `LEARNINGS.md` records the general planner invariant.
+- [x] `/api/activity` local built-route response time: with the rollback union source and events source on temporary local ports against the configured Neon DB, seven warm `/api/activity?limit=40` samples had median `272.1ms` on union and `190.3ms` on events, a `30.1%` improvement. This is the available substitute for the preview/M1-baseline check in this workspace.
+- [ ] Preview URL: not deployed from this workspace; `package.json` has no `deploy` script and no preview deployment context/token was available.
 
 ---
 

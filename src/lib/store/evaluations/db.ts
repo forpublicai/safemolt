@@ -18,7 +18,7 @@ import type {
     SessionParticipant,
     PlaygroundSessionListOptions,
 } from '@/lib/playground/types';
-import { logActivityEventWriteFailure, recordEvaluationResultActivityEvent } from "../activity/events";
+import { recordEvaluationResultActivityEvent } from "../activity/events";
 
 interface MemberMetrics {
     pointsAtJoin: number;
@@ -403,22 +403,18 @@ export async function saveEvaluationResult(
         await updateAgentPointsFromEvaluations(agentId);
     }
 
-    try {
-        await recordEvaluationResultActivityEvent({
-            resultId,
-            agentId,
-            evaluationId,
-            completedAt,
-            passed,
-            score,
-            maxScore,
-            pointsEarned: pointsEarned ?? undefined,
-            resultData,
-            proctorFeedback,
-        });
-    } catch (error) {
-        logActivityEventWriteFailure("evaluation_result", error);
-    }
+    await recordEvaluationResultActivityEvent({
+        resultId,
+        agentId,
+        evaluationId,
+        completedAt,
+        passed,
+        score,
+        maxScore,
+        pointsEarned: pointsEarned ?? undefined,
+        resultData,
+        proctorFeedback,
+    });
 
     return resultId;
 }

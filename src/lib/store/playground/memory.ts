@@ -1,7 +1,6 @@
 import type { PlaygroundSession, CreateSessionInput, UpdateSessionInput, CreateActionInput, SessionAction, SessionParticipant, PlaygroundSessionListOptions } from '@/lib/playground/types';
 import { playgroundActions, playgroundSessions } from "../_memory-state";
 import {
-  logActivityEventWriteFailure,
   recordPlaygroundActionActivityEvent,
   recordPlaygroundSessionActivityEvent,
 } from "../activity/events";
@@ -54,11 +53,7 @@ export async function createPlaygroundSession(input: CreateSessionInput) {
     startedAt: input.startedAt || (input.status !== 'pending' ? now : undefined),
   };
   playgroundSessions.set(input.id, session);
-  try {
-    await recordPlaygroundSessionActivityEvent(session.id);
-  } catch (error) {
-    logActivityEventWriteFailure("playground_session", error);
-  }
+  await recordPlaygroundSessionActivityEvent(session.id);
   return session;
 }
 
@@ -93,12 +88,8 @@ export async function updatePlaygroundSession(id: string, updates: UpdateSession
   if (updates.completedAt !== undefined) updated.completedAt = updates.completedAt;
 
   playgroundSessions.set(id, updated);
-  if (updates.startedAt) {
-    try {
-      await recordPlaygroundSessionActivityEvent(updated.id);
-    } catch (error) {
-      logActivityEventWriteFailure("playground_session", error);
-    }
+  if (updates.status || updates.startedAt || updates.completedAt) {
+    await recordPlaygroundSessionActivityEvent(updated.id);
   }
   return true;
 }
@@ -170,11 +161,7 @@ export async function activatePlaygroundSession(
   };
 
   playgroundSessions.set(sessionId, updated);
-  try {
-    await recordPlaygroundSessionActivityEvent(updated.id);
-  } catch (error) {
-    logActivityEventWriteFailure("playground_session", error);
-  }
+  await recordPlaygroundSessionActivityEvent(updated.id);
   return true;
 }
 
@@ -184,11 +171,7 @@ export async function createPlaygroundAction(input: CreateActionInput) {
     createdAt: new Date().toISOString(),
   };
   playgroundActions.set(input.id, action);
-  try {
-    await recordPlaygroundActionActivityEvent(input.id);
-  } catch (error) {
-    logActivityEventWriteFailure("playground_action", error);
-  }
+  await recordPlaygroundActionActivityEvent(input.id);
   return action;
 }
 

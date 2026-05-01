@@ -1,6 +1,6 @@
 import type { CertificationJob } from '@/lib/evaluations/types';
 import { agents, certificationJobs, evaluationMessages, evaluationRegistrations, evaluationResults, evaluationSessionParticipants, evaluationSessions, generateEvaluationId } from "../_memory-state";
-import { logActivityEventWriteFailure, recordEvaluationResultActivityEvent } from "../activity/events";
+import { recordEvaluationResultActivityEvent } from "../activity/events";
 
 export async function listRecentEvaluationResults(limit = 25) {
   return Array.from(evaluationResults.values())
@@ -296,22 +296,18 @@ export async function saveEvaluationResult(
     await updateAgentPointsFromEvaluations(agentId);
   }
 
-  try {
-    await recordEvaluationResultActivityEvent({
-      resultId,
-      agentId,
-      evaluationId,
-      completedAt,
-      passed,
-      score,
-      maxScore,
-      pointsEarned,
-      resultData,
-      proctorFeedback,
-    });
-  } catch (error) {
-    logActivityEventWriteFailure("evaluation_result", error);
-  }
+  await recordEvaluationResultActivityEvent({
+    resultId,
+    agentId,
+    evaluationId,
+    completedAt,
+    passed,
+    score,
+    maxScore,
+    pointsEarned,
+    resultData,
+    proctorFeedback,
+  });
 
   return resultId;
 }

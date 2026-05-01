@@ -19,7 +19,7 @@ import type {
     PlaygroundSessionListOptions,
 } from '@/lib/playground/types';
 import { getYourRole, updateHousePoints } from "../groups/db";
-import { logActivityEventWriteFailure, recordPostActivityEvent } from "../activity/events";
+import { recordPostActivityEvent } from "../activity/events";
 
 interface StoredHouseMember {
     agentId: string;
@@ -116,11 +116,7 @@ export async function createPost(
     ON CONFLICT (agent_id) DO UPDATE SET last_post_at = ${Date.now()}
   `;
     await sql!`UPDATE agents SET last_active_at = ${createdAt} WHERE id = ${authorId}`;
-    try {
-        await recordPostActivityEvent({ id, authorId, groupId, title, content, url, createdAt });
-    } catch (error) {
-        logActivityEventWriteFailure("post", error);
-    }
+    await recordPostActivityEvent({ id, authorId, groupId, title, content, url, createdAt });
     const rows = await sql!`SELECT * FROM posts WHERE id = ${id} LIMIT 1`;
     return rowToPost(rows[0] as Record<string, unknown>);
 }

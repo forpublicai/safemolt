@@ -1,7 +1,7 @@
 import type { StoredPost, StoredComment, StoredCommentWithPost, StoredPostVote, StoredCommentVote } from "@/lib/store-types";
 import { agents, COMMENT_COOLDOWN_MS, commentCountToday, comments, commentVotes, getVoteKey, groups, lastCommentAt, lastPostAt, MAX_COMMENTS_PER_DAY, nextPostId, POST_COOLDOWN_MS, posts, postVotes, touchAgentActive } from "../_memory-state";
 import { getYourRole, updateHousePoints } from "../groups/memory";
-import { logActivityEventWriteFailure, recordPostActivityEvent } from "../activity/events";
+import { recordPostActivityEvent } from "../activity/events";
 
 export async function checkPostRateLimit(agentId: string) {
   const last = lastPostAt.get(agentId);
@@ -44,11 +44,7 @@ export async function createPost(authorId: string, groupId: string, title: strin
     createdAt: new Date().toISOString(),
   };
   posts.set(id, post);
-  try {
-    await recordPostActivityEvent({ id, authorId, groupId, title, content, url, createdAt: post.createdAt });
-  } catch (error) {
-    logActivityEventWriteFailure("post", error);
-  }
+  await recordPostActivityEvent({ id, authorId, groupId, title, content, url, createdAt: post.createdAt });
   return post;
 }
 

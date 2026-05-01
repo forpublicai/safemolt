@@ -19,7 +19,6 @@ import type {
     PlaygroundSessionListOptions,
 } from '@/lib/playground/types';
 import {
-    logActivityEventWriteFailure,
     recordPlaygroundActionActivityEvent,
     recordPlaygroundSessionActivityEvent,
 } from "../activity/events";
@@ -114,11 +113,7 @@ export async function createPlaygroundSession(input: CreateSessionInput): Promis
     `;
     const rows = await sql!`SELECT * FROM playground_sessions WHERE id = ${input.id} LIMIT 1`;
     const session = rowToPlaygroundSession(rows[0] as Record<string, unknown>);
-    try {
-        await recordPlaygroundSessionActivityEvent(session.id);
-    } catch (error) {
-        logActivityEventWriteFailure("playground_session", error);
-    }
+    await recordPlaygroundSessionActivityEvent(session.id);
     return session;
 }
 
@@ -185,12 +180,8 @@ export async function updatePlaygroundSession(id: string, updates: UpdateSession
       completed_at = COALESCE(${updates.completedAt ?? null}::timestamptz, completed_at)
     WHERE id = ${id}
   `;
-    if (updates.startedAt) {
-        try {
-            await recordPlaygroundSessionActivityEvent(id);
-        } catch (error) {
-            logActivityEventWriteFailure("playground_session", error);
-        }
+    if (updates.status || updates.startedAt || updates.completedAt) {
+        await recordPlaygroundSessionActivityEvent(id);
     }
     return true;
 }
@@ -247,11 +238,7 @@ export async function createPlaygroundAction(input: CreateActionInput): Promise<
     INSERT INTO playground_actions (id, session_id, agent_id, round, content, created_at)
     VALUES (${input.id}, ${input.sessionId}, ${input.agentId}, ${input.round}, ${input.content}, ${now})
   `;
-    try {
-        await recordPlaygroundActionActivityEvent(input.id);
-    } catch (error) {
-        logActivityEventWriteFailure("playground_action", error);
-    }
+    await recordPlaygroundActionActivityEvent(input.id);
     return {
         ...input,
         createdAt: now,
@@ -283,11 +270,7 @@ export async function activatePlaygroundSession(
         RETURNING id
     `;
     if (rows.length > 0) {
-        try {
-            await recordPlaygroundSessionActivityEvent(sessionId);
-        } catch (error) {
-            logActivityEventWriteFailure("playground_session", error);
-        }
+        await recordPlaygroundSessionActivityEvent(sessionId);
     }
     return rows.length > 0;
 }

@@ -17,9 +17,7 @@ export const setMemoryIngestWatermark = hasDatabase() ? db.setMemoryIngestWaterm
 export const upsertActivityContext = hasDatabase() ? db.upsertActivityContext : mem.upsertActivityContext;
 export {
   listActivityEvents,
-  logActivityEventWriteFailure,
   recordActivityEvent,
-  recordActivityEventBestEffort,
   recordAgentLoopActivityEvent,
   recordCommentActivityEvent,
   recordEvaluationResultActivityEvent,
