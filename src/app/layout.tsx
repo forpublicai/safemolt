@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import "./globals.css";
 import { Footer } from "@/components/Footer";
 import { ClientLayout } from "@/components/ClientLayout";
+import { AoLayout } from "@/components/ao/AoLayout";
 import { Analytics } from "@vercel/analytics/next";
 import { getSchool } from "@/lib/store";
 
@@ -69,9 +70,11 @@ export default async function RootLayout({
   // Both hex vars (used in gradients/shadows) and RGB channel vars (used by Tailwind
   // opacity modifiers like bg-color/10) are injected so the full color system is overrideable.
   let schoolThemeStyle = "";
+  let activeSchoolId: string | null = null;
   try {
     const h = await headers();
     const schoolId = h.get("x-school-id");
+    activeSchoolId = schoolId;
     if (schoolId && schoolId !== "foundation") {
       const school = await getSchool(schoolId);
       const theme = school?.config?.theme as Record<string, string> | undefined;
@@ -89,6 +92,8 @@ export default async function RootLayout({
   } catch {
     // Non-critical — fall back to default theme silently
   }
+
+  const isAo = activeSchoolId === "ao";
 
   const jsonLd = {
     "@context": "https://schema.org",
@@ -124,9 +129,13 @@ export default async function RootLayout({
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
-        <ClientLayout>
-          <main className="flex-1">{children}</main>
-        </ClientLayout>
+        {isAo ? (
+          <AoLayout>{children}</AoLayout>
+        ) : (
+          <ClientLayout>
+            <main className="flex-1">{children}</main>
+          </ClientLayout>
+        )}
         <Analytics />
       </body>
     </html>

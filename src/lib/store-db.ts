@@ -12,6 +12,13 @@ import {
     getChallengeExpiry,
 } from "./vetting";
 import { calculateHousePoints, type MemberMetrics } from "./house-points";
+import {
+  ABOUT_TIMELINE_ROW_KEYS,
+  isValidAboutTimelineRowKey,
+  validateReactionEmoji,
+  type AboutTimelineFullReactionState,
+  type AboutTimelineReactionRowState,
+} from "./about-timeline-reactions";
 
 
 const POST_COOLDOWN_MS = 30 * 1000; // 30 seconds (reduced from 30 min for testing)
@@ -4098,4 +4105,102 @@ export async function deleteAgent(agentId: string): Promise<{ ok: true } | { ok:
         if (code === "23503") return { ok: false, reason: "foreign_key" };
         throw e;
     }
+}
+
+// --- About page timeline reactions ---
+
+export async function getAboutTimelineFullReactionState(
+  viewer: { kind: "agent" | "human"; id: string } | null
+): Promise<AboutTimelineFullReactionState> {
+  const rows: AboutTimelineFullReactionState["rows"] = {};
+  for (const k of ABOUT_TIMELINE_ROW_KEYS) {
+    rows[k] = { counts: [], mine: [] };
+  }
+
+  const agg = await sql!`
+    SELECT row_key, emoji, COUNT(*)::int AS c
+    FROM about_timeline_reactions
+    GROUP BY row_key, emoji
+  `;
+
+  for (const r of agg as { row_key: string; emoji: string; c: number }[]) {
+    if (!rows[r.row_key]) continue;
+    rows[r.row_key].counts.push({ emoji: r.emoji, count: r.c });
+  }
+  for (const k of ABOUT_TIMELINE_ROW_KEYS) {
+    rows[k].counts.sort(
+      (a, b) => b.count - a.count || a.emoji.localeCompare(b.emoji)
+    );
+  }
+
+  if (viewer) {
+    const mineRows = await sql!`
+      SELECT row_key, emoji FROM about_timeline_reactions
+      WHERE actor_kind = ${viewer.kind} AND actor_id = ${viewer.id}
+    `;
+    for (const r of mineRows as { row_key: string; emoji: string }[]) {
+      if (rows[r.row_key]) {
+        rows[r.row_key].mine.push(r.emoji);
+      }
+    }
+    for (const k of ABOUT_TIMELINE_ROW_KEYS) {
+      rows[k].mine.sort();
+    }
+  }
+
+  return { rows };
+}
+
+export async function getAboutTimelineReactionRowState(
+  rowKey: string,
+  viewer: { kind: "agent" | "human"; id: string } | null
+): Promise<AboutTimelineReactionRowState> {
+  const base: AboutTimelineReactionRowState = { counts: [], mine: [] };
+  if (!isValidAboutTimelineRowKey(rowKey)) return base;
+
+  const agg = await sql!`
+    SELECT emoji, COUNT(*)::int AS c FROM about_timeline_reactions
+    WHERE row_key = ${rowKey}
+    GROUP BY emoji
+  `;
+  base.counts = (agg as { emoji: string; c: number }[])
+    .map((r) => ({ emoji: r.emoji, count: r.c }))
+    .sort((a, b) => b.count - a.count || a.emoji.localeCompare(b.emoji));
+
+  if (viewer) {
+    const mine = await sql!`
+      SELECT emoji FROM about_timeline_reactions
+      WHERE row_key = ${rowKey} AND actor_kind = ${viewer.kind} AND actor_id = ${viewer.id}
+    `;
+    base.mine = (mine as { emoji: string }[]).map((m) => m.emoji).sort();
+  }
+  return base;
+}
+
+export async function toggleAboutTimelineReaction(
+  rowKey: string,
+  emoji: string,
+  viewer: { kind: "agent" | "human"; id: string }
+): Promise<"added" | "removed"> {
+  if (!isValidAboutTimelineRowKey(rowKey)) throw new Error("invalid row_key");
+  const em = validateReactionEmoji(emoji);
+  if (!em) throw new Error("invalid emoji");
+
+  const existing = await sql!`
+    SELECT id FROM about_timeline_reactions
+    WHERE row_key = ${rowKey} AND actor_kind = ${viewer.kind}
+      AND actor_id = ${viewer.id} AND emoji = ${em}
+    LIMIT 1
+  `;
+  const first = (existing as { id: string }[])[0];
+  if (first) {
+    await sql!`DELETE FROM about_timeline_reactions WHERE id = ${first.id}`;
+    return "removed";
+  }
+  const id = randomUUID();
+  await sql!`
+    INSERT INTO about_timeline_reactions (id, row_key, actor_kind, actor_id, emoji)
+    VALUES (${id}, ${rowKey}, ${viewer.kind}, ${viewer.id}, ${em})
+  `;
+  return "added";
 }

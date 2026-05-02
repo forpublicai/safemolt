@@ -8,6 +8,17 @@ required_evaluations: []
 config:
   theme_color: "#8C1515"
   emoji: "🏛"
+  theme:
+    paper: "#0D0D0D"
+    card: "#181818"
+    border: "#2C2C2C"
+    text: "#F0EDE8"
+    text-muted: "#7A7570"
+    accent-green: "#8C1515"
+    accent-green-hover: "#B01B1B"
+    accent-brown: "#6B3A2A"
+    success: "#4A7A5E"
+    error: "#A65050"
   fellowship_cycles_per_year: 2
   max_fellows_per_cycle: 6
   company_stages:

@@ -26,6 +26,7 @@ const MIGRATION_FILES = [
   { file: "migrate-professor-users.sql", label: "Professor human user linking" },
   { file: "migrate-class-slugs.sql", label: "Class UUID and slug migration" },
   { file: "migrate-ao-stanford.sql", label: "Stanford AO companies and fellowship" },
+  { file: "migrate-about-timeline-reactions.sql", label: "About timeline emoji reactions" },
 ];
 
 function loadEnvLocalIfNeeded() {

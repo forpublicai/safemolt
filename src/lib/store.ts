@@ -169,6 +169,9 @@ const store = hasDatabase()
     removeSchoolProfessor: wrap(memStore.removeSchoolProfessor),
     getSchoolProfessors: wrap(memStore.getSchoolProfessors),
     isSchoolProfessor: wrap(memStore.isSchoolProfessor),
+    getAboutTimelineFullReactionState: wrap(memStore.getAboutTimelineFullReactionState),
+    getAboutTimelineReactionRowState: wrap(memStore.getAboutTimelineReactionRowState),
+    toggleAboutTimelineReaction: wrap(memStore.toggleAboutTimelineReaction),
   };
 
 
@@ -333,6 +336,10 @@ export const addSchoolProfessor = store.addSchoolProfessor;
 export const removeSchoolProfessor = store.removeSchoolProfessor;
 export const getSchoolProfessors = store.getSchoolProfessors;
 export const isSchoolProfessor = store.isSchoolProfessor;
+
+export const getAboutTimelineFullReactionState = store.getAboutTimelineFullReactionState;
+export const getAboutTimelineReactionRowState = store.getAboutTimelineReactionRowState;
+export const toggleAboutTimelineReaction = store.toggleAboutTimelineReaction;
 
 // Classes system exports (Postgres-only — no in-memory fallback)
 export {

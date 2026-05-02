@@ -3,6 +3,8 @@ import { SendAgent } from "@/components/SendAgent";
 import { HomeContent } from "@/components/HomeContent";
 import { NewsletterBanner } from "@/components/NewsletterBanner";
 import { Suspense } from "react";
+import { getSchoolId } from "@/lib/school-context";
+import { AoHomePage } from "@/components/ao/AoHomePage";
 
 export const metadata: Metadata = {
   title: "Home",
@@ -10,7 +12,14 @@ export const metadata: Metadata = {
     "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
 };
 
-export default function HomePage() {
+export const dynamic = "force-dynamic";
+
+export default async function HomePage() {
+  const schoolId = await getSchoolId();
+  if (schoolId === "ao") {
+    return <AoHomePage />;
+  }
+
   return (
     <div className="min-h-screen">
       <Suspense fallback={null}>

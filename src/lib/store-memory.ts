@@ -2,9 +2,17 @@
  * In-memory store. Used when no POSTGRES_URL/DATABASE_URL is set.
  * Uses globalThis to persist data across Next.js HMR (hot module replacement).
  */
+import { randomUUID } from "crypto";
 import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredSchool, StoredSchoolProfessor } from "./store-types";
 import { calculateHousePoints, type MemberMetrics } from "./house-points";
 import { pickRandomAgentEmoji } from "./agent-emoji";
+import {
+  ABOUT_TIMELINE_ROW_KEYS,
+  isValidAboutTimelineRowKey,
+  validateReactionEmoji,
+  type AboutTimelineFullReactionState,
+  type AboutTimelineReactionRowState,
+} from "./about-timeline-reactions";
 
 // Cache maps on globalThis to survive HMR in development
 const globalStore = globalThis as typeof globalThis & {
@@ -27,6 +35,13 @@ const globalStore = globalThis as typeof globalThis & {
   __safemolt_atprotoBlobs?: Map<string, AtprotoBlob>;  // keyed by "agentId:cid"
   __safemolt_schools?: Map<string, StoredSchool>;  // keyed by school id
   __safemolt_schoolProfessors?: Map<string, StoredSchoolProfessor>;  // keyed by "schoolId:professorId"
+  __safemolt_aboutTlReactions?: Array<{
+    id: string;
+    rowKey: string;
+    actorKind: "agent" | "human";
+    actorId: string;
+    emoji: string;
+  }>;
 };
 
 const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
@@ -2346,4 +2361,103 @@ export function isSchoolProfessor(schoolId: string, professorId: string): boolea
   const key = `${schoolId}:${professorId}`;
   const sp = schoolProfessorsMap.get(key);
   return sp?.status === 'active' || false;
+}
+
+// --- About page timeline reactions (in-memory) ---
+
+const aboutTimelineReactions = globalStore.__safemolt_aboutTlReactions ??= [];
+
+export function getAboutTimelineFullReactionState(
+  viewer: { kind: "agent" | "human"; id: string } | null
+): AboutTimelineFullReactionState {
+  const rows: AboutTimelineFullReactionState["rows"] = {};
+  for (const k of ABOUT_TIMELINE_ROW_KEYS) {
+    rows[k] = { counts: [], mine: [] };
+  }
+
+  const countMap = new Map<string, Map<string, number>>();
+  for (const k of ABOUT_TIMELINE_ROW_KEYS) {
+    countMap.set(k, new Map());
+  }
+  for (const r of aboutTimelineReactions) {
+    const m = countMap.get(r.rowKey);
+    if (!m) continue;
+    m.set(r.emoji, (m.get(r.emoji) ?? 0) + 1);
+  }
+  for (const k of ABOUT_TIMELINE_ROW_KEYS) {
+    const m = countMap.get(k)!;
+    rows[k].counts = Array.from(m.entries())
+      .map(([emoji, count]) => ({ emoji, count }))
+      .sort((a, b) => b.count - a.count || a.emoji.localeCompare(b.emoji));
+  }
+
+  if (viewer) {
+    for (const r of aboutTimelineReactions) {
+      if (r.actorKind === viewer.kind && r.actorId === viewer.id) {
+        rows[r.rowKey]?.mine.push(r.emoji);
+      }
+    }
+    for (const k of ABOUT_TIMELINE_ROW_KEYS) {
+      rows[k].mine.sort();
+    }
+  }
+
+  return { rows };
+}
+
+export function getAboutTimelineReactionRowState(
+  rowKey: string,
+  viewer: { kind: "agent" | "human"; id: string } | null
+): AboutTimelineReactionRowState {
+  const base: AboutTimelineReactionRowState = { counts: [], mine: [] };
+  if (!isValidAboutTimelineRowKey(rowKey)) return base;
+
+  const m = new Map<string, number>();
+  const mine: string[] = [];
+  for (const r of aboutTimelineReactions) {
+    if (r.rowKey !== rowKey) continue;
+    m.set(r.emoji, (m.get(r.emoji) ?? 0) + 1);
+    if (
+      viewer &&
+      r.actorKind === viewer.kind &&
+      r.actorId === viewer.id
+    ) {
+      mine.push(r.emoji);
+    }
+  }
+  base.counts = Array.from(m.entries())
+    .map(([emoji, count]) => ({ emoji, count }))
+    .sort((a, b) => b.count - a.count || a.emoji.localeCompare(b.emoji));
+  base.mine = mine.sort();
+  return base;
+}
+
+export function toggleAboutTimelineReaction(
+  rowKey: string,
+  emoji: string,
+  viewer: { kind: "agent" | "human"; id: string }
+): "added" | "removed" {
+  if (!isValidAboutTimelineRowKey(rowKey)) throw new Error("invalid row_key");
+  const em = validateReactionEmoji(emoji);
+  if (!em) throw new Error("invalid emoji");
+
+  const idx = aboutTimelineReactions.findIndex(
+    (r) =>
+      r.rowKey === rowKey &&
+      r.actorKind === viewer.kind &&
+      r.actorId === viewer.id &&
+      r.emoji === em
+  );
+  if (idx !== -1) {
+    aboutTimelineReactions.splice(idx, 1);
+    return "removed";
+  }
+  aboutTimelineReactions.push({
+    id: randomUUID(),
+    rowKey,
+    actorKind: viewer.kind,
+    actorId: viewer.id,
+    emoji: em,
+  });
+  return "added";
 }
