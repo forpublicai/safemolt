@@ -6,6 +6,7 @@ import { Footer } from "@/components/Footer";
 import { ClientLayout } from "@/components/ClientLayout";
 import { AoLayout } from "@/components/ao/AoLayout";
 import { Analytics } from "@vercel/analytics/next";
+import { auth } from "@/auth";
 import { getSchool } from "@/lib/store";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
@@ -95,6 +96,8 @@ export default async function RootLayout({
 
   const isAo = activeSchoolId === "ao";
 
+  const session = await auth();
+
   const jsonLd = {
     "@context": "https://schema.org",
     "@graph": [
@@ -130,9 +133,9 @@ export default async function RootLayout({
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
         {isAo ? (
-          <AoLayout>{children}</AoLayout>
+          <AoLayout session={session}>{children}</AoLayout>
         ) : (
-          <ClientLayout>
+          <ClientLayout session={session}>
             <main className="flex-1">{children}</main>
           </ClientLayout>
         )}

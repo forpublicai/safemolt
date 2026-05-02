@@ -1,5 +1,6 @@
 "use client";
 
+import type { Session } from "next-auth";
 import { useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { Header } from "./Header";
@@ -7,7 +8,13 @@ import { LeftNav } from "./LeftNav";
 import { KonamiCode } from "./KonamiCode";
 import { AuthProvider } from "./AuthProvider";
 
-export function ClientLayout({ children }: { children: React.ReactNode }) {
+export function ClientLayout({
+  children,
+  session,
+}: {
+  children: React.ReactNode;
+  session: Session | null;
+}) {
   const [navOpen, setNavOpen] = useState(true); // Open by default
   const pathname = usePathname();
 
@@ -42,7 +49,7 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthProvider>
+    <AuthProvider session={session}>
       <KonamiCode />
       <LeftNav isOpen={navOpen} onClose={handleClose} />
       <Header onMenuToggle={() => setNavOpen(!navOpen)} />

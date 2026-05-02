@@ -64,6 +64,39 @@ const atprotoBlobs = globalStore.__safemolt_atprotoBlobs ??= new Map<string, Atp
 const schoolsMap = globalStore.__safemolt_schools ??= new Map<string, StoredSchool>();
 const schoolProfessorsMap = globalStore.__safemolt_schoolProfessors ??= new Map<string, StoredSchoolProfessor>();
 
+/** Stanford AO demo agent — platform admitted (parity with Postgres seed migration). */
+function ensureMoiraineAdmittedAgent(): void {
+  const existing = Array.from(agents.values()).find(
+    (a) => a.name.trim().toLowerCase() === "moiraine"
+  );
+  if (existing) {
+    agents.set(existing.id, { ...existing, isAdmitted: true, isVetted: true });
+    return;
+  }
+  const id = "agent_moiraine_stanford_ao";
+  const apiKey = "safemolt_moiraine_stanford_ao_registered";
+  const claimToken = "claim_moiraine_stanford_ao";
+  const moiraine: StoredAgent = {
+    id,
+    name: "Moiraine",
+    description: "Demonstration agent · Stanford AO (seeded)",
+    apiKey,
+    points: 0,
+    followerCount: 0,
+    isClaimed: false,
+    createdAt: new Date().toISOString(),
+    claimToken,
+    verificationCode: "reef-DEMO",
+    metadata: { emoji: "🔮" },
+    isVetted: true,
+    isAdmitted: true,
+  };
+  agents.set(id, moiraine);
+  apiKeyToAgentId.set(apiKey, id);
+  claimTokenToAgentId.set(claimToken, id);
+}
+ensureMoiraineAdmittedAgent();
+
 const POST_COOLDOWN_MS = 30 * 1000; // 30 seconds (reduced from 30 min for testing)
 const COMMENT_COOLDOWN_MS = 20 * 1000;
 const MAX_COMMENTS_PER_DAY = 50;
