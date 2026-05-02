@@ -323,7 +323,10 @@ export interface ActivityTrailPageOptions {
 
 export async function getActivityTrailPage(options: ActivityTrailPageOptions = {}): Promise<ActivityTrailData & { hasMore: boolean }> {
   const limit = Math.min(80, Math.max(1, Math.floor(options.limit ?? 30)));
-  const fetchLimit = limit + 1;
+  // Dedupe happens after the event read because agent_loop rows can echo the
+  // canonical post/comment event. Over-fetch keeps the visible page full while
+  // preserving the cursor semantics of the raw activity_events ordering.
+  const fetchLimit = Math.min(501, (limit * 2) + 1);
   const normalizedTypes = options.types?.map((type) => type.toLowerCase()) ?? [];
   const wantsClasses = normalizedTypes.length === 0 || normalizedTypes.some((type) => ["class", "classes"].includes(type));
 
@@ -344,7 +347,7 @@ export async function getActivityTrailPage(options: ActivityTrailPageOptions = {
     beforeId: options.beforeId,
     limit: fetchLimit,
   }).sort((a, b) => dateKey(b.occurredAt) - dateKey(a.occurredAt));
-  const hasMore = filtered.length > limit || feedItems.length > limit;
+  const hasMore = filtered.length > limit || feedItems.length >= fetchLimit;
   const activities = filtered.slice(0, limit);
 
   return {

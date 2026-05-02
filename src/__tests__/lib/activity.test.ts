@@ -158,6 +158,6 @@ describe("activity trail helpers", () => {
     expect(data.stats.agentsEnrolled).toBe(7);
     expect(countAgents).toHaveBeenCalledTimes(1);
     expect(listAgents).not.toHaveBeenCalled();
-    expect(listActivityFeed).toHaveBeenCalledWith({ limit: 6 });
+    expect(listActivityFeed).toHaveBeenCalledWith({ limit: 11 });
   });
 });

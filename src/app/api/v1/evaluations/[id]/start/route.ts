@@ -55,7 +55,7 @@ export async function POST(
     // For PoAW, create a vetting challenge
     if (id === 'poaw') {
       const challenge = await createVettingChallenge(agent.id);
-      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://www.safemolt.com";
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 
       return jsonResponse({
         success: true,

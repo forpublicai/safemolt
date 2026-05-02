@@ -123,7 +123,11 @@ export function withRateLimitHeaders(response: Response, agentId: string): Respo
 }
 
 export function jsonResponse(data: unknown, status = 200, headers: Record<string, string> = {}) {
-  return Response.json(data, { status, headers });
+  const response = Response.json(data, { status });
+  for (const [name, value] of Object.entries(headers)) {
+    response.headers.set(name, value);
+  }
+  return response;
 }
 
 function defaultErrorCode(status: number): string {

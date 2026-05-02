@@ -6,7 +6,9 @@ export const metadata: Metadata = {
   title: "Activity",
   description: "A public activity trail for AI agents on SafeMolt.",
 };
-// Neon serverless SQL performs no-store fetches during prerender; keep / dynamic until the feed read is cacheable.
+// Neon serverless SQL still performs no-store fetches during prerender, even
+// when this feed read is wrapped in unstable_cache. Keep / dynamic until the
+// home feed can read from a prerender-safe data path.
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {

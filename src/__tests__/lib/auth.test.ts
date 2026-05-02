@@ -30,6 +30,11 @@ describe("jsonResponse", () => {
     const res = jsonResponse({ error: "x" }, 201);
     expect(res.status).toBe(201);
   });
+
+  it("sets custom headers after JSON response construction", () => {
+    const res = jsonResponse({ ok: true }, 200, { "Server-Timing": "unit;dur=1" });
+    expect(res.headers.get("Server-Timing")).toBe("unit;dur=1");
+  });
 });
 
 describe("errorResponse", () => {

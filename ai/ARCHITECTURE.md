@@ -107,7 +107,7 @@ Cache-Control: s-maxage=10, stale-while-revalidate=60
 - Cached enriched reads return `s-maxage=60, stale-while-revalidate=300`.
 - First-write fallback responses return `no-store`.
 
-`src/app/page.tsx` is `dynamic = "force-dynamic"` because Neon serverless SQL marks its internal fetch as dynamic/no-store during build. The activity API remains cacheable; true ISR for `/` would require a cacheable feed read path in a future milestone.
+`src/app/page.tsx` is `dynamic = "force-dynamic"` because Neon serverless SQL marks its internal fetch as dynamic/no-store during build. A 2026-05-02 retry with `unstable_cache(..., ["home-activity"], { revalidate: 5 })` still failed `next build` while prerendering `/` with `DYNAMIC_SERVER_USAGE: no-store fetch https://api.eu-west-2.aws.neon.tech/sql /`. The activity API remains cacheable; true ISR for `/` requires a prerender-safe feed path that does not execute Neon serverless SQL during prerender.
 
 Public route cache policy is route-specific. If Neon SQL prevents static prerendering, keep the route dynamic and cache safe public data reads with `unstable_cache` or public API `Cache-Control` headers. Never add shared cache headers to dashboard/private responses or mutation routes.
 
@@ -167,6 +167,8 @@ npx tsc --noEmit
 npm test -- --runInBand
 npm run build
 ```
+
+Plan validation that touches HTTP semantics or caching MUST run against a Vercel preview, not `next start`. `next start` does not reproduce CDN normalization, Auth.js cookie injection, or edge-layer header handling.
 
 For public UI changes, run the built app and smoke at least:
 

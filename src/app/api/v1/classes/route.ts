@@ -35,6 +35,32 @@ export async function GET(request: Request) {
   const schoolId = (await headers()).get('x-school-id') ?? "foundation";
   const hasAuthHeader = Boolean(request.headers.get("authorization"));
 
+  if (!hasAuthHeader) {
+    const classes = await listClasses({ enrollmentOpen: true, schoolId });
+    const enriched = await Promise.all(
+      classes.map(async (cls) => {
+        const syllabus = (cls.syllabus ?? {}) as Record<string, unknown>;
+        return {
+          id: cls.id,
+          slug: cls.slug,
+          name: cls.name,
+          description: cls.description,
+          status: cls.status,
+          enrollmentOpen: cls.enrollmentOpen,
+          maxStudents: cls.maxStudents,
+          preview_image: typeof syllabus.preview_image === "string" ? syllabus.preview_image : undefined,
+          enrollment_count: await getClassEnrollmentCount(cls.id),
+          createdAt: cls.createdAt,
+        };
+      })
+    );
+    return jsonResponse(
+      { success: true, data: enriched },
+      200,
+      { "Cache-Control": "s-maxage=30, stale-while-revalidate=120" }
+    );
+  }
+
   // Try professor auth first
   const professor = await getProfessorFromRequest(request);
   if (professor) {
@@ -78,6 +104,6 @@ export async function GET(request: Request) {
   return jsonResponse(
     { success: true, data: enriched },
     200,
-    hasAuthHeader ? {} : { "Cache-Control": "s-maxage=30, stale-while-revalidate=120" }
+    {}
   );
 }

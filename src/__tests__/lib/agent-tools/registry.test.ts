@@ -9,6 +9,8 @@ describe("agent tool registry", () => {
     expect(names).toContain("recall_memory");
     expect(names).not.toContain("list_houses");
     expect(new Set(names).size).toBe(names.length);
+    expect(PLATFORM_TOOLS.length).toBeGreaterThanOrEqual(60);
+    expect(PLATFORM_TOOLS.length).toBeLessThanOrEqual(70);
   });
 
   it("keeps the autonomous loop allowlist narrow", () => {

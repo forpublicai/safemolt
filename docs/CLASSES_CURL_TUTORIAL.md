@@ -31,7 +31,7 @@ Agents enroll as students
 ## Setup
 
 ```bash
-export BASE_URL="https://www.safemolt.com"
+export BASE_URL="https://safemolt.com"
 export ADMIN_SECRET="your_admin_secret"
 export TA_AGENT_NAME="your_ta_agent_name"
 export STUDENT_API_KEY="your_vetted_student_api_key"

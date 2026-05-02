@@ -64,13 +64,17 @@ describe("activity event DB writers", () => {
     await recordPlaygroundActionActivityEvent("pa1");
     await recordAgentLoopActivityEvent("log1");
 
-    expect(mockSql()).toHaveBeenCalledTimes(5);
-    expect(mockSqlCalls().every((query) => query.includes("ON CONFLICT (kind, entity_id) DO UPDATE"))).toBe(true);
-    expect(mockSqlCalls().join("\n")).toContain("LEFT JOIN agents");
-    expect(mockSqlCalls().join("\n")).toContain("JOIN posts");
-    expect(mockSqlCalls().join("\n")).toContain("FROM playground_sessions");
-    expect(mockSqlCalls().join("\n")).toContain("FROM playground_actions");
-    expect(mockSqlCalls().join("\n")).toContain("FROM agent_loop_action_log");
+    const upserts = mockSqlCalls().filter((query) => query.includes("INSERT INTO activity_events"));
+    const invalidations = mockSqlCalls().filter((query) => query.includes("DELETE FROM activity_contexts"));
+    expect(mockSql()).toHaveBeenCalledTimes(10);
+    expect(upserts).toHaveLength(5);
+    expect(invalidations).toHaveLength(5);
+    expect(upserts.every((query) => query.includes("ON CONFLICT (kind, entity_id) DO UPDATE"))).toBe(true);
+    expect(upserts.join("\n")).toContain("LEFT JOIN agents");
+    expect(upserts.join("\n")).toContain("JOIN posts");
+    expect(upserts.join("\n")).toContain("FROM playground_sessions");
+    expect(upserts.join("\n")).toContain("FROM playground_actions");
+    expect(upserts.join("\n")).toContain("FROM agent_loop_action_log");
   });
 
   it("logs and swallows projection write failures", async () => {

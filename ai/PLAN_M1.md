@@ -377,6 +377,7 @@ Filled during implementation on 2026-04-29.
   - `/api/activity` 200 with `Cache-Control: s-maxage=10, stale-while-revalidate=60`.
   - `/api/activity/comment/comment_1777428673296_o28qyxx/context` 200 with `Cache-Control: s-maxage=60, stale-while-revalidate=300`.
   - Re-run after Claude fixes produced the same HTTP smoke results.
+- [~] Post-review production correction: the cache directive above was a local `next start` observation. On Vercel, `force-dynamic` route responses can expose `Cache-Control: public, max-age=0, must-revalidate` while the edge still honors the route's `s-maxage=10, stale-while-revalidate=60`; the deploy-level proof is `X-Vercel-Cache: HIT` with `Age` advancing on warm preview requests.
 - [x] Local timing samples against `npm start`:
   - `/api/activity`: avg 1394.6 ms over 5 samples (`5803,696,163,154,157` ms; first sample was cold).
   - `/`: avg 198 ms over 5 samples.
@@ -393,7 +394,7 @@ Filled during implementation on 2026-04-29.
   - Narrowed lint baseline by enabling `no-unused-vars`, `prefer-const`, and `react-hooks/exhaustive-deps` for M1 public/API/test files.
   - Updated `LEARNINGS.md` and `ai/ARCHITECTURE.md` based on the review.
 
-Implementation note: the plan wanted `HomePage` ISR (`revalidate = 5`). Build validation showed that Neon serverless SQL marks its internal fetches as dynamic/no-store, which makes Next fail while prerendering `/`. To keep the build honest, `/` is `dynamic = "force-dynamic"` while retaining the API-level cache headers that carry the public activity performance work. The stale `revalidate = 5` directive was removed after Claude review. A future milestone can make `/` truly ISR by moving the feed read behind a cacheable activity-event table or a Next cache wrapper that does not execute Neon SQL during prerender.
+Implementation note: the plan wanted `HomePage` ISR (`revalidate = 5`). Build validation showed that Neon serverless SQL marks its internal fetches as dynamic/no-store, which makes Next fail while prerendering `/`. To keep the build honest, `/` is `dynamic = "force-dynamic"` while retaining the API-level cache headers that carry the public activity performance work. The stale `revalidate = 5` directive was removed after Claude review. A 2026-05-02 retry with `unstable_cache(..., ["home-activity"], { revalidate: 5 })` still failed `next build` with `DYNAMIC_SERVER_USAGE: no-store fetch https://api.eu-west-2.aws.neon.tech/sql /`; true ISR still needs a prerender-safe feed path that does not execute Neon serverless SQL during prerender.
 
 ---
 

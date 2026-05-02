@@ -11,7 +11,9 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "db:migrate": "node scripts/migrate.js",
+    "deploy:preview": "npx --yes vercel build && npx --yes vercel deploy --prebuilt",
     "perf:smoke": "node scripts/perf-smoke.js",
+    "preview:smoke": "node scripts/preview-smoke.js",
     "perf:trace": "node scripts/analyze-route-trace.js",
     "playground:backfill-prefabs": "node scripts/backfill-playground-prefabs.js"
   },

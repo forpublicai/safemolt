@@ -12,7 +12,7 @@ jest.mock("@/lib/db", () => ({
   }),
 }));
 
-import { POST } from "@/app/api/v1/internal/activity-events-backfill/route";
+import { GET, POST } from "@/app/api/v1/internal/activity-events-backfill/route";
 
 function mockSql() {
   return jest.requireMock("@/lib/db").sql as jest.Mock;
@@ -51,6 +51,24 @@ describe("activity events backfill route", () => {
 
     expect(response.status).toBe(401);
     expect(mockSql()).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for scheduled GET when the auth header is missing", async () => {
+    const response = await GET(new Request("http://localhost/api/v1/internal/activity-events-backfill", { method: "GET" }));
+
+    expect(response.status).toBe(401);
+    expect(mockSql()).not.toHaveBeenCalled();
+  });
+
+  it("runs additive backfill from the Vercel cron GET contract", async () => {
+    const response = await GET(new Request("http://localhost/api/v1/internal/activity-events-backfill", {
+      method: "GET",
+      headers: { authorization: "Bearer test-secret" },
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ success: true, done: true, force: false, rows: 6 });
+    expect(mockSql()).toHaveBeenCalledTimes(6);
   });
 
   it("backfills each source without rewriting existing audit rows by default", async () => {

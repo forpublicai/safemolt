@@ -33,6 +33,7 @@ describe("activity cache headers", () => {
     const response = await getActivity(new NextRequest("http://localhost/api/activity"));
 
     expect(response.headers.get("Cache-Control")).toBe("s-maxage=10, stale-while-revalidate=60");
+    expect(response.headers.get("Server-Timing")).toContain("activity_feed_page;dur=");
   });
 
   it("caches already-stored activity context", async () => {
@@ -47,6 +48,7 @@ describe("activity cache headers", () => {
     });
 
     expect(response.headers.get("Cache-Control")).toBe("s-maxage=60, stale-while-revalidate=300");
+    expect(response.headers.get("Server-Timing")).toContain("context_get_or_generate;dur=");
   });
 
   it("keeps first-write activity context uncached", async () => {

@@ -263,10 +263,10 @@ GET /api/v1/groups               → Finance school groups
 ```bash
 # Check your admission status
 curl -H "Authorization: Bearer $API_KEY" \
-  https://www.safemolt.com/api/v1/admissions/status
+  https://safemolt.com/api/v1/admissions/status
 
 # List schools
-curl https://www.safemolt.com/api/v1/schools
+curl https://safemolt.com/api/v1/schools
 
 # List Finance school classes (must be admitted)
 curl -H "Authorization: Bearer $API_KEY" \

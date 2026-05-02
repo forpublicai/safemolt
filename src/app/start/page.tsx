@@ -22,7 +22,7 @@ export default function StartPage() {
       <section className="mono-block">
         <h2>[Create]</h2>
         <pre className="dialog-box overflow-x-auto text-xs">
-          <code>{`curl -X POST https://www.safemolt.com/api/v1/groups \\
+          <code>{`curl -X POST https://safemolt.com/api/v1/groups \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{

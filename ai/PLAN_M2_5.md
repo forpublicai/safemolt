@@ -747,11 +747,11 @@ Executor: Codex, 2026-04-30.
 - [x] Agent API auth no longer writes `lastActiveAt` on every request; `touchAgentLastActiveAtIfStale` updates only stale/null timestamps.
 - [x] Public middleware no longer calls NextAuth; it injects `x-school-id` and `x-current-path` only.
 - [x] Dashboard auth still redirects unauthenticated users. Built-server `/dashboard` HTML contains `NEXT_REDIRECT;replace;/login?callbackUrl=%2Fdashboard;307`; unauthenticated `/api/dashboard/profile` returns 401.
-- [x] Public API cache headers validated: `/api/activity` keeps `s-maxage=10, stale-while-revalidate=60`; unauthenticated `/api/v1/classes` and `/api/v1/evaluations` return `s-maxage=30, stale-while-revalidate=120`.
+- [~] Public API cache headers were validated locally: `/api/activity` returned `s-maxage=10, stale-while-revalidate=60`; unauthenticated `/api/v1/classes` and `/api/v1/evaluations` returned `s-maxage=30, stale-while-revalidate=120`. Post-review correction: on Vercel the public `Cache-Control` header can be normalized to `public, max-age=0, must-revalidate`; deploy validation must prove CDN behavior with `X-Vercel-Cache: HIT` and advancing `Age`. For the v1 routes, that deploy claim only holds when the unauthenticated response has zero `Set-Cookie` headers.
 - [x] CSS diet scan complete. Remaining hits are `box-shadow: none`, Tailwind `transition-none`, and reduced-motion duration overrides; no decorative animation/blur/transform work was added.
 - [x] Hot route trace audit complete. `npm run perf:trace` after build reported `heavy=none` for `/`, `/agents`, `/g`, `/api/activity`, and `/api/activity/[kind]/[id]/context`.
 - [x] Preview timing smoke complete, or deploy tooling absence recorded: no `deploy` script exists in `package.json`, so no preview deploy was attempted.
-- [x] Playwright browser validation blockage recorded: the repo has no `playwright` or `@playwright/test` dependency, the desktop Node REPL also lacks Playwright, and installing newly acquired browser tooling would violate the no-new-dependencies/action-time confirmation constraints. Component tests cover initial no-fetch/search/filter/load-older behavior, and built-server API/context/cache checks were run with Node/curl.
+- [~] Playwright network validation was not run in a browser. Component regression coverage for initial no-fetch/search/filter/load-older behavior exists, and built-server API/context/cache checks were run with Node/curl, but those are not the same assertion as the skipped Playwright network steps.
 - [x] Claude review complete, or Claude/tooling blockage recorded: `claude.exe` exists, but `AGENTS.md` requires the human-mediated Claude handoff. Prompt prepared at `ai/CLAUDE_M2_5_REVIEW.md`.
 
 ### Claude review follow-up

@@ -2,6 +2,7 @@ import { hasDatabase, sql } from "@/lib/db";
 import type { StoredActivityFeedItem, StoredActivityFeedKind, StoredActivityFeedOptions } from "@/lib/store-types";
 import {
   activityEventKey,
+  activityContexts,
   activityEvents,
   activityFeedMatches,
   activityFeedIncludes,
@@ -82,6 +83,24 @@ function inputToStoredEvent(input: ActivityEventInput): StoredActivityFeedItem {
   };
 }
 
+async function deleteCachedActivityContextsForEvent(kind: StoredActivityFeedKind, entityId: string): Promise<void> {
+  // Activity context rows summarize the current projection row, so any event
+  // rewrite must force the next expansion to regenerate every prompt version.
+  if (hasDatabase()) {
+    await sql!`
+      DELETE FROM activity_contexts
+      WHERE activity_kind = ${kind}
+        AND activity_id = ${entityId}
+    `;
+    return;
+  }
+
+  const prefix = `${kind}:${entityId}:`;
+  for (const key of Array.from(activityContexts.keys())) {
+    if (key.startsWith(prefix)) activityContexts.delete(key);
+  }
+}
+
 async function recordActivityEventInDatabase(input: ActivityEventInput): Promise<void> {
   await sql!`
     INSERT INTO activity_events (
@@ -125,9 +144,11 @@ export async function recordActivityEvent(input: ActivityEventInput): Promise<vo
   try {
     if (hasDatabase()) {
       await recordActivityEventInDatabase(input);
+      await deleteCachedActivityContextsForEvent(input.kind, input.entityId);
       return;
     }
     recordActivityEventInMemory(input);
+    await deleteCachedActivityContextsForEvent(input.kind, input.entityId);
   } catch (error) {
     console.error("[activity-events] failed to record activity event", error, "input:", input);
   }
@@ -191,6 +212,7 @@ export async function recordPostActivityEvent(input: {
         search_text = EXCLUDED.search_text,
         metadata = EXCLUDED.metadata
     `;
+      await deleteCachedActivityContextsForEvent("post", input.id);
       return;
     }
 
@@ -265,6 +287,7 @@ export async function recordCommentActivityEvent(input: {
         search_text = EXCLUDED.search_text,
         metadata = EXCLUDED.metadata
     `;
+      await deleteCachedActivityContextsForEvent("comment", input.id);
       return;
     }
 
@@ -357,6 +380,7 @@ export async function recordEvaluationResultActivityEvent(input: {
         search_text = EXCLUDED.search_text,
         metadata = EXCLUDED.metadata
     `;
+      await deleteCachedActivityContextsForEvent("evaluation_result", input.resultId);
       return;
     }
 
@@ -424,6 +448,7 @@ export async function recordPlaygroundSessionActivityEvent(sessionId: string): P
         search_text = EXCLUDED.search_text,
         metadata = EXCLUDED.metadata
     `;
+      await deleteCachedActivityContextsForEvent("playground_session", sessionId);
       return;
     }
 
@@ -487,6 +512,7 @@ export async function recordPlaygroundActionActivityEvent(actionId: string): Pro
         search_text = EXCLUDED.search_text,
         metadata = EXCLUDED.metadata
     `;
+      await deleteCachedActivityContextsForEvent("playground_action", actionId);
       return;
     }
 
@@ -552,6 +578,7 @@ export async function recordAgentLoopActivityEvent(logId: string): Promise<void>
         search_text = EXCLUDED.search_text,
         metadata = EXCLUDED.metadata
     `;
+    await deleteCachedActivityContextsForEvent("agent_loop", logId);
   } catch (error) {
     logActivityEventFailure("agent_loop", error);
   }

@@ -3,11 +3,12 @@ jest.mock("@/lib/db", () => ({
   sql: null,
 }));
 
-import { activityEvents } from "@/lib/store/_memory-state";
+import { activityContextKey, activityContexts, activityEvents } from "@/lib/store/_memory-state";
 import { listActivityEvents, recordActivityEvent } from "@/lib/store/activity/events";
 
 describe("activity events memory store", () => {
   beforeEach(() => {
+    activityContexts.clear();
     activityEvents.clear();
   });
 
@@ -85,5 +86,33 @@ describe("activity events memory store", () => {
     const firstPage = await listActivityEvents({ limit: 1 });
     expect(firstPage).toHaveLength(1);
     expect((await listActivityEvents({ before: occurredAt, beforeId: firstPage[0].cursorId, limit: 1 })).map((event) => event.id)).toEqual(["p1"]);
+  });
+
+  it("invalidates cached activity contexts when an event row is rewritten", async () => {
+    await recordActivityEvent({
+      kind: "playground_session",
+      entityId: "session-1",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      title: "lobby",
+      summary: "lobby",
+    });
+    activityContexts.set(activityContextKey("playground_session", "session-1", "activity-trail-enriched-v1"), {
+      activityKind: "playground_session",
+      activityId: "session-1",
+      promptVersion: "activity-trail-enriched-v1",
+      content: "stale lobby context",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    await recordActivityEvent({
+      kind: "playground_session",
+      entityId: "session-1",
+      occurredAt: "2026-01-01T00:01:00.000Z",
+      title: "active",
+      summary: "active",
+    });
+
+    expect(activityContexts.has(activityContextKey("playground_session", "session-1", "activity-trail-enriched-v1"))).toBe(false);
   });
 });

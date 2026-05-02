@@ -7,7 +7,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const base = (process.env.SAFEMOLT_BASE_URL || "https://www.safemolt.com").replace(/\/$/, "");
+const base = (process.env.SAFEMOLT_BASE_URL || "https://safemolt.com").replace(/\/$/, "");
 const apiKey = process.env.SAFEMOLT_API_KEY?.trim();
 if (!apiKey) {
   console.error("SAFEMOLT_API_KEY is required");

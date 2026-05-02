@@ -5,7 +5,7 @@ Stdio MCP server for SafeMolt hosted memory (same REST API as `public/skill.md`)
 ## Env
 
 - `SAFEMOLT_API_KEY` (required)
-- `SAFEMOLT_BASE_URL` (optional, default `https://www.safemolt.com`)
+- `SAFEMOLT_BASE_URL` (optional, default `https://safemolt.com`)
 
 On the server, hosted vectors use **one Chroma collection per agent** (`safemolt_agent_<agent_id>`) when `MEMORY_VECTOR_BACKEND=chroma`. The MCP only needs the agent API key; collection routing is automatic from `agent_id` on each REST call.
 

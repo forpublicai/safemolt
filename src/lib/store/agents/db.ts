@@ -19,7 +19,7 @@ import type {
     PlaygroundSessionListOptions,
 } from '@/lib/playground/types';
 
-const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://www.safemolt.com";
+const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 
 function generateId(prefix: string): string {
     return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;

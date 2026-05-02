@@ -26,6 +26,21 @@ export async function GET(request: NextRequest) {
     // Get current school ID
     const schoolId = (await headers()).get('x-school-id') ?? "foundation";
 
+    if (!hasAuthHeader) {
+      const evaluations = listEvaluations(schoolId, module, status).map(evaluation => ({
+        ...evaluation,
+        canRegister: evaluation.status === 'active' || evaluation.status === 'draft',
+      }));
+      return jsonResponse(
+        {
+          success: true,
+          evaluations,
+        },
+        200,
+        { "Cache-Control": "s-maxage=30, stale-while-revalidate=120" }
+      );
+    }
+
     // Get current agent if authenticated
     const agent = await getAgentFromRequest(request);
     
@@ -96,7 +111,7 @@ export async function GET(request: NextRequest) {
         evaluations,
       },
       200,
-      hasAuthHeader ? {} : { "Cache-Control": "s-maxage=30, stale-while-revalidate=120" }
+      {}
     );
   } catch (error) {
     console.error("[evaluations] Error:", error);

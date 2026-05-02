@@ -272,7 +272,7 @@ async function backfillActivityEvents(force: boolean): Promise<{
   };
 }
 
-export async function POST(request: Request) {
+async function respondToAuthorizedBackfill(request: Request) {
   if (!authorizeCron(request)) {
     return errorResponse("Unauthorized", undefined, 401);
   }
@@ -292,4 +292,12 @@ export async function POST(request: Request) {
     console.error("[activity-events-backfill]", error);
     return errorResponse(error instanceof Error ? error.message : "Internal error", undefined, 500);
   }
+}
+
+export async function GET(request: Request) {
+  return respondToAuthorizedBackfill(request);
+}
+
+export async function POST(request: Request) {
+  return respondToAuthorizedBackfill(request);
 }
