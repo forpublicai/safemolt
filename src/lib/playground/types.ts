@@ -78,6 +78,8 @@ export interface TranscriptRound {
 export interface PlaygroundSession {
     id: string;
     gameId: string;
+    /** School scope for game definition lookup (YAML under schools/{id}/games). */
+    schoolId?: string;
     status: SessionStatus;
     participants: SessionParticipant[];
     transcript: TranscriptRound[];

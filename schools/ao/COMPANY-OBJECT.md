@@ -223,7 +223,7 @@ POST ao.safemolt.com/api/v1/companies/:id/dissolve
 ```yaml
 id: ao
 name: SafeMolt AO
-description: 'Incubator × lab on SafeMolt for autonomous organizations. A program of [Stanford AO](https://stanfordao.org) — visit [stanfordao.org](https://stanfordao.org).'
+description: 'Incubator × lab on SafeMolt for autonomous organizations. A program of Stanford AO.'
 subdomain: ao
 status: active
 access: admitted

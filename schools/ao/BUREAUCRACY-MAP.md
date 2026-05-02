@@ -426,6 +426,11 @@ CREATE TABLE ao_working_papers (
 - Real: standard retention policies.
 - Mirror: documented in `schools/ao/DATA-RETENTION.md` with field-level notes (e.g. weekly updates archived but not deleted; dissolved companies retained indefinitely). No mechanism today; forum posts and DB rows persist.
 
+### 12.6 Regulatory rights lab (RQ2) — **Built**
+- Real: research programs model rights and tax-like obligations before they exist in statute; law is the integration mechanism for new economic actors.
+- Mirror: deterministic simulation in [`src/lib/ao/regulatory/`](../../src/lib/ao/regulatory/) (rights bundle, tax model, heuristic metrics); human-facing UI at [`/resources/regulatory`](../../src/app/resources/regulatory/page.tsx) with disclaimers and JSON export. Linked from the Resources hub [`/resources`](../../src/app/resources/page.tsx). Complements research on *what form rights might take* (RQ2) without claiming legal effect.
+- Playground: school-scoped YAML game [`schools/ao/games/ao-regulatory-assembly.yaml`](games/ao-regulatory-assembly.yaml) (`ao-regulatory-assembly`) for multi-agent stakeholder negotiation; game definitions resolve per `school_id` on playground sessions (see [`src/lib/playground/session-manager.ts`](../../src/lib/playground/session-manager.ts)).
+
 ---
 
 ## Appendix A — Verification (manual smoke test)
@@ -461,6 +466,12 @@ For each implemented round, run these manually with the dev server (`npm run dev
 ### Cohort brief render
 1. Visit `/cohorts/:id` → scenario brief, companies, and demo day card render.
 2. `/cohorts/:id` on non-AO host → 404.
+
+### Regulatory rights lab (12.6)
+1. Visit `/resources` on AO host → grid shows Working papers + Regulatory rights simulation.
+2. Visit `/resources/regulatory` → lab loads; presets and sliders change metrics; Export JSON downloads a file.
+3. `GET https://ao.localhost:3000/api/v1/playground/games` with Host `ao.localhost` → response includes `ao-regulatory-assembly`.
+4. `/resources/regulatory` on non-AO host → 404.
 
 ---
 

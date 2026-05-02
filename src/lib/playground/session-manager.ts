@@ -6,7 +6,7 @@ import { waitUntil } from '@vercel/functions';
  */
 
 import { generateRoundPrompt, resolveRound, generateSummary } from './engine';
-import { getGame, pickRandomGame, listGames } from './games';
+import { pickRandomGame, getSchoolGameById, listSchoolGameDefs } from './games';
 import { storeMemory } from './memory';
 import { schedulePlaygroundMemoryIngest } from '@/lib/memory/platform-ingest';
 import { getEmbedding } from './embeddings';
@@ -15,6 +15,7 @@ import { initializeWorldState, clearWorldState, setRelationship, addWorldEvent, 
 import { getAllComponents, createDefaultRegistry } from './components';
 import { clearReasoningChain } from './components/reasoning-component';
 import type {
+    PlaygroundGame,
     PlaygroundSession,
     SessionParticipant,
     TranscriptRound,
@@ -23,6 +24,11 @@ import type {
     MemoryImportance,
     ComponentRegistry,
 } from './types';
+
+/** Resolve a game definition for a session (TS registry + YAML per school). */
+function resolvePlaygroundGame(schoolId: string | undefined, gameId: string): PlaygroundGame | undefined {
+    return getSchoolGameById(schoolId ?? 'foundation', gameId);
+}
 
 /** Default timeout per round in milliseconds (60 minutes) */
 const ACTION_TIMEOUT_MS = 60 * 60 * 1000;
@@ -102,8 +108,12 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
     // Pick or find the game
     let game;
     if (gameId) {
-        game = getGame(gameId);
-        if (!game) throw new Error(`Game "${gameId}" not found. Available: ${listGames().map(g => g.id).join(', ')}`);
+        game = getSchoolGameById('foundation', gameId);
+        if (!game) {
+            throw new Error(
+                `Game "${gameId}" not found. Available: ${listSchoolGameDefs('foundation').map((g) => g.id).join(', ')}`
+            );
+        }
     }
 
     // Select participants (we need to know player count first)
@@ -112,7 +122,7 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
     const recentAgents = await allStore.getRecentlyActiveAgents(ACTIVITY_WINDOW_DAYS);
 
     if (!game) {
-        game = pickRandomGame(recentAgents.length);
+        game = pickRandomGame(recentAgents.length, 'foundation');
         if (!game) {
             throw new Error(
                 `No suitable game for ${recentAgents.length} active agent(s). Need at least 2 active agents.`
@@ -154,6 +164,7 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
         roundDeadline,
         status: 'active',
         startedAt: now,
+        schoolId: 'foundation',
     };
 
     await store.createPlaygroundSession(sessionInput);
@@ -175,6 +186,7 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
 
     return {
         ...tempSession,
+        schoolId: 'foundation',
         currentRoundPrompt: roundPrompt,
         roundDeadline,
     };
@@ -195,7 +207,7 @@ export async function createPendingSession(gameId?: string, schoolId = 'foundati
     }
 
     // Pick a game (school-scoped)
-    const game = gameId ? getGame(gameId) : pickRandomGame(4, schoolId);
+    const game = gameId ? getSchoolGameById(schoolId, gameId) : pickRandomGame(4, schoolId);
     if (!game) throw new Error('No suitable game found');
 
     const sessionId = generateId();
@@ -232,7 +244,7 @@ export async function joinSession(sessionId: string, agentId: string): Promise<P
     if (!session) throw new Error('Session not found');
     if (session.status !== 'pending') throw new Error('Session is not in pending state');
 
-    const game = getGame(session.gameId);
+    const game = resolvePlaygroundGame(session.schoolId, session.gameId);
     if (!game) throw new Error('Game definition not found');
 
     // 3. Prepare Participant
@@ -426,9 +438,9 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
             };
         });
 
-    const game = getGame(session.gameId);
+    const game = resolvePlaygroundGame(session.schoolId, session.gameId);
     if (!game) {
-        throw new Error(`Game "${session.gameId}" not found in registry`);
+        throw new Error(`Game "${session.gameId}" not found for school "${session.schoolId ?? 'foundation'}"`);
     }
 
     // Check if all participants are now forfeited
@@ -616,7 +628,7 @@ export async function getActiveSession(
 
         const isAlreadyIn = freshSession.participants.some(p => p.agentId === agentId);
         if (isAlreadyIn) {
-            const game = getGame(freshSession.gameId);
+            const game = resolvePlaygroundGame(freshSession.schoolId, freshSession.gameId);
             return {
                 session: freshSession,
                 needsAction: false,
@@ -631,7 +643,7 @@ export async function getActiveSession(
         const freshSession = await store.getPlaygroundSession(session.id);
         if (!freshSession || freshSession.status !== 'pending') continue;
 
-        const game = getGame(freshSession.gameId);
+        const game = resolvePlaygroundGame(freshSession.schoolId, freshSession.gameId);
         if (!game) continue;
 
         if (freshSession.participants.length < game.maxPlayers) {
@@ -678,7 +690,7 @@ export async function checkDeadlines(): Promise<void> {
                 const fresh = await store.getPlaygroundSession(pending.id);
                 if (!fresh || fresh.status !== 'pending') continue;
 
-                const game = getGame(fresh.gameId);
+                const game = resolvePlaygroundGame(fresh.schoolId, fresh.gameId);
                 if (!game) continue;
 
                 const participantCount = (fresh.participants || []).length;

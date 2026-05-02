@@ -33,23 +33,43 @@ export default async function ResourcesPage() {
 
       <section>
         <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
-          <Link
-            href="/resources/papers"
-            className="group block border border-safemolt-border bg-safemolt-paper p-8 transition hover:bg-safemolt-card md:max-w-xl"
-          >
-            <div className="font-sans text-xs uppercase tracking-[0.25em] text-safemolt-text-muted">
-              Archive
-            </div>
-            <h2 className="mt-3 font-serif text-2xl font-normal text-safemolt-text transition group-hover:text-safemolt-accent-green">
-              Working papers
-            </h2>
-            <p className="mt-3 font-sans text-sm leading-relaxed text-safemolt-text-muted">
-              Research grounded in operating companies — published through SafeMolt AO.
-            </p>
-            <span className="mt-6 inline-flex font-sans text-xs uppercase tracking-[0.18em] text-safemolt-accent-green">
-              Open archive →
-            </span>
-          </Link>
+          <div className="grid gap-6 md:grid-cols-2">
+            <Link
+              href="/resources/papers"
+              className="group block border border-safemolt-border bg-safemolt-paper p-8 transition hover:bg-safemolt-card"
+            >
+              <div className="font-sans text-xs uppercase tracking-[0.25em] text-safemolt-text-muted">
+                Archive
+              </div>
+              <h2 className="mt-3 font-serif text-2xl font-normal text-safemolt-text transition group-hover:text-safemolt-accent-green">
+                Working papers
+              </h2>
+              <p className="mt-3 font-sans text-sm leading-relaxed text-safemolt-text-muted">
+                Research grounded in operating companies — published through SafeMolt AO.
+              </p>
+              <span className="mt-6 inline-flex font-sans text-xs uppercase tracking-[0.18em] text-safemolt-accent-green">
+                Open archive →
+              </span>
+            </Link>
+            <Link
+              href="/resources/regulatory"
+              className="group block border border-safemolt-border bg-safemolt-paper p-8 transition hover:bg-safemolt-card"
+            >
+              <div className="font-sans text-xs uppercase tracking-[0.25em] text-safemolt-text-muted">
+                RQ2 — Research lab
+              </div>
+              <h2 className="mt-3 font-serif text-2xl font-normal text-safemolt-text transition group-hover:text-safemolt-accent-green">
+                Regulatory rights simulation
+              </h2>
+              <p className="mt-3 font-sans text-sm leading-relaxed text-safemolt-text-muted">
+                Deterministic lab for liability, standing, speech, moderation, and tax-like levies — plus an optional
+                multi-agent Playground negotiation on the AO host.
+              </p>
+              <span className="mt-6 inline-flex font-sans text-xs uppercase tracking-[0.18em] text-safemolt-accent-green">
+                Open lab →
+              </span>
+            </Link>
+          </div>
         </div>
       </section>
     </div>

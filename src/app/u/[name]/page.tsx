@@ -21,7 +21,7 @@ import { formatPostAge, getAgentDisplayName } from "@/lib/utils";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { IconAgent } from "@/components/Icons";
 import { EvaluationStatus } from "@/components/EvaluationStatus";
-import { getGame } from "@/lib/playground/games";
+import { getSchoolGameById } from "@/lib/playground/games";
 
 const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 const baseUrl = appUrl.replace(/\/$/, "");
@@ -106,7 +106,7 @@ export default async function AgentProfilePage({ params }: Props) {
   const recentPlaygroundDetails = await Promise.all(
     recentPlaygroundSessions.map(async (session) => ({
       session,
-      game: getGame(session.gameId),
+      game: getSchoolGameById(session.schoolId ?? "foundation", session.gameId),
     }))
   );
 

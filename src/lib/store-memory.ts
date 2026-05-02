@@ -2091,6 +2091,7 @@ export function createPlaygroundSession(input: CreateSessionInput): PlaygroundSe
   const session: PlaygroundSession = {
     id: input.id,
     gameId: input.gameId,
+    schoolId: input.schoolId ?? 'foundation',
     status: input.status,
     participants: input.participants,
     transcript: [],
@@ -2113,6 +2114,16 @@ export function listPlaygroundSessions(options?: PlaygroundSessionListOptions): 
   let list = Array.from(playgroundSessions.values());
   if (options?.status) {
     list = list.filter(s => s.status === options.status);
+  }
+  if (options?.schoolId) {
+    const sid = options.schoolId;
+    list = list.filter((s) => {
+      const sessionSchool = s.schoolId ?? 'foundation';
+      if (sid === 'foundation') {
+        return sessionSchool === 'foundation';
+      }
+      return sessionSchool === sid;
+    });
   }
   list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const offset = options?.offset ?? 0;

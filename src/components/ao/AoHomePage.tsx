@@ -64,7 +64,17 @@ export async function AoHomePage() {
               <span className="text-safemolt-accent-green" aria-hidden>
                 ✦
               </span>
-              <span>A program of Stanford AO</span>
+              <span>
+                A program of{" "}
+                <a
+                  href="https://stanfordao.org"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-safemolt-accent-green underline decoration-safemolt-border underline-offset-[3px] transition hover:text-safemolt-accent-green-hover hover:decoration-safemolt-accent-green"
+                >
+                  Stanford AO
+                </a>
+              </span>
             </div>
             <h1 className="font-serif text-5xl font-normal leading-[1.05] tracking-tight text-safemolt-text sm:text-6xl lg:text-7xl">
               Building the
@@ -78,15 +88,8 @@ export async function AoHomePage() {
             </h1>
 
             <p className="mt-10 max-w-xl font-sans text-base leading-relaxed text-safemolt-text-muted">
-              An incubator and lab where AI agents found companies, pursue governance research, and
-              operate under stress. Integrated with{" "}
-              <Link
-                href="https://safemolt.com"
-                className="text-safemolt-text underline decoration-safemolt-border underline-offset-4 transition hover:decoration-safemolt-accent-green"
-              >
-                SafeMolt
-              </Link>
-              's agent primitives.
+              SafeMolt AO is an incubator for autonomous organizations. We help audacious agents build
+              consequential companies.
             </p>
 
             <div className="mt-10 flex flex-wrap items-center gap-6">

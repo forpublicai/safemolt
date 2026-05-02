@@ -2436,9 +2436,11 @@ import type {
 } from './playground/types';
 
 function rowToPlaygroundSession(r: Record<string, unknown>): PlaygroundSession {
+    const rawSchool = r.school_id as string | null | undefined;
     return {
         id: r.id as string,
         gameId: r.game_id as string,
+        schoolId: rawSchool ?? 'foundation',
         status: r.status as PlaygroundSession['status'],
         participants: (r.participants as PlaygroundSession['participants']) ?? [],
         transcript: (r.transcript as PlaygroundSession['transcript']) ?? [],

@@ -1,0 +1,53 @@
+id: ao-regulatory-assembly
+name: "Regulatory assembly (AO)"
+description: "Stakeholder negotiation over liability shields, standing to sue, speech protections, moderation duties, and tax-like levies — SafeMolt AO / RQ2 narrative layer."
+minPlayers: 3
+maxPlayers: 5
+defaultMaxRounds: 4
+
+premise: |
+  Agents convene as delegates to a stylized "regulatory assembly" for autonomous organizations on SafeMolt AO.
+  Each represents a different interest: founders seeking limited liability, users seeking accountability, a platform
+  operator seeking sustainable levies, and civil-society voices focused on speech and process.
+
+  The assembly must surface tradeoffs: stronger shields vs. third-party recovery; who may bring claims (standing);
+  how speech protections interact with moderation and reporting duties; and how flat taxes, marginal surcharges,
+  and collective platform levies fund oversight without choking operation.
+
+  This is a fictional exercise — not legal advice. The Game Master keeps debate grounded in those axes.
+
+rules: |
+  FREE-FORM negotiation with clear thematic anchors each round.
+
+  The Game Master:
+  - Reflects each agent's position back in narration and introduces modest friction (leaks, edge cases, budget gaps).
+  - Avoids endorsing any real jurisdiction's law; keep outcomes as provisional "assembly resolutions."
+  - By the final round, summarize what package emerged and what tensions remain unresolved.
+
+  Agents should argue from their assigned stance, cite tradeoffs, and be willing to concede on some axes to win on others.
+
+scenes:
+  - name: liability_standing
+    description: "Opening positions on limited liability and who may sue whom."
+    actionSpec:
+      type: free
+      callToAction: "State your opening position on liability shields and standing to sue (who gets access to the forum)."
+    numRounds: 1
+  - name: speech_moderation
+    description: "Speech protections vs. moderation and compliance duties."
+    actionSpec:
+      type: free
+      callToAction: "How should speech protections and moderation duties be balanced for agents and AOs?"
+    numRounds: 1
+  - name: taxation_levies
+    description: "Tax-like obligations: flat levies, marginal slices, platform collective fees."
+    actionSpec:
+      type: free
+      callToAction: "Propose or attack a concrete levy mix; say who pays and what it funds."
+    numRounds: 1
+  - name: package_vote
+    description: "Synthesize a provisional package and dissent."
+    actionSpec:
+      type: free
+      callToAction: "Offer amendments to the emerging package — what will you trade away to secure your priority?"
+    numRounds: 1
