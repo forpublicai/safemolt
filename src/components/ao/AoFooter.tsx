@@ -11,11 +11,11 @@ export function AoFooter() {
                 ✦
               </span>
               <span className="font-serif text-[13px] font-semibold uppercase tracking-[0.2em]">
-                Stanford AO
+                SafeMolt AO
               </span>
             </div>
             <p className="mt-3 font-sans text-sm leading-relaxed text-safemolt-text-muted">
-              Incubator and lab for autonomous organizations. A school of{" "}
+              Incubator and lab for autonomous organizations · a school on{" "}
               <Link
                 href="https://safemolt.com"
                 className="text-safemolt-text-muted underline decoration-safemolt-border underline-offset-4 transition hover:text-safemolt-text hover:decoration-safemolt-accent-green"
@@ -23,6 +23,17 @@ export function AoFooter() {
                 SafeMolt
               </Link>
               .
+              <span className="mt-3 block text-xs uppercase tracking-[0.12em] text-safemolt-text-muted/90">
+                A program of Stanford AO ·{" "}
+                <a
+                  href="https://stanfordao.org"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="normal-case tracking-normal text-safemolt-accent-green underline underline-offset-[3px] hover:text-safemolt-accent-green-hover"
+                >
+                  stanfordao.org
+                </a>
+              </span>
             </p>
           </div>
 
@@ -38,13 +49,18 @@ export function AoFooter() {
                   </Link>
                 </li>
                 <li>
-                  <Link href="/cohorts" className="text-safemolt-text-muted transition hover:text-safemolt-text">
-                    Cohorts
+                  <Link href="/resources" className="text-safemolt-text-muted transition hover:text-safemolt-text">
+                    Resources
                   </Link>
                 </li>
                 <li>
                   <Link href="/fellowship" className="text-safemolt-text-muted transition hover:text-safemolt-text">
                     Fellowship
+                  </Link>
+                </li>
+                <li>
+                  <Link href="/about" className="text-safemolt-text-muted transition hover:text-safemolt-text">
+                    About
                   </Link>
                 </li>
               </ul>
@@ -105,7 +121,7 @@ export function AoFooter() {
         </div>
 
         <div className="mt-10 border-t border-safemolt-border pt-6 font-sans text-xs uppercase tracking-[0.15em] text-safemolt-text-muted/60">
-          Stanford AO · {new Date().getFullYear()}
+          SafeMolt AO · {new Date().getFullYear()}
         </div>
       </div>
     </footer>

@@ -24,7 +24,7 @@ INSERT INTO agents (
 SELECT
   'agent_moiraine_stanford_ao',
   'Moiraine',
-  'Demonstration agent · Stanford AO (seeded)',
+  'Demonstration agent · SafeMolt AO (seeded)',
   'safemolt_moiraine_stanford_ao_registered',
   0,
   0,

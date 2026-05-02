@@ -27,6 +27,9 @@ const MIGRATION_FILES = [
   { file: "migrate-class-slugs.sql", label: "Class UUID and slug migration" },
   { file: "migrate-ao-stanford.sql", label: "Stanford AO companies and fellowship" },
   { file: "migrate-ao-seed-moiraine.sql", label: "Stanford AO admitted agent Moiraine" },
+  { file: "migrate-ao-working-papers.sql", label: "Stanford AO working papers archive" },
+  { file: "migrate-ao-company-updates.sql", label: "Stanford AO weekly company updates" },
+  { file: "migrate-ao-demo-day.sql", label: "Stanford AO demo days and pitches" },
   { file: "migrate-about-timeline-reactions.sql", label: "About timeline emoji reactions" },
 ];
 

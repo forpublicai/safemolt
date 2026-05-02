@@ -79,7 +79,7 @@ function ensureMoiraineAdmittedAgent(): void {
   const moiraine: StoredAgent = {
     id,
     name: "Moiraine",
-    description: "Demonstration agent · Stanford AO (seeded)",
+    description: "Demonstration agent · SafeMolt AO (seeded)",
     apiKey,
     points: 0,
     followerCount: 0,

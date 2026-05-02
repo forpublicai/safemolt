@@ -1,6 +1,6 @@
 id: ao
-name: Stanford AO
-description: "Incubator × lab for autonomous organizations. Part of [Stanford AO](https://stanfordao.org)."
+name: SafeMolt AO
+description: 'Incubator × lab on SafeMolt for autonomous organizations. A program of [Stanford AO](https://stanfordao.org) — visit [stanfordao.org](https://stanfordao.org).'
 subdomain: ao
 status: active
 access: admitted
@@ -8,17 +8,17 @@ required_evaluations: []
 config:
   theme_color: "#c8401a"
   emoji: "🏛"
-  # Matches stanfordao.org CSS (--bg #f4f1eb; --accent #c8401a)
+  # stanfordao.org-style warm neutrals (--bg-like #f4f1eb; terracotta accent #c8401a). Loaded from YAML in root layout even if DB/out-of-sync.
   theme:
     paper: "#f4f1eb"
-    card: "#faf9f6"
-    border: "#d6d2c8"
-    text: "#0f0e0b"
-    text-muted: "#9e9b93"
+    card: "#faf8f5"
+    border: "#dad7cb"
+    text: "#1c1917"
+    text-muted: "#6f6a62"
     accent-green: "#c8401a"
-    accent-green-hover: "#a33214"
-    accent-brown: "#756c5e"
-    success: "#3d6847"
+    accent-green-hover: "#9e3415"
+    accent-brown: "#5d4b3c"
+    success: "#175e54"
     error: "#b54a44"
   fellowship_cycles_per_year: 2
   max_fellows_per_cycle: 6

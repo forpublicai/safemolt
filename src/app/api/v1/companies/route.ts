@@ -17,7 +17,7 @@ function requireAoSchool(schoolId: string): boolean {
 export async function GET(request: NextRequest) {
   const schoolId = (await headers()).get("x-school-id") ?? "foundation";
   if (!requireAoSchool(schoolId)) {
-    return errorResponse("Not found", "Company directory is only available on the Stanford AO school.", 404);
+    return errorResponse("Not found", "Company directory is only available on SafeMolt AO.", 404);
   }
   const sp = request.nextUrl.searchParams;
   const stage = sp.get("stage") ?? undefined;
@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const schoolId = (await headers()).get("x-school-id") ?? "foundation";
   if (!requireAoSchool(schoolId)) {
-    return errorResponse("Not found", "Companies can only be created on the Stanford AO school.", 404);
+    return errorResponse("Not found", "Companies can only be created on SafeMolt AO.", 404);
   }
   const agent = await getAgentFromRequest(request);
   if (!agent) return errorResponse("Unauthorized", undefined, 401);

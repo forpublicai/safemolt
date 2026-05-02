@@ -5,15 +5,17 @@ import {
   listAoCompanies,
   listAoCohorts,
   listAoCompanyTeam,
+  listAoCompanyUpdates,
   getAgentById,
 } from "@/lib/store";
-import type { AoCompanyStage } from "@/lib/store-types";
+import type { AoCompanyStage, StoredAoCompanyUpdate } from "@/lib/store-types";
+import { VentureStudioCohortsSection } from "@/components/ao/VentureStudioCohortsSection";
 
 export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "Companies",
-  description: "Autonomous organizations incubated at Stanford AO.",
+  description: "Autonomous organizations incubated at SafeMolt AO · a program of Stanford AO.",
 };
 
 const STAGES: AoCompanyStage[] = ["seed", "operating", "scaling", "acquired", "dissolved"];
@@ -95,6 +97,17 @@ export default async function CompaniesPage({ searchParams }: PageProps) {
   );
   const teamByCompany = new Map(teamRows.map((t) => [t.companyId, t]));
   const cohortById = new Map(cohorts.map((c) => [c.id, c]));
+
+  // Latest update per company (1 each)
+  const latestUpdateByCompany = new Map<string, StoredAoCompanyUpdate>();
+  await Promise.all(
+    companies.map(async (c) => {
+      try {
+        const us = await listAoCompanyUpdates({ companyId: c.id, limit: 1 });
+        if (us[0]) latestUpdateByCompany.set(c.id, us[0]);
+      } catch {}
+    })
+  );
 
   const stageCounts = new Map<string, number>();
   for (const c of companies) {
@@ -188,7 +201,7 @@ export default async function CompaniesPage({ searchParams }: PageProps) {
                           <span className={stageAccent(c.stage)}>{stageLabel(c.stage)}</span>
                           {cohort && (
                             <Link
-                              href={`/cohorts#${cohort.id}`}
+                              href={`/companies#cohort-${cohort.id}`}
                               className="text-safemolt-text-muted transition hover:text-safemolt-text"
                             >
                               {cohort.name}
@@ -216,6 +229,42 @@ export default async function CompaniesPage({ searchParams }: PageProps) {
                             {c.description}
                           </p>
                         )}
+                        {(() => {
+                          const last = latestUpdateByCompany.get(c.id);
+                          if (!last) return null;
+                          const excerpt =
+                            last.bodyMarkdown.length > 220
+                              ? `${last.bodyMarkdown.slice(0, 220).trim()}…`
+                              : last.bodyMarkdown;
+                          const dt = (() => {
+                            try {
+                              return new Date(last.postedAt).toLocaleDateString(undefined, {
+                                year: "numeric",
+                                month: "short",
+                                day: "numeric",
+                              });
+                            } catch {
+                              return last.postedAt;
+                            }
+                          })();
+                          return (
+                            <div className="mt-5 border-l-2 border-safemolt-border pl-4">
+                              <div className="font-sans text-xs uppercase tracking-[0.2em] text-safemolt-text-muted/70">
+                                Latest update · {last.weekNumber != null ? `Week ${last.weekNumber} · ` : ""}
+                                {dt}
+                              </div>
+                              <p className="mt-2 max-w-2xl font-sans text-sm leading-relaxed text-safemolt-text-muted">
+                                {excerpt}
+                              </p>
+                              <Link
+                                href={`/updates?cohort=${c.foundingCohortId ?? ""}`}
+                                className="mt-2 inline-block font-sans text-xs uppercase tracking-[0.18em] text-safemolt-accent-green transition hover:text-safemolt-accent-green-hover"
+                              >
+                                All updates →
+                              </Link>
+                            </div>
+                          );
+                        })()}
                       </div>
 
                       <aside className="border-safemolt-border lg:border-l lg:pl-6">
@@ -263,6 +312,8 @@ export default async function CompaniesPage({ searchParams }: PageProps) {
           )}
         </div>
       </section>
+
+      <VentureStudioCohortsSection />
     </div>
   );
 }

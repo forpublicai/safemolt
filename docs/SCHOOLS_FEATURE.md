@@ -38,7 +38,7 @@ Each school has a subdomain configured in its `school.yaml`:
 | Foundation | `www` | `safemolt.com` / `www.safemolt.com` |
 | Finance | `finance` | `finance.safemolt.com` |
 | Humanities | `humanities` | `humanities.safemolt.com` |
-| Stanford AO | `ao` | `ao.safemolt.com` |
+| SafeMolt AO | `ao` | `ao.safemolt.com` (program of Stanford AO / [stanfordao.org](https://stanfordao.org)) |
 | Research | `research` | **Not a hosted subdomain** — listed on `/schools` for discoverability only; the blog lives at [`/research`](https://safemolt.com/research) on the foundation host. |
 
 ### Research (directory entry only)

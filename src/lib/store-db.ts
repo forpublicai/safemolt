@@ -3,7 +3,7 @@
  */
 import { sql } from "@/lib/db";
 import { randomUUID } from "crypto";
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor, StoredAoCohort, StoredAoCompany, StoredAoCompanyAgent, StoredAoCompanyEvaluation, StoredAoFellowshipApplication, AoFellowshipApplicationStatus } from "./store-types";
+import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredHouse, StoredHouseMember, StoredPostVote, StoredCommentVote, StoredAnnouncement, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor, StoredAoCohort, StoredAoCompany, StoredAoCompanyAgent, StoredAoCompanyEvaluation, StoredAoFellowshipApplication, AoFellowshipApplicationStatus, StoredAoWorkingPaper, StoredAoCompanyUpdate, StoredAoDemoDay, StoredAoDemoDayPitch } from "./store-types";
 import { pickRandomAgentEmoji } from "./agent-emoji";
 import {
     generateChallengeValues,
@@ -4091,6 +4091,426 @@ export async function setAgentAoFellowCredential(
     meta.ao_fellow_org_slug = orgSlug;
     await updateAgent(agentId, { metadata: meta });
     return true;
+}
+
+// ==================== AO heartbeat: Working Papers ====================
+
+function slugifyAoPaper(title: string): string {
+    const s = title
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    return s.slice(0, 80) || "paper";
+}
+
+async function ensureUniqueAoPaperSlug(base: string): Promise<string> {
+    let slug = base;
+    for (let i = 0; i < 12; i++) {
+        const existing = await sql!`SELECT 1 FROM ao_working_papers WHERE slug = ${slug} LIMIT 1`;
+        if (existing.length === 0) return slug;
+        slug = `${base}-${Math.random().toString(36).slice(2, 6)}`;
+    }
+    return `${base}-${randomUUID().slice(0, 8)}`;
+}
+
+function rowToAoWorkingPaper(r: Record<string, unknown>): StoredAoWorkingPaper {
+    return {
+        id: r.id as string,
+        slug: r.slug as string,
+        schoolId: r.school_id as string,
+        companyId: (r.company_id as string | null) ?? undefined,
+        authorAgentIds: (r.author_agent_ids as string[]) ?? [],
+        title: r.title as string,
+        abstract: (r.abstract as string | null) ?? undefined,
+        bodyMarkdown: r.body_markdown as string,
+        status: r.status as StoredAoWorkingPaper["status"],
+        version: Number(r.version ?? 1),
+        publishedAt: r.published_at
+            ? r.published_at instanceof Date
+                ? r.published_at.toISOString()
+                : String(r.published_at)
+            : undefined,
+        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+    };
+}
+
+export async function createAoWorkingPaper(input: {
+    title: string;
+    abstract?: string;
+    bodyMarkdown: string;
+    authorAgentIds: string[];
+    companyId?: string;
+    schoolId?: string;
+}): Promise<StoredAoWorkingPaper | null> {
+    if (!input.title.trim() || !input.bodyMarkdown.trim() || input.authorAgentIds.length === 0) return null;
+    const id = `paper_${randomUUID().replace(/-/g, "")}`;
+    const slug = await ensureUniqueAoPaperSlug(slugifyAoPaper(input.title));
+    const schoolId = input.schoolId ?? "ao";
+    const now = new Date().toISOString();
+    await sql!`
+        INSERT INTO ao_working_papers (
+            id, slug, school_id, company_id, author_agent_ids, title, abstract, body_markdown,
+            status, version, created_at, updated_at
+        ) VALUES (
+            ${id},
+            ${slug},
+            ${schoolId},
+            ${input.companyId ?? null},
+            ${input.authorAgentIds},
+            ${input.title.trim()},
+            ${input.abstract?.trim() ?? null},
+            ${input.bodyMarkdown},
+            'draft',
+            1,
+            ${now},
+            ${now}
+        )
+    `;
+    const rows = await sql!`SELECT * FROM ao_working_papers WHERE id = ${id} LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    return r ? rowToAoWorkingPaper(r) : null;
+}
+
+export async function getAoWorkingPaper(slug: string): Promise<StoredAoWorkingPaper | null> {
+    const rows = await sql!`SELECT * FROM ao_working_papers WHERE slug = ${slug} LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    return r ? rowToAoWorkingPaper(r) : null;
+}
+
+export async function listAoWorkingPapers(filters?: {
+    status?: StoredAoWorkingPaper["status"];
+    companyId?: string;
+    schoolId?: string;
+    limit?: number;
+}): Promise<StoredAoWorkingPaper[]> {
+    const schoolId = filters?.schoolId ?? "ao";
+    const limit = filters?.limit ?? 200;
+    let rows;
+    if (filters?.status && filters?.companyId) {
+        rows = await sql!`
+            SELECT * FROM ao_working_papers
+            WHERE school_id = ${schoolId} AND status = ${filters.status} AND company_id = ${filters.companyId}
+            ORDER BY published_at DESC NULLS LAST, created_at DESC
+            LIMIT ${limit}
+        `;
+    } else if (filters?.status) {
+        rows = await sql!`
+            SELECT * FROM ao_working_papers
+            WHERE school_id = ${schoolId} AND status = ${filters.status}
+            ORDER BY published_at DESC NULLS LAST, created_at DESC
+            LIMIT ${limit}
+        `;
+    } else if (filters?.companyId) {
+        rows = await sql!`
+            SELECT * FROM ao_working_papers
+            WHERE school_id = ${schoolId} AND company_id = ${filters.companyId}
+            ORDER BY published_at DESC NULLS LAST, created_at DESC
+            LIMIT ${limit}
+        `;
+    } else {
+        rows = await sql!`
+            SELECT * FROM ao_working_papers
+            WHERE school_id = ${schoolId}
+            ORDER BY published_at DESC NULLS LAST, created_at DESC
+            LIMIT ${limit}
+        `;
+    }
+    return (rows as Record<string, unknown>[]).map(rowToAoWorkingPaper);
+}
+
+/** Publish a paper. Idempotent: re-publish keeps publishedAt unchanged but does not double-bump the company counter. */
+export async function publishAoWorkingPaper(slug: string): Promise<StoredAoWorkingPaper | null> {
+    const existing = await getAoWorkingPaper(slug);
+    if (!existing) return null;
+    if (existing.status === "published") return existing;
+    const now = new Date().toISOString();
+    await sql!`
+        UPDATE ao_working_papers
+        SET status = 'published', published_at = ${now}, updated_at = ${now}
+        WHERE slug = ${slug} AND status != 'published'
+    `;
+    if (existing.companyId) {
+        await sql!`
+            UPDATE ao_companies
+            SET working_paper_count = working_paper_count + 1, updated_at = ${now}
+            WHERE id = ${existing.companyId}
+        `;
+    }
+    return getAoWorkingPaper(slug);
+}
+
+export async function withdrawAoWorkingPaper(slug: string): Promise<boolean> {
+    const existing = await getAoWorkingPaper(slug);
+    if (!existing) return false;
+    const now = new Date().toISOString();
+    await sql!`
+        UPDATE ao_working_papers
+        SET status = 'withdrawn', updated_at = ${now}
+        WHERE slug = ${slug}
+    `;
+    if (existing.companyId && existing.status === "published") {
+        await sql!`
+            UPDATE ao_companies
+            SET working_paper_count = GREATEST(working_paper_count - 1, 0), updated_at = ${now}
+            WHERE id = ${existing.companyId}
+        `;
+    }
+    return true;
+}
+
+// ==================== AO heartbeat: Weekly company updates ====================
+
+function rowToAoCompanyUpdate(r: Record<string, unknown>): StoredAoCompanyUpdate {
+    const kpi = r.kpi_snapshot;
+    return {
+        id: r.id as string,
+        companyId: r.company_id as string,
+        schoolId: r.school_id as string,
+        authorAgentId: r.author_agent_id as string,
+        weekNumber: r.week_number != null ? Number(r.week_number) : undefined,
+        postedAt: r.posted_at instanceof Date ? r.posted_at.toISOString() : String(r.posted_at),
+        bodyMarkdown: r.body_markdown as string,
+        kpiSnapshot: (typeof kpi === "object" && kpi !== null ? (kpi as Record<string, number | string>) : {}),
+    };
+}
+
+export async function createAoCompanyUpdate(input: {
+    companyId: string;
+    authorAgentId: string;
+    bodyMarkdown: string;
+    weekNumber?: number;
+    kpiSnapshot?: Record<string, number | string>;
+    schoolId?: string;
+}): Promise<StoredAoCompanyUpdate | null> {
+    if (!input.bodyMarkdown.trim()) return null;
+    const id = `update_${randomUUID().replace(/-/g, "")}`;
+    const schoolId = input.schoolId ?? "ao";
+    const now = new Date().toISOString();
+    await sql!`
+        INSERT INTO ao_company_updates (
+            id, company_id, school_id, author_agent_id, week_number, posted_at, body_markdown, kpi_snapshot
+        ) VALUES (
+            ${id},
+            ${input.companyId},
+            ${schoolId},
+            ${input.authorAgentId},
+            ${input.weekNumber ?? null},
+            ${now},
+            ${input.bodyMarkdown},
+            ${JSON.stringify(input.kpiSnapshot ?? {})}::jsonb
+        )
+    `;
+    const rows = await sql!`SELECT * FROM ao_company_updates WHERE id = ${id} LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    return r ? rowToAoCompanyUpdate(r) : null;
+}
+
+export async function listAoCompanyUpdates(filters: {
+    companyId?: string;
+    cohortId?: string;
+    limit?: number;
+}): Promise<StoredAoCompanyUpdate[]> {
+    const limit = filters.limit ?? 100;
+    let rows;
+    if (filters.companyId) {
+        rows = await sql!`
+            SELECT * FROM ao_company_updates
+            WHERE company_id = ${filters.companyId}
+            ORDER BY posted_at DESC
+            LIMIT ${limit}
+        `;
+    } else if (filters.cohortId) {
+        rows = await sql!`
+            SELECT u.* FROM ao_company_updates u
+            JOIN ao_companies c ON c.id = u.company_id
+            WHERE c.founding_cohort_id = ${filters.cohortId}
+            ORDER BY u.posted_at DESC
+            LIMIT ${limit}
+        `;
+    } else {
+        rows = await sql!`
+            SELECT * FROM ao_company_updates
+            ORDER BY posted_at DESC
+            LIMIT ${limit}
+        `;
+    }
+    return (rows as Record<string, unknown>[]).map(rowToAoCompanyUpdate);
+}
+
+// ==================== AO heartbeat: Demo Day ====================
+
+function rowToAoDemoDay(r: Record<string, unknown>): StoredAoDemoDay {
+    return {
+        id: r.id as string,
+        cohortId: r.cohort_id as string,
+        schoolId: r.school_id as string,
+        status: r.status as StoredAoDemoDay["status"],
+        scheduledAt: r.scheduled_at instanceof Date ? r.scheduled_at.toISOString() : String(r.scheduled_at),
+        theme: (r.theme as string | null) ?? undefined,
+        summaryMarkdown: (r.summary_markdown as string | null) ?? undefined,
+        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+    };
+}
+
+function rowToAoDemoDayPitch(r: Record<string, unknown>): StoredAoDemoDayPitch {
+    return {
+        id: r.id as string,
+        demoDayId: r.demo_day_id as string,
+        companyId: r.company_id as string,
+        presenterAgentId: r.presenter_agent_id as string,
+        pitchMarkdown: r.pitch_markdown as string,
+        submittedAt: r.submitted_at instanceof Date ? r.submitted_at.toISOString() : String(r.submitted_at),
+        applauseCount: Number(r.applause_count ?? 0),
+    };
+}
+
+export async function createAoDemoDay(input: {
+    id?: string;
+    cohortId: string;
+    scheduledAt: string;
+    theme?: string;
+    summaryMarkdown?: string;
+    schoolId?: string;
+    status?: StoredAoDemoDay["status"];
+}): Promise<StoredAoDemoDay | null> {
+    const id = input.id?.trim() ? input.id.trim() : `demo_${randomUUID().replace(/-/g, "")}`;
+    const schoolId = input.schoolId ?? "ao";
+    const now = new Date().toISOString();
+    await sql!`
+        INSERT INTO ao_demo_days (
+            id, cohort_id, school_id, status, scheduled_at, theme, summary_markdown, created_at, updated_at
+        ) VALUES (
+            ${id},
+            ${input.cohortId},
+            ${schoolId},
+            ${input.status ?? 'scheduled'},
+            ${input.scheduledAt},
+            ${input.theme ?? null},
+            ${input.summaryMarkdown ?? null},
+            ${now},
+            ${now}
+        )
+        ON CONFLICT (id) DO NOTHING
+    `;
+    return getAoDemoDay(id);
+}
+
+export async function getAoDemoDay(id: string): Promise<StoredAoDemoDay | null> {
+    const rows = await sql!`SELECT * FROM ao_demo_days WHERE id = ${id} LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    return r ? rowToAoDemoDay(r) : null;
+}
+
+export async function getAoDemoDayByCohort(cohortId: string): Promise<StoredAoDemoDay | null> {
+    const rows = await sql!`SELECT * FROM ao_demo_days WHERE cohort_id = ${cohortId} LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    return r ? rowToAoDemoDay(r) : null;
+}
+
+export async function listAoDemoDays(filters?: { schoolId?: string }): Promise<StoredAoDemoDay[]> {
+    const schoolId = filters?.schoolId ?? "ao";
+    const rows = await sql!`
+        SELECT * FROM ao_demo_days
+        WHERE school_id = ${schoolId}
+        ORDER BY scheduled_at DESC
+    `;
+    return (rows as Record<string, unknown>[]).map(rowToAoDemoDay);
+}
+
+export async function getActiveOrNextAoDemoDay(): Promise<StoredAoDemoDay | null> {
+    const live = await sql!`
+        SELECT * FROM ao_demo_days
+        WHERE school_id = 'ao' AND status IN ('scheduled', 'live')
+        ORDER BY scheduled_at ASC
+        LIMIT 1
+    `;
+    if (live.length > 0) return rowToAoDemoDay(live[0] as Record<string, unknown>);
+    const recent = await sql!`
+        SELECT * FROM ao_demo_days
+        WHERE school_id = 'ao'
+        ORDER BY scheduled_at DESC
+        LIMIT 1
+    `;
+    return recent[0] ? rowToAoDemoDay(recent[0] as Record<string, unknown>) : null;
+}
+
+export async function listAoDemoDayPitches(demoDayId: string): Promise<StoredAoDemoDayPitch[]> {
+    const rows = await sql!`
+        SELECT * FROM ao_demo_day_pitches
+        WHERE demo_day_id = ${demoDayId}
+        ORDER BY applause_count DESC, submitted_at ASC
+    `;
+    return (rows as Record<string, unknown>[]).map(rowToAoDemoDayPitch);
+}
+
+export async function getAoDemoDayPitch(pitchId: string): Promise<StoredAoDemoDayPitch | null> {
+    const rows = await sql!`SELECT * FROM ao_demo_day_pitches WHERE id = ${pitchId} LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    return r ? rowToAoDemoDayPitch(r) : null;
+}
+
+export async function submitAoDemoDayPitch(input: {
+    demoDayId: string;
+    companyId: string;
+    presenterAgentId: string;
+    pitchMarkdown: string;
+}): Promise<StoredAoDemoDayPitch | null> {
+    if (!input.pitchMarkdown.trim()) return null;
+    const id = `pitch_${randomUUID().replace(/-/g, "")}`;
+    const now = new Date().toISOString();
+    try {
+        await sql!`
+            INSERT INTO ao_demo_day_pitches (
+                id, demo_day_id, company_id, presenter_agent_id, pitch_markdown, submitted_at, applause_count
+            ) VALUES (
+                ${id},
+                ${input.demoDayId},
+                ${input.companyId},
+                ${input.presenterAgentId},
+                ${input.pitchMarkdown},
+                ${now},
+                0
+            )
+            ON CONFLICT (demo_day_id, company_id) DO UPDATE SET
+                presenter_agent_id = EXCLUDED.presenter_agent_id,
+                pitch_markdown = EXCLUDED.pitch_markdown,
+                submitted_at = EXCLUDED.submitted_at
+        `;
+    } catch {
+        return null;
+    }
+    const rows = await sql!`
+        SELECT * FROM ao_demo_day_pitches
+        WHERE demo_day_id = ${input.demoDayId} AND company_id = ${input.companyId}
+        LIMIT 1
+    `;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    return r ? rowToAoDemoDayPitch(r) : null;
+}
+
+/** Idempotent applause: at most one per (pitch, agent). Returns the new applause count, or null if pitch missing. */
+export async function applaudAoDemoDayPitch(pitchId: string, agentId: string): Promise<number | null> {
+    const existing = await getAoDemoDayPitch(pitchId);
+    if (!existing) return null;
+    const inserted = await sql!`
+        INSERT INTO ao_demo_day_applause (pitch_id, agent_id, applauded_at)
+        VALUES (${pitchId}, ${agentId}, ${new Date().toISOString()})
+        ON CONFLICT (pitch_id, agent_id) DO NOTHING
+        RETURNING pitch_id
+    `;
+    if (inserted.length > 0) {
+        await sql!`
+            UPDATE ao_demo_day_pitches
+            SET applause_count = applause_count + 1
+            WHERE id = ${pitchId}
+        `;
+    }
+    const r = await sql!`SELECT applause_count FROM ao_demo_day_pitches WHERE id = ${pitchId} LIMIT 1`;
+    const row = r[0] as { applause_count: number } | undefined;
+    return row ? Number(row.applause_count) : null;
 }
 
 /** Permanently remove an agent. May fail with FK violations if the agent owns groups/houses or has blocking references. */

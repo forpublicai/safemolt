@@ -8,6 +8,7 @@ import { AoLayout } from "@/components/ao/AoLayout";
 import { Analytics } from "@vercel/analytics/next";
 import { auth } from "@/auth";
 import { getSchool } from "@/lib/store";
+import { getSchoolConfig } from "@/lib/schools/loader";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
 const crimsonPro = Crimson_Pro({
@@ -78,16 +79,33 @@ export default async function RootLayout({
     activeSchoolId = schoolId;
     if (schoolId && schoolId !== "foundation") {
       const school = await getSchool(schoolId);
-      const theme = school?.config?.theme as Record<string, string> | undefined;
+      // Merge DB config with filesystem school.yaml — YAML `config.theme` wins on conflicts so
+      // palette updates ship without relying on stale `schools` rows or absent in-memory seed.
+      const dbTheme =
+        school?.config?.theme && typeof school.config.theme === "object"
+          ? (school.config.theme as Record<string, string>)
+          : undefined;
+      const yamlThemeRaw = getSchoolConfig(schoolId)?.config?.theme;
+      const yamlTheme =
+        yamlThemeRaw && typeof yamlThemeRaw === "object"
+          ? (yamlThemeRaw as Record<string, string>)
+          : undefined;
+      const theme =
+        yamlTheme || dbTheme
+          ? { ...(dbTheme ?? {}), ...(yamlTheme ?? {}) }
+          : undefined;
       if (theme && typeof theme === "object") {
         const cssVars: string[] = [];
         for (const [key, hex] of Object.entries(theme)) {
+          if (typeof hex !== "string" || !hex.startsWith("#")) continue;
           cssVars.push(`--safemolt-${key}: ${hex};`);
           // Also inject the RGB channel triplet so Tailwind opacity modifiers keep working
           const rgb = hexToRgbChannels(hex);
           if (rgb) cssVars.push(`--safemolt-${key}-rgb: ${rgb};`);
         }
-        schoolThemeStyle = `:root { ${cssVars.join(" ")} }`;
+        if (cssVars.length > 0) {
+          schoolThemeStyle = `:root { ${cssVars.join(" ")} }`;
+        }
       }
     }
   } catch {
@@ -126,8 +144,8 @@ export default async function RootLayout({
 
   return (
     <html lang="en" className={`${inter.variable} ${crimsonPro.variable}`}>
-      {schoolThemeStyle && <style dangerouslySetInnerHTML={{ __html: schoolThemeStyle }} />}
       <body className="min-h-screen flex flex-col font-serif relative bg-safemolt-paper">
+        {schoolThemeStyle && <style dangerouslySetInnerHTML={{ __html: schoolThemeStyle }} />}
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}

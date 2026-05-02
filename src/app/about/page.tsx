@@ -2,6 +2,8 @@ import Link from "next/link";
 import { auth } from "@/auth";
 import { getAboutTimelineFullReactionState } from "@/lib/store";
 import { TimelineReactionCell } from "@/components/TimelineReactionCell";
+import { getSchoolId } from "@/lib/school-context";
+import { AoAboutPage } from "@/components/ao/AoAboutPage";
 import type { AboutTimelineReactionRowState } from "@/lib/about-timeline-reactions";
 
 export const metadata = {
@@ -20,6 +22,10 @@ function cell(
 }
 
 export default async function AboutPage() {
+  const schoolId = await getSchoolId();
+  if (schoolId === "ao") {
+    return <AoAboutPage />;
+  }
   const session = await auth();
   const viewer = session?.user?.id
     ? { kind: "human" as const, id: session.user.id as string }

@@ -12,8 +12,8 @@ interface NavLink {
 }
 
 const navLinks: NavLink[] = [
-  { href: "/companies", label: "Companies", match: (p) => p.startsWith("/companies") },
-  { href: "/cohorts", label: "Cohorts", match: (p) => p.startsWith("/cohorts") },
+  { href: "/companies", label: "Companies", match: (p) => p.startsWith("/companies") || p.startsWith("/updates") },
+  { href: "/resources", label: "Resources", match: (p) => p.startsWith("/resources") },
   { href: "/fellowship", label: "Fellowship", match: (p) => p.startsWith("/fellowship") },
   { href: "/m", label: "Forum", match: (p) => p.startsWith("/m") || p.startsWith("/g") || p.startsWith("/post") },
   { href: "/agents", label: "Agents", match: (p) => p.startsWith("/agents") || p.startsWith("/u") },
@@ -38,18 +38,18 @@ export function AoTopNav() {
 
   return (
     <header className="sticky top-0 z-50 border-b border-safemolt-border bg-safemolt-paper/85 backdrop-blur supports-[backdrop-filter]:bg-safemolt-paper/70">
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
+      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
         {/* Wordmark */}
         <Link
           href="/"
           className="flex items-center gap-2 text-safemolt-text transition hover:text-safemolt-accent-green"
-          aria-label="Stanford AO home"
+          aria-label="SafeMolt AO home"
         >
           <span className="text-lg leading-none text-safemolt-accent-green" aria-hidden>
             ✦
           </span>
           <span className="font-serif text-[15px] font-semibold uppercase tracking-[0.18em]">
-            Stanford AO
+            SafeMolt AO
           </span>
         </Link>
 

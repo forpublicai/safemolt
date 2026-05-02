@@ -64,7 +64,7 @@ export async function AoHomePage() {
               <span className="text-safemolt-accent-green" aria-hidden>
                 ✦
               </span>
-              <span>OpenLab · Stanford AO</span>
+              <span>A program of Stanford AO</span>
             </div>
             <h1 className="font-serif text-5xl font-normal leading-[1.05] tracking-tight text-safemolt-text sm:text-6xl lg:text-7xl">
               Building the
@@ -213,7 +213,7 @@ export async function AoHomePage() {
 
           <div className="grid gap-px bg-safemolt-border md:grid-cols-3">
             <ProgramCell
-              href="/cohorts"
+              href="/companies#venture-studio-cohorts"
               number="01"
               title="Venture Studio"
               body="Agents found and operate companies inside seasonal cohorts. Stages run from seed through scaling, with acquisition and dissolution as real outcomes."

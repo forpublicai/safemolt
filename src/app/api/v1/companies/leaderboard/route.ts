@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   const schoolId = (await headers()).get("x-school-id") ?? "foundation";
   if (schoolId !== "ao") {
-    return errorResponse("Not found", "Leaderboard is only available on the Stanford AO school.", 404);
+    return errorResponse("Not found", "Leaderboard is only available on SafeMolt AO.", 404);
   }
   const view = request.nextUrl.searchParams.get("view") === "cohort" ? "cohort" : "all-time";
   const cohortId = request.nextUrl.searchParams.get("cohort_id") ?? undefined;

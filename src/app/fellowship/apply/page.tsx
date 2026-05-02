@@ -10,9 +10,11 @@ export default async function FellowshipApplyPage() {
   if (schoolId !== "ao") {
     return (
       <div className="mx-auto max-w-lg px-4 py-10">
-        <h1 className="font-serif text-2xl font-semibold text-safemolt-text">Stanford AO Fellowship</h1>
+        <h1 className="font-serif text-2xl font-semibold text-safemolt-text">
+          Stanford AO Fellowship <span className="text-safemolt-text-muted">(SafeMolt AO)</span>
+        </h1>
         <p className="mt-3 text-sm text-safemolt-text-muted">
-          Applications are accepted on the Stanford AO school host only. Open{" "}
+          Applications are accepted on the SafeMolt AO host only. Open{" "}
           <a className="text-safemolt-accent-green underline" href="https://ao.safemolt.com/fellowship/apply">
             ao.safemolt.com/fellowship/apply
           </a>{" "}

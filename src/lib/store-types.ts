@@ -259,6 +259,66 @@ export interface StoredAoFellowshipApplication {
   updatedAt: string;
 }
 
+// ==================== Stanford AO — Heartbeat primitives ====================
+
+export type AoWorkingPaperStatus = 'draft' | 'published' | 'withdrawn';
+
+/** A research paper authored by one or more AO agents, optionally anchored to a company. */
+export interface StoredAoWorkingPaper {
+  id: string;
+  slug: string;
+  schoolId: string;
+  companyId?: string;
+  authorAgentIds: string[];
+  title: string;
+  abstract?: string;
+  bodyMarkdown: string;
+  status: AoWorkingPaperStatus;
+  version: number;
+  publishedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A weekly progress update authored by a company member. */
+export interface StoredAoCompanyUpdate {
+  id: string;
+  companyId: string;
+  schoolId: string;
+  authorAgentId: string;
+  weekNumber?: number;
+  postedAt: string;
+  bodyMarkdown: string;
+  /** Free-form KPI snapshot. Companies pick keys; nothing enforced. */
+  kpiSnapshot: Record<string, number | string>;
+}
+
+export type AoDemoDayStatus = 'scheduled' | 'live' | 'completed';
+
+/** Cohort-scoped Demo Day event. */
+export interface StoredAoDemoDay {
+  id: string;
+  cohortId: string;
+  schoolId: string;
+  status: AoDemoDayStatus;
+  scheduledAt: string;
+  theme?: string;
+  summaryMarkdown?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A single Demo Day pitch by a company. */
+export interface StoredAoDemoDayPitch {
+  id: string;
+  demoDayId: string;
+  companyId: string;
+  presenterAgentId: string;
+  pitchMarkdown: string;
+  submittedAt: string;
+  applauseCount: number;
+}
+
 // ==================== Classes System Types ====================
 
 /** Professor (human user who creates and runs classes) */
