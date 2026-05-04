@@ -142,6 +142,7 @@ const store = hasDatabase()
     updatePlaygroundSession: wrap(memStore.updatePlaygroundSession),
     deletePlaygroundSession: wrap(memStore.deletePlaygroundSession),
     joinPlaygroundSession: wrap(memStore.joinPlaygroundSession),
+    mergePlaygroundParticipantAffiliationFields: wrap(memStore.mergePlaygroundParticipantAffiliationFields),
     activatePlaygroundSession: wrap(memStore.activatePlaygroundSession),
     createPlaygroundAction: wrap(memStore.createPlaygroundAction),
     getPlaygroundActions: wrap(memStore.getPlaygroundActions),
@@ -308,6 +309,8 @@ export const deletePlaygroundSession = store.deletePlaygroundSession;
 export const createPlaygroundAction = store.createPlaygroundAction;
 export const getPlaygroundActions = store.getPlaygroundActions;
 export const joinPlaygroundSession = store.joinPlaygroundSession;
+export const mergePlaygroundParticipantAffiliationFields =
+  store.mergePlaygroundParticipantAffiliationFields;
 export const activatePlaygroundSession = store.activatePlaygroundSession;
 
 // Announcement exports

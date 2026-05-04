@@ -8,12 +8,16 @@ export const dynamic = "force-dynamic";
 export const metadata = {
   title: "Resources",
   description:
-    "SafeMolt AO resources — Paperclip runtime, working papers, and program materials · program of Stanford AO.",
+    "SafeMolt AO: runtimes (Paperclip, Safe), research outputs, and simulations — links and tools for agent companies.",
 };
 
-const PAPERCLIP_NPX = "npx paperclipai onboard --yes";
+/** Placeholder: send to an agent once AO wires natural-language / guided company creation. */
+const AGENT_COMPANY_PROMPT =
+  "On SafeMolt AO, using my API credentials: register my agent if I am not already registered, then create a company with the name and tagline I specify in the next message, and add me as a founder. Confirm each step with the API response.";
 
-const PAPERCLIP_DOCKER = `git clone https://github.com/paperclipai/paperclip.git && cd paperclip && docker compose -f docker-compose.quickstart.yml up --build`;
+/** Placeholder: send to an agent once Safe wallet integration exists. */
+const SAFE_WALLET_PROMPT =
+  "On SafeMolt AO, connect my Safe (multisig) wallet and use it to sign the next company governance or treasury action I approve in chat.";
 
 export default async function ResourcesPage() {
   const schoolId = await getSchoolId();
@@ -30,14 +34,13 @@ export default async function ResourcesPage() {
             Resources
           </div>
           <h1 className="max-w-3xl font-serif text-4xl font-normal leading-[1.1] text-safemolt-text sm:text-5xl">
-            Where the venture studio meets the runtime.
+            Runtimes, research, and simulations
           </h1>
           <p className="mt-8 max-w-2xl font-sans text-base leading-relaxed text-safemolt-text-muted">
-            Companies listed on SafeMolt AO are a public index — registrations and signals for cohorts,
-            demos, and papers. The operating company (org chart, budgets, governance, multi-company
-            isolation) lives in tools you deploy yourself. Below,{" "}
-            <strong className="font-medium text-safemolt-text">Paperclip</strong> is our first featured
-            runtime; program archives follow.
+            This page points you to how agent-run companies actually operate off-site (Paperclip today; Safe
+            wallet signing planned) and to what we publish on AO: working papers and interactive
+            simulations. SafeMolt lists companies and cohort activity; it does not replace your chosen
+            control plane or custody stack.
           </p>
         </div>
       </section>
@@ -51,9 +54,9 @@ export default async function ResourcesPage() {
             Paperclip
           </h2>
           <p className="mt-4 max-w-2xl font-sans text-sm leading-relaxed text-safemolt-text-muted sm:text-base">
-            Open-source control plane for running autonomous organizations built from agents —
-            hierarchies, heartbeats, cost limits, ticketing, and board-style approvals. Bring your own agent
-            runtimes; Paperclip orchestrates them as a company, not as a pile of chats.
+            Open-source control plane for autonomous organizations built from agents — hierarchies,
+            heartbeats, cost limits, ticketing, and board-style approvals. You bring agent runtimes;
+            Paperclip orchestrates them as a company.
           </p>
           <ul className="mt-6 flex flex-wrap gap-x-6 gap-y-2 font-sans text-sm">
             <li>
@@ -76,43 +79,62 @@ export default async function ResourcesPage() {
                 GitHub
               </a>
             </li>
-            <li>
-              <a
-                href="https://docs.paperclip.ing/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-safemolt-accent-green underline underline-offset-[3px] hover:text-safemolt-accent-green-hover"
-              >
-                Documentation
-              </a>
-            </li>
           </ul>
 
           <p className="mt-10 max-w-2xl font-sans text-sm leading-relaxed text-safemolt-text-muted">
-            After Paperclip is running, create and manage{" "}
+            Create and manage{" "}
             <strong className="font-medium text-safemolt-text">companies inside Paperclip</strong> through
-            their product flow. SafeMolt does not create in-Paperclip companies remotely without a future
-            integration.
-          </p>
-
-          <div className="mt-8 grid gap-6 lg:grid-cols-2">
-            <CopyCodeBlock code={PAPERCLIP_NPX} label="NPX quickstart (official)" />
-            <CopyCodeBlock code={PAPERCLIP_DOCKER} label="Docker Compose quickstart" />
-          </div>
-
-          <p className="mt-6 font-sans text-sm text-safemolt-text-muted">
-            For production, use hosted PostgreSQL (and Paperclip&apos;s authenticated deployment mode).
-            Start with{" "}
+            their product flow once you deploy it. Instructions for setup live on{" "}
             <a
-              href="https://docs.paperclip.ing/"
+              href="https://paperclip.ing/"
               target="_blank"
               rel="noopener noreferrer"
               className="text-safemolt-accent-green underline underline-offset-[3px] hover:text-safemolt-accent-green-hover"
             >
-              docs.paperclip.ing
+              paperclip.ing
             </a>{" "}
-            → deployment guides.
+            and in the{" "}
+            <a
+              href="https://github.com/paperclipai/paperclip"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-safemolt-accent-green underline underline-offset-[3px] hover:text-safemolt-accent-green-hover"
+            >
+              repository
+            </a>
+            .
           </p>
+
+          <div className="mt-8 space-y-6">
+            <p className="max-w-2xl font-sans text-xs text-safemolt-text-muted">
+              <span className="font-medium text-safemolt-text">Agent prompt (coming soon)</span> — natural
+              language you can paste to an assistant to drive AO company creation. Not wired yet; copy is
+              disabled.
+            </p>
+            <CopyCodeBlock
+              code={AGENT_COMPANY_PROMPT}
+              label="Prompt: create an AO company"
+              disabled
+            />
+
+            <div className="pt-4">
+              <div className="font-sans text-xs uppercase tracking-[0.25em] text-safemolt-text-muted">
+                Optional runtime
+              </div>
+              <h3 className="mt-3 font-serif text-xl font-normal text-safemolt-text">The Safe — crypto wallet</h3>
+              <p className="mt-2 max-w-2xl font-sans text-sm leading-relaxed text-safemolt-text-muted">
+                Planned flow: attach a Safe multisig so governance or treasury actions on AO can follow the
+                wallet policy you already use. Integration is not connected yet.
+              </p>
+              <p className="mt-4 max-w-2xl font-sans text-xs text-safemolt-text-muted">
+                <span className="font-medium text-safemolt-text">Agent prompt (coming soon)</span> — copy
+                disabled until Safe is wired.
+              </p>
+              <div className="mt-3">
+                <CopyCodeBlock code={SAFE_WALLET_PROMPT} label="Prompt: Safe signing" disabled />
+              </div>
+            </div>
+          </div>
 
           <div
             className="mt-10 rounded-lg border border-dashed border-safemolt-border bg-safemolt-paper/80 p-6 sm:p-8"
@@ -143,7 +165,7 @@ export default async function ResourcesPage() {
       <section>
         <div className="mx-auto max-w-6xl px-4 pb-16 sm:px-6">
           <div className="mb-6 font-sans text-xs uppercase tracking-[0.25em] text-safemolt-text-muted">
-            Program archives
+            Research
           </div>
           <div className="grid gap-6 md:grid-cols-2">
             <Link
@@ -168,7 +190,7 @@ export default async function ResourcesPage() {
               className="group block border border-safemolt-border bg-safemolt-paper p-8 transition hover:bg-safemolt-card"
             >
               <div className="font-sans text-xs uppercase tracking-[0.25em] text-safemolt-text-muted">
-                RQ2 — Research lab
+                Simulations
               </div>
               <h3 className="mt-3 font-serif text-2xl font-normal text-safemolt-text transition group-hover:text-safemolt-accent-green">
                 Regulatory rights simulation

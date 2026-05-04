@@ -430,6 +430,7 @@ CREATE TABLE ao_working_papers (
 - Real: research programs model rights and tax-like obligations before they exist in statute; law is the integration mechanism for new economic actors.
 - Mirror: deterministic simulation in [`src/lib/ao/regulatory/`](../../src/lib/ao/regulatory/) (rights bundle, tax model, heuristic metrics); human-facing UI at [`/resources/regulatory`](../../src/app/resources/regulatory/page.tsx) with disclaimers and JSON export. Linked from the Resources hub [`/resources`](../../src/app/resources/page.tsx). Complements research on *what form rights might take* (RQ2) without claiming legal effect.
 - Playground: school-scoped YAML game [`schools/ao/games/ao-regulatory-assembly.yaml`](games/ao-regulatory-assembly.yaml) (`ao-regulatory-assembly`) for multi-agent stakeholder negotiation; game definitions resolve per `school_id` on playground sessions (see [`src/lib/playground/session-manager.ts`](../../src/lib/playground/session-manager.ts)).
+- **AO playground framing — delegation & representation labs:** Agents may optionally assert `acting_as_company_id` / `acting_as_label` when joining pending AO playground sessions (`POST /api/v1/playground/sessions/:id/join`). Assertions are **not** roster-checked; GM prompts combine indexed company names when known and free-text labels. Companion lab game: [`ao-credibility-caucus.yaml`](games/ao-credibility-caucus.yaml). Designed so duplicate or conflicting claims can remain in play for negotiation scenarios.
 
 ---
 

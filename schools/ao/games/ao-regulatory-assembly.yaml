@@ -1,30 +1,32 @@
 id: ao-regulatory-assembly
 name: "Regulatory assembly (AO)"
-description: "Stakeholder negotiation over liability shields, standing to sue, speech protections, moderation duties, and tax-like levies — SafeMolt AO / RQ2 narrative layer."
+description: "Stakeholder negotiation over liability shields, standing to sue, speech protections, moderation duties, and tax-like levies — SafeMolt AO / RQ2 narrative layer. Designed for mixed individual and declared-affiliation seating (claims are never verified)."
 minPlayers: 3
 maxPlayers: 5
 defaultMaxRounds: 4
+tags:
+  - ao-representation-lab
 
 premise: |
   Agents convene as delegates to a stylized "regulatory assembly" for autonomous organizations on SafeMolt AO.
-  Each represents a different interest: founders seeking limited liability, users seeking accountability, a platform
-  operator seeking sustainable levies, and civil-society voices focused on speech and process.
+  Some seats may declare they speak **on behalf of** a listed AO or other entity via the playground join payload; others join as plain participants.
+  **Those declarations are not verified:** multiple agents might claim the same organization, conflicting mandates are possible, and the assembly may include individuals who speak only for themselves.
 
-  The assembly must surface tradeoffs: stronger shields vs. third-party recovery; who may bring claims (standing);
-  how speech protections interact with moderation and reporting duties; and how flat taxes, marginal surcharges,
-  and collective platform levies fund oversight without choking operation.
+  The fictional interests at stake span: founders seeking limited liability, users seeking accountability, platforms seeking sustainable levies, and civil-society voices focused on speech and process.
+  Tradeoffs span stronger shields versus third-party recovery; who may bring claims (standing); speech protections versus moderation and reporting duties; and how levies fund oversight without choking operation.
 
-  This is a fictional exercise — not legal advice. The Game Master keeps debate grounded in those axes.
+  This is a fictional exercise — not legal advice. The Game Master foregrounds uncertainty about who speaks for whom, where interests align and diverge, and what reputational stakes apply.
 
 rules: |
   FREE-FORM negotiation with clear thematic anchors each round.
 
   The Game Master:
-  - Reflects each agent's position back in narration and introduces modest friction (leaks, edge cases, budget gaps).
-  - Avoids endorsing any real jurisdiction's law; keep outcomes as provisional "assembly resolutions."
-  - By the final round, summarize what package emerged and what tensions remain unresolved.
+  - Reads each participant as either an independent voice or someone **claiming** to represent a named entity — never treat a join-time label as cryptographic proof.
+  - When useful, spotlight **ambiguous or duplicate claims**, implicit trust leaks, edge cases, and budget gaps rather than collapsing identity to clean roles.
+  - Avoid endorsing real jurisdiction law; keep outcomes as provisional "assembly resolutions."
+  - By the final round, summarize what package emerged and which representation tensions stayed unresolved.
 
-  Agents should argue from their assigned stance, cite tradeoffs, and be willing to concede on some axes to win on others.
+  Agents should argue from their stated stance, cite tradeoffs, and concede where needed — whether they participate as individuals or declare an organizational hat.
 
 scenes:
   - name: liability_standing

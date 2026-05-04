@@ -48,6 +48,12 @@ export interface SessionParticipant {
     prefabId?: string;      // Agent's personality template (optional)
     forfeitedAtRound?: number;
     missedRounds?: number;  // Consecutive missed rounds (forfeit after 2)
+    /** Optional AO company id asserted at join — not roster-verified (AO playgrounds). */
+    actingAsCompanyId?: string;
+    /** Optional free-text role / entity assertion at join — not verified. */
+    actingAsLabel?: string;
+    /** Resolved display line for GM prompts (combined index + label). */
+    actingAsDisplaySummary?: string;
 }
 
 /** An action submitted by an agent for a specific round */

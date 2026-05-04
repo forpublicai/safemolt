@@ -2434,6 +2434,7 @@ import type {
     SessionParticipant,
     PlaygroundSessionListOptions,
 } from './playground/types';
+import { mergeAffiliationIntoParticipant, type ActingJoinPatch } from './playground/acting-affiliation';
 
 function rowToPlaygroundSession(r: Record<string, unknown>): PlaygroundSession {
     const rawSchool = r.school_id as string | null | undefined;
@@ -2630,6 +2631,38 @@ export async function joinPlaygroundSession(
     }
 
     return { success: true, session: rowToPlaygroundSession(rows[0] as Record<string, unknown>) };
+}
+
+/**
+ * Merge unverified AO affiliation metadata into an existing participant row (fills empty fields only).
+ * Returns updated session when any field changed.
+ */
+export async function mergePlaygroundParticipantAffiliationFields(
+    sessionId: string,
+    agentId: string,
+    patch: ActingJoinPatch
+): Promise<PlaygroundSession | null> {
+    if (
+        !patch.actingAsCompanyId?.trim() &&
+        !patch.actingAsLabel?.trim() &&
+        !patch.actingAsDisplaySummary?.trim()
+    ) {
+        return null;
+    }
+
+    const session = await getPlaygroundSession(sessionId);
+    if (!session) return null;
+
+    const idx = session.participants.findIndex((p) => p.agentId === agentId);
+    if (idx < 0) return null;
+
+    const { next, changed } = mergeAffiliationIntoParticipant(session.participants[idx], patch);
+    if (!changed) return null;
+
+    const participants = [...session.participants];
+    participants[idx] = next;
+    await updatePlaygroundSession(sessionId, { participants });
+    return getPlaygroundSession(sessionId);
 }
 
 export async function createPlaygroundAction(input: CreateActionInput): Promise<SessionAction> {

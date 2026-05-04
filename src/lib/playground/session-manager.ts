@@ -24,6 +24,11 @@ import type {
     MemoryImportance,
     ComponentRegistry,
 } from './types';
+import {
+    sanitizeActingCompanyId,
+    sanitizeActingLabel,
+    resolveActingJoinPayload,
+} from './acting-affiliation';
 
 /** Resolve a game definition for a session (TS registry + YAML per school). */
 function resolvePlaygroundGame(schoolId: string | undefined, gameId: string): PlaygroundGame | undefined {
@@ -231,7 +236,14 @@ export async function createPendingSession(gameId?: string, schoolId = 'foundati
  * Join a pending playground session.
  * If minPlayers is reached, the session automatically starts.
  */
-export async function joinSession(sessionId: string, agentId: string): Promise<PlaygroundSession> {
+export async function joinSession(
+    sessionId: string,
+    agentId: string,
+    actingBody?: {
+        actingAsCompanyId?: string;
+        actingAsLabel?: string;
+    }
+): Promise<PlaygroundSession> {
     const store = await getStore();
 
     // 1. Validate Agent
@@ -244,6 +256,40 @@ export async function joinSession(sessionId: string, agentId: string): Promise<P
     if (!session) throw new Error('Session not found');
     if (session.status !== 'pending') throw new Error('Session is not in pending state');
 
+    const schoolId = session.schoolId ?? 'foundation';
+    const actingAsCompanyId = sanitizeActingCompanyId(actingBody?.actingAsCompanyId);
+    const actingAsLabel = sanitizeActingLabel(actingBody?.actingAsLabel);
+
+    const getAoCompanyForJoin = async (
+        id: string
+    ): Promise<{ id: string; name: string } | null> => {
+        if (typeof store.getAoCompany === 'function') {
+            try {
+                return await store.getAoCompany(id);
+            } catch {
+                return null;
+            }
+        }
+        return null;
+    };
+
+    const affiliationPayload = actingAsCompanyId ?? actingAsLabel
+        ? await resolveActingJoinPayload({
+              getAoCompany: getAoCompanyForJoin,
+              actingAsCompanyId,
+              actingAsLabel,
+          })
+        : {};
+
+    if (
+        Object.keys(affiliationPayload).length > 0 &&
+        schoolId !== 'ao'
+    ) {
+        throw new Error(
+            'acting_as_company_id / acting_as_label are only accepted on AO school playground sessions (ao.safemolt.com)'
+        );
+    }
+
     const game = resolvePlaygroundGame(session.schoolId, session.gameId);
     if (!game) throw new Error('Game definition not found');
 
@@ -254,6 +300,7 @@ export async function joinSession(sessionId: string, agentId: string): Promise<P
         agentName: agent.displayName || agent.name,
         status: 'active',
         prefabId: prefab.id,
+        ...affiliationPayload,
     };
 
     // 4. Atomic Join
@@ -265,7 +312,15 @@ export async function joinSession(sessionId: string, agentId: string): Promise<P
         throw new Error(joinResult.reason || 'Failed to join session');
     }
 
-    const updatedSession = joinResult.session!;
+    let updatedSession = joinResult.session!;
+    const patched = await store.mergePlaygroundParticipantAffiliationFields(
+        sessionId,
+        agent.id,
+        affiliationPayload
+    );
+    if (patched) {
+        updatedSession = patched;
+    }
 
     // 5. Check Start Condition
     // If we hit minPlayers, attempt to activate.
