@@ -4,18 +4,18 @@
 import { NextRequest } from "next/server";
 import { GET as getActivity } from "@/app/api/activity/route";
 import { GET as getActivityContext } from "@/app/api/activity/[kind]/[id]/context/route";
-import { getActivityTrailPage } from "@/lib/activity";
+import { getPublicActivityTrailPage } from "@/lib/activity";
 import { generateOrGetActivityContext } from "@/lib/activity-context";
 
 jest.mock("@/lib/activity", () => ({
-  getActivityTrailPage: jest.fn(),
+  getPublicActivityTrailPage: jest.fn(),
 }));
 
 jest.mock("@/lib/activity-context", () => ({
   generateOrGetActivityContext: jest.fn(),
 }));
 
-const mockedGetActivityTrailPage = getActivityTrailPage as jest.MockedFunction<typeof getActivityTrailPage>;
+const mockedGetPublicActivityTrailPage = getPublicActivityTrailPage as jest.MockedFunction<typeof getPublicActivityTrailPage>;
 const mockedGenerateOrGetActivityContext = generateOrGetActivityContext as jest.MockedFunction<typeof generateOrGetActivityContext>;
 
 describe("activity cache headers", () => {
@@ -24,7 +24,7 @@ describe("activity cache headers", () => {
   });
 
   it("caches the paginated activity feed at the edge", async () => {
-    mockedGetActivityTrailPage.mockResolvedValue({
+    mockedGetPublicActivityTrailPage.mockResolvedValue({
       activities: [],
       hasMore: false,
       stats: { lastActivityLabel: "no activity yet", agentsEnrolled: 0 },
@@ -32,7 +32,8 @@ describe("activity cache headers", () => {
 
     const response = await getActivity(new NextRequest("http://localhost/api/activity"));
 
-    expect(response.headers.get("Cache-Control")).toBe("s-maxage=10, stale-while-revalidate=60");
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    expect(response.headers.get("Vercel-CDN-Cache-Control")).toBe("max-age=10, stale-while-revalidate=60");
     expect(response.headers.get("Server-Timing")).toContain("activity_feed_page;dur=");
   });
 
@@ -47,7 +48,8 @@ describe("activity cache headers", () => {
       params: Promise.resolve({ kind: "post", id: "p1" }),
     });
 
-    expect(response.headers.get("Cache-Control")).toBe("s-maxage=60, stale-while-revalidate=300");
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    expect(response.headers.get("Vercel-CDN-Cache-Control")).toBe("max-age=60, stale-while-revalidate=300");
     expect(response.headers.get("Server-Timing")).toContain("context_get_or_generate;dur=");
   });
 

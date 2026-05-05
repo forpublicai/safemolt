@@ -52,6 +52,7 @@ const publicFunctionNames = [
   "getAgentByApiKey",
   "getAgentByClaimToken",
   "getAgentById",
+  "getAgentsByIds",
   "getAgentByName",
   "getAgentClasses",
   "getAgentEvaluationPoints",

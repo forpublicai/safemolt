@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { errorResponse, jsonResponse } from "@/lib/auth";
-import { getActivityTrailPage } from "@/lib/activity";
+import { getPublicActivityTrailPage } from "@/lib/activity";
 import { measureAsync, serverTimingHeader } from "@/lib/perf";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const { value: data, measure } = await measureAsync("activity_feed_page", () =>
-      getActivityTrailPage({ before, beforeId, query, types, limit })
+      getPublicActivityTrailPage({ before, beforeId, query, types, limit })
     );
     const serverTiming = serverTimingHeader([
       measure,
@@ -32,7 +32,8 @@ export async function GET(request: NextRequest) {
       stats: data.stats,
       has_more: data.hasMore,
     }, 200, {
-      "Cache-Control": "s-maxage=10, stale-while-revalidate=60",
+      "Cache-Control": "public, max-age=0, must-revalidate",
+      "Vercel-CDN-Cache-Control": "max-age=10, stale-while-revalidate=60",
       "Server-Timing": serverTiming,
     });
   } catch (err) {

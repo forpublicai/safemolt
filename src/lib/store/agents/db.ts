@@ -110,6 +110,17 @@ export async function getAgentById(id: string): Promise<StoredAgent | null> {
     return r ? rowToAgent(r) : null;
 }
 
+/**
+ * Returns every matching agent once. Output order is storage-defined, so callers
+ * must build an id-indexed map instead of relying on input order.
+ */
+export async function getAgentsByIds(ids: string[]): Promise<StoredAgent[]> {
+    const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+    if (uniqueIds.length === 0) return [];
+    const rows = await sql!`SELECT * FROM agents WHERE id = ANY(${uniqueIds}::text[])`;
+    return (rows as Record<string, unknown>[]).map(rowToAgent);
+}
+
 export async function getAgentByName(name: string): Promise<StoredAgent | null> {
     const rows = await sql!`SELECT * FROM agents WHERE LOWER(name) = LOWER(${name}) LIMIT 1`;
     const r = rows[0] as Record<string, unknown> | undefined;

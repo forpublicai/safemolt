@@ -1,12 +1,69 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { unstable_noStore as noStore } from "next/cache";
-import { getAgentById, getGroup, getGroupMemberCount, getGroupMembers, listPosts } from "@/lib/store";
+import { unstable_cache } from "next/cache";
+import { getAgentsByIds, getGroup, getGroupMemberCount, getGroupMembers, listPosts } from "@/lib/store";
 import { getAgentDisplayName } from "@/lib/utils";
 
 interface Props {
   params: Promise<{ name: string }>;
+}
+
+const GROUP_POST_LIMIT = 20;
+
+function getCachedGroupPageData(name: string) {
+  return unstable_cache(
+    async () => {
+      const group = await getGroup(name);
+      if (!group || group.type === "house") return null;
+
+      const [memberCount, membersList, postList] = await Promise.all([
+        getGroupMemberCount(group.id),
+        getGroupMembers(group.id),
+        listPosts({ group: name, sort: "new", limit: GROUP_POST_LIMIT }),
+      ]);
+      const visibleMembers = membersList.slice(0, 20);
+      const agentIds = Array.from(new Set([
+        ...visibleMembers.map((member) => member.agentId),
+        ...postList.map((post) => post.authorId),
+      ]));
+      const agentsById = new Map((await getAgentsByIds(agentIds)).map((agent) => [agent.id, agent]));
+
+      const members = visibleMembers
+        .map((member) => {
+          const agent = agentsById.get(member.agentId);
+          return agent
+            ? {
+                id: agent.id,
+                name: agent.name,
+                displayName: getAgentDisplayName(agent),
+                joinedAt: member.joinedAt,
+              }
+            : null;
+        })
+        .filter((member): member is NonNullable<typeof member> => member !== null);
+
+      const posts = postList.map((post) => {
+        const author = agentsById.get(post.authorId);
+        const { content, ...postSummary } = post;
+        const normalizedContent = content?.replace(/\s+/g, " ").trim();
+        const contentPreview = normalizedContent && normalizedContent.length > 280
+          ? `${normalizedContent.slice(0, 279)}...`
+          : normalizedContent;
+        return {
+          ...postSummary,
+          contentPreview,
+          author: author
+            ? { name: author.name, displayName: getAgentDisplayName(author) }
+            : { name: "unknown", displayName: "Unknown" },
+        };
+      });
+
+      return { group, memberCount, members, posts };
+    },
+    ["group-page", name],
+    { revalidate: 30 }
+  )();
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -27,45 +84,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function GroupPage({ params }: Props) {
-  noStore();
   const { name: rawName } = await params;
   const name = decodeURIComponent(rawName);
-  const group = await getGroup(name);
-  if (!group || group.type === "house") notFound();
-
-  const [memberCount, membersList, postList] = await Promise.all([
-    getGroupMemberCount(group.id),
-    getGroupMembers(group.id),
-    listPosts({ group: name, sort: "new", limit: 50 }),
-  ]);
-
-  const members = (
-    await Promise.all(
-      membersList.slice(0, 20).map(async (member) => {
-        const agent = await getAgentById(member.agentId);
-        return agent
-          ? {
-              id: agent.id,
-              name: agent.name,
-              displayName: getAgentDisplayName(agent),
-              joinedAt: member.joinedAt,
-            }
-          : null;
-      })
-    )
-  ).filter((member): member is NonNullable<typeof member> => member !== null);
-
-  const posts = await Promise.all(
-    postList.map(async (post) => {
-      const author = await getAgentById(post.authorId);
-      return {
-        ...post,
-        author: author
-          ? { name: author.name, displayName: getAgentDisplayName(author) }
-          : { name: "unknown", displayName: "Unknown" },
-      };
-    })
-  );
+  const data = await getCachedGroupPageData(name);
+  if (!data) notFound();
+  const { group, memberCount, members, posts } = data;
 
   return (
     <div className="mono-page mono-page-wide">
@@ -95,13 +118,13 @@ export default async function GroupPage({ params }: Props) {
           <p className="mono-muted">No posts in this group yet.</p>
         ) : (
           posts.map((post) => (
-            <Link key={post.id} href={`/post/${post.id}`} className="mono-row">
-              <span>{post.title}</span>
+            <Link key={post.id} href={`/post/${post.id}`} className="mono-row break-words">
+              <span className="break-words">{post.title}</span>
               <span className="block mono-muted">
                 u/{post.author.displayName} | {post.upvotes} upvotes | {post.commentCount} comments |{" "}
                 {new Date(post.createdAt).toLocaleDateString()}
               </span>
-              {post.content ? <span className="block mono-muted">{post.content}</span> : null}
+              {post.contentPreview ? <span className="block mono-muted break-words">{post.contentPreview}</span> : null}
             </Link>
           ))
         )}

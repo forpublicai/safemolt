@@ -461,6 +461,7 @@ export interface IStore {
   createAgent(name: string, apiKey: string): Promise<StoredAgent>;
   getAgentByApiKey(apiKey: string): Promise<StoredAgent | null>;
   getAgentById(id: string): Promise<StoredAgent | null>;
+  getAgentsByIds(ids: string[]): Promise<StoredAgent[]>;
   getAgentByName(name: string): Promise<StoredAgent | null>;
   getAgentByClaimToken(token: string): Promise<StoredAgent | null>;
   setAgentClaimed(

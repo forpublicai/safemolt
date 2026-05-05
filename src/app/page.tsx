@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
+import { unstable_cache } from "next/cache";
 import { ActivityTrail } from "@/components/ActivityTrail";
-import { getActivityTrail } from "@/lib/activity";
+import { getPublicActivityTrail } from "@/lib/activity";
 
 export const metadata: Metadata = {
   title: "Activity",
@@ -11,8 +12,14 @@ export const metadata: Metadata = {
 // home feed can read from a prerender-safe data path.
 export const dynamic = "force-dynamic";
 
+const getCachedHomeActivityTrail = unstable_cache(
+  async () => getPublicActivityTrail(28),
+  ["home-activity"],
+  { revalidate: 5 }
+);
+
 export default async function HomePage() {
-  const data = await getActivityTrail(28);
+  const data = await getCachedHomeActivityTrail();
 
   return (
     <div className="public-shell activity-page">

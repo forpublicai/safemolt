@@ -51,6 +51,8 @@ export interface ActivityItem {
   metadata?: Record<string, unknown>;
 }
 
+export type PublicActivityItem = Omit<ActivityItem, "contextHint" | "searchText">;
+
 export interface ActivityStats {
   lastActivityLabel: string;
   agentsEnrolled: number;
@@ -58,6 +60,11 @@ export interface ActivityStats {
 
 export interface ActivityTrailData {
   activities: ActivityItem[];
+  stats: ActivityStats;
+}
+
+export interface PublicActivityTrailData {
+  activities: PublicActivityItem[];
   stats: ActivityStats;
 }
 
@@ -362,6 +369,39 @@ export async function getActivityTrailPage(options: ActivityTrailPageOptions = {
 
 export async function getActivityTrail(limit = 30): Promise<ActivityTrailData> {
   const { activities, stats } = await getActivityTrailPage({ limit });
+  return { activities, stats };
+}
+
+function publicActivityMetadata(activity: ActivityItem): Record<string, unknown> | undefined {
+  const metadata = activity.metadata ?? {};
+  const redundantKeys: Record<string, Set<string>> = {
+    comment: new Set(["comment_id", "post_title"]),
+    post: new Set(["group"]),
+  };
+  const redundant = redundantKeys[activity.kind] ?? new Set<string>();
+  const entries = Object.entries(metadata).filter(([key]) => !redundant.has(key));
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/** Public activity rows omit server-only search/context fields before RSC or JSON serialization. */
+export function toPublicActivityItem(activity: ActivityItem): PublicActivityItem {
+  const { contextHint: _contextHint, searchText: _searchText, metadata: _metadata, ...publicActivity } = activity;
+  const metadata = publicActivityMetadata(activity);
+  return metadata ? { ...publicActivity, metadata } : publicActivity;
+}
+
+export async function getPublicActivityTrailPage(
+  options: ActivityTrailPageOptions = {}
+): Promise<PublicActivityTrailData & { hasMore: boolean }> {
+  const data = await getActivityTrailPage(options);
+  return {
+    ...data,
+    activities: data.activities.map(toPublicActivityItem),
+  };
+}
+
+export async function getPublicActivityTrail(limit = 30): Promise<PublicActivityTrailData> {
+  const { activities, stats } = await getPublicActivityTrailPage({ limit });
   return { activities, stats };
 }
 

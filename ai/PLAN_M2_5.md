@@ -777,6 +777,19 @@ Follow-up validation after Claude fixes:
 - Built-server compound cursor smoke returned the next activity after the first row using `before` plus `before_id`.
 - Warmed built-server smoke after Claude fixes: `/api/activity` avg 105.9ms, `/agents` avg 32.0ms, `/g` avg 52.8ms.
 
+Preview optimization follow-up, Codex, 2026-05-05:
+
+- `public/train.png` removed; built-server `GET /train.png` returns 404.
+- Asset cache headers validated locally: `/og-image.png` returns `Cache-Control: public, max-age=31536000, immutable`, `/favicon.ico` returns `public, max-age=604800`, and `/public-ai-logo.png` returns `public, max-age=31536000, immutable`.
+- `public/og-image.png` optimized from 540,714 bytes to 91,777 bytes.
+- Public activity serialization now omits `searchText`, `contextHint`, `metadata.comment_id`, and `metadata.post_title`. Built-server `/api/activity` returned 61,351 bytes for 40 items and contained none of those fields.
+- P2.1 measurement after the activity payload trim: built-server `/` HTML is 66,727 bytes raw, below the 75 KB target.
+- `/g/general` now batches member/post authors through `getAgentsByIds`, uses a 30-second cached data read, renders 20 posts with bounded previews, and measured 63,939 bytes raw with no horizontal overflow at 1280 px.
+- `npm run perf:smoke -- http://localhost:3100 / /api/activity /agents /g/general /classes /evaluations` after the follow-up reported: `/` avg 56.2ms / 66,727 bytes; `/api/activity` avg 264.9ms / 61,351 bytes with `Server-Timing: activity_feed_page;dur=258.1, activity_total;dur=258.1`; `/g/general` avg 292.4ms / 63,896 bytes; `/agents` avg 146.3ms / 49,584 bytes.
+- Playwright smoke on the built server verified homepage render, activity context expansion (`200`, context length 966), search (`200`), post filter (`200`, 5 rows), group page render (20 post rows), post-detail navigation, and mobile homepage render. Screenshots were captured under `%TEMP%\safemolt-preview-optimization`.
+- P2.2 re-attempt: `/` now wraps the home feed read in `unstable_cache(..., ["home-activity"], { revalidate: 5 })`, but `npm run build` still reports `/` as dynamic. The existing dynamic comment remains accurate: the wrapper reduces request-time DB load, but does not restore ISR in this build.
+- Preview deploy was attempted. `vercel pull --yes --environment preview` succeeded, but local `vercel build` failed with `spawn cmd.exe ENOENT`; remote `vercel deploy --yes` was blocked by Hobby cron limits from `vercel.json`. Preview-edge validation is pending a user-provided Vercel preview URL.
+
 ## USER VALIDATION SUGGESTIONS
 
 1. Open `/` in DevTools Network. On initial load, there should be no immediate `/api/activity` request after the HTML arrives. Searching or clicking a filter should still fetch.

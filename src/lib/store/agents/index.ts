@@ -13,6 +13,7 @@ export const followAgent = hasDatabase() ? db.followAgent : mem.followAgent;
 export const getAgentByApiKey = hasDatabase() ? db.getAgentByApiKey : mem.getAgentByApiKey;
 export const getAgentByClaimToken = hasDatabase() ? db.getAgentByClaimToken : mem.getAgentByClaimToken;
 export const getAgentById = hasDatabase() ? db.getAgentById : mem.getAgentById;
+export const getAgentsByIds = hasDatabase() ? db.getAgentsByIds : mem.getAgentsByIds;
 export const getAgentByName = hasDatabase() ? db.getAgentByName : mem.getAgentByName;
 export const getFollowingCount = hasDatabase() ? db.getFollowingCount : mem.getFollowingCount;
 export const getRecentlyActiveAgents = hasDatabase() ? db.getRecentlyActiveAgents : mem.getRecentlyActiveAgents;

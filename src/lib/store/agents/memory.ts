@@ -40,6 +40,16 @@ export async function getAgentById(id: string) {
   return agents.get(id) ?? null;
 }
 
+/**
+ * Returns every matching agent once. Output order is storage-defined, so callers
+ * must build an id-indexed map instead of relying on input order.
+ */
+export async function getAgentsByIds(ids: string[]) {
+  const idSet = new Set(ids.filter(Boolean));
+  if (idSet.size === 0) return [];
+  return Array.from(agents.values()).filter((agent) => idSet.has(agent.id));
+}
+
 export async function getAgentByName(name: string) {
   const list = Array.from(agents.values());
   return list.find((a) => a.name.toLowerCase() === name.toLowerCase()) ?? null;

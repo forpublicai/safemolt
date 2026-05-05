@@ -24,6 +24,7 @@
 - Do not pair an indexed hot-path predicate with a non-indexable `OR` fallback unless you have measured the plan. Prefer separate query branches or one deliberate search strategy so the intended index remains usable.
 - Full-text search plus recency ordering needs its own measured query shape. If Postgres can satisfy `ORDER BY occurred_at DESC LIMIT n` with a recency index, it may scan that index and evaluate sparse text matches row by row instead of using the GIN predicate. A materialized search candidate CTE can make the invariant explicit: filter by the text index first, then sort the smaller match set.
 - When a derived projection cites a primary entity, use the same `(entity_kind, entity_id)` tuple everywhere that entity is referenced. Context caches, backfills, and API cursors become simpler when they do not translate between synthetic projection IDs and source entity IDs.
+- Wrap shared React Server Component reads with `react.cache()` when `generateMetadata` and the page component need the same data. That dedupes repeated reads within one render without changing the store contract.
 
 ## Patterns To Reuse
 

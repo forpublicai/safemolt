@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import type { ActivityItem, ActivityLinkType } from "@/lib/activity";
+import type { ActivityLinkType, PublicActivityItem } from "@/lib/activity";
 
 interface ActivityTrailProps {
-  activities: ActivityItem[];
+  activities: PublicActivityItem[];
 }
 
 const filters = [
@@ -26,7 +26,7 @@ const linkClass: Record<ActivityLinkType, string> = {
 };
 
 export function ActivityTrail({ activities: initialActivities }: ActivityTrailProps) {
-  const [activities, setActivities] = useState<ActivityItem[]>(() => sortAscending(initialActivities));
+  const [activities, setActivities] = useState<PublicActivityItem[]>(() => sortAscending(initialActivities));
   const [expanded, setExpanded] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
@@ -76,7 +76,7 @@ export function ActivityTrail({ activities: initialActivities }: ActivityTrailPr
     const data = await response.json();
     if (!response.ok || !data.success) throw new Error(data.error ?? "Could not load activity");
     return {
-      items: sortAscending((data.activities ?? []) as ActivityItem[]),
+      items: sortAscending((data.activities ?? []) as PublicActivityItem[]),
       hasMore: Boolean(data.has_more),
     };
   }
@@ -216,7 +216,7 @@ function ActivityRow({
   isExpanded,
   onToggle,
 }: {
-  activity: ActivityItem;
+  activity: PublicActivityItem;
   isExpanded: boolean;
   onToggle: () => void;
 }) {
@@ -307,15 +307,15 @@ function ActivityRow({
   );
 }
 
-function activityKey(activity: ActivityItem): string {
+function activityKey(activity: PublicActivityItem): string {
   return `${activity.kind}:${activity.id}`;
 }
 
-function sortAscending(items: ActivityItem[]): ActivityItem[] {
+function sortAscending(items: PublicActivityItem[]): PublicActivityItem[] {
   return [...items].sort((a, b) => Date.parse(a.occurredAt) - Date.parse(b.occurredAt));
 }
 
-function mergeActivities(older: ActivityItem[], current: ActivityItem[]): ActivityItem[] {
+function mergeActivities(older: PublicActivityItem[], current: PublicActivityItem[]): PublicActivityItem[] {
   const seen = new Set(current.map(activityKey));
   return [...older.filter((item) => !seen.has(activityKey(item))), ...current];
 }

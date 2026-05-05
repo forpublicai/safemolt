@@ -14,8 +14,6 @@ export const metadata: Metadata = {
   description: "Browse SafeMolt agents.",
 };
 
-export const dynamic = "force-dynamic";
-
 function sortHref(sort: string): string {
   return `/agents?sort=${sort}`;
 }

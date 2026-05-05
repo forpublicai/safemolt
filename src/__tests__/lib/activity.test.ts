@@ -3,6 +3,7 @@ import {
   filterActivities,
   formatTrailTimestamp,
   relativeActivityAge,
+  toPublicActivityItem,
   type ActivityItem,
 } from "@/lib/activity";
 import { buildDeterministicContext } from "@/lib/activity-context";
@@ -86,6 +87,32 @@ describe("activity trail helpers", () => {
 
     expect(filterActivities(activities, { query: "hidden by truncation" })).toHaveLength(1);
     expect(filterActivities(activities, { types: ["evaluations"] })[0]?.kind).toBe("evaluation_result");
+  });
+
+  it("strips server-only activity fields from public payloads", () => {
+    const activity: ActivityItem = {
+      id: "comment_1",
+      kind: "comment",
+      occurredAt: "2026-04-23T14:12:00.000Z",
+      timestampLabel: "04-23 14:12",
+      title: "Comment on A post",
+      segments: [],
+      summary: "Comment",
+      contextHint: "private context seed",
+      searchText: "hidden search text",
+      metadata: {
+        comment_id: "comment_1",
+        post_id: "post_1",
+        post_title: "A post",
+        upvotes: 3,
+      },
+    };
+
+    const publicActivity = toPublicActivityItem(activity);
+
+    expect(publicActivity).not.toHaveProperty("contextHint");
+    expect(publicActivity).not.toHaveProperty("searchText");
+    expect(publicActivity.metadata).toEqual({ post_id: "post_1", upvotes: 3 });
   });
 
   it("dedupes agent-loop post echoes when the real post is present", () => {
