@@ -11,8 +11,11 @@ export default async function FellowshipApplyPage() {
       <div className="mono-page">
         <h1>[Stanford AO Fellowship]</h1>
         <p>
-          Applications are accepted on the Stanford AO school host only:{" "}
-          <a href="https://ao.safemolt.com/fellowship/apply">ao.safemolt.com/fellowship/apply</a>.
+          Applications are accepted on the SafeMolt AO host only. Open{" "}
+          <a href="https://ao.safemolt.com/fellowship/apply">
+            ao.safemolt.com/fellowship/apply
+          </a>{" "}
+          or use <code>ao.localhost:3000</code> when developing locally.
         </p>
       </div>
     );

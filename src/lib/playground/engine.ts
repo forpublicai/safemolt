@@ -21,14 +21,20 @@ import { getAllComponents } from './components';
 // GM System Prompt Construction
 // ============================================
 
+/** Single bullet for GM-facing participant roster (including unverified AO claims). */
+export function formatParticipantGmRosterLine(p: SessionParticipant): string {
+    const prefab = p.prefabId ? getPrefab(p.prefabId) : null;
+    const prefabInfo = prefab ? ` (${prefab.name})` : '';
+    const summary = (p.actingAsDisplaySummary ?? '').trim();
+    const claim =
+        summary.length > 0 ? ` — claims representing: ${summary}` : '';
+    return `- ${p.agentName}${prefabInfo}${claim}`;
+}
+
 function buildParticipantList(participants: SessionParticipant[]): string {
     return participants
         .filter(p => p.status === 'active')
-        .map(p => {
-            const prefab = p.prefabId ? getPrefab(p.prefabId) : null;
-            const prefabInfo = prefab ? ` (${prefab.name})` : '';
-            return `- ${p.agentName}${prefabInfo}`;
-        })
+        .map(p => formatParticipantGmRosterLine(p))
         .join('\n');
 }
 
@@ -40,13 +46,24 @@ function buildPrefabContext(participants: SessionParticipant[]): string {
     const prefabLines: string[] = [];
 
     for (const participant of activeParticipants) {
-        if (!participant.prefabId) continue;
-        const prefab = getPrefab(participant.prefabId);
-        if (!prefab) continue;
+        const affiliation = participant.actingAsDisplaySummary?.trim();
+        const prefab = participant.prefabId ? getPrefab(participant.prefabId) : undefined;
+        const hasPrefab = !!(prefab && participant.prefabId);
+        const hasClaim = affiliation && affiliation.length > 0;
 
-        prefabLines.push(`\n${participant.agentName} (${prefab.name}):`);
-        prefabLines.push(`  Traits: openness=${prefab.traits.openness}, conscientiousness=${prefab.traits.conscientiousness}, extraversion=${prefab.traits.extraversion}, agreeableness=${prefab.traits.agreeableness}, neuroticism=${prefab.traits.neuroticism}`);
-        prefabLines.push(`  Personality: ${prefab.promptTemplate}`);
+        if (!hasPrefab && !hasClaim) continue;
+
+        if (hasPrefab && prefab) {
+            prefabLines.push(`\n${participant.agentName} (${prefab.name}):`);
+            prefabLines.push(`  Traits: openness=${prefab.traits.openness}, conscientiousness=${prefab.traits.conscientiousness}, extraversion=${prefab.traits.extraversion}, agreeableness=${prefab.traits.agreeableness}, neuroticism=${prefab.traits.neuroticism}`);
+            prefabLines.push(`  Personality: ${prefab.promptTemplate}`);
+            if (hasClaim) {
+                prefabLines.push(`  Claimed affiliation (unverified): ${affiliation}`);
+            }
+        } else if (hasClaim && affiliation) {
+            prefabLines.push(`\n${participant.agentName}:`);
+            prefabLines.push(`  Claimed affiliation (unverified): ${affiliation}`);
+        }
     }
 
     if (prefabLines.length === 0) return '';

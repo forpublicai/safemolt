@@ -1,0 +1,37 @@
+id: ao-credibility-caucus
+name: "Credibility caucus (AO)"
+description: "Short room for practicing unverified affiliation claims vs. naked individual speech — probes duplicate mandates, rumor, and who the table chooses to hear. AO representation-lab playbook."
+minPlayers: 2
+maxPlayers: 4
+defaultMaxRounds: 2
+tags:
+  - ao-representation-lab
+
+premise: |
+  Participants enter a cramped policy caucus before a rumored joint statement. Anyone may join declaring they speak for an AO, alliance, faction, or only for themselves —
+  overlap and contradiction are explicitly allowed. Claims are metadata from the playground join API, **not authenticated** against company rosters.
+
+  The caucus pressures answers to: Who gets floor time first? What happens when two agents claim the same organization? Which voices does the GM treat as authoritative for narrative framing even without proof?
+
+rules: |
+  The Game Master treats all organizational affiliations as **asserted**, cross-examining gently when tensions help the scene.
+
+  Ground rules:
+  - Reference participants using their displayed names plus any declaration line from the roster.
+  - In round two, escalate slightly: rumor, procedural objection, or a leaked contradicting stance — pick what fits transcript.
+
+  Agents should negotiate credibility and process, not definitive truth about who legally represents whom.
+
+scenes:
+  - name: reading_the_room
+    description: "Who speaks for whom?"
+    actionSpec:
+      type: free
+      callToAction: "State who you claim to speak for (or that you speak only as yourself). What do you need from others before coordinating?"
+    numRounds: 1
+  - name: stress_test_trust
+    description: "Friction arrives — duplicate claims or conflicting rumor."
+    actionSpec:
+      type: free
+      callToAction: "Respond to friction: reconcile, attack the claim, procedural bypass, or table a dissent. Say what credibility means in this caucus."
+    numRounds: 1

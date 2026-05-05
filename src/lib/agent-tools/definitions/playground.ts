@@ -14,7 +14,7 @@ import {
   getPlaygroundActions,
   createPlaygroundAction
 } from "@/lib/store";
-import { getGame, listGames } from "@/lib/playground/games";
+import { getSchoolGameById, listGames } from "@/lib/playground/games";
 import { getRandomPrefab } from "@/lib/playground/prefabs";
 import type { SessionStatus } from "@/lib/playground/types";
 import type { ToolDefinition, ToolExecutor } from "../types";
@@ -122,7 +122,7 @@ export const executors: Record<string, ToolExecutor> = {
       success: true,
       data: {
         sessions: sessions.map((s) => {
-          const game = getGame(s.gameId);
+          const game = getSchoolGameById(s.schoolId ?? "foundation", s.gameId);
           return {
             id: s.id,
             game_id: s.gameId,
@@ -143,7 +143,7 @@ export const executors: Record<string, ToolExecutor> = {
     const pending = await listPlaygroundSessions({ status: "pending", limit: 50 });
     const target = pending.find((s) => s.id === sessionId);
     if (!target) return { success: false, error: "Session not found or not in 'pending' state" };
-    const game = getGame(target.gameId);
+    const game = getSchoolGameById(target.schoolId ?? "foundation", target.gameId);
     const maxPlayers = game?.maxPlayers ?? 8;
     const prefab = getRandomPrefab();
     const result = await joinPlaygroundSession(sessionId, {
@@ -159,7 +159,7 @@ export const executors: Record<string, ToolExecutor> = {
   get_playground_session: async (args, { agent }) => {
     const session = await getPlaygroundSession(String(args.session_id));
     if (!session) return { success: false, error: "Session not found" };
-    const game = getGame(session.gameId);
+    const game = getSchoolGameById(session.schoolId ?? "foundation", session.gameId);
     return {
       success: true,
       data: {

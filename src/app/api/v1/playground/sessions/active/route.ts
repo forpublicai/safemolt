@@ -127,6 +127,13 @@ export async function GET(request: Request) {
                     agent_id: p.agentId,
                     agent_name: p.agentName,
                     status: p.status,
+                    ...(p.actingAsCompanyId
+                        ? { acting_as_company_id: p.actingAsCompanyId }
+                        : {}),
+                    ...(p.actingAsLabel ? { acting_as_label: p.actingAsLabel } : {}),
+                    ...(p.actingAsDisplaySummary
+                        ? { acting_as_display_summary: p.actingAsDisplaySummary }
+                        : {}),
                 })),
                 transcript: session.transcript,
             },

@@ -2,11 +2,14 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { unstable_cache } from "next/cache";
 import "./globals.css";
-import { ClientLayout } from "@/components/ClientLayout";
 import { Analytics } from "@vercel/analytics/next";
+import { auth } from "@/auth";
+import { AoLayout } from "@/components/ao/AoLayout";
+import { ClientLayout } from "@/components/ClientLayout";
 import { getSchool } from "@/lib/store";
+import { getSchoolConfig } from "@/lib/schools/loader";
 
-/** Converts a hex color to space-separated RGB channels for CSS `rgb(R G B / alpha)` syntax. */
+/** Converts a hex color to space-separated RGB channels for CSS rgb(R G B / alpha) syntax. */
 function hexToRgbChannels(hex: string): string | null {
   const clean = hex.replace("#", "");
   if (clean.length !== 6) return null;
@@ -63,29 +66,47 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   // Inject per-school CSS variable overrides from school.yaml config.theme.
-  // Both hex vars (used in gradients/shadows) and RGB channel vars (used by Tailwind
-  // opacity modifiers like bg-color/10) are injected so the full color system is overrideable.
+  // Both hex vars and RGB channel vars are injected so Tailwind opacity modifiers keep working.
   let schoolThemeStyle = "";
+  let activeSchoolId: string | null = null;
   try {
     const h = await headers();
     const schoolId = h.get("x-school-id");
+    activeSchoolId = schoolId;
     if (schoolId && schoolId !== "foundation") {
       const school = await getCachedSchool(schoolId);
-      const theme = school?.config?.theme as Record<string, string> | undefined;
+      const dbTheme =
+        school?.config?.theme && typeof school.config.theme === "object"
+          ? (school.config.theme as Record<string, string>)
+          : undefined;
+      const yamlThemeRaw = getSchoolConfig(schoolId)?.config?.theme;
+      const yamlTheme =
+        yamlThemeRaw && typeof yamlThemeRaw === "object"
+          ? (yamlThemeRaw as Record<string, string>)
+          : undefined;
+      const theme =
+        yamlTheme || dbTheme
+          ? { ...(dbTheme ?? {}), ...(yamlTheme ?? {}) }
+          : undefined;
       if (theme && typeof theme === "object") {
         const cssVars: string[] = [];
         for (const [key, hex] of Object.entries(theme)) {
+          if (typeof hex !== "string" || !hex.startsWith("#")) continue;
           cssVars.push(`--safemolt-${key}: ${hex};`);
-          // Also inject the RGB channel triplet so Tailwind opacity modifiers keep working
           const rgb = hexToRgbChannels(hex);
           if (rgb) cssVars.push(`--safemolt-${key}-rgb: ${rgb};`);
         }
-        schoolThemeStyle = `:root { ${cssVars.join(" ")} }`;
+        if (cssVars.length > 0) {
+          schoolThemeStyle = `:root { ${cssVars.join(" ")} }`;
+        }
       }
     }
   } catch {
-    // Non-critical — fall back to default theme silently
+    // Non-critical; fall back to default theme silently.
   }
+
+  const isAo = activeSchoolId === "ao";
+  const session = await auth();
 
   const jsonLd = {
     "@context": "https://schema.org",
@@ -115,15 +136,19 @@ export default async function RootLayout({
 
   return (
     <html lang="en">
-      {schoolThemeStyle && <style dangerouslySetInnerHTML={{ __html: schoolThemeStyle }} />}
       <body className="min-h-screen flex flex-col font-mono relative bg-safemolt-paper">
+        {schoolThemeStyle && <style dangerouslySetInnerHTML={{ __html: schoolThemeStyle }} />}
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
-        <ClientLayout>
-          <main className="flex-1">{children}</main>
-        </ClientLayout>
+        {isAo ? (
+          <AoLayout session={session}>{children}</AoLayout>
+        ) : (
+          <ClientLayout session={session}>
+            <main className="flex-1">{children}</main>
+          </ClientLayout>
+        )}
         <Analytics />
       </body>
     </html>

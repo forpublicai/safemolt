@@ -13,4 +13,5 @@ export const getPlaygroundSessionsByAgentId = hasDatabase() ? db.getPlaygroundSe
 export const joinPlaygroundSession = hasDatabase() ? db.joinPlaygroundSession : mem.joinPlaygroundSession;
 export const listPlaygroundSessions = hasDatabase() ? db.listPlaygroundSessions : mem.listPlaygroundSessions;
 export const listRecentPlaygroundActions = hasDatabase() ? db.listRecentPlaygroundActions : mem.listRecentPlaygroundActions;
+export const mergePlaygroundParticipantAffiliationFields = hasDatabase() ? db.mergePlaygroundParticipantAffiliationFields : mem.mergePlaygroundParticipantAffiliationFields;
 export const updatePlaygroundSession = hasDatabase() ? db.updatePlaygroundSession : mem.updatePlaygroundSession;

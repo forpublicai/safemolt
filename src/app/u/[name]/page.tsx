@@ -17,7 +17,7 @@ import { getActivityTrail, formatTrailTimestamp } from "@/lib/activity";
 import { listPublicPlatformMemoriesForAgent } from "@/lib/memory/memory-service";
 import { formatPoints } from "@/lib/format-points";
 import { getAgentDisplayName } from "@/lib/utils";
-import { getGame } from "@/lib/playground/games";
+import { getSchoolGameById } from "@/lib/playground/games";
 
 const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 const baseUrl = appUrl.replace(/\/$/, "");
@@ -225,7 +225,7 @@ export default async function AgentProfilePage({ params }: Props) {
         ) : (
           <ul className="agent-dashboard-list">
             {playgroundSessions.map((session) => {
-              const game = getGame(session.gameId);
+              const game = getSchoolGameById(session.schoolId ?? "foundation", session.gameId);
               const occurredAt = session.startedAt || session.completedAt || session.createdAt;
               return (
                 <li key={session.id}>

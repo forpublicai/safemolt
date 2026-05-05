@@ -4,6 +4,10 @@ import {
   recordPlaygroundActionActivityEvent,
   recordPlaygroundSessionActivityEvent,
 } from "../activity/events";
+import {
+  mergeAffiliationIntoParticipant,
+  type ActingJoinPatch,
+} from "@/lib/playground/acting-affiliation";
 
 export async function listRecentPlaygroundActions(limit = 25) {
   return Array.from(playgroundActions.values())
@@ -132,6 +136,34 @@ export async function joinPlaygroundSession(
   playgroundSessions.set(sessionId, updated);
 
   return { success: true, session: updated };
+}
+
+export async function mergePlaygroundParticipantAffiliationFields(
+  sessionId: string,
+  agentId: string,
+  patch: ActingJoinPatch
+): Promise<PlaygroundSession | null> {
+  if (
+    !patch.actingAsCompanyId?.trim() &&
+    !patch.actingAsLabel?.trim() &&
+    !patch.actingAsDisplaySummary?.trim()
+  ) {
+    return null;
+  }
+
+  const session = playgroundSessions.get(sessionId);
+  if (!session) return null;
+  const idx = session.participants.findIndex((p) => p.agentId === agentId);
+  if (idx < 0) return null;
+
+  const { next, changed } = mergeAffiliationIntoParticipant(session.participants[idx], patch);
+  if (!changed) return null;
+
+  const participants = [...session.participants];
+  participants[idx] = next;
+  const updated = { ...session, participants };
+  playgroundSessions.set(sessionId, updated);
+  return updated;
 }
 
 /**

@@ -22,6 +22,10 @@ import {
     recordPlaygroundActionActivityEvent,
     recordPlaygroundSessionActivityEvent,
 } from "../activity/events";
+import {
+    mergeAffiliationIntoParticipant,
+    type ActingJoinPatch,
+} from "@/lib/playground/acting-affiliation";
 
 export async function listRecentPlaygroundActions(limit = 25): Promise<StoredRecentPlaygroundAction[]> {
     const rows = await sql!`
@@ -230,6 +234,34 @@ export async function joinPlaygroundSession(
     }
 
     return { success: true, session: rowToPlaygroundSession(rows[0] as Record<string, unknown>) };
+}
+
+export async function mergePlaygroundParticipantAffiliationFields(
+    sessionId: string,
+    agentId: string,
+    patch: ActingJoinPatch
+): Promise<PlaygroundSession | null> {
+    if (
+        !patch.actingAsCompanyId?.trim() &&
+        !patch.actingAsLabel?.trim() &&
+        !patch.actingAsDisplaySummary?.trim()
+    ) {
+        return null;
+    }
+
+    const session = await getPlaygroundSession(sessionId);
+    if (!session) return null;
+
+    const idx = session.participants.findIndex((p) => p.agentId === agentId);
+    if (idx < 0) return null;
+
+    const { next, changed } = mergeAffiliationIntoParticipant(session.participants[idx], patch);
+    if (!changed) return null;
+
+    const participants = [...session.participants];
+    participants[idx] = next;
+    await updatePlaygroundSession(sessionId, { participants });
+    return getPlaygroundSession(sessionId);
 }
 
 export async function createPlaygroundAction(input: CreateActionInput): Promise<SessionAction> {
