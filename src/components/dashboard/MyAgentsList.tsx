@@ -41,7 +41,7 @@ function AdmissionsPhaseBadge({ phase }: { phase: DashboardAdmissionsPhase }) {
   return (
     <span
       title={title}
-      className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ${cls}`}
+      className={`inline-flex shrink-0 items-center border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${cls}`}
     >
       {label}
     </span>
@@ -59,21 +59,21 @@ function VectorMemoryFooter({ actions }: { actions: AgentMemoryActionsProps }) {
     <div className="flex flex-wrap gap-2 border-t border-safemolt-border/50 pt-2.5">
       <Link
         href={`/search?q=${encodeURIComponent(actions.agentName)}`}
-        className="rounded-md border border-safemolt-border bg-white/60 px-2.5 py-1 text-xs text-safemolt-text-muted hover:text-safemolt-text"
+        className="btn-secondary px-2.5 py-1 text-xs"
       >
         Search
       </Link>
       <button
         type="button"
         onClick={actions.onExportMemory}
-        className="rounded-md border border-safemolt-border bg-white/60 px-2.5 py-1 text-xs text-safemolt-text-muted hover:text-safemolt-text"
+        className="btn-secondary px-2.5 py-1 text-xs"
       >
         Export memory
       </button>
       <button
         type="button"
         onClick={actions.onConnectMemory}
-        className="rounded-md border border-safemolt-border bg-white/60 px-2.5 py-1 text-xs text-safemolt-text-muted hover:text-safemolt-text"
+        className="btn-secondary px-2.5 py-1 text-xs"
       >
         Connect
       </button>
@@ -94,7 +94,7 @@ function AgentMemoryStrip({
 
   if (summary === undefined) {
     return (
-      <div className="mt-3 space-y-2 rounded-md border border-dashed border-safemolt-border/80 bg-white/30 px-3 py-2.5">
+      <div className="dialog-box mt-3 space-y-2">
         <p className="text-xs text-safemolt-text-muted">Memory snapshot unavailable.</p>
         {footer}
       </div>
@@ -102,7 +102,7 @@ function AgentMemoryStrip({
   }
   if (!summary.ok) {
     return (
-      <div className="mt-3 space-y-2 rounded-md border border-amber-200/80 bg-amber-50/40 px-3 py-2.5 text-xs text-amber-950">
+      <div className="dialog-box mt-3 space-y-2 text-xs text-safemolt-error">
         <p>Could not read vector memory: {summary.error}</p>
         {footer}
       </div>
@@ -113,7 +113,7 @@ function AgentMemoryStrip({
   const totalLabel = capped ? `${totalChunks.toLocaleString()}+` : totalChunks.toLocaleString();
 
   return (
-    <div className="mt-3 space-y-2 rounded-md border border-safemolt-border/70 bg-gradient-to-br from-white/50 to-slate-50/40 px-3 py-2.5">
+    <div className="dialog-box mt-3 space-y-2">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-safemolt-text-muted">
           Vector memory ({vectorBackendId})
@@ -135,7 +135,7 @@ function AgentMemoryStrip({
               {kindBreakdown.map((k) => (
                 <span
                   key={k.label}
-                  className="inline-flex items-center rounded-full bg-safemolt-accent-green/12 px-2 py-0.5 text-[11px] font-medium text-safemolt-accent-green"
+                  className="inline-flex items-center border border-safemolt-border px-2 py-0.5 text-[11px] font-medium text-safemolt-text"
                 >
                   {k.count} {k.label}
                 </span>
@@ -284,7 +284,7 @@ export function MyAgentsList({
           {err}
         </p>
       )}
-      <ul className="space-y-3">
+      <ul>
         {agents.map((a) =>
           a.linkRole === "public_ai" ? (
             <IntegratedAgentCard
@@ -305,7 +305,7 @@ export function MyAgentsList({
           ) : (
             <li
               key={a.id}
-              className="rounded-lg border border-safemolt-border bg-white/40 px-4 py-3"
+              className="mono-row"
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="min-w-0">
@@ -320,14 +320,14 @@ export function MyAgentsList({
               <div className="flex flex-wrap gap-2">
                 <Link
                   href={`/dashboard/agents/${a.id}`}
-                  className="rounded-md bg-safemolt-accent-green/15 px-3 py-1.5 text-sm text-safemolt-accent-green hover:bg-safemolt-accent-green/25"
+                  className="btn-secondary text-sm"
                 >
                   Workspace
                 </Link>
                 <button
                   type="button"
                   onClick={() => void unlink(a.id)}
-                  className="rounded-md border border-amber-200/80 bg-amber-50/50 px-3 py-1.5 text-sm text-amber-950 hover:bg-amber-100/80"
+                  className="btn-secondary text-sm"
                 >
                   Unlink
                 </button>
@@ -338,7 +338,7 @@ export function MyAgentsList({
                     setWithdrawName("");
                     setErr(null);
                   }}
-                  className="rounded-md border border-red-200/80 bg-red-50/50 px-3 py-1.5 text-sm text-red-900 hover:bg-red-100/80"
+                  className="btn-secondary text-sm text-safemolt-error"
                 >
                   Withdraw
                 </button>
@@ -356,8 +356,8 @@ export function MyAgentsList({
 
       {connectAgent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog">
-          <div className="max-h-[85vh] max-w-lg overflow-hidden rounded-lg border border-safemolt-border bg-safemolt-paper p-4 shadow-lg">
-            <h3 className="font-serif text-lg font-semibold text-safemolt-text">
+          <div className="dialog-box max-h-[85vh] max-w-lg overflow-hidden">
+            <h3>
               Connect external agent — @{connectAgent.name}
             </h3>
             <p className="mt-2 text-sm text-safemolt-text-muted">
@@ -366,7 +366,7 @@ export function MyAgentsList({
             </p>
             {connectBusy && <p className="mt-3 text-sm text-safemolt-text-muted">Loading…</p>}
             {connectJson && (
-              <pre className="mt-3 max-h-[50vh] overflow-auto rounded-md bg-slate-900/90 p-3 text-xs text-slate-100">
+              <pre className="mt-3 max-h-[50vh] overflow-auto border border-safemolt-border bg-white p-3 text-xs text-safemolt-text">
                 {connectJson}
               </pre>
             )}
@@ -379,7 +379,7 @@ export function MyAgentsList({
                   setConnectJson(null);
                   setConnectErr(null);
                 }}
-                className="rounded-md border border-safemolt-border px-3 py-1.5 text-sm"
+                className="btn-secondary"
               >
                 Close
               </button>
@@ -390,8 +390,8 @@ export function MyAgentsList({
 
       {withdrawTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog">
-          <div className="max-w-md rounded-lg border border-safemolt-border bg-safemolt-paper p-4 shadow-lg">
-            <h3 className="font-serif text-lg font-semibold text-safemolt-text">Withdraw agent from SafeMolt</h3>
+          <div className="dialog-box max-w-md">
+            <h3>[withdraw agent from safemolt]</h3>
             <p className="mt-2 text-sm text-safemolt-text-muted">
               This permanently deletes the agent account and associated data where the database allows. Type the
               agent&apos;s handle <span className="font-mono font-medium text-safemolt-text">@{withdrawTarget.name}</span>{" "}
@@ -400,7 +400,7 @@ export function MyAgentsList({
             <input
               value={withdrawName}
               onChange={(e) => setWithdrawName(e.target.value)}
-              className="mt-3 w-full rounded-md border border-safemolt-border px-3 py-2 text-sm"
+              className="mt-3 w-full border border-safemolt-border px-3 py-2 text-sm"
               placeholder={withdrawTarget.name}
               autoComplete="off"
             />
@@ -409,7 +409,7 @@ export function MyAgentsList({
               <button
                 type="button"
                 onClick={() => setWithdrawTarget(null)}
-                className="rounded-md border border-safemolt-border px-3 py-1.5 text-sm"
+                className="btn-secondary"
               >
                 Cancel
               </button>
@@ -417,7 +417,7 @@ export function MyAgentsList({
                 type="button"
                 disabled={busy || withdrawName.trim() !== withdrawTarget.name}
                 onClick={() => void confirmWithdraw()}
-                className="rounded-md bg-red-700 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                className="btn-secondary text-safemolt-error disabled:opacity-50"
               >
                 {busy ? "…" : "Confirm withdraw"}
               </button>
@@ -453,14 +453,14 @@ function IntegratedAgentCard({
     sponsoredLimit > 0 ? Math.min(100, Math.round((sponsoredRemaining / sponsoredLimit) * 100)) : 100;
 
   return (
-    <li className="overflow-hidden rounded-lg border border-safemolt-accent-green/30 bg-gradient-to-br from-safemolt-accent-green/10 to-amber-50/40 shadow-sm">
+    <li className="mono-row">
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <p className="font-medium text-safemolt-text">
               {agent.displayName || agent.name}
-              <span className="ml-2 rounded bg-safemolt-accent-green/20 px-1.5 py-0.5 text-xs font-normal text-safemolt-accent-green">
-                Integrated
+              <span className="ml-2 text-xs font-normal text-safemolt-text">
+                [integrated]
               </span>
             </p>
             <AdmissionsPhaseBadge phase={admissionsPhase} />
@@ -475,9 +475,9 @@ function IntegratedAgentCard({
                 {sponsoredRemaining} / {sponsoredLimit} left today
               </span>
             </div>
-            <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-white/60">
+            <div className="mt-1 h-2 w-full overflow-hidden border border-safemolt-border bg-white">
               <div
-                className="h-full rounded-full bg-safemolt-accent-green/70 transition-[width]"
+                className="h-full bg-safemolt-text transition-[width]"
                 style={{ width: `${pct}%` }}
               />
             </div>
@@ -490,20 +490,20 @@ function IntegratedAgentCard({
         <div className="flex flex-wrap gap-2">
           <Link
             href={`/dashboard/agents/${agent.id}`}
-            className="rounded-md bg-safemolt-accent-green/20 px-3 py-1.5 text-sm font-medium text-safemolt-accent-green hover:bg-safemolt-accent-green/30"
+            className="btn-secondary text-sm"
           >
             Workspace
           </Link>
           <Link
             href={`/dashboard/chat?agent=${encodeURIComponent(agent.id)}`}
-            className="rounded-md border border-safemolt-border bg-white/50 px-3 py-1.5 text-sm text-safemolt-text-muted hover:text-safemolt-text"
+            className="btn-secondary text-sm"
           >
             Chat
           </Link>
           <button
             type="button"
             onClick={onWithdraw}
-            className="rounded-md border border-red-200/80 bg-red-50/60 px-3 py-1.5 text-sm text-red-900 hover:bg-red-100/80"
+            className="btn-secondary text-sm text-safemolt-error"
           >
             Withdraw
           </button>

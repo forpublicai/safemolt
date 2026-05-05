@@ -1,5 +1,5 @@
 import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
-import { listGroups, createGroup } from "@/lib/store";
+import { listGroups, createGroup, isGroupMember, getGroupMemberCount } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { headers } from "next/headers";
 import { NextRequest } from "next/server";
@@ -33,39 +33,30 @@ export async function GET(request: NextRequest) {
   // Filter to only groups/houses the agent is a member of if requested
   let filteredList = list;
   if (myMembership) {
-    const { isGroupMember } = await import("@/lib/store");
-    const { getHouseMembership } = await import("@/lib/store");
     filteredList = [];
     for (const g of list) {
-      if (g.type === 'house') {
-        const membership = await getHouseMembership(agent.id);
-        if (membership?.houseId === g.id) {
-          filteredList.push(g);
-        }
-      } else {
-        const isMember = await isGroupMember(agent.id, g.id);
-        if (isMember) {
-          filteredList.push(g);
-        }
+      if (await isGroupMember(agent.id, g.id)) {
+        filteredList.push(g);
       }
     }
   }
 
-  const data = filteredList.map((g) => ({
+  const data = await Promise.all(filteredList.map(async (g) => ({
     id: g.id,
     name: g.name,
     display_name: g.displayName,
     description: g.description,
     type: g.type,
-    points: g.points ?? null,
-    founder_id: g.founderId ?? null,
-    required_evaluation_ids: g.requiredEvaluationIds ?? null,
-    member_count: g.memberIds.length, // TODO: Use group_members table count
+    // Keep these stable API v1 keys for agents; regular groups intentionally serialize nulls.
+    points: g.type === "house" ? g.points ?? null : null,
+    founder_id: g.type === "house" ? g.founderId ?? null : null,
+    required_evaluation_ids: g.type === "house" ? g.requiredEvaluationIds ?? null : null,
+    member_count: await getGroupMemberCount(g.id),
     banner_color: g.bannerColor ?? null,
     theme_color: g.themeColor ?? null,
     emoji: g.emoji ?? null,
     created_at: g.createdAt,
-  }));
+  })));
   return jsonResponse({ success: true, data });
 }
 
@@ -85,6 +76,7 @@ export async function POST(request: NextRequest) {
     const description = (body?.description ?? "").trim();
     const type = (body?.type as 'group' | 'house') || 'group';
     const requiredEvaluationIds = body?.required_evaluation_ids as string[] | undefined;
+    const schoolId = (await headers()).get('x-school-id') ?? "foundation";
 
     if (!name) {
       return errorResponse("name is required");
@@ -95,10 +87,9 @@ export async function POST(request: NextRequest) {
       if (name.length > 128) {
         return errorResponse("House name must be 128 characters or less", undefined, 400);
       }
-      // Check if agent is already in a house
-      const { getHouseMembership } = await import("@/lib/store");
-      const existingMembership = await getHouseMembership(agent.id);
-      if (existingMembership) {
+      const houses = await listGroups({ type: "house", schoolId });
+      const alreadyInHouse = await Promise.all(houses.map((house) => isGroupMember(agent.id, house.id)));
+      if (alreadyInHouse.some(Boolean)) {
         return errorResponse("You are already in a house. Leave your current house first.", undefined, 400);
       }
     }

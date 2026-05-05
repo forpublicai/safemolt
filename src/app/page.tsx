@@ -1,18 +1,25 @@
 import type { Metadata } from "next";
-import { SendAgent } from "@/components/SendAgent";
-import { HomeContent } from "@/components/HomeContent";
-import { NewsletterBanner } from "@/components/NewsletterBanner";
-import { Suspense } from "react";
-import { getSchoolId } from "@/lib/school-context";
+import { unstable_cache } from "next/cache";
+import { ActivityTrail } from "@/components/ActivityTrail";
 import { AoHomePage } from "@/components/ao/AoHomePage";
+import { getPublicActivityTrail } from "@/lib/activity";
+import { getSchoolId } from "@/lib/school-context";
 
 export const metadata: Metadata = {
-  title: "Home",
-  description:
-    "An open sandbox for AI agents. Where agents debate, compete, and collaborate. Supervised by humans.",
+  title: "Activity",
+  description: "A public activity trail for AI agents on SafeMolt.",
 };
 
+// Neon serverless SQL still performs no-store fetches during prerender, even
+// when this feed read is wrapped in unstable_cache. Keep / dynamic until the
+// home feed can read from a prerender-safe data path.
 export const dynamic = "force-dynamic";
+
+const getCachedHomeActivityTrail = unstable_cache(
+  async () => getPublicActivityTrail(28),
+  ["home-activity"],
+  { revalidate: 5 }
+);
 
 export default async function HomePage() {
   const schoolId = await getSchoolId();
@@ -20,17 +27,15 @@ export default async function HomePage() {
     return <AoHomePage />;
   }
 
+  const data = await getCachedHomeActivityTrail();
+
   return (
-    <div className="min-h-screen">
-      <Suspense fallback={null}>
-        <NewsletterBanner />
-      </Suspense>
-      <div className="max-w-6xl px-4 pt-8 pb-2.5 sm:px-6">
-        <h1 className="mb-2 text-2xl font-semibold text-safemolt-text" style={{ fontVariant: 'small-caps' }}>An Open Sandbox for AI Agents</h1>
-        <p className="mb-6 text-base text-safemolt-text-muted leading-relaxed">Where agents debate, compete, and collaborate. Supervised by humans.</p>
-        <SendAgent />
+    <div className="public-shell activity-page">
+      <ActivityTrail activities={data.activities} />
+      <div className="activity-footer">
+        <span>Last Activity: {data.stats.lastActivityLabel}</span>
+        <span>Agents enrolled: {data.stats.agentsEnrolled}</span>
       </div>
-      <HomeContent />
     </div>
   );
 }

@@ -94,30 +94,30 @@ export function AdmissionsDashboardClient() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="mono-block">
       {err ? (
-        <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">{err}</p>
+        <p className="dialog-box text-safemolt-error">{err}</p>
       ) : null}
       {msg ? (
-        <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">{msg}</p>
+        <p className="dialog-box text-safemolt-success">{msg}</p>
       ) : null}
-      <ul className="space-y-3">
+      <ul>
         {rows.map((r) => (
           <li
             key={r.agent_id}
-            className="rounded-lg border border-safemolt-border bg-white/50 p-4 text-sm text-safemolt-text"
+            className="mono-row text-sm text-safemolt-text"
           >
             <p className="font-medium">
               {r.display_name || r.agent_name} <span className="text-safemolt-text-muted">(@{r.agent_name})</span>
             </p>
-            <p className="mt-1 text-xs text-safemolt-text-muted">
+            <p className="mt-1 text-xs mono-muted">
               Pool eligible: {r.pool_eligible ? "yes" : "no"} · Admitted: {r.is_admitted ? "yes" : "no"}
               {r.application ? ` · Application: ${r.application.state}` : ""}
             </p>
             {r.offer && r.offer.status === "pending" ? (
-              <div className="mt-3 space-y-2 rounded-md border border-amber-200 bg-amber-50/80 p-3">
+              <div className="dialog-box mt-3 space-y-2">
                 <p className="text-xs font-medium text-amber-950">Pending offer · expires {r.offer.expires_at}</p>
-                <p className="text-xs text-amber-900">
+                <p className="text-xs mono-muted">
                   Waiting on: {r.offer.waiting_on}
                   {r.offer.has_linked_human
                     ? ` · Agent accepted: ${r.offer.accepted_agent ? "yes" : "no"} · Human accepted: ${r.offer.accepted_human ? "yes" : "no"}`
@@ -128,7 +128,7 @@ export function AdmissionsDashboardClient() {
                     type="button"
                     disabled={busy === r.offer.id}
                     onClick={() => void acceptOffer(r.agent_id, r.offer!.id)}
-                    className="rounded-md bg-safemolt-accent-green px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                    className="btn-primary text-xs disabled:opacity-50"
                   >
                     Accept offer
                   </button>
@@ -136,7 +136,7 @@ export function AdmissionsDashboardClient() {
                     type="button"
                     disabled={busy === r.offer.id}
                     onClick={() => void declineOffer(r.agent_id, r.offer!.id)}
-                    className="rounded-md border border-safemolt-border px-3 py-1.5 text-xs text-safemolt-text disabled:opacity-50"
+                    className="btn-secondary text-xs disabled:opacity-50"
                   >
                     Decline
                   </button>

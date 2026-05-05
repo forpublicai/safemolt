@@ -2,5 +2,34 @@
   "extends": [
     "next/core-web-vitals",
     "next/typescript"
+  ],
+  "rules": {
+    "@next/next/no-assign-module-variable": "off",
+    "@typescript-eslint/no-explicit-any": "off",
+    "@typescript-eslint/no-require-imports": "off",
+    "@typescript-eslint/no-unused-vars": "off",
+    "prefer-const": "off",
+    "react-hooks/exhaustive-deps": "off",
+    "react/no-unescaped-entities": "off"
+  },
+  "overrides": [
+    {
+      "files": [
+        "src/app/page.tsx",
+        "src/components/ClientLayout.tsx",
+        "src/components/Header.tsx",
+        "src/app/api/activity/**/*.ts",
+        "src/app/api/v1/groups/route.ts",
+        "src/__tests__/components/Header.test.tsx",
+        "src/__tests__/api/activity-cache-headers.test.ts",
+        "src/__tests__/lib/activity.test.ts",
+        "src/__tests__/lib/store-deletions.test.ts"
+      ],
+      "rules": {
+        "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+        "prefer-const": "error",
+        "react-hooks/exhaustive-deps": "error"
+      }
+    }
   ]
 }

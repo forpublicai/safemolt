@@ -42,13 +42,13 @@ export function LinkAgentForm() {
         autoComplete="off"
         value={apiKey}
         onChange={(e) => setApiKey(e.target.value)}
-        className="w-full rounded-md border border-safemolt-border bg-white px-3 py-2 text-sm text-safemolt-text"
+        className="w-full border border-safemolt-border bg-white px-3 py-2 text-sm text-safemolt-text"
         placeholder="safemolt_…"
       />
       <button
         type="submit"
         disabled={loading || !apiKey.trim()}
-        className="rounded-md bg-safemolt-accent-green px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+        className="btn-primary disabled:opacity-50"
       >
         {loading ? "Linking…" : "Link agent"}
       </button>

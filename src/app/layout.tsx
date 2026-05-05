@@ -1,23 +1,15 @@
 import type { Metadata } from "next";
-import { Inter, Crimson_Pro } from "next/font/google";
 import { headers } from "next/headers";
+import { unstable_cache } from "next/cache";
 import "./globals.css";
-import { Footer } from "@/components/Footer";
-import { ClientLayout } from "@/components/ClientLayout";
-import { AoLayout } from "@/components/ao/AoLayout";
 import { Analytics } from "@vercel/analytics/next";
 import { auth } from "@/auth";
+import { AoLayout } from "@/components/ao/AoLayout";
+import { ClientLayout } from "@/components/ClientLayout";
 import { getSchool } from "@/lib/store";
 import { getSchoolConfig } from "@/lib/schools/loader";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
-const crimsonPro = Crimson_Pro({
-  subsets: ["latin"],
-  variable: "--font-serif",
-  weight: ["400", "500", "600", "700"],
-});
-
-/** Converts a hex color to space-separated RGB channels for CSS `rgb(R G B / alpha)` syntax. */
+/** Converts a hex color to space-separated RGB channels for CSS rgb(R G B / alpha) syntax. */
 function hexToRgbChannels(hex: string): string | null {
   const clean = hex.replace("#", "");
   if (clean.length !== 6) return null;
@@ -30,6 +22,11 @@ function hexToRgbChannels(hex: string): string | null {
 
 const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 const ogImageUrl = `${appUrl.replace(/\/$/, "")}/og-image.png`;
+const getCachedSchool = unstable_cache(
+  async (schoolId: string) => getSchool(schoolId),
+  ["school-theme"],
+  { revalidate: 300 }
+);
 
 export const metadata: Metadata = {
   metadataBase: new URL(appUrl),
@@ -69,8 +66,7 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   // Inject per-school CSS variable overrides from school.yaml config.theme.
-  // Both hex vars (used in gradients/shadows) and RGB channel vars (used by Tailwind
-  // opacity modifiers like bg-color/10) are injected so the full color system is overrideable.
+  // Both hex vars and RGB channel vars are injected so Tailwind opacity modifiers keep working.
   let schoolThemeStyle = "";
   let activeSchoolId: string | null = null;
   try {
@@ -78,9 +74,7 @@ export default async function RootLayout({
     const schoolId = h.get("x-school-id");
     activeSchoolId = schoolId;
     if (schoolId && schoolId !== "foundation") {
-      const school = await getSchool(schoolId);
-      // Merge DB config with filesystem school.yaml — YAML `config.theme` wins on conflicts so
-      // palette updates ship without relying on stale `schools` rows or absent in-memory seed.
+      const school = await getCachedSchool(schoolId);
       const dbTheme =
         school?.config?.theme && typeof school.config.theme === "object"
           ? (school.config.theme as Record<string, string>)
@@ -99,7 +93,6 @@ export default async function RootLayout({
         for (const [key, hex] of Object.entries(theme)) {
           if (typeof hex !== "string" || !hex.startsWith("#")) continue;
           cssVars.push(`--safemolt-${key}: ${hex};`);
-          // Also inject the RGB channel triplet so Tailwind opacity modifiers keep working
           const rgb = hexToRgbChannels(hex);
           if (rgb) cssVars.push(`--safemolt-${key}-rgb: ${rgb};`);
         }
@@ -109,11 +102,10 @@ export default async function RootLayout({
       }
     }
   } catch {
-    // Non-critical — fall back to default theme silently
+    // Non-critical; fall back to default theme silently.
   }
 
   const isAo = activeSchoolId === "ao";
-
   const session = await auth();
 
   const jsonLd = {
@@ -143,8 +135,8 @@ export default async function RootLayout({
   };
 
   return (
-    <html lang="en" className={`${inter.variable} ${crimsonPro.variable}`}>
-      <body className="min-h-screen flex flex-col font-serif relative bg-safemolt-paper">
+    <html lang="en">
+      <body className="min-h-screen flex flex-col font-mono relative bg-safemolt-paper">
         {schoolThemeStyle && <style dangerouslySetInnerHTML={{ __html: schoolThemeStyle }} />}
         <script
           type="application/ld+json"

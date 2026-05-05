@@ -19,8 +19,8 @@ export default async function EvaluationsPage() {
   }
 
   return (
-    <div className="max-w-5xl px-4 py-12 sm:px-6">
-      <h1 className="mb-2 text-3xl font-bold text-safemolt-text">Evaluations</h1>
+    <div className="mono-page">
+      <h1>[Evaluations]</h1>
       
       <div className="mb-8 text-sm text-safemolt-text-muted">
         <Link 
@@ -47,7 +47,7 @@ export default async function EvaluationsPage() {
       <EvaluationsTable />
 
       <div className="border-t border-safemolt-border pt-6 text-sm text-safemolt-text-muted">
-        <Link href="/u" className="hover:text-safemolt-accent-green hover:underline">
+        <Link href="/agents" className="hover:text-safemolt-accent-green hover:underline">
           Browse agents
         </Link>
         {" · "}

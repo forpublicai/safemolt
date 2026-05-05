@@ -94,21 +94,9 @@ export interface StoredComment {
   createdAt: string;
 }
 
-/** House - a team/leaderboard group distinct from community groups */
-export interface StoredHouse {
-  id: string;
-  name: string;              // max 128 chars
-  founderId: string;
-  points: number;
-  createdAt: string;
-}
-
-/** House membership record */
-export interface StoredHouseMember {
-  agentId: string;
-  houseId: string;
-  pointsAtJoin: number;       // snapshot for contribution calculation
-  joinedAt: string;
+export interface StoredCommentWithPost {
+  comment: StoredComment;
+  post: StoredPost;
 }
 
 /** Post vote record (track who voted on which post) */
@@ -132,6 +120,84 @@ export interface StoredAnnouncement {
   id: string;
   content: string;
   createdAt: string;
+}
+
+export interface StoredRecentEvaluationResult {
+  id: string;
+  registrationId: string;
+  evaluationId: string;
+  agentId: string;
+  passed: boolean;
+  completedAt: string;
+  evaluationVersion?: string;
+  score?: number;
+  maxScore?: number;
+  pointsEarned?: number;
+  resultData?: Record<string, unknown>;
+  proctorAgentId?: string;
+  proctorFeedback?: string;
+}
+
+export interface StoredRecentPlaygroundAction {
+  id: string;
+  sessionId: string;
+  agentId: string;
+  round: number;
+  content: string;
+  createdAt: string;
+  gameId: string;
+  sessionStatus: string;
+}
+
+export interface StoredAgentLoopAction {
+  id: string;
+  agentId: string;
+  action: string;
+  targetType?: string;
+  targetId?: string;
+  contentSnippet?: string;
+  createdAt: string;
+}
+
+export interface StoredActivityContext {
+  activityKind: string;
+  activityId: string;
+  promptVersion: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type StoredActivityFeedKind =
+  | "post"
+  | "comment"
+  | "evaluation_result"
+  | "playground_session"
+  | "playground_action"
+  | "agent_loop";
+
+export interface StoredActivityFeedOptions {
+  query?: string;
+  types?: string[];
+  before?: string;
+  beforeId?: string;
+  limit?: number;
+}
+
+export interface StoredActivityFeedItem {
+  id: string;
+  cursorId?: string;
+  kind: StoredActivityFeedKind;
+  occurredAt: string;
+  actorId?: string;
+  actorName?: string;
+  actorCanonicalName?: string;
+  title: string;
+  href?: string;
+  summary: string;
+  contextHint: string;
+  searchText: string;
+  metadata?: Record<string, unknown>;
 }
 
 /** AT Protocol identity: DID (did:web:{handle}), handle, and signing key. agentId null = shared network identity. */
@@ -455,6 +521,7 @@ export interface IStore {
   createAgent(name: string, apiKey: string): Promise<StoredAgent>;
   getAgentByApiKey(apiKey: string): Promise<StoredAgent | null>;
   getAgentById(id: string): Promise<StoredAgent | null>;
+  getAgentsByIds(ids: string[]): Promise<StoredAgent[]>;
   getAgentByName(name: string): Promise<StoredAgent | null>;
   getAgentByClaimToken(token: string): Promise<StoredAgent | null>;
   setAgentClaimed(
@@ -465,6 +532,7 @@ export interface IStore {
   ): Promise<boolean>;
   setAgentUnclaimed(agentId: string): Promise<void>;
   listAgents(): Promise<StoredAgent[]>;
+  countAgents(): Promise<number>;
   updateAgent(
     id: string,
     updates: Updatable<StoredAgent, "description" | "displayName" | "avatarUrl" | "lastActiveAt" | "metadata">
@@ -525,30 +593,12 @@ export interface IStore {
   unsubscribeFromGroup(agentId: string, groupName: string): Promise<boolean>;
   isSubscribed(agentId: string, groupName: string): Promise<boolean>;
 
-  // Newsletter methods
-  subscribeNewsletter(email: string): Promise<{ token: string }>;
-  confirmNewsletter(token: string): Promise<boolean>;
-  unsubscribeNewsletter(email: string): Promise<boolean>;
-
   // Vetting challenge methods
   createVettingChallenge(agentId: string): Promise<VettingChallenge>;
   getVettingChallenge(id: string): Promise<VettingChallenge | null>;
   markChallengeFetched(id: string): Promise<boolean>;
   consumeVettingChallenge(id: string): Promise<boolean>;
   setAgentVetted(agentId: string, identityMd: string): Promise<boolean>;
-
-  // House methods
-  createHouse(founderId: string, name: string, requiredEvaluationIds?: string[]): Promise<StoredHouse | null>;
-  getHouse(id: string): Promise<StoredHouse | null>;
-  getHouseByName(name: string): Promise<StoredHouse | null>;
-  listHouses(sort?: "points" | "recent" | "name"): Promise<StoredHouse[]>;
-  getHouseMembership(agentId: string): Promise<StoredHouseMember | null>;
-  getHouseMembers(houseId: string): Promise<StoredHouseMember[]>;
-  getHouseMemberCount(houseId: string): Promise<number>;
-  joinHouse(agentId: string, houseId: string): Promise<boolean>;
-  leaveHouse(agentId: string): Promise<boolean>;
-  recalculateHousePoints(houseId: string): Promise<boolean>;
-  getHouseWithDetails(houseId: string): Promise<(StoredHouse & { memberCount: number }) | null>;
 
   // Certification job methods (for agent_certification type evaluations)
   createCertificationJob(

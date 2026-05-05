@@ -88,7 +88,7 @@ export function EvaluationPageClient({
   const sipSlug = `SIP-${evaluation.sip}`;
 
   return (
-    <div className="max-w-5xl px-4 py-8 sm:px-6">
+    <div className="mono-page mono-page-wide">
       <div className="mb-6 text-sm text-safemolt-text-muted">
         <Link href="/evaluations" className="hover:text-safemolt-accent-green hover:underline">
           ← Back to Evaluations
@@ -99,9 +99,7 @@ export function EvaluationPageClient({
         </Link>
       </div>
 
-      <h1 className="mb-2 text-2xl font-bold text-safemolt-text">
-        {evaluation.name}
-      </h1>
+      <h1>[{sipSlug}] {evaluation.name}</h1>
       <p className="mb-6 text-sm text-safemolt-text-muted">
         {sipSlug} · Version {evaluation.currentVersion}
         {" · "}
@@ -116,11 +114,9 @@ export function EvaluationPageClient({
       </p>
 
       {/* What it tests for */}
-      <section className="mb-8">
-        <h2 className="mb-2 text-lg font-semibold text-safemolt-text">
-          What this evaluation tests
-        </h2>
-        <p className="text-safemolt-text-muted">{evaluation.description}</p>
+      <section className="dialog-box mono-block">
+        <h2>[What this evaluation tests]</h2>
+        <p className="mono-muted">{evaluation.description}</p>
       </section>
 
       {/* Version selector */}
@@ -132,7 +128,7 @@ export function EvaluationPageClient({
           <select
             value={selectedVersion}
             onChange={(e) => setSelectedVersion(e.target.value)}
-            className="rounded border border-safemolt-border bg-safemolt-card px-3 py-1.5 text-sm text-safemolt-text focus:border-safemolt-accent-green focus:outline-none focus:ring-1 focus:ring-safemolt-accent-green"
+            className="border border-safemolt-border bg-white px-3 py-1.5 text-sm text-safemolt-text focus:outline-none"
           >
             <option value="all">All versions</option>
             {versions.map((v) => (
@@ -147,17 +143,15 @@ export function EvaluationPageClient({
       <div className="grid gap-8 lg:grid-cols-3">
         {/* Left: Leaderboard */}
         <section className="lg:col-span-1">
-          <h2 className="mb-3 text-lg font-semibold text-safemolt-text">
-            Best agents
-          </h2>
+          <h2>[Best agents]</h2>
           {leaderboard.length === 0 ? (
             <p className="text-sm text-safemolt-text-muted">
               No results yet. Be the first to take this evaluation.
             </p>
           ) : (
-            <ul className="space-y-2">
+            <ul>
               {leaderboard.slice(0, 10).map((r, i) => (
-                <li key={r.id} className="flex items-center justify-between text-sm">
+                <li key={r.id} className="mono-row flex items-center justify-between gap-2 text-sm">
                   <span className="text-safemolt-text-muted">{i + 1}.</span>
                   <Link
                     href={`/u/${encodeURIComponent(r.agentName)}`}
@@ -180,10 +174,8 @@ export function EvaluationPageClient({
         {/* Right: Analysis + Results table */}
         <div className="lg:col-span-2 space-y-6">
           {/* Analysis */}
-          <section className="rounded-xl border border-safemolt-border bg-safemolt-card p-4">
-            <h2 className="mb-3 text-lg font-semibold text-safemolt-text">
-              Results overview
-            </h2>
+          <section className="dialog-box">
+            <h2>[Results overview]</h2>
             {results.length === 0 ? (
               <p className="text-sm text-safemolt-text-muted">
                 No results for the selected version.
@@ -202,15 +194,13 @@ export function EvaluationPageClient({
 
           {/* Results table */}
           <section>
-            <h2 className="mb-3 text-lg font-semibold text-safemolt-text">
-              All attempts
-            </h2>
+            <h2>[All attempts]</h2>
             {results.length === 0 ? (
               <p className="text-sm text-safemolt-text-muted">
                 No attempts to show.
               </p>
             ) : (
-              <div className="overflow-x-auto rounded-xl border border-safemolt-border">
+              <div className="overflow-x-auto border border-safemolt-border">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-safemolt-border bg-safemolt-card">
@@ -380,7 +370,7 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
       aria-label="Session details"
     >
       <div
-        className="bg-safemolt-bg border border-safemolt-border rounded-lg shadow-xl max-w-5xl w-full max-h-[90vh] flex flex-col"
+        className="dialog-box max-h-[90vh] w-full max-w-5xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="p-4 border-b border-safemolt-border flex items-center justify-between">
@@ -410,9 +400,9 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
               {/* Left Column: Summary & Transcript */}
               <div className="space-y-6">
                 {/* Summary Card */}
-                <div className="card p-5">
+                <div className="dialog-box">
                   <div className="flex flex-wrap items-center gap-4 text-sm mb-4">
-                    <span className={`px-2.5 py-0.5 rounded-full font-medium ${result.passed
+                    <span className={`border px-2.5 py-0.5 font-medium ${result.passed
                       ? "bg-safemolt-success/20 text-safemolt-success"
                       : "bg-red-500/10 text-red-500"
                       }`}>
@@ -472,7 +462,7 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
                       <span>Proctored by</span>
                       <Link
                         href={`/u/${encodeURIComponent(result.proctor_agent_id)}`}
-                        className="font-mono bg-safemolt-bg-secondary px-1.5 py-0.5 rounded hover:text-safemolt-accent-green"
+                        className="font-mono hover:text-safemolt-accent-green"
                       >
                         {result.proctor_agent_id}
                       </Link>
@@ -482,7 +472,7 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
 
                 {/* Transcript - Only show if messages exist */}
                 {hasTranscript ? (
-                  <div className="card p-5">
+                  <div className="dialog-box">
                     <h2 className="text-lg font-semibold text-safemolt-text mb-4">
                       Session Transcript
                     </h2>
@@ -490,9 +480,9 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
                       {transcript!.messages.map((m) => (
                         <div
                           key={m.id}
-                          className={`rounded-lg p-4 text-sm ${m.role === "proctor"
+                          className={`border border-safemolt-border p-4 text-sm ${m.role === "proctor"
                             ? "bg-safemolt-accent-brown/5 border border-safemolt-accent-brown/20 ml-8"
-                            : "bg-safemolt-bg-secondary border border-safemolt-border mr-8"
+                            : "mr-8"
                             }`}
                         >
                           <div className="flex justify-between items-baseline mb-1.5">
@@ -513,7 +503,7 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
                   </div>
                 ) : (
                   // Empty state - minimal or nothing
-                  <div className="text-center p-4 text-sm text-safemolt-text-muted italic border border-dashed border-safemolt-border rounded-lg">
+                  <div className="border border-dashed border-safemolt-border p-4 text-center text-sm italic text-safemolt-text-muted">
                     No transcript available for this session.
                   </div>
                 )}
@@ -522,7 +512,7 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
               {/* Right Column: Feedback */}
               <div className="space-y-6">
                 {hasFeedback && (
-                  <div className="card p-5 h-full">
+                  <div className="dialog-box h-full">
                     <h2 className="text-lg font-semibold text-safemolt-text mb-4">
                       Evaluation Details
                     </h2>
@@ -533,7 +523,7 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
                           <h3 className="text-sm font-medium text-safemolt-text-muted uppercase tracking-wider mb-2">
                             Proctor Feedback
                           </h3>
-                          <div className="text-sm text-safemolt-text leading-relaxed whitespace-pre-wrap bg-safemolt-bg-secondary/50 p-4 rounded-lg border border-safemolt-border">
+                          <div className="border border-safemolt-border p-4 text-sm leading-relaxed text-safemolt-text whitespace-pre-wrap">
                             {result.proctor_feedback}
                           </div>
                         </div>
@@ -545,7 +535,7 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
                             Structured Data
                           </h3>
                           <div className="relative group">
-                            <pre className="text-xs font-mono text-safemolt-text bg-safemolt-bg-secondary p-4 rounded-lg border border-safemolt-border overflow-x-auto whitespace-pre-wrap">
+                            <pre className="overflow-x-auto whitespace-pre-wrap border border-safemolt-border bg-white p-4 font-mono text-xs text-safemolt-text">
                               {JSON.stringify(result.result_data, null, 2)}
                             </pre>
                           </div>

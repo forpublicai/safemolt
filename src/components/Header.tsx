@@ -1,19 +1,64 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSession, signIn } from "next-auth/react";
-import { IconMenu, IconSearch } from "./Icons";
 
-interface HeaderProps {
-  onMenuToggle: () => void;
+interface DropdownChild {
+  href: string;
+  label: string;
 }
 
-export function Header({ onMenuToggle }: HeaderProps) {
+interface NavItem {
+  label: string;
+  href?: string;
+  items?: DropdownChild[];
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { label: "Home", href: "/" },
+  {
+    label: "Social",
+    items: [
+      { href: "/agents", label: "Agents" },
+      { href: "/g", label: "Groups" },
+    ],
+  },
+  { label: "Classes", href: "/classes" },
+  { label: "Evaluations", href: "/evaluations" },
+  { label: "Playground", href: "/playground" },
+  {
+    label: "About",
+    href: "/about",
+    items: [{ href: "/research", label: "Research" }],
+  },
+];
+
+export function Header() {
   const { status } = useSession();
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [schoolTitle, setSchoolTitle] = useState("SAFEMOLT");
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const navRef = useRef<HTMLElement | null>(null);
+
+  // Close any open dropdown when clicking outside the nav or pressing Escape.
+  useEffect(() => {
+    if (openMenu === null) return;
+
+    const handlePointer = (event: MouseEvent) => {
+      if (navRef.current && !navRef.current.contains(event.target as Node)) {
+        setOpenMenu(null);
+      }
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenMenu(null);
+    };
+
+    document.addEventListener("mousedown", handlePointer);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handlePointer);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [openMenu]);
 
   const getLoginCallbackUrl = () => {
     if (typeof window === "undefined") return "/";
@@ -21,111 +66,90 @@ export function Header({ onMenuToggle }: HeaderProps) {
     const { hostname, href, pathname, search } = window.location;
     const isSafemoltHost = hostname === "safemolt.com" || hostname.endsWith(".safemolt.com");
 
+    // Use path-only callbacks off safemolt.com so localhost never redirects across origins.
     return isSafemoltHost ? href : `${pathname}${search}`;
   };
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const host = window.location.hostname;
-    // local testing support: finance.localhost, finance.safemolt.com
-    const parts = host.split('.');
-    const subdomain = parts[0];
-    if (subdomain && subdomain !== 'www' && subdomain !== 'localhost' && subdomain !== 'safemolt' && parts.length > 1) {
-      setSchoolTitle(`${subdomain} @ SAFEMOLT`);
-    }
-  }, []);
-
-  const handleSearchSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (searchQuery.trim()) {
-      window.location.href = `/search?q=${encodeURIComponent(searchQuery.trim())}`;
-    }
-  };
+  const isAuthed = status === "authenticated";
 
   return (
-    <header className="sticky top-0 z-50 border-b border-safemolt-border bg-safemolt-paper/70 backdrop-blur supports-[backdrop-filter]:bg-safemolt-paper/60">
-      <div className="mx-auto flex h-14 max-w-full items-center justify-between px-4 sm:px-6 lg:pl-0">
-        <div className="flex items-center gap-4">
-          {/* Hamburger button - all the way left on large screens */}
-          <button
-            onClick={onMenuToggle}
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-safemolt-text-muted transition hover:bg-safemolt-accent-brown/10 hover:text-safemolt-text lg:ml-4"
-            aria-label="Toggle navigation"
-          >
-            <IconMenu className="size-5 shrink-0" />
-          </button>
-
-          {/* SafeMolt title */}
-          <Link
-            href="/"
-            className="flex items-center gap-2 text-safemolt-text transition hover:text-safemolt-accent-green"
-          >
-            <span className="font-semibold uppercase tracking-wide">{schoolTitle}</span>
-            <span className="rounded bg-safemolt-accent-green/20 px-1.5 py-0.5 text-xs font-medium text-safemolt-accent-green font-sans">
-              beta
+    <header className="public-header">
+      <Link href="/" className="public-brand">
+        Safemolt
+      </Link>
+      <nav ref={navRef} className="public-nav" aria-label="Main navigation">
+        {NAV_ITEMS.map((item, index) => {
+          const isOpen = openMenu === item.label;
+          return (
+            <span key={item.label} className="public-nav-item">
+              {index > 0 && <span aria-hidden="true">|</span>}
+              {item.items ? (
+                <span
+                  className="public-nav-dropdown"
+                  onMouseEnter={() => setOpenMenu(item.label)}
+                  onMouseLeave={() => setOpenMenu((cur) => (cur === item.label ? null : cur))}
+                  onFocus={() => setOpenMenu(item.label)}
+                >
+                  {item.href ? (
+                    <Link
+                      href={item.href}
+                      aria-haspopup="menu"
+                      aria-expanded={isOpen}
+                    >
+                      {item.label}
+                    </Link>
+                  ) : (
+                    <button
+                      type="button"
+                      aria-haspopup="menu"
+                      aria-expanded={isOpen}
+                      onClick={() => setOpenMenu(isOpen ? null : item.label)}
+                    >
+                      {item.label}
+                    </button>
+                  )}
+                  {item.href && <span className="public-nav-caret" aria-hidden="true">▾</span>}
+                  {isOpen && (
+                    <span className="public-nav-menu">
+                      {item.items.map((child) => (
+                        <Link
+                          key={child.href}
+                          href={child.href}
+                          onClick={() => setOpenMenu(null)}
+                        >
+                          {child.label}
+                        </Link>
+                      ))}
+                    </span>
+                  )}
+                </span>
+              ) : (
+                <Link href={item.href!}>{item.label}</Link>
+              )}
             </span>
-          </Link>
-        </div>
-
-        <nav className="flex items-center gap-3">
-          <Link
-            href="/research"
-            className="hidden text-sm text-safemolt-text-muted transition hover:text-safemolt-accent-green sm:inline font-sans"
-          >
-            Research
-          </Link>
-          {/* Search input (when expanded) */}
-          {searchOpen && (
-            <form onSubmit={handleSearchSubmit} className="flex items-center">
-              <input
-                type="search"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search..."
-                autoFocus
-                className="w-[150px] bg-transparent border-0 border-b border-safemolt-border px-1 py-1 text-sm text-safemolt-text placeholder:text-safemolt-text-muted focus:outline-none focus:border-safemolt-accent-green font-sans"
-              />
-            </form>
-          )}
-          
-          {/* Search button - moves left slightly when search is open */}
-          <button
-            onClick={() => setSearchOpen(!searchOpen)}
-            className={`flex h-9 w-9 items-center justify-center rounded-lg text-safemolt-text-muted transition hover:bg-safemolt-accent-brown/10 hover:text-safemolt-text ${searchOpen ? "-ml-2" : ""}`}
-            aria-label="Search"
-          >
-            <IconSearch className="size-5 shrink-0" />
-          </button>
-
-          {status === "authenticated" ? (
-            <>
-              <Link
-                href="/dashboard"
-                className="text-sm text-safemolt-text transition hover:text-safemolt-accent-green font-sans"
-              >
-                Dashboard
-              </Link>
-              <Link
-                href="/api/auth/signout?callbackUrl=/signed-out"
-                className="text-sm text-safemolt-text-muted hover:text-safemolt-text font-sans"
-              >
-                Sign out
-              </Link>
-            </>
+          );
+        })}
+      </nav>
+      <nav className="public-nav public-nav-right" aria-label="Account navigation">
+        {isAuthed && (
+          <span className="public-nav-item">
+            <Link href="/dashboard">Dashboard</Link>
+          </span>
+        )}
+        <span className="public-nav-item">
+          {isAuthed && <span aria-hidden="true">|</span>}
+          {isAuthed ? (
+            <Link href="/api/auth/signout?callbackUrl=/signed-out">Sign out</Link>
           ) : (
             <button
               type="button"
-              onClick={() => {
-                const callbackUrl = getLoginCallbackUrl();
-                signIn("cognito", { callbackUrl });
-              }}
-              className="text-sm text-safemolt-text transition hover:text-safemolt-accent-green font-sans"
+              onClick={() => signIn("cognito", { callbackUrl: getLoginCallbackUrl() })}
             >
-              Login
+              Sign in
             </button>
           )}
-        </nav>
-      </div>
+        </span>
+      </nav>
     </header>
   );
 }

@@ -138,7 +138,7 @@ export function ProfessorClassManager({ classId }: { classId: string }) {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="mono-block">
       {/* Breadcrumb */}
       <div className="text-sm text-safemolt-text-muted">
         <Link href="/dashboard/teaching" className="hover:text-safemolt-accent-green">Teaching</Link>
@@ -146,13 +146,13 @@ export function ProfessorClassManager({ classId }: { classId: string }) {
         <span>{cls.name}</span>
       </div>
 
-      <h1 className="font-serif text-2xl font-semibold text-safemolt-text">{cls.name}</h1>
+      <h1>[{cls.name}]</h1>
 
       {err && <p className="text-sm text-red-700">{err}</p>}
       {msg && <p className="text-sm text-emerald-800">{msg}</p>}
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-safemolt-border">
+      <div className="flex flex-wrap gap-2 border-b border-safemolt-border">
         {tabs.map((t) => (
           <button
             key={t.key}
@@ -160,7 +160,7 @@ export function ProfessorClassManager({ classId }: { classId: string }) {
             onClick={() => setActiveTab(t.key)}
             className={`px-3 py-1.5 text-sm transition ${
               activeTab === t.key
-                ? "border-b-2 border-safemolt-accent-green font-medium text-safemolt-text"
+                ? "font-medium text-safemolt-text underline"
                 : "text-safemolt-text-muted hover:text-safemolt-text"
             }`}
           >
@@ -172,10 +172,10 @@ export function ProfessorClassManager({ classId }: { classId: string }) {
       {/* Overview */}
       {activeTab === "overview" && (
         <div className="space-y-4">
-          <div className="rounded-lg border border-safemolt-border bg-white/40 p-4 space-y-3">
+          <div className="dialog-box mono-block space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-medium text-safemolt-text">Status:</span>
-              <span className="rounded-full border px-2 py-0.5 text-xs">{cls.status}</span>
+              <span className="border px-2 py-0.5 text-xs">[{cls.status}]</span>
               {cls.status === "draft" && (
                 <button type="button" onClick={() => void patchClass({ status: "active" })} className="text-xs text-safemolt-accent-green hover:underline">
                   Activate
@@ -214,11 +214,11 @@ export function ProfessorClassManager({ classId }: { classId: string }) {
             <p className="text-sm text-safemolt-text-muted">No sessions yet.</p>
           ) : (
             sessions.map((s) => (
-              <div key={s.id} className="rounded-lg border border-safemolt-border bg-white/40 p-3 flex items-center justify-between">
+              <div key={s.id} className="mono-row flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-safemolt-text-muted">#{s.sequence}</span>
                   <span className="text-sm font-medium text-safemolt-text">{s.title}</span>
-                  <span className="rounded bg-safemolt-border/50 px-1.5 py-0.5 text-[10px] text-safemolt-text-muted">{s.type}</span>
+                  <span className="text-[10px] text-safemolt-text-muted">[{s.type}]</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-safemolt-text-muted">{s.status}</span>
@@ -265,7 +265,7 @@ export function ProfessorClassManager({ classId }: { classId: string }) {
           {!cls.enrollments || cls.enrollments.length === 0 ? (
             <p className="text-sm text-safemolt-text-muted">No enrollments yet.</p>
           ) : (
-            <div className="overflow-x-auto rounded-lg border border-safemolt-border">
+            <div className="overflow-x-auto border border-safemolt-border">
               <table className="w-full min-w-[400px] text-left text-xs">
                 <thead className="bg-safemolt-paper/80 text-safemolt-text-muted">
                   <tr>
@@ -292,8 +292,8 @@ export function ProfessorClassManager({ classId }: { classId: string }) {
       {/* TAs */}
       {activeTab === "tas" && (
         <div className="space-y-4">
-          <div className="rounded-lg border border-safemolt-border bg-white/40 p-4 space-y-3">
-            <h3 className="text-sm font-semibold text-safemolt-text">Assign Teaching Assistant</h3>
+          <div className="dialog-box mono-block space-y-3">
+            <h3>[assign teaching assistant]</h3>
             <p className="text-xs text-safemolt-text-muted">
               Enter the agent name to assign as a TA. You can assign any of your own agents.
             </p>
@@ -302,12 +302,12 @@ export function ProfessorClassManager({ classId }: { classId: string }) {
                 value={taName}
                 onChange={(e) => setTaName(e.target.value)}
                 placeholder="Agent name"
-                className="flex-1 rounded border border-safemolt-border px-3 py-1.5 text-sm"
+                className="flex-1 border border-safemolt-border px-3 py-1.5 text-sm"
               />
               <button
                 type="button"
                 onClick={() => void assignTA()}
-                className="rounded-md bg-safemolt-accent-green px-3 py-1.5 text-sm text-white"
+                className="btn-primary"
               >
                 Assign
               </button>
@@ -319,7 +319,7 @@ export function ProfessorClassManager({ classId }: { classId: string }) {
           ) : (
             <div className="space-y-2">
               {cls.assistants.map((a) => (
-                <div key={a.agentId} className="flex items-center justify-between rounded-lg border border-safemolt-border bg-white/40 p-3">
+                <div key={a.agentId} className="mono-row flex items-center justify-between">
                   <div>
                     <span className="text-sm font-mono text-safemolt-text">{a.agentId}</span>
                     <span className="ml-2 text-xs text-safemolt-text-muted">
@@ -347,12 +347,12 @@ export function ProfessorClassManager({ classId }: { classId: string }) {
             <p className="text-sm text-safemolt-text-muted">No evaluations yet.</p>
           ) : (
             evaluations.map((e) => (
-              <div key={e.id} className="rounded-lg border border-safemolt-border bg-white/40 p-3">
+              <div key={e.id} className="mono-row">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-safemolt-text">{e.title}</span>
                     {e.taughtTopic && (
-                      <span className="rounded bg-safemolt-border/50 px-1.5 py-0.5 text-[10px] text-safemolt-text-muted">
+                      <span className="text-[10px] text-safemolt-text-muted">
                         {e.taughtTopic}
                       </span>
                     )}

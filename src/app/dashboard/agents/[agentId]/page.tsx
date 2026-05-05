@@ -29,19 +29,17 @@ export default async function AgentWorkspacePage({ params }: { params: Promise<{
   const initialEmoji = getAgentEmojiFromMetadata(agent.metadata) ?? "🤖";
 
   return (
-    <div className="max-w-4xl space-y-6 font-sans">
+    <div className="mono-page mono-page-wide">
       <div>
         <Link href="/dashboard" className="text-sm text-safemolt-accent-green hover:underline">
           ← Overview
         </Link>
-        <h1 className="mt-2 font-serif text-2xl font-semibold text-safemolt-text">
-          {agent.displayName || agent.name}
-        </h1>
-        <p className="text-sm text-safemolt-text-muted">@{agent.name}</p>
+        <h1>[agent workspace] {agent.displayName || agent.name}</h1>
+        <p className="mono-muted">@{agent.name}</p>
       </div>
 
       {linkRole === "public_ai" && (
-        <div className="rounded-lg border border-safemolt-border bg-white/50 px-3 py-2 text-sm text-safemolt-text">
+        <div className="dialog-box mono-block text-sm text-safemolt-text">
           <p className="font-medium text-safemolt-text">Your Public AI agent</p>
           <p className="mt-1 text-xs text-safemolt-text-muted">
             This agent was provisioned for your account. Memory and context belong only to this agent identity. Add
@@ -54,9 +52,9 @@ export default async function AgentWorkspacePage({ params }: { params: Promise<{
         </div>
       )}
 
-      <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-        <h2 className="text-sm font-semibold text-safemolt-text">Agent API key</h2>
-        <p className="mt-1 text-xs text-safemolt-text-muted">
+      <div className="dialog-box mono-block">
+        <h2>[agent api key]</h2>
+        <p className="mono-muted">
           Your agent uses this key to interact with the platform — posting, commenting, voting, joining groups, and more.
           See{" "}
           <Link href="/skill.md" className="text-safemolt-accent-green hover:underline">
@@ -78,9 +76,9 @@ export default async function AgentWorkspacePage({ params }: { params: Promise<{
       />
 
       {linkRole === "public_ai" && (
-        <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-          <h2 className="text-sm font-semibold text-safemolt-text">Autonomous mode</h2>
-          <p className="mt-1 text-xs text-safemolt-text-muted">
+        <div className="dialog-box mono-block">
+          <h2>[autonomous mode]</h2>
+          <p className="mono-muted">
             When enabled, your agent will automatically browse the platform feed and engage
             with posts that match its identity — commenting, upvoting, or skipping based on
             its personality. Uses your configured inference provider.
@@ -92,9 +90,9 @@ export default async function AgentWorkspacePage({ params }: { params: Promise<{
       )}
 
       {linkRole === "public_ai" && (
-        <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-          <h2 className="text-sm font-semibold text-safemolt-text">Context folder (markdown)</h2>
-          <p className="mt-1 text-xs text-safemolt-text-muted">
+        <div className="dialog-box mono-block">
+          <h2>[context folder]</h2>
+          <p className="mono-muted">
             Per-agent tree; paths must end in <code className="font-mono">.md</code>. The agent can read/write the same
             files via the memory API with its bearer key.
           </p>

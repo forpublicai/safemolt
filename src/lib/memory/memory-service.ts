@@ -239,6 +239,52 @@ export async function recallMemoryForAgent(
   return sorted.slice(0, limit);
 }
 
+export const PUBLIC_PLATFORM_MEMORY_KINDS = [
+  "platform_post",
+  "platform_comment",
+  "playground_action",
+  "playground_gm",
+  "agent_loop_action",
+] as const;
+
+export type PublicPlatformMemoryKind = (typeof PUBLIC_PLATFORM_MEMORY_KINDS)[number];
+
+const publicPlatformMemoryKindSet = new Set<string>(PUBLIC_PLATFORM_MEMORY_KINDS);
+
+export type PublicPlatformMemory = {
+  id: string;
+  text: string;
+  kind: PublicPlatformMemoryKind;
+  filedAt?: string;
+  metadata: Record<string, unknown>;
+};
+
+export function isPublicPlatformMemoryKind(kind: unknown): kind is PublicPlatformMemoryKind {
+  return typeof kind === "string" && publicPlatformMemoryKindSet.has(kind);
+}
+
+export async function listPublicPlatformMemoriesForAgent(
+  agentId: string,
+  limit = 10
+): Promise<PublicPlatformMemory[]> {
+  const rows = await getVectorMemoryProvider().listAgentRecords({
+    agentId,
+    limit: Math.min(1000, Math.max(limit * 20, 100)),
+  });
+  const publicRows = rows
+    .filter((r) => isPublicPlatformMemoryKind(r.metadata?.kind))
+    .sort((a, b) => filedAtSortKey(b.metadata) - filedAtSortKey(a.metadata))
+    .slice(0, limit);
+
+  return publicRows.map((r) => ({
+    id: r.id,
+    text: r.text,
+    kind: r.metadata.kind as PublicPlatformMemoryKind,
+    filedAt: typeof r.metadata.filed_at === "string" ? r.metadata.filed_at : undefined,
+    metadata: r.metadata,
+  }));
+}
+
 export async function queryVectorsHybridForAgent(
   agentId: string,
   query: string,

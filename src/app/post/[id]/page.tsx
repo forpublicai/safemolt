@@ -1,20 +1,25 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { cache } from "react";
 import { notFound } from "next/navigation";
-import { unstable_noStore as noStore } from 'next/cache';
-import { getPost, getAgentById, getGroup, listComments } from "@/lib/store";
+import { unstable_noStore as noStore } from "next/cache";
+import { getPost, getAgentById, getAgentsByIds, getGroup, listComments } from "@/lib/store";
 import { getAgentDisplayName } from "@/lib/utils";
 
 interface Props {
   params: Promise<{ id: string }>;
 }
 
+const getPostCached = cache((id: string) => getPost(id));
+const getAgentCached = cache((id: string) => getAgentById(id));
+const getGroupCached = cache((id: string) => getGroup(id));
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { id } = await params;
-  const post = await getPost(id);
+  const post = await getPostCached(id);
   if (!post) return { title: "Post not found" };
-  const author = await getAgentById(post.authorId);
-  const group = await getGroup(post.groupId);
+  const author = await getAgentCached(post.authorId);
+  const group = await getGroupCached(post.groupId);
   const authorName = author ? getAgentDisplayName(author) : "Unknown";
   const groupName = group?.name ?? "general";
   const title = post.title.length > 60 ? post.title.slice(0, 57) + "…" : post.title;
@@ -36,31 +41,37 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function PostPage({ params }: Props) {
   noStore(); // Disable caching so comments appear immediately
   const { id } = await params;
-  const post = await getPost(id);
+  const post = await getPostCached(id);
   if (!post) notFound();
 
-  const author = await getAgentById(post.authorId);
-  const group = await getGroup(post.groupId);
-  const comments = await listComments(id, "top");
-
-  const commentsWithAuthors = await Promise.all(
-    comments.map(async (c) => {
-      const commentAuthor = await getAgentById(c.authorId);
-      return {
-        id: c.id,
-        content: c.content,
-        upvotes: c.upvotes,
-        createdAt: c.createdAt,
-        author: commentAuthor
-          ? { name: commentAuthor.name, displayName: getAgentDisplayName(commentAuthor) }
-          : { name: "unknown", displayName: "Unknown" },
-      };
-    })
+  const [author, group, comments] = await Promise.all([
+    getAgentCached(post.authorId),
+    getGroupCached(post.groupId),
+    listComments(id, "top"),
+  ]);
+  const commentAuthorsById = new Map(
+    (await getAgentsByIds(Array.from(new Set(comments.map((comment) => comment.authorId))))).map((commentAuthor) => [
+      commentAuthor.id,
+      commentAuthor,
+    ])
   );
 
+  const commentsWithAuthors = comments.map((c) => {
+    const commentAuthor = commentAuthorsById.get(c.authorId);
+    return {
+      id: c.id,
+      content: c.content,
+      upvotes: c.upvotes,
+      createdAt: c.createdAt,
+      author: commentAuthor
+        ? { name: commentAuthor.name, displayName: getAgentDisplayName(commentAuthor) }
+        : { name: "unknown", displayName: "Unknown" },
+    };
+  });
+
   return (
-    <div className="max-w-3xl px-4 py-8 sm:px-6">
-      <div className="card">
+    <div className="mono-page">
+      <div className="mono-block">
         <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-safemolt-text-muted">
           <Link href={`/g/${encodeURIComponent(group?.name ?? "general")}`} className="hover:text-safemolt-accent-green">
             g/{group?.name ?? "general"}
@@ -70,7 +81,7 @@ export default async function PostPage({ params }: Props) {
             u/{author ? getAgentDisplayName(author) : "Unknown"}
           </Link>
         </div>
-        <h1 className="text-2xl font-bold text-safemolt-text">{post.title}</h1>
+        <h1>{post.title}</h1>
         {post.url && (
           <a
             href={post.url}
@@ -94,17 +105,17 @@ export default async function PostPage({ params }: Props) {
       </div>
 
       <div className="mt-8">
-        <h2 className="mb-4 text-lg font-semibold text-safemolt-text">Comments</h2>
+        <h2>[Comments]</h2>
         {commentsWithAuthors.length === 0 ? (
-          <div className="card">
+          <div>
             <p className="py-4 text-center text-sm text-safemolt-text-muted">
               No comments yet. Agents can comment via the API.
             </p>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div>
             {commentsWithAuthors.map((comment) => (
-              <div key={comment.id} className="card">
+              <div key={comment.id} className="mono-row">
                 <div className="flex items-center gap-2 text-xs text-safemolt-text-muted mb-2">
                   <Link href={`/u/${comment.author.name}`} className="hover:text-safemolt-accent-green">
                     u/{comment.author.displayName}

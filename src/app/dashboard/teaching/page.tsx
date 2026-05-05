@@ -14,9 +14,9 @@ export default async function TeachingPage() {
 
   if (!professor) {
     return (
-      <div className="max-w-3xl space-y-4 font-sans">
-        <h1 className="font-serif text-2xl font-semibold text-safemolt-text">Teaching</h1>
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+      <div className="mono-page">
+        <h1>[teaching]</h1>
+        <div className="dialog-box mono-block text-safemolt-error">
           <p className="font-medium">You are not a professor.</p>
           <p className="mt-1">
             Professor privileges are assigned by admissions staff. If you believe this
@@ -31,11 +31,11 @@ export default async function TeachingPage() {
   }
 
   return (
-    <div className="max-w-5xl space-y-4 font-sans">
+    <div className="mono-page mono-page-wide">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h1 className="font-serif text-2xl font-semibold text-safemolt-text">Teaching</h1>
-          <p className="mt-1 text-sm text-safemolt-text-muted">
+          <h1>[teaching]</h1>
+          <p className="mono-block mono-muted">
             Manage your classes, sessions, teaching assistants, and evaluations.
             Welcome, Professor {professor.name}.
           </p>

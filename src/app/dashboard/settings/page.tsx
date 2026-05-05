@@ -14,10 +14,10 @@ export default async function DashboardSettingsPage() {
     : profile.username || safeUserLabel(session?.user?.name, "Hidden for privacy");
 
   return (
-    <div className="max-w-xl space-y-8 font-sans">
+    <div className="mono-page">
       <div>
-        <h1 className="font-serif text-2xl font-semibold text-safemolt-text">Settings</h1>
-        <p className="mt-1 text-sm text-safemolt-text-muted">
+        <h1>[settings]</h1>
+        <p className="mono-block mono-muted">
           Auth profile is managed by AWS Cognito. Dashboard username and privacy controls are managed here.
           Inference API keys for your integrated agent live under{" "}
           <a href="/dashboard" className="text-safemolt-accent-green hover:underline">
@@ -27,24 +27,24 @@ export default async function DashboardSettingsPage() {
         </p>
       </div>
 
-      <dl className="space-y-2 text-sm">
-        <div>
+      <dl className="mono-block">
+        <div className="mono-row">
           <dt className="text-safemolt-text-muted">Account email</dt>
           <dd className="text-safemolt-text">Hidden for privacy</dd>
         </div>
-        <div>
+        <div className="mono-row">
           <dt className="text-safemolt-text-muted">Name</dt>
           <dd className="text-safemolt-text">{safeName}</dd>
         </div>
-        <div>
+        <div className="mono-row">
           <dt className="text-safemolt-text-muted">Dashboard username</dt>
           <dd className="text-safemolt-text">{profile.username ?? "Not set"}</dd>
         </div>
-        <div>
+        <div className="mono-row">
           <dt className="text-safemolt-text-muted">Username visibility</dt>
           <dd className="text-safemolt-text">{profile.isHidden ? "Hidden" : "Visible"}</dd>
         </div>
-        <div>
+        <div className="mono-row">
           <dt className="text-safemolt-text-muted">Dashboard user id</dt>
           <dd className="break-all font-mono text-xs text-safemolt-text">{session?.user?.id ?? "—"}</dd>
         </div>

@@ -54,29 +54,29 @@ export function ClassesListClient() {
   }, []);
 
   if (loading) {
-    return <div className="text-safemolt-text-muted">Loading classes...</div>;
+    return <div className="mono-muted">[Loading classes...]</div>;
   }
 
   if (classes.length === 0) {
     return (
-      <div className="card p-8 text-center text-safemolt-text-muted">
+      <div className="mono-row mono-muted">
         {error ? `Could not load classes: ${error}` : "No classes available yet. Check back soon."}
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
+    <div>
       {classes.map((cls) => (
         <Link
           key={cls.id}
           href={`/classes/${cls.slug ?? cls.id}`}
-          className="card block p-4 transition hover:border-safemolt-accent-green/40"
+          className="mono-row"
         >
           <div>
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 flex-1 pb-1">
-                <h3 className="text-lg font-semibold text-safemolt-text">{cls.name}</h3>
+                <h3>{cls.name}</h3>
                 {cls.description && (
                   <p className="mt-1 text-sm text-safemolt-text-muted line-clamp-2">
                     {cls.description}
@@ -90,16 +90,14 @@ export function ClassesListClient() {
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {cls.enrollmentOpen && (
-                  <span className="pill text-xs border-safemolt-accent-green/40 bg-safemolt-accent-green/10 text-safemolt-accent-green">
-                    Open
-                  </span>
+                  <span>[Open]</span>
                 )}
               </div>
             </div>
 
             {cls.preview_image && (
               <div className="mt-3 flex justify-end">
-                <div className="inline-block overflow-hidden rounded-lg border border-safemolt-border bg-safemolt-paper">
+                <div className="inline-block overflow-hidden border border-black bg-white">
                   <Image
                     src={cls.preview_image}
                     alt={`${cls.name} preview`}

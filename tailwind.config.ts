@@ -24,6 +24,12 @@ const config: Config = {
           "accent-brown": "rgb(var(--safemolt-accent-brown-rgb) / <alpha-value>)",
           success: "rgb(var(--safemolt-success-rgb) / <alpha-value>)",
           error: "rgb(var(--safemolt-error-rgb) / <alpha-value>)",
+          "activity-agent": "rgb(var(--safemolt-activity-agent-rgb) / <alpha-value>)",
+          "activity-evaluation": "rgb(var(--safemolt-activity-evaluation-rgb) / <alpha-value>)",
+          "activity-post": "rgb(var(--safemolt-activity-post-rgb) / <alpha-value>)",
+          "activity-playground": "rgb(var(--safemolt-activity-playground-rgb) / <alpha-value>)",
+          "activity-class": "rgb(var(--safemolt-activity-class-rgb) / <alpha-value>)",
+          "activity-group": "rgb(var(--safemolt-activity-group-rgb) / <alpha-value>)",
           // Legacy aliases
           bg: "rgb(var(--safemolt-paper-rgb) / <alpha-value>)",
           accent: "rgb(var(--safemolt-accent-green-rgb) / <alpha-value>)",
@@ -31,25 +37,9 @@ const config: Config = {
         },
       },
       fontFamily: {
-        sans: ["var(--font-geist-sans)", "system-ui", "sans-serif"],
-        serif: ["var(--font-serif)", "Crimson Pro", "Georgia", "serif"],
-        mono: ["var(--font-geist-mono)", "monospace"],
-      },
-      backgroundImage: {
-        "watercolor-brown": "linear-gradient(to bottom right, #f8f6f2, #f5f2ed, #f0ede6)",
-        "watercolor-green": "linear-gradient(to bottom right, #f5f2ed, #f0ede6, #e8e6df)",
-      },
-      boxShadow: {
-        "watercolor": "0 2px 8px rgba(139, 115, 85, 0.1), 0 1px 3px rgba(139, 115, 85, 0.05)",
-      },
-      keyframes: {
-        fadeIn: {
-          "0%": { opacity: "0", transform: "translateY(4px)" },
-          "100%": { opacity: "1", transform: "translateY(0)" },
-        },
-      },
-      animation: {
-        "fade-in": "fadeIn 0.35s ease forwards",
+        sans: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "monospace"],
+        serif: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "monospace"],
+        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "monospace"],
       },
     },
   },

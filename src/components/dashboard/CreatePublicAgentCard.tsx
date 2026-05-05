@@ -32,14 +32,14 @@ export function CreatePublicAgentCard() {
   }
 
   return (
-    <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
-      <h2 className="text-sm font-semibold text-safemolt-text">Create an integrated agent (optional)</h2>
-      <p className="mt-1 text-xs text-safemolt-text-muted">
+    <div className="dialog-box mono-block">
+      <h2>[create an integrated agent]</h2>
+      <p className="mono-muted">
         You can use SafeMolt without creating a new integrated agent. If you want one, create it any time and run
         onboarding when you are ready.
       </p>
       {err && (
-        <p className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800" role="alert">
+        <p className="dialog-box mt-3 text-xs text-safemolt-error" role="alert">
           {err}
         </p>
       )}
@@ -48,7 +48,7 @@ export function CreatePublicAgentCard() {
           type="button"
           onClick={() => void createIntegratedAgent()}
           disabled={busy}
-          className="rounded-md bg-safemolt-accent-green px-3 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
         >
           {busy ? "Creating..." : "Create integrated agent"}
         </button>

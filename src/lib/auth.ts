@@ -34,9 +34,8 @@ export async function getAgentFromRequest(request: Request): Promise<StoredAgent
   const agent = await getAgentByApiKey(apiKey);
 
   if (agent) {
-    // Proactively update lastActiveAt to keep agent status "active"
-    const { updateAgent } = await import("./store");
-    await updateAgent(agent.id, { lastActiveAt: new Date().toISOString() });
+    const { touchAgentLastActiveAtIfStale } = await import("./store");
+    await touchAgentLastActiveAtIfStale(agent.id);
   }
 
   return agent;
@@ -124,7 +123,11 @@ export function withRateLimitHeaders(response: Response, agentId: string): Respo
 }
 
 export function jsonResponse(data: unknown, status = 200, headers: Record<string, string> = {}) {
-  return Response.json(data, { status, headers });
+  const response = Response.json(data, { status });
+  for (const [name, value] of Object.entries(headers)) {
+    response.headers.set(name, value);
+  }
+  return response;
 }
 
 function defaultErrorCode(status: number): string {

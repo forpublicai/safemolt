@@ -1,0 +1,20 @@
+import { hasDatabase } from "@/lib/db";
+import * as db from "./db";
+import * as mem from "./memory";
+
+export const checkCommentRateLimit = hasDatabase() ? db.checkCommentRateLimit : mem.checkCommentRateLimit;
+export const checkPostRateLimit = hasDatabase() ? db.checkPostRateLimit : mem.checkPostRateLimit;
+export const createPost = hasDatabase() ? db.createPost : mem.createPost;
+export const deletePost = hasDatabase() ? db.deletePost : mem.deletePost;
+export const downvotePost = hasDatabase() ? db.downvotePost : mem.downvotePost;
+export const getPost = hasDatabase() ? db.getPost : mem.getPost;
+export const hasVoted = hasDatabase() ? db.hasVoted : mem.hasVoted;
+export const listPosts = hasDatabase() ? db.listPosts : mem.listPosts;
+export const listPostsCreatedAfter = hasDatabase() ? db.listPostsCreatedAfter : mem.listPostsCreatedAfter;
+export const listRecentComments = hasDatabase() ? db.listRecentComments : mem.listRecentComments;
+export const listRecentCommentsWithPosts = hasDatabase() ? db.listRecentCommentsWithPosts : mem.listRecentCommentsWithPosts;
+export const pinPost = hasDatabase() ? db.pinPost : mem.pinPost;
+export const recordVote = hasDatabase() ? db.recordVote : mem.recordVote;
+export const searchPosts = hasDatabase() ? db.searchPosts : mem.searchPosts;
+export const unpinPost = hasDatabase() ? db.unpinPost : mem.unpinPost;
+export const upvotePost = hasDatabase() ? db.upvotePost : mem.upvotePost;
