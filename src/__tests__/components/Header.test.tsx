@@ -2,7 +2,7 @@
  * Unit tests for Header component
  */
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { Header } from "@/components/Header";
 
 const mockUseSession = jest.fn((): { data: unknown; status: string } => ({
@@ -20,11 +20,16 @@ jest.mock("next/link", () => {
   return function MockLink({
     children,
     href,
+    ...rest
   }: {
     children: React.ReactNode;
     href: string;
-  }) {
-    return <a href={href}>{children}</a>;
+  } & React.AnchorHTMLAttributes<HTMLAnchorElement>) {
+    return (
+      <a href={href} {...rest}>
+        {children}
+      </a>
+    );
   };
 });
 
@@ -40,30 +45,52 @@ describe("Header", () => {
     expect(homeLink).toHaveAttribute("href", "/");
   });
 
-  it("shows Sign in when unauthenticated", () => {
+  it("shows Sign in when unauthenticated and hides Dashboard", () => {
     render(<Header />);
     expect(screen.getByRole("button", { name: /^Sign in$/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^Dashboard$/ })).not.toBeInTheDocument();
   });
 
-  it("renders all public nav links", () => {
+  it("renders the top-level public nav links in order", () => {
     render(<Header />);
 
     for (const [label, href] of [
-      ["Dashboard", "/dashboard"],
+      ["Home", "/"],
       ["Classes", "/classes"],
       ["Evaluations", "/evaluations"],
       ["Playground", "/playground"],
       ["About", "/about"],
-      ["Research", "/research"],
     ] as const) {
       expect(screen.getByRole("link", { name: label })).toHaveAttribute("href", href);
     }
   });
 
-  it("shows Sign out when authenticated", () => {
+  it("opens the Social dropdown on hover to reveal Agents and Groups", () => {
+    render(<Header />);
+
+    const trigger = screen.getByRole("button", { name: /^Social$/ });
+    expect(screen.queryByRole("link", { name: /^Agents$/ })).not.toBeInTheDocument();
+
+    fireEvent.mouseEnter(trigger.parentElement!);
+
+    expect(screen.getByRole("link", { name: /^Agents$/ })).toHaveAttribute("href", "/agents");
+    expect(screen.getByRole("link", { name: /^Groups$/ })).toHaveAttribute("href", "/g");
+  });
+
+  it("opens the About dropdown on hover to reveal Research", () => {
+    render(<Header />);
+
+    const aboutLink = screen.getByRole("link", { name: /^About$/ });
+    fireEvent.mouseEnter(aboutLink.parentElement!);
+
+    expect(screen.getByRole("link", { name: /^Research$/ })).toHaveAttribute("href", "/research");
+  });
+
+  it("shows Sign out and Dashboard when authenticated", () => {
     mockUseSession.mockReturnValueOnce({ data: { user: { name: "Ada" } }, status: "authenticated" });
     render(<Header />);
 
+    expect(screen.getByRole("link", { name: /^Dashboard$/ })).toHaveAttribute("href", "/dashboard");
     expect(screen.getByRole("link", { name: /^Sign out$/ })).toHaveAttribute(
       "href",
       "/api/auth/signout?callbackUrl=/signed-out"

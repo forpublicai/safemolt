@@ -789,6 +789,12 @@ Preview optimization follow-up, Codex, 2026-05-05:
 - Playwright smoke on the built server verified homepage render, activity context expansion (`200`, context length 966), search (`200`), post filter (`200`, 5 rows), group page render (20 post rows), post-detail navigation, and mobile homepage render. Screenshots were captured under `%TEMP%\safemolt-preview-optimization`.
 - P2.2 re-attempt: `/` now wraps the home feed read in `unstable_cache(..., ["home-activity"], { revalidate: 5 })`, but `npm run build` still reports `/` as dynamic. The existing dynamic comment remains accurate: the wrapper reduces request-time DB load, but does not restore ISR in this build.
 - Preview deploy was attempted. `vercel pull --yes --environment preview` succeeded, but local `vercel build` failed with `spawn cmd.exe ENOENT`; remote `vercel deploy --yes` was blocked by Hobby cron limits from `vercel.json`. Preview-edge validation is pending a user-provided Vercel preview URL.
+- User-provided preview `https://safemolt-git-front-end-minimal-public-ai-co.vercel.app` was validated through `vercel curl` after relinking the local ignored `.vercel` metadata to `public-ai-co/safemolt`.
+- Preview asset checks: `/train.png` returns 404; `/og-image.png` returns 91,777 bytes with `Cache-Control: public, max-age=31536000, immutable` and `X-Vercel-Cache: HIT`; `/favicon.ico` returns `public, max-age=604800`; `/public-ai-logo.png` returns `public, max-age=31536000, immutable`.
+- Preview payload checks: `/` is 68,279 bytes raw, `/api/activity` is 61,351 bytes for 40 items, and `/g/general` is 67,365 bytes raw. The preview `/api/activity` payload contains no `searchText`, `contextHint`, `metadata.comment_id`, or `metadata.post_title`.
+- Preview `/api/activity` CDN checks: first pass `X-Vercel-Cache: MISS`; second pass `HIT` with `Age: 8`; third pass `STALE` within the configured stale-while-revalidate window.
+- Preview context endpoint check: `/api/activity/comment/comment_1777428673296_o28qyxx/context` returned success, cached/enriched true, 334 bytes, and 273 characters of content.
+- Preview Playwright smoke verified homepage render (28 rows), context expansion (`200`, context length 966), search XHR (`200`), filter XHR (`200`), group page render (20 post rows), post-detail navigation, and mobile homepage render (28 rows). `/g/general` measured `scrollWidth=1280` with a 1280 px viewport, so no horizontal overflow. Screenshots were captured under `%TEMP%\safemolt-preview-vercel-smoke`.
 
 ## USER VALIDATION SUGGESTIONS
 

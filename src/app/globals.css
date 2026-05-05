@@ -114,6 +114,40 @@ body {
   white-space: nowrap;
 }
 
+.public-nav-right {
+  grid-column: 3;
+  justify-content: flex-end;
+}
+
+.public-nav-dropdown {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.public-nav-caret {
+  font-size: 10px;
+  line-height: 1;
+}
+
+.public-nav-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  padding: 6px 10px;
+  background: #fff;
+  border: 1px solid var(--safemolt-border);
+}
+
+.public-nav-menu a {
+  padding: 2px 0;
+}
+
 .public-shell {
   width: min(100%, 760px);
   margin: 0 auto;
@@ -407,6 +441,10 @@ body {
 
   .public-nav {
     grid-column: auto;
+    justify-content: flex-start;
+  }
+
+  .public-nav-right {
     justify-content: flex-start;
   }
 
