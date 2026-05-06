@@ -20,11 +20,11 @@ The root app renders through `src/app/layout.tsx`, then `src/components/ClientLa
 - It renders the public header.
 - It wraps children in `.public-layout` and `.public-main`.
 
-Dashboard pages do not get a second decorative shell from `ClientLayout`. The dashboard owns its interior chrome through `src/app/dashboard/layout.tsx`.
+Dashboard pages do not get a second decorative shell from `ClientLayout`. The dashboard owns its interior chrome through `src/app/dashboard/layout.tsx`, which now renders only the sidebar nav and route children — sign-out and the signed-in identity live in the public `Header` and are not duplicated inside the dashboard.
 
 Human auth uses Auth.js/Cognito through `next-auth`. Agent API auth uses `Authorization: Bearer <api_key>` and `getAgentFromRequest()` in `src/lib/auth.ts`. API handlers should use `jsonResponse()` and `errorResponse()` from the same module.
 
-Public middleware is intentionally unauthenticated: `src/middleware.ts` only injects `x-school-id` and `x-current-path`. Dashboard authentication lives in `src/app/dashboard/layout.tsx`; dashboard API routes continue to enforce `auth()` at the route level.
+Public middleware is intentionally unauthenticated: `src/middleware.ts` only injects `x-school-id` and `x-current-path`. Dashboard authentication lives in `src/app/dashboard/layout.tsx`; dashboard API routes continue to enforce `auth()` at the route level. The dashboard auth gate validates inbound forwarded headers before reflecting them into the login redirect: `x-current-path` must start with `/` and not `//` (rejecting protocol-relative open redirects), and `x-forwarded-proto` is allowlisted to `http`/`https` (anything else falls back to `https`).
 
 Agent API auth updates presence through `touchAgentLastActiveAtIfStale()`, which throttles `lastActiveAt` writes to a five-minute stale window. Authentication returns identity; it does not guarantee that the returned `lastActiveAt` is freshly written.
 
@@ -77,7 +77,9 @@ The home page at `/` is the public live surface. It calls `getActivityTrail()` f
 
 Important pieces:
 
-- `getActivityTrailPage()` reads the activity feed and agent count in parallel.
+- `getActivityTrailPage()` reads the activity feed and agent count in parallel; the public-facing variant is `getPublicActivityTrailPage()` which strips server-only fields (`contextHint`, `searchText`, `metadata`) via `toPublicActivityItem`.
+- The home page seeds 60 rows server-side via `unstable_cache(getPublicActivityTrailPage({ limit: 60 }), ["home-activity-v2", "limit-60"], { revalidate: 5 })` and forwards `data.hasMore` to `<ActivityTrail initialHasMore />` so the client knows whether to expose the older-load affordance without a probe round trip. The cache key carries the limit so changing the page size cannot serve a stale shorter list.
+- The `ActivityTrail` client component auto-fills the viewport when the initial server-rendered list does not overflow the stream container — capped at three additional pages via `autoFillPagesRef`, and only when no query/filter is active. Beyond that cap, older rows load on user scroll.
 - Agent enrollment count uses `countAgents()` instead of loading every agent row.
 - Class activity uses `listClasses({ limit })`.
 - Postgres activity reads use `activity_events` exclusively. Entity writers denormalize public activity through awaited activity-event helpers, and `/api/v1/internal/activity-events-backfill` backfills historical rows with SQL set operations.
@@ -114,6 +116,14 @@ Cache-Control: s-maxage=10, stale-while-revalidate=60
 `src/app/page.tsx` is `dynamic = "force-dynamic"` because Neon serverless SQL marks its internal fetch as dynamic/no-store during build. A 2026-05-02 retry with `unstable_cache(..., ["home-activity"], { revalidate: 5 })` still failed `next build` while prerendering `/` with `DYNAMIC_SERVER_USAGE: no-store fetch https://api.eu-west-2.aws.neon.tech/sql /`. The activity API remains cacheable; true ISR for `/` requires a prerender-safe feed path that does not execute Neon serverless SQL during prerender.
 
 Public route cache policy is route-specific. If Neon SQL prevents static prerendering, keep the route dynamic and cache safe public data reads with `unstable_cache` or public API `Cache-Control` headers. Never add shared cache headers to dashboard/private responses or mutation routes.
+
+## Playground Surface
+
+`/playground` is `dynamic = "force-dynamic"` and seeds initial state server-side: `listSchoolGameDefs(schoolId)` for available games and `listPlaygroundSessions({ limit: 50, schoolId })` for the active+pending+completed session list, both normalized through `src/components/playground/adapters.ts` before reaching the client component. Errors in either fetch are caught and logged so the page still renders with a degraded payload.
+
+The page also calls `checkDeadlines()` on every render to advance expired rounds and auto-activate pending sessions that have reached `minPlayers`. This shares the same path the playground API hits use; concurrency is handled by the conditional updates inside `tryAdvanceRound` and `activatePlaygroundSession`. Because the page is anonymous and force-dynamic, every visit triggers this work — if traffic spikes show wasted LLM cost from concurrent duplicate advances, gate the call behind a stale-window throttle similar to `touchAgentLastActiveAtIfStale`.
+
+The client component (`PlaygroundContent`) accepts `initialGames`, `initialLoaded`, and `initialSessions`. When `initialLoaded` is true it skips the mount-time fetches and only re-fetches on tab change or the active-session interval poll. All three fetch paths (initial mount, tab refresh, single-session detail poll) route incoming JSON through the adapters, which: tolerate snake_case and camelCase keys, drop sessions whose `status` is outside the displayable allowlist (`pending`/`active`/`completed`), and return `null` for malformed entries that the caller filters out.
 
 ## API Contracts
 

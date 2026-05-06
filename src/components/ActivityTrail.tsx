@@ -6,6 +6,7 @@ import type { ActivityLinkType, PublicActivityItem } from "@/lib/activity";
 
 interface ActivityTrailProps {
   activities: PublicActivityItem[];
+  initialHasMore?: boolean;
 }
 
 const filters = [
@@ -26,19 +27,21 @@ const linkClass: Record<ActivityLinkType, string> = {
   group: "activity-link-group",
 };
 
-export function ActivityTrail({ activities: initialActivities }: ActivityTrailProps) {
+export function ActivityTrail({ activities: initialActivities, initialHasMore = false }: ActivityTrailProps) {
   const [activities, setActivities] = useState<PublicActivityItem[]>(() => sortAscending(initialActivities));
   const [expanded, setExpanded] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
+  const [hasMore, setHasMore] = useState(initialHasMore);
   const [loadError, setLoadError] = useState<string | null>(null);
   const streamRef = useRef<HTMLDivElement | null>(null);
   const debounceRef = useRef<number | null>(null);
   const requestSeq = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const didMountRef = useRef(false);
+  const autoFillPagesRef = useRef(0);
+  const activeFiltersKey = useMemo(() => activeFilters.join(","), [activeFilters]);
 
   useEffect(() => {
     const stream = streamRef.current;
@@ -59,7 +62,16 @@ export function ActivityTrail({ activities: initialActivities }: ActivityTrailPr
     return () => {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
-  }, [query, activeFilters.join(",")]);
+  }, [query, activeFiltersKey]);
+
+  useEffect(() => {
+    const stream = streamRef.current;
+    const isUnfiltered = !query.trim() && activeFilters.length === 0;
+    if (!stream || !isUnfiltered || !hasMore || loadingOlder || autoFillPagesRef.current >= 3) return;
+    if (stream.scrollHeight > stream.clientHeight + 8) return;
+    autoFillPagesRef.current += 1;
+    loadOlderFireAndForget();
+  }, [activities.length, hasMore, loadingOlder, query, activeFiltersKey]);
 
   const oldest = activities[0];
 
@@ -83,6 +95,7 @@ export function ActivityTrail({ activities: initialActivities }: ActivityTrailPr
   }
 
   async function loadFresh(q = query, types = activeFilters) {
+    autoFillPagesRef.current = 0;
     const seq = ++requestSeq.current;
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -264,8 +277,13 @@ function ActivityRow({
   }
 
   function toggle() {
+    const wasExpanded = isExpanded;
+    if (wasExpanded && enrichTimerRef.current) {
+      window.clearTimeout(enrichTimerRef.current);
+      enrichTimerRef.current = null;
+    }
     onToggle();
-    if (context || loading) return;
+    if (wasExpanded || context || loading) return;
     fetchContextFireAndForget();
   }
 

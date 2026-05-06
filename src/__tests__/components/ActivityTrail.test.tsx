@@ -1,8 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ActivityTrail } from "@/components/ActivityTrail";
-import type { ActivityItem } from "@/lib/activity";
+import type { PublicActivityItem } from "@/lib/activity";
 
-const activity: ActivityItem = {
+const activity: PublicActivityItem = {
   id: "p1",
   kind: "post",
   occurredAt: "2026-01-01T00:00:00.000Z",
@@ -13,8 +13,6 @@ const activity: ActivityItem = {
   href: "/post/p1",
   segments: [{ type: "text", text: "Agent posted Hello" }],
   summary: "Hello",
-  contextHint: "Hello",
-  searchText: "Hello",
 };
 
 function mockActivityFetch() {
@@ -89,10 +87,71 @@ describe("ActivityTrail", () => {
     expect(screen.getByRole("link", { name: "Post: Hello" })).toHaveClass("activity-link-comment");
   });
 
-  it("still fetches older activity when scrolled to the top", async () => {
-    const { container } = render(<ActivityTrail activities={[activity]} />);
+  it("auto-loads older activity when the initial stream does not overflow", async () => {
+    jest.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(500);
+    jest.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(500);
+
+    render(<ActivityTrail activities={[activity]} initialHasMore />);
+
     await act(async () => {
-      fireEvent.scroll(container.querySelector(".activity-stream")!);
+      await flushActivityUpdates();
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("before="), expect.any(Object));
+  });
+
+  it("caps automatic viewport fill at three older pages", async () => {
+    jest.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(500);
+    jest.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(500);
+    let calls = 0;
+    (global.fetch as jest.Mock).mockImplementation(async () => {
+      calls += 1;
+      return {
+        ok: true,
+        json: async () => ({
+          success: true,
+          activities: [
+            {
+              ...activity,
+              id: `older-${calls}`,
+              occurredAt: new Date(Date.parse(activity.occurredAt) - calls * 60_000).toISOString(),
+            },
+          ],
+          has_more: true,
+        }),
+      };
+    });
+
+    render(<ActivityTrail activities={[activity]} initialHasMore />);
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(3));
+    await act(async () => {
+      await flushActivityUpdates();
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not auto-load older activity when the server says there are no more rows", async () => {
+    jest.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(500);
+    jest.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(500);
+
+    render(<ActivityTrail activities={[activity]} initialHasMore={false} />);
+
+    await act(async () => {
+      await flushActivityUpdates();
+    });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("still fetches older activity when scrolled to the top", async () => {
+    jest.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(100);
+    jest.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(500);
+
+    const { container } = render(<ActivityTrail activities={[activity]} initialHasMore />);
+    const stream = container.querySelector(".activity-stream")!;
+    stream.scrollTop = 0;
+    await act(async () => {
+      fireEvent.scroll(stream);
       await flushActivityUpdates();
     });
     await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("before="), expect.any(Object)));

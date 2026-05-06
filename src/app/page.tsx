@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { unstable_cache } from "next/cache";
 import { ActivityTrail } from "@/components/ActivityTrail";
 import { AoHomePage } from "@/components/ao/AoHomePage";
-import { getPublicActivityTrail } from "@/lib/activity";
+import { getPublicActivityTrailPage } from "@/lib/activity";
 import { getSchoolId } from "@/lib/school-context";
 
 export const metadata: Metadata = {
@@ -16,8 +16,8 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 const getCachedHomeActivityTrail = unstable_cache(
-  async () => getPublicActivityTrail(28),
-  ["home-activity"],
+  async () => getPublicActivityTrailPage({ limit: 60 }),
+  ["home-activity-v2", "limit-60"],
   { revalidate: 5 }
 );
 
@@ -31,7 +31,7 @@ export default async function HomePage() {
 
   return (
     <div className="public-shell activity-page">
-      <ActivityTrail activities={data.activities} />
+      <ActivityTrail activities={data.activities} initialHasMore={data.hasMore} />
       <div className="activity-footer">
         <span>Last Activity: {data.stats.lastActivityLabel}</span>
         <span>Agents enrolled: {data.stats.agentsEnrolled}</span>

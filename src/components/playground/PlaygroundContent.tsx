@@ -1,24 +1,36 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { normalizeGameDefs, normalizePlaygroundSession, normalizePlaygroundSessions } from "./adapters";
 import { GameCard } from "./GameCard";
 import { SessionDetail } from "./SessionDetail";
 import { SessionsList } from "./SessionsList";
 import { SystemCard } from "./SystemCard";
 import type { GameDef, PlaygroundSession, TabFilter } from "./types";
 
-export function PlaygroundContent() {
+interface PlaygroundContentProps {
+  initialGames?: GameDef[];
+  initialLoaded?: boolean;
+  initialSessions?: PlaygroundSession[];
+}
+
+export function PlaygroundContent({
+  initialGames = [],
+  initialLoaded = false,
+  initialSessions = [],
+}: PlaygroundContentProps) {
   const searchParams = useSearchParams();
   const targetSessionId = searchParams.get("session");
-  const [sessions, setSessions] = useState<PlaygroundSession[]>([]);
-  const [games, setGames] = useState<GameDef[]>([]);
+  const [sessions, setSessions] = useState<PlaygroundSession[]>(() => initialSessions);
+  const [games, setGames] = useState<GameDef[]>(() => initialGames);
   const [selectedSession, setSelectedSession] = useState<PlaygroundSession | null>(null);
   const [tab, setTab] = useState<TabFilter>("all");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialLoaded);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasUsedInitialSessionsRef = useRef(initialLoaded);
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -28,7 +40,8 @@ export function PlaygroundContent() {
       });
       const data = await res.json();
       if (data.success) {
-        const latestSessions: PlaygroundSession[] = data.data || [];
+        setError(null);
+        const latestSessions = normalizePlaygroundSessions(data.data);
         setSessions(latestSessions);
         setSelectedSession((previous) => {
           if (!previous) return previous;
@@ -49,6 +62,8 @@ export function PlaygroundContent() {
           }
           return previous;
         });
+      } else {
+        setError(typeof data.error === "string" ? data.error : "Failed to load sessions");
       }
     } catch {
       setError("Failed to load sessions");
@@ -58,18 +73,23 @@ export function PlaygroundContent() {
   }, [tab]);
 
   useEffect(() => {
+    if (initialLoaded && initialGames.length > 0) return;
     fetch("/api/v1/playground/games")
       .then((r) => r.json())
       .then((d) => {
-        if (d.success) setGames(d.data || []);
+        if (d.success) setGames(normalizeGameDefs(d.data));
       })
       .catch(() => {});
-  }, []);
+  }, [initialGames.length, initialLoaded]);
 
   useEffect(() => {
+    if (hasUsedInitialSessionsRef.current) {
+      hasUsedInitialSessionsRef.current = false;
+      return;
+    }
     setLoading(true);
     fetchSessions();
-  }, [fetchSessions]);
+  }, [fetchSessions, tab]);
 
   useEffect(() => {
     if (tab !== "active" && tab !== "all") return;
@@ -84,7 +104,17 @@ export function PlaygroundContent() {
         cache: "no-store",
       });
       const data = await res.json();
-      if (data.success) setSelectedSession(data.data);
+      if (data.success) {
+        const session = normalizePlaygroundSession(data.data);
+        if (session) {
+          setError(null);
+          setSelectedSession(session);
+        } else {
+          setError("Session unavailable");
+        }
+      } else {
+        setError(typeof data.error === "string" ? data.error : "Failed to load session details");
+      }
     } catch {
       setError("Failed to load session details");
     } finally {
@@ -106,7 +136,10 @@ export function PlaygroundContent() {
           cache: "no-store",
         });
         const data = await res.json();
-        if (data.success) setSelectedSession(data.data);
+        if (data.success) {
+          const session = normalizePlaygroundSession(data.data);
+          if (session) setSelectedSession(session);
+        }
       } catch {
         // Polling is best-effort; the next interval or manual navigation can recover.
       }
