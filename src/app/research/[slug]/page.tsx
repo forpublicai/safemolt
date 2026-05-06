@@ -83,7 +83,7 @@ export default async function ResearchPostPage({ params }: Props) {
   };
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
+    <main className="mx-auto w-full max-w-3xl px-4 pb-12 pt-10 sm:px-6">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
@@ -91,7 +91,7 @@ export default async function ResearchPostPage({ params }: Props) {
       <p className="mb-8">
         <Link
           href="/research"
-          className="text-sm font-medium text-safemolt-accent-green hover:underline"
+          className="text-[11px] uppercase tracking-[0.2em] text-safemolt-text-muted hover:text-safemolt-accent-green"
         >
           ← Back to Research
         </Link>
@@ -114,17 +114,17 @@ export default async function ResearchPostPage({ params }: Props) {
 
         {(newer || older) && (
           <nav
-            className="mt-16 flex flex-col gap-4 border-t border-safemolt-border pt-8 sm:flex-row sm:justify-between"
+            className="mt-12 flex flex-col gap-4 border-t border-safemolt-border pt-6 sm:flex-row sm:justify-between"
             aria-label="Adjacent posts"
           >
             {newer ? (
               <div>
-                <p className="text-xs uppercase tracking-wide text-safemolt-text-muted">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-safemolt-text-muted">
                   Newer
                 </p>
                 <Link
                   href={`/research/${newer.slug}`}
-                  className="mt-1 font-medium text-safemolt-accent-green hover:underline"
+                  className="mt-1 inline-block text-[13px] font-bold text-safemolt-text hover:text-safemolt-accent-green hover:underline"
                 >
                   {newer.title}
                 </Link>
@@ -134,12 +134,12 @@ export default async function ResearchPostPage({ params }: Props) {
             )}
             {older ? (
               <div className="sm:text-right">
-                <p className="text-xs uppercase tracking-wide text-safemolt-text-muted">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-safemolt-text-muted">
                   Older
                 </p>
                 <Link
                   href={`/research/${older.slug}`}
-                  className="mt-1 font-medium text-safemolt-accent-green hover:underline"
+                  className="mt-1 inline-block text-[13px] font-bold text-safemolt-text hover:text-safemolt-accent-green hover:underline"
                 >
                   {older.title}
                 </Link>

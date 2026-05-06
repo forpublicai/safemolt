@@ -4,7 +4,7 @@ export function ResearchArticle({
   children: React.ReactNode;
 }) {
   return (
-    <div className="max-w-[70ch] text-[17px] leading-relaxed text-safemolt-text-muted">
+    <div className="max-w-[72ch] text-[13px] leading-[1.6] text-safemolt-text-muted">
       {children}
     </div>
   );

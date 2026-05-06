@@ -15,21 +15,21 @@ function formatDate(iso: string): string {
 
 function Authors({ authors }: { authors: ResearchAuthor[] }) {
   return (
-    <p className="text-sm text-safemolt-text-muted">
+    <p className="text-[12px] text-safemolt-text-muted">
       {authors.map((a, i) => (
         <span key={a.name}>
           {i > 0 ? (i < authors.length - 1 ? ", " : " and ") : ""}
           {a.url ? (
             <a
               href={a.url}
-              className="font-medium text-safemolt-accent-green hover:underline"
+              className="font-bold text-safemolt-text hover:text-safemolt-accent-green hover:underline"
               target="_blank"
               rel="noopener noreferrer"
             >
               {a.name}
             </a>
           ) : (
-            <span className="font-medium text-safemolt-text">{a.name}</span>
+            <span className="font-bold text-safemolt-text">{a.name}</span>
           )}
           {a.affiliation ? (
             <span className="text-safemolt-text-muted"> ({a.affiliation})</span>
@@ -54,16 +54,19 @@ export function PostHeader({
   abstract: string;
 }) {
   return (
-    <header className="border-b border-safemolt-border pb-8">
+    <header className="border-b border-safemolt-border pb-6">
+      <div className="mb-2 text-[11px] uppercase tracking-[0.2em] text-safemolt-text-muted">
+        Research note
+      </div>
       <h1
         id="research-post-title"
-        className="font-serif text-3xl font-bold tracking-tight text-safemolt-text sm:text-4xl"
+        className="text-[22px] font-bold leading-[1.25] text-safemolt-text sm:text-[28px]"
       >
         {title}
       </h1>
       <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
         <Authors authors={authors} />
-        <div className="text-sm text-safemolt-text-muted">
+        <div className="text-[12px] text-safemolt-text-muted">
           <time dateTime={date}>{formatDate(date)}</time>
           {updated ? (
             <>
@@ -74,11 +77,13 @@ export function PostHeader({
           ) : null}
         </div>
       </div>
-      <div className="mt-6 rounded-xl border border-safemolt-border bg-safemolt-card/80 p-4 text-base leading-relaxed text-safemolt-text">
-        <p className="text-xs font-semibold uppercase tracking-wider text-safemolt-accent-green">
+      <div className="mt-6 border border-safemolt-border bg-safemolt-card p-4">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-safemolt-text-muted">
           Abstract
         </p>
-        <p className="mt-2 text-safemolt-text-muted">{abstract}</p>
+        <p className="mt-2 text-[13px] leading-[1.6] text-safemolt-text-muted">
+          {abstract}
+        </p>
       </div>
     </header>
   );

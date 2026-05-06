@@ -29,12 +29,12 @@ function AnchorLink({
   );
 }
 
-/** Typography aligned to SafeMolt paper / text tokens */
+/** Typography aligned with the SafeMolt About page (mono, sharp, 12–13px body) */
 export const researchMdxComponents: MDXComponents = {
   h2: ({ id, children, ...props }) => (
     <h2
       id={id}
-      className="mt-12 scroll-mt-24 border-b border-safemolt-border pb-2 font-serif text-2xl font-semibold text-safemolt-text first:mt-0"
+      className="mt-12 scroll-mt-24 border-b border-safemolt-border pb-2 text-[18px] font-bold leading-[1.3] text-safemolt-text first:mt-0 sm:text-[20px]"
       {...props}
     >
       {children}
@@ -43,7 +43,7 @@ export const researchMdxComponents: MDXComponents = {
   h3: ({ id, children, ...props }) => (
     <h3
       id={id}
-      className="mt-8 scroll-mt-24 font-serif text-xl font-semibold text-safemolt-text"
+      className="mt-8 scroll-mt-24 text-[14px] font-bold leading-[1.35] text-safemolt-text"
       {...props}
     >
       {children}
@@ -51,7 +51,7 @@ export const researchMdxComponents: MDXComponents = {
   ),
   h4: ({ children, ...props }) => (
     <h4
-      className="mt-4 font-semibold text-safemolt-text"
+      className="mt-5 text-[13px] font-bold text-safemolt-text"
       {...props}
     >
       {children}
@@ -59,7 +59,7 @@ export const researchMdxComponents: MDXComponents = {
   ),
   p: ({ children, ...props }) => (
     <p
-      className="mt-4 leading-relaxed text-safemolt-text-muted first:mt-0"
+      className="mt-3 text-[13px] leading-[1.6] text-safemolt-text-muted first:mt-0"
       {...props}
     >
       {children}
@@ -70,7 +70,7 @@ export const researchMdxComponents: MDXComponents = {
       href={href}
       className={
         className ??
-        "font-medium text-safemolt-accent-green underline decoration-safemolt-accent-green/30 underline-offset-2 hover:text-safemolt-accent-green-hover"
+        "font-medium text-safemolt-accent-green underline decoration-safemolt-accent-green/30 underline-offset-2 hover:decoration-safemolt-accent-green hover:text-safemolt-accent-green-hover"
       }
       {...props}
     >
@@ -79,7 +79,7 @@ export const researchMdxComponents: MDXComponents = {
   ),
   ul: ({ children, ...props }) => (
     <ul
-      className="mt-4 list-disc space-y-2 pl-6 text-safemolt-text-muted marker:text-safemolt-accent-green/80"
+      className="mt-3 list-disc space-y-1.5 pl-5 text-[13px] leading-[1.6] text-safemolt-text-muted marker:text-safemolt-accent-green/80"
       {...props}
     >
       {children}
@@ -87,36 +87,44 @@ export const researchMdxComponents: MDXComponents = {
   ),
   ol: ({ children, ...props }) => (
     <ol
-      className="mt-4 list-decimal space-y-2 pl-6 text-safemolt-text-muted marker:font-medium marker:text-safemolt-text"
+      className="mt-3 list-decimal space-y-1.5 pl-5 text-[13px] leading-[1.6] text-safemolt-text-muted marker:font-bold marker:text-safemolt-text"
       {...props}
     >
       {children}
     </ol>
   ),
   li: ({ children, ...props }) => (
-    <li className="leading-relaxed" {...props}>
+    <li className="leading-[1.6]" {...props}>
       {children}
     </li>
   ),
   blockquote: ({ children, ...props }) => (
     <blockquote
-      className="my-6 border-l-4 border-safemolt-accent-green/40 pl-4 italic text-safemolt-text"
+      className="my-5 border-l-2 border-safemolt-accent-green pl-4 text-[13px] italic leading-[1.6] text-safemolt-text"
       {...props}
     >
       {children}
     </blockquote>
   ),
   strong: ({ children, ...props }) => (
-    <strong className="font-semibold text-safemolt-text" {...props}>
+    <strong className="font-bold text-safemolt-text" {...props}>
       {children}
     </strong>
   ),
+  em: ({ children, ...props }) => (
+    <em className="italic" {...props}>
+      {children}
+    </em>
+  ),
   hr: () => (
-    <hr className="my-12 border-0 border-t border-safemolt-border" />
+    <hr className="my-10 border-0 border-t border-safemolt-border" />
   ),
   table: ({ children, ...props }) => (
-    <div className="my-6 overflow-x-auto rounded-xl border border-safemolt-border">
-      <table className="w-full border-collapse text-sm text-safemolt-text" {...props}>
+    <div className="my-6 overflow-x-auto border border-safemolt-border">
+      <table
+        className="w-full border-collapse text-[12px] text-safemolt-text"
+        {...props}
+      >
         {children}
       </table>
     </div>
@@ -136,14 +144,17 @@ export const researchMdxComponents: MDXComponents = {
   ),
   th: ({ children, ...props }) => (
     <th
-      className="px-4 py-3 text-left font-semibold text-safemolt-text"
+      className="px-3 py-2 text-left font-bold text-safemolt-text"
       {...props}
     >
       {children}
     </th>
   ),
   td: ({ children, ...props }) => (
-    <td className="px-4 py-3 align-top text-safemolt-text-muted" {...props}>
+    <td
+      className="px-3 py-2 align-top text-[12px] leading-[1.55] text-safemolt-text-muted"
+      {...props}
+    >
       {children}
     </td>
   ),
@@ -158,7 +169,7 @@ export const researchMdxComponents: MDXComponents = {
     }
     return (
       <code
-        className="rounded bg-safemolt-accent-brown/10 px-1.5 py-0.5 font-mono text-sm text-safemolt-text"
+        className="bg-safemolt-card px-1.5 py-0.5 text-[12px] text-safemolt-text"
         {...props}
       >
         {children}
@@ -167,7 +178,7 @@ export const researchMdxComponents: MDXComponents = {
   },
   pre: ({ children, ...props }) => (
     <pre
-      className="my-6 overflow-x-auto rounded-xl border border-safemolt-border bg-safemolt-card p-4 text-sm text-safemolt-text"
+      className="my-5 overflow-x-auto border border-safemolt-border bg-safemolt-card p-3 text-[12px] leading-[1.55] text-safemolt-text"
       {...props}
     >
       {children}
@@ -179,8 +190,7 @@ export const researchMdxComponents: MDXComponents = {
       src={typeof src === "string" ? src : ""}
       alt={alt ?? ""}
       className={
-        className ??
-        "my-6 h-auto max-w-full rounded-lg border border-safemolt-border"
+        className ?? "my-5 h-auto max-w-full border border-safemolt-border"
       }
       {...props}
     />
