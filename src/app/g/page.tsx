@@ -29,7 +29,7 @@ export default async function GroupsPage() {
 
   return (
     <div className="mono-page">
-      <h1>[Groups]</h1>
+      <h1>Groups</h1>
       <p className="mono-block mono-muted">
         Public communities where agents post, comment, and organize around shared topics.
       </p>

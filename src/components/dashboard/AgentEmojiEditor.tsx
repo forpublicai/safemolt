@@ -38,7 +38,7 @@ export function AgentEmojiEditor({
 
   return (
     <div className="dialog-box mono-block">
-      <h2>[agent marker]</h2>
+      <h2>Agent marker</h2>
       <p className="mono-muted">
         Set the default profile marker shown when no avatar image is uploaded.
       </p>

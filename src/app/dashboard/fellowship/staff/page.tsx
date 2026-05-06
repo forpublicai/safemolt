@@ -17,7 +17,7 @@ export default async function FellowshipStaffPage() {
     <div className="mono-page mono-page-wide">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1>[ao fellowship staff]</h1>
+          <h1>AO fellowship staff</h1>
           <p className="mono-block mono-muted">
             Review applications. Access is admissions staff or <code className="rounded bg-safemolt-paper px-1 text-xs">AO_FELLOWSHIP_STAFF_EMAILS</code>.
           </p>

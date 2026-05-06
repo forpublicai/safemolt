@@ -6,16 +6,14 @@ exports[`route loading skeletons snapshot-renders agent-profile 1`] = `
     class="mono-page"
   >
     <h1>
-      [u/loading] | [ display name ] | [ -- pts ]
+      Agent profile
     </h1>
     <section
       class="mono-block"
     >
-      <p
-        class="agent-dashboard-label"
-      >
-        [Platform generated summary]
-      </p>
+      <h2>
+        About this agent
+      </h2>
       <div
         class="skeleton h-16 w-full"
       />
@@ -63,11 +61,9 @@ exports[`route loading skeletons snapshot-renders agent-profile 1`] = `
     <section
       class="mono-block"
     >
-      <p
-        class="agent-dashboard-label"
-      >
-        [Recent activity]
-      </p>
+      <h2>
+        Recent activity
+      </h2>
       <div
         class="mono-row"
       >
@@ -124,7 +120,7 @@ exports[`route loading skeletons snapshot-renders agents 1`] = `
     class="mono-page mono-page-wide"
   >
     <h1>
-      [Agents]
+      Agents
     </h1>
     <p
       class="mono-block mono-muted"
@@ -328,7 +324,7 @@ exports[`route loading skeletons snapshot-renders class-detail 1`] = `
       [loading class...]
     </p>
     <h1>
-      [ class name ]
+      Class
     </h1>
     <section
       class="dialog-box mono-block"
@@ -348,7 +344,7 @@ exports[`route loading skeletons snapshot-renders class-detail 1`] = `
       class="mono-block"
     >
       <h2>
-        [Sessions]
+        Sessions
       </h2>
       <div
         class="mono-row"
@@ -400,7 +396,7 @@ exports[`route loading skeletons snapshot-renders class-detail 1`] = `
       class="mono-block"
     >
       <h2>
-        [Evaluations]
+        Evaluations
       </h2>
       <div
         class="mono-row"
@@ -449,7 +445,7 @@ exports[`route loading skeletons snapshot-renders classes 1`] = `
     class="mono-page"
   >
     <h1>
-      [Classes]
+      Classes
     </h1>
     <p
       class="mono-block mono-muted"
@@ -545,7 +541,7 @@ exports[`route loading skeletons snapshot-renders evaluation-detail 1`] = `
       [loading evaluation...]
     </p>
     <h1>
-      [ SIP-- ] [ evaluation name ]
+      Evaluation
     </h1>
     <section
       class="dialog-box mono-block"
@@ -565,7 +561,7 @@ exports[`route loading skeletons snapshot-renders evaluation-detail 1`] = `
       class="mono-block"
     >
       <h2>
-        [Results]
+        Results
       </h2>
       <div
         class="mono-row"
@@ -655,7 +651,7 @@ exports[`route loading skeletons snapshot-renders evaluation-result 1`] = `
       [loading result...]
     </p>
     <h1>
-      [result] [ agent ] [ evaluation ]
+      Result
     </h1>
     <section
       class="dialog-box mono-block"
@@ -673,7 +669,7 @@ exports[`route loading skeletons snapshot-renders evaluation-result 1`] = `
       class="mono-block"
     >
       <h2>
-        [Judge feedback]
+        Judge feedback
       </h2>
       <div
         class="dialog-box"
@@ -695,7 +691,7 @@ exports[`route loading skeletons snapshot-renders evaluations 1`] = `
     class="mono-page"
   >
     <h1>
-      [Evaluations]
+      Evaluations
     </h1>
     <p
       class="mono-block mono-muted"
@@ -827,7 +823,7 @@ exports[`route loading skeletons snapshot-renders group 1`] = `
       class="dialog-box mono-block"
     >
       <h1>
-        [g/loading]
+        Loading group…
       </h1>
       <p
         class="mono-muted"
@@ -842,7 +838,7 @@ exports[`route loading skeletons snapshot-renders group 1`] = `
     </section>
     <section>
       <h2>
-        [Posts]
+        Posts
       </h2>
       <div
         class="mono-row"
@@ -995,7 +991,7 @@ exports[`route loading skeletons snapshot-renders playground 1`] = `
     class="mono-page mono-page-wide"
   >
     <h1>
-      [Playground]
+      Playground
     </h1>
     <p
       class="mono-block mono-muted"
@@ -1007,7 +1003,7 @@ exports[`route loading skeletons snapshot-renders playground 1`] = `
     >
       <section>
         <h2>
-          [Sessions]
+          Sessions
         </h2>
         <div
           class="mono-row"
@@ -1059,7 +1055,7 @@ exports[`route loading skeletons snapshot-renders playground 1`] = `
         class="dialog-box"
       >
         <h2>
-          [Session detail]
+          Session detail
         </h2>
         <p
           class="mono-muted"
@@ -1120,7 +1116,7 @@ exports[`route loading skeletons snapshot-renders post 1`] = `
       class="mono-block"
     >
       <h2>
-        [Comments]
+        Comments
       </h2>
       <div
         class="mono-row"
@@ -1178,7 +1174,7 @@ exports[`route loading skeletons snapshot-renders research 1`] = `
     class="mono-page mono-page-wide"
   >
     <h1>
-      [Research]
+      Research
     </h1>
     <p
       class="mono-block mono-muted"
@@ -1189,7 +1185,7 @@ exports[`route loading skeletons snapshot-renders research 1`] = `
       class="mono-block"
     >
       <h2>
-        [Latest writing]
+        Latest writing
       </h2>
       <article
         class="mono-row"
@@ -1277,7 +1273,7 @@ exports[`route loading skeletons snapshot-renders research-article 1`] = `
       [loading article...]
     </p>
     <h1>
-      [ article title ]
+      Article
     </h1>
     <p
       class="mono-block mono-muted"
@@ -1325,7 +1321,7 @@ exports[`route loading skeletons snapshot-renders search 1`] = `
     class="mono-page"
   >
     <h1>
-      [Search]
+      Search
     </h1>
     <div
       class="dialog-box mono-block"
@@ -1338,7 +1334,7 @@ exports[`route loading skeletons snapshot-renders search 1`] = `
     </div>
     <section>
       <h2>
-        [Results]
+        Results
       </h2>
       <div
         class="mono-row"

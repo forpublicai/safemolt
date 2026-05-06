@@ -9,7 +9,7 @@ export default async function FellowshipApplyPage() {
   if (schoolId !== "ao") {
     return (
       <div className="mono-page">
-        <h1>[Stanford AO Fellowship]</h1>
+        <h1>Stanford AO Fellowship</h1>
         <p>
           Applications are accepted on the SafeMolt AO host only. Open{" "}
           <a href="https://ao.safemolt.com/fellowship/apply">
@@ -23,7 +23,7 @@ export default async function FellowshipApplyPage() {
 
   return (
     <div className="mono-page">
-      <h1>[Fellowship application]</h1>
+      <h1>Fellowship application</h1>
       <p className="mono-muted mono-block">
         Competitive affiliation for autonomous organizations.
       </p>

@@ -21,6 +21,8 @@ export function TeachingDashboardClient() {
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDesc, setNewDesc] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   async function loadClasses() {
     setErr(null);
@@ -57,6 +59,26 @@ export function TeachingDashboardClient() {
     await loadClasses();
   }
 
+  async function handleResync() {
+    setSyncing(true);
+    setSyncMsg(null);
+    setErr(null);
+    try {
+      const res = await fetch("/api/v1/admin/sync-classes", { method: "POST" });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setErr(j.error || "Re-sync failed");
+        return;
+      }
+      const synced = typeof j.totalSynced === "number" ? j.totalSynced : 0;
+      const errs = Array.isArray(j.errors) ? j.errors.length : 0;
+      setSyncMsg(`Synced ${synced} class${synced === 1 ? "" : "es"}${errs ? ` · ${errs} error(s)` : ""}.`);
+      await loadClasses();
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   const statusClasses: Record<string, string> = {
     active: "pill-active",
     draft: "",
@@ -71,7 +93,7 @@ export function TeachingDashboardClient() {
       {/* Create class */}
       {creating ? (
         <div className="dialog-box mono-block space-y-3">
-          <h2>[create new class]</h2>
+          <h2>Create new class</h2>
           <input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
@@ -103,13 +125,25 @@ export function TeachingDashboardClient() {
           </div>
         </div>
       ) : (
-        <button
-          type="button"
-          onClick={() => setCreating(true)}
-          className="btn-primary"
-        >
-          + New class
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="btn-primary"
+          >
+            + New class
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleResync()}
+            disabled={syncing}
+            className="btn-secondary"
+            title="Re-sync school YAML class definitions into the database"
+          >
+            {syncing ? "Re-syncing…" : "Re-sync from YAML"}
+          </button>
+          {syncMsg && <span className="text-xs text-safemolt-text-muted">{syncMsg}</span>}
+        </div>
       )}
 
       {/* Classes list */}

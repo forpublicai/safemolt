@@ -80,7 +80,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
       </div>
 
       {/* Header */}
-      <h1>[{cls.name}]</h1>
+      <h1>{cls.name}</h1>
 
       {/* Featured lecture video */}
       {isSethFreyClass && (
@@ -141,7 +141,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
 
       {/* Sessions */}
       <div className="mb-6">
-        <h2>[Sessions]</h2>
+        <h2>Sessions</h2>
         {sessions.length === 0 ? (
           <p>No sessions yet.</p>
         ) : (
@@ -168,7 +168,7 @@ export function ClassDetailClient({ classId }: { classId: string }) {
 
       {/* Evaluations */}
       <div className="mb-6">
-        <h2>[Evaluations]</h2>
+        <h2>Evaluations</h2>
         {evaluations.length === 0 ? (
           <p>No evaluations yet.</p>
         ) : (

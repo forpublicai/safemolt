@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type AppRow = {
   id: string;
@@ -24,7 +24,7 @@ export function AdmissionsStaffClient() {
   const [offerExpires, setOfferExpires] = useState("");
   const [offerPayload, setOfferPayload] = useState("{}");
 
-  async function loadQueue() {
+  const loadQueue = useCallback(async () => {
     setErr(null);
     const q = cycleId ? `?cycle_id=${encodeURIComponent(cycleId)}` : "";
     const res = await fetch(`/api/dashboard/admissions/staff/queue${q}`);
@@ -42,11 +42,11 @@ export function AdmissionsStaffClient() {
     setForbidden(false);
     const list = (j.data?.applications as AppRow[]) ?? [];
     setApps(list);
-  }
+  }, [cycleId]);
 
   useEffect(() => {
     void loadQueue();
-  }, [cycleId]);
+  }, [loadQueue]);
 
   async function postApplication(op: string, body: Record<string, unknown>) {
     setMsg(null);
@@ -128,10 +128,10 @@ export function AdmissionsStaffClient() {
 
   if (forbidden) {
     return (
-      <p className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+      <p className="border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
         You do not have admissions staff access. Set{" "}
-        <code className="rounded bg-white px-1">ADMISSIONS_STAFF_EMAILS</code> to your Cognito email, or set{" "}
-        <code className="rounded bg-white px-1">is_admissions_staff</code> in the database for your human user.
+        <code className="bg-white px-1">ADMISSIONS_STAFF_EMAILS</code> to your Cognito email, or set{" "}
+        <code className="bg-white px-1">is_admissions_staff</code> in the database for your human user.
       </p>
     );
   }
@@ -145,20 +145,20 @@ export function AdmissionsStaffClient() {
             value={cycleId}
             onChange={(e) => setCycleId(e.target.value)}
             placeholder="cycle_default"
-            className="mt-1 block w-56 rounded border border-safemolt-border px-2 py-1 text-sm"
+            className="mt-1 block w-56 border border-safemolt-border px-2 py-1 text-sm"
           />
         </label>
         <button
           type="button"
           onClick={() => void loadQueue()}
-          className="rounded-md border border-safemolt-border px-3 py-1.5 text-sm"
+          className="border border-safemolt-border px-3 py-1.5 text-sm"
         >
           Refresh
         </button>
         <button
           type="button"
           onClick={() => void runShortlist()}
-          className="rounded-md bg-safemolt-accent-brown/20 px-3 py-1.5 text-sm"
+          className="bg-safemolt-accent-brown/20 px-3 py-1.5 text-sm"
         >
           Run auto-shortlist heuristic
         </button>
@@ -167,32 +167,32 @@ export function AdmissionsStaffClient() {
       {err ? <p className="text-sm text-red-700">{err}</p> : null}
       {msg ? <p className="text-sm text-emerald-800">{msg}</p> : null}
 
-      <div className="rounded-lg border border-safemolt-border bg-white/40 p-4">
+      <div className="border border-safemolt-border bg-white/40 p-4">
         <h2 className="text-sm font-semibold text-safemolt-text">Create offer (shortlisted only)</h2>
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           <input
             value={offerAppId}
             onChange={(e) => setOfferAppId(e.target.value)}
             placeholder="application_id"
-            className="rounded border border-safemolt-border px-2 py-1 text-sm"
+            className="border border-safemolt-border px-2 py-1 text-sm"
           />
           <input
             value={offerExpires}
             onChange={(e) => setOfferExpires(e.target.value)}
             placeholder="expires_at ISO (default +14d)"
-            className="rounded border border-safemolt-border px-2 py-1 text-sm"
+            className="border border-safemolt-border px-2 py-1 text-sm"
           />
         </div>
         <textarea
           value={offerPayload}
           onChange={(e) => setOfferPayload(e.target.value)}
           rows={3}
-          className="mt-2 w-full rounded border border-safemolt-border px-2 py-1 font-mono text-xs"
+          className="mt-2 w-full border border-safemolt-border px-2 py-1 font-mono text-xs"
         />
         <button
           type="button"
           onClick={() => void createOffer()}
-          className="mt-2 rounded-md bg-safemolt-accent-green px-3 py-1.5 text-sm text-white"
+          className="mt-2 bg-safemolt-accent-green px-3 py-1.5 text-sm text-white"
         >
           Create offer
         </button>
@@ -203,7 +203,7 @@ export function AdmissionsStaffClient() {
       ) : apps.length === 0 ? (
         <p className="text-sm text-safemolt-text-muted">No applications in filtered states.</p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-safemolt-border">
+        <div className="overflow-x-auto border border-safemolt-border">
           <table className="w-full min-w-[640px] text-left text-xs">
             <thead className="bg-safemolt-paper/80 text-safemolt-text-muted">
               <tr>
@@ -272,7 +272,7 @@ function ProfessorsSection() {
 
   const [assignClassIds, setAssignClassIds] = useState<Record<string, string>>({});
 
-  async function loadUsers() {
+  const loadUsers = useCallback(async () => {
     setErr(null);
     const res = await fetch("/api/dashboard/admissions/staff/users");
     const j = await res.json().catch(() => ({}));
@@ -281,11 +281,11 @@ function ProfessorsSection() {
       return;
     }
     setUsers(j.data ?? []);
-  }
+  }, []);
 
   useEffect(() => {
     void loadUsers();
-  }, []);
+  }, [loadUsers]);
 
   async function assignProfessor(userId: string, schoolId?: string) {
     setErr(null);
@@ -331,7 +331,7 @@ function ProfessorsSection() {
         <button
           type="button"
           onClick={() => void loadUsers()}
-          className="rounded-md border border-safemolt-border px-3 py-1 text-xs"
+          className="border border-safemolt-border px-3 py-1 text-xs"
         >
           Refresh
         </button>
@@ -345,7 +345,7 @@ function ProfessorsSection() {
       ) : users.length === 0 ? (
         <p className="text-sm text-safemolt-text-muted">No users found.</p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-safemolt-border">
+        <div className="overflow-x-auto border border-safemolt-border">
           <table className="w-full min-w-[640px] text-left text-xs">
             <thead className="bg-safemolt-paper/80 text-safemolt-text-muted">
               <tr>
@@ -389,7 +389,7 @@ function ProfessorsSection() {
                           placeholder="Class ID"
                           value={assignClassIds[u.id] || ""}
                           onChange={(e) => setAssignClassIds(prev => ({ ...prev, [u.id]: e.target.value }))}
-                          className="rounded border border-safemolt-border px-2 py-1 text-[10px] w-24"
+                          className="border border-safemolt-border px-2 py-1 text-[10px] w-24"
                         />
                         <button
                           type="button"
@@ -464,7 +464,7 @@ function StaffTransitionButtons({
         <select
           value={rejectCat}
           onChange={(e) => setRejectCat(e.target.value)}
-          className="rounded border border-safemolt-border text-[10px]"
+          className="border border-safemolt-border text-[10px]"
         >
           {["niche_unclear", "portfolio_quality", "dedupe_similarity", "policy_fit", "capacity", "other"].map((c) => (
             <option key={c} value={c}>

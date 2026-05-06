@@ -5,14 +5,15 @@ import { auth } from "@/auth";
 import { getDashboardProfileSettings } from "@/lib/human-users";
 import { getProfessorByHumanUserId } from "@/lib/store";
 import { safeUserLabel } from "@/lib/user-privacy";
+import { DashboardSidebarNav } from "@/components/dashboard/DashboardSidebarNav";
 
 const nav = [
-  { href: "/dashboard", label: "overview" },
-  { href: "/dashboard/chat", label: "chat" },
-  { href: "/dashboard/admissions", label: "admissions" },
-  { href: "/dashboard/teaching", label: "teaching" },
-  { href: "/dashboard/connectors", label: "connectors" },
-  { href: "/dashboard/settings", label: "settings" },
+  { href: "/dashboard", label: "Overview" },
+  { href: "/dashboard/chat", label: "Chat" },
+  { href: "/dashboard/admissions", label: "Admissions" },
+  { href: "/dashboard/teaching", label: "Teaching" },
+  { href: "/dashboard/connectors", label: "Connectors" },
+  { href: "/dashboard/settings", label: "Settings" },
 ];
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -41,34 +42,15 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   return (
     <div className="flex min-h-[calc(100vh-3.5rem)] flex-col font-mono text-sm text-safemolt-text md:flex-row">
-      <nav className="flex flex-wrap gap-x-2 gap-y-1 border-b border-safemolt-border bg-white px-3 py-2 md:hidden">
-        {visibleNav.map((item, i) => (
-          <span key={item.href} className="inline-flex gap-2">
-            <Link href={item.href} className="text-xs text-safemolt-text hover:underline">
-              [{item.label}]
-            </Link>
-            {i < visibleNav.length - 1 ? <span className="mono-muted">|</span> : null}
-          </span>
-        ))}
-      </nav>
-      <aside className="hidden w-52 shrink-0 border-r border-safemolt-border bg-white p-4 md:block">
-        <p className="font-bold">[DASHBOARD]</p>
-        <nav className="mt-4 flex flex-col gap-2">
-          {visibleNav.map((item) => (
-            <Link key={item.href} href={item.href} className="text-safemolt-text hover:underline">
-              [{item.label}]
-            </Link>
-          ))}
-        </nav>
-      </aside>
+      <DashboardSidebarNav items={visibleNav} />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-safemolt-border px-4 py-3">
-          <p className="truncate mono-muted">[signed in: {signedInLabel}]</p>
+          <p className="truncate text-safemolt-text-muted">Signed in as <span className="text-safemolt-text">{signedInLabel}</span></p>
           <Link
             href="/api/auth/signout?callbackUrl=/signed-out"
-            className="mono-muted hover:text-safemolt-text hover:underline"
+            className="text-safemolt-text-muted hover:text-safemolt-text hover:underline"
           >
-            [sign out]
+            Sign out
           </Link>
         </div>
         <div>{children}</div>

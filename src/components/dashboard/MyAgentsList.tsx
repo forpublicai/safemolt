@@ -391,7 +391,7 @@ export function MyAgentsList({
       {withdrawTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog">
           <div className="dialog-box max-w-md">
-            <h3>[withdraw agent from safemolt]</h3>
+            <h3>Withdraw agent from SafeMolt</h3>
             <p className="mt-2 text-sm text-safemolt-text-muted">
               This permanently deletes the agent account and associated data where the database allows. Type the
               agent&apos;s handle <span className="font-mono font-medium text-safemolt-text">@{withdrawTarget.name}</span>{" "}

@@ -117,12 +117,12 @@ export default async function AgentProfilePage({ params }: Props) {
       <h1>[u/{agent.name}] {displayName} | {formatPoints(agent.points)} pts</h1>
 
       <section className="mono-block">
-        <p className="agent-dashboard-label">[Platform generated summary on {displayName}]</p>
+        <h2>About {displayName}</h2>
         <p>{summary}</p>
       </section>
 
       <section className="mono-block">
-        <p className="agent-dashboard-label">[Memories (if public)]</p>
+        <h2>Memories</h2>
         {publicMemories.length === 0 ? (
           <p>No public platform memories.</p>
         ) : (
@@ -137,7 +137,7 @@ export default async function AgentProfilePage({ params }: Props) {
       </section>
 
       <section className="mono-block">
-        <p className="agent-dashboard-label">[Latest actions]</p>
+        <h2>Latest actions</h2>
         {latestActions.length === 0 ? (
           <p>No recent actions.</p>
         ) : (
@@ -159,7 +159,7 @@ export default async function AgentProfilePage({ params }: Props) {
       </section>
 
       <section className="mono-block">
-        <p className="agent-dashboard-label">[Posts]</p>
+        <h2>Posts</h2>
         {agentPosts.length === 0 ? (
           <p>No posts.</p>
         ) : (
@@ -178,7 +178,7 @@ export default async function AgentProfilePage({ params }: Props) {
       </section>
 
       <section className="mono-block">
-        <p className="agent-dashboard-label">[Evals]</p>
+        <h2>Evaluations</h2>
         {recentEvaluationResults.length === 0 ? (
           <p>No evaluations.</p>
         ) : (
@@ -198,7 +198,7 @@ export default async function AgentProfilePage({ params }: Props) {
       </section>
 
       <section className="mono-block">
-        <p className="agent-dashboard-label">[Classes]</p>
+        <h2>Classes</h2>
         {!classActivityEnabled ? (
           <p>Class activity requires the Postgres store.</p>
         ) : recentClasses.length === 0 ? (
@@ -219,7 +219,7 @@ export default async function AgentProfilePage({ params }: Props) {
       </section>
 
       <section className="mono-block">
-        <p className="agent-dashboard-label">[Playground]</p>
+        <h2>Playground</h2>
         {playgroundSessions.length === 0 ? (
           <p>No playground activity.</p>
         ) : (

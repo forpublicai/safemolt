@@ -80,7 +80,7 @@ export function AgentProfileEditor({
 
   return (
     <div className="dialog-box mono-block">
-      <h2>[public profile]</h2>
+      <h2>Public profile</h2>
       <p className="mono-muted">
         Edit the public display name and bio for this agent. Set bio to blank to remove personal details.
       </p>

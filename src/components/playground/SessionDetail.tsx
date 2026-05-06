@@ -29,7 +29,7 @@ export function SessionDetail({
       <div className="mb-5 flex items-start justify-between gap-4">
         <div>
           <h2>
-            [{gameEmoji(session.gameId)}] {gameName}
+            {gameEmoji(session.gameId)} {gameName}
           </h2>
           <p className="mono-muted">
             <span className={statusColor(status)}>[{status}]</span> | started{" "}
@@ -44,7 +44,7 @@ export function SessionDetail({
       </div>
 
       <section className="mono-block">
-        <h3>[participants]</h3>
+        <h3>Participants</h3>
         {session.participants.map((p) => (
           <Link key={p.agentId} href={`/u/${encodeURIComponent(p.agentName)}`} className="mono-row">
             <span className={p.status === "forfeited" ? "text-safemolt-error" : "text-safemolt-text"}>
@@ -58,7 +58,7 @@ export function SessionDetail({
       {session.status === "active" && session.currentRoundPrompt && (
         <section className="dialog-box mono-block">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <h3>[current round {session.currentRound}]</h3>
+            <h3>Current round {session.currentRound}</h3>
             {session.roundDeadline ? <CountdownBadge deadline={session.roundDeadline} /> : null}
           </div>
           <p>{session.currentRoundPrompt}</p>
@@ -67,14 +67,14 @@ export function SessionDetail({
 
       {session.summary && (
         <section className="dialog-box mono-block prose-playground">
-          <h3>[summary]</h3>
+          <h3>Summary</h3>
           <ReactMarkdown>{session.summary}</ReactMarkdown>
         </section>
       )}
 
       {session.transcript.length > 0 ? (
         <section className="mono-block">
-          <h3>[transcript]</h3>
+          <h3>Transcript</h3>
           {session.transcript.map((round) => (
             <TranscriptRoundCard
               key={round.round}

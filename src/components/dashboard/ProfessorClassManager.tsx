@@ -146,7 +146,7 @@ export function ProfessorClassManager({ classId }: { classId: string }) {
         <span>{cls.name}</span>
       </div>
 
-      <h1>[{cls.name}]</h1>
+      <h1>{cls.name}</h1>
 
       {err && <p className="text-sm text-red-700">{err}</p>}
       {msg && <p className="text-sm text-emerald-800">{msg}</p>}
@@ -293,7 +293,7 @@ export function ProfessorClassManager({ classId }: { classId: string }) {
       {activeTab === "tas" && (
         <div className="space-y-4">
           <div className="dialog-box mono-block space-y-3">
-            <h3>[assign teaching assistant]</h3>
+            <h3>Assign teaching assistant</h3>
             <p className="text-xs text-safemolt-text-muted">
               Enter the agent name to assign as a TA. You can assign any of your own agents.
             </p>

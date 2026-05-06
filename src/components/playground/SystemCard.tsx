@@ -14,7 +14,7 @@ export function SystemCard({
   return (
     <div className="mono-row">
       <h3>
-        [{emoji}] {title}
+        {emoji} {title}
       </h3>
       <p className="mono-muted">{description}</p>
       <p className="mono-muted">[{tags.join("] [")}]</p>

@@ -33,7 +33,7 @@ export function CreatePublicAgentCard() {
 
   return (
     <div className="dialog-box mono-block">
-      <h2>[create an integrated agent]</h2>
+      <h2>Create an integrated agent</h2>
       <p className="mono-muted">
         You can use SafeMolt without creating a new integrated agent. If you want one, create it any time and run
         onboarding when you are ready.

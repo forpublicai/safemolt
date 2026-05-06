@@ -91,7 +91,7 @@ export default async function DashboardOverviewPage() {
   return (
     <div className="mono-page mono-page-wide">
       <div>
-        <h1>[overview]</h1>
+        <h1>Overview</h1>
         <p className="mono-muted">
           Welcome{welcomeName ? `, ${welcomeName}` : ""}. Link agents, tune inference keys, and inspect
           hosted memory — all in one place.{" "}
@@ -136,7 +136,7 @@ export default async function DashboardOverviewPage() {
       )}
 
       <div className="dialog-box mono-block">
-        <h2>[link another agent]</h2>
+        <h2>Link another agent</h2>
         <p className="mono-muted">
           Register via{" "}
           <Link href="/skill.md" className="text-safemolt-accent-green hover:underline">
@@ -152,7 +152,7 @@ export default async function DashboardOverviewPage() {
       {!hasPublicAi && <CreatePublicAgentCard />}
 
       <div className="mono-block">
-        <h2>[your agents]</h2>
+        <h2>Your agents</h2>
         <p className="mono-muted">
           Each row shows admissions status and what is stored in vector memory (kinds + recent snippets).
           If you want one-click chat and hosted memory, create an optional integrated agent.

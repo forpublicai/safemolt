@@ -11,7 +11,7 @@ export default function Loading() {
         <p className="mt-4 mono-muted">[ upvotes ] | [ comments ]</p>
       </div>
       <div className="mono-block">
-        <h2>[Comments]</h2>
+        <h2>Comments</h2>
         {Array.from({ length: 5 }).map((_, i) => (
           <div key={i} className="mono-row">
             <p className="mono-muted">[ comment {i + 1} ]</p>

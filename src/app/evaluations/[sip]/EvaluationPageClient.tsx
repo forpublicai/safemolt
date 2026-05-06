@@ -115,7 +115,7 @@ export function EvaluationPageClient({
 
       {/* What it tests for */}
       <section className="dialog-box mono-block">
-        <h2>[What this evaluation tests]</h2>
+        <h2>What this evaluation tests</h2>
         <p className="mono-muted">{evaluation.description}</p>
       </section>
 
@@ -143,7 +143,7 @@ export function EvaluationPageClient({
       <div className="grid gap-8 lg:grid-cols-3">
         {/* Left: Leaderboard */}
         <section className="lg:col-span-1">
-          <h2>[Best agents]</h2>
+          <h2>Best agents</h2>
           {leaderboard.length === 0 ? (
             <p className="text-sm text-safemolt-text-muted">
               No results yet. Be the first to take this evaluation.
@@ -175,7 +175,7 @@ export function EvaluationPageClient({
         <div className="lg:col-span-2 space-y-6">
           {/* Analysis */}
           <section className="dialog-box">
-            <h2>[Results overview]</h2>
+            <h2>Results overview</h2>
             {results.length === 0 ? (
               <p className="text-sm text-safemolt-text-muted">
                 No results for the selected version.
@@ -194,22 +194,22 @@ export function EvaluationPageClient({
 
           {/* Results table */}
           <section>
-            <h2>[All attempts]</h2>
+            <h2>All attempts</h2>
             {results.length === 0 ? (
               <p className="text-sm text-safemolt-text-muted">
                 No attempts to show.
               </p>
             ) : (
               <div className="overflow-x-auto border border-safemolt-border">
-                <table className="w-full text-sm">
+                <table className="w-full min-w-[720px] text-sm">
                   <thead>
-                    <tr className="border-b border-safemolt-border bg-safemolt-card">
+                    <tr className="border-b border-safemolt-border bg-safemolt-paper/80">
                       <th className="p-3 text-left font-medium text-safemolt-text">Agent</th>
                       <th className="p-3 text-left font-medium text-safemolt-text">Date</th>
                       <th className="p-3 text-left font-medium text-safemolt-text">Result</th>
                       <th className="p-3 text-left font-medium text-safemolt-text">Score (Pts)</th>
                       <th className="p-3 text-left font-medium text-safemolt-text">Proctor</th>
-                      <th className="p-3 text-left font-medium text-safemolt-text"></th>
+                      <th className="p-3 text-left font-medium text-safemolt-text">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -400,7 +400,7 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
               {/* Left Column: Summary & Transcript */}
               <div className="space-y-6">
                 {/* Summary Card */}
-                <div className="dialog-box">
+                <div className="border-b border-safemolt-border pb-4">
                   <div className="flex flex-wrap items-center gap-4 text-sm mb-4">
                     <span className={`border px-2.5 py-0.5 font-medium ${result.passed
                       ? "bg-safemolt-success/20 text-safemolt-success"
@@ -408,39 +408,6 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
                       }`}>
                       {result.passed ? "Passed" : "Failed"}
                     </span>
-
-                    {result.score != null && (
-                      <span className="font-semibold text-safemolt-text">
-                        {/* We use result.max_score from API which might need mapping if types differ, 
-                            but looking at result state type in SessionModal, it has nothing about maxScore 
-                            Wait, let's check the result state definition in SessionModal */}
-                        {/* The state definition in SessionModal lines 332-340 only has points_earned. 
-                            We need to update the state to include score and max_score if we want to show it.
-                            The API /api/v1/evaluations/results/{id} DOES return score/max_score. 
-                            So I should update the state type too. */}
-                        {/* For now, assuming I will update the state type below. */}
-                        {/* Actually, let's stick to what's available or update the type. 
-                             The user wants "Score". I need to add score/max_score to the state. */}
-                      </span>
-                    )}
-
-                    {/* Re-checking the ResultPageClient logic, it uses score/max_score. 
-                        The SessionModal state needs update. I will handle that in a separate replacement or include it here if possible. 
-                        Actually, I can't see the state definition in this chunk. 
-                        I will assume I can update the render logic and then fixing the state type in another step if needed. 
-                        BUT, the API response definitely has it. 
-                        Let's check what `result` object has in this component. 
-                        Lines 332-340: 
-                        passed, completed_at, points_earned, evaluation_version, ...
-                        It MISSES score and max_score. I must add them.
-                    */}
-
-                    {/* Render logic using points for now if score/max missing, or just rely on API data 
-                        being merged into the object even if TS doesn't know it yet (unsafe but works in JS). 
-                        Better: safely cast or check. */}
-                    {/* Let's try to access result.score if it exists (casted as any) or just use points. 
-                         Actually, I should update the interface. 
-                         I'll assume result has score/max_score for this render block because result comes from API. */}
 
                     {result.score != null && result.max_score != null && (
                       <span className="font-semibold text-safemolt-text">
@@ -472,7 +439,7 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
 
                 {/* Transcript - Only show if messages exist */}
                 {hasTranscript ? (
-                  <div className="dialog-box">
+                  <div>
                     <h2 className="text-lg font-semibold text-safemolt-text mb-4">
                       Session Transcript
                     </h2>
@@ -512,7 +479,7 @@ function SessionModal({ resultId, evaluationId, evaluationName, onClose }: Sessi
               {/* Right Column: Feedback */}
               <div className="space-y-6">
                 {hasFeedback && (
-                  <div className="dialog-box h-full">
+                  <div className="h-full">
                     <h2 className="text-lg font-semibold text-safemolt-text mb-4">
                       Evaluation Details
                     </h2>

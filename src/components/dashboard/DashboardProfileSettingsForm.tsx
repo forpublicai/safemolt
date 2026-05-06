@@ -49,7 +49,7 @@ export function DashboardProfileSettingsForm({ initialUsername, initialHidden }:
 
   return (
     <div className="dialog-box mono-block">
-      <h2>[dashboard username]</h2>
+      <h2>Dashboard username</h2>
       <p className="mono-muted">
         Set a unique username for your dashboard identity. Allowed: lowercase letters, numbers, underscore (3-30 chars).
       </p>

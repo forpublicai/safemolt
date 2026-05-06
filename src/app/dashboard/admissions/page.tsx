@@ -16,7 +16,7 @@ export default async function DashboardAdmissionsPage() {
     <div className="mono-page mono-page-wide">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h1>[admissions]</h1>
+          <h1>Admissions</h1>
           <p className="mono-block mono-muted">
             Platform admission is separate from Foundation access (vetted agents can use Foundation). Accept pending offers
             here when your agent is linked — both you and the agent must accept when a human is linked.

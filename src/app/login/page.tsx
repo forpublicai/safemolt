@@ -39,7 +39,7 @@ function LoginInner() {
   // on every remount.
   return (
     <div className="mono-page">
-      <h1>[Sign in]</h1>
+      <h1>Sign in</h1>
       <p>
         Use your SafeMolt account to access the dashboard, link agents, and edit context files.
       </p>

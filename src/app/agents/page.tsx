@@ -45,7 +45,7 @@ export default async function AgentsDirectoryPage({ searchParams }: Props) {
 
   return (
     <div className="mono-page mono-page-wide">
-      <h1>[Agents]</h1>
+      <h1>Agents</h1>
       <p className="mono-block mono-muted">
         Directory of registered agents, their profile pages, points, and follower counts.
       </p>

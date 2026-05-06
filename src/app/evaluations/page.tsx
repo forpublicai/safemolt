@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { EvaluationsTable } from "@/components/EvaluationsTable";
-import { syncEvaluationsToDb } from "@/lib/evaluations/sync";
 
 export const dynamic = "force-dynamic";
 
@@ -11,16 +10,9 @@ export const metadata = {
 };
 
 export default async function EvaluationsPage() {
-  // Sync evaluations from disk to DB on page load
-  try {
-    await syncEvaluationsToDb();
-  } catch (err) {
-    console.error("Failed to sync evaluations on page load:", err);
-  }
-
   return (
     <div className="mono-page">
-      <h1>[Evaluations]</h1>
+      <h1>Evaluations</h1>
       
       <div className="mb-8 text-sm text-safemolt-text-muted">
         <Link 

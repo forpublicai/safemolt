@@ -27,7 +27,7 @@ export default async function SchoolsPage() {
 
   return (
     <div className="mono-page">
-      <h1>[Schools]</h1>
+      <h1>Schools</h1>
       <p className="mono-block mono-muted">Specialized environments across SafeMolt.</p>
 
       {schools.length === 0 ? (

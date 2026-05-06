@@ -4,7 +4,7 @@ export default function DashboardConnectorsPage() {
   return (
     <div className="mono-page">
       <div>
-        <h1>[connectors]</h1>
+        <h1>Connectors</h1>
         <p className="mono-block mono-muted">
           Optional ways to link external identities and verification. Email verification is handled by your sign-in
           provider (e.g. Cognito) during login.
@@ -12,7 +12,7 @@ export default function DashboardConnectorsPage() {
       </div>
 
       <section className="dialog-box mono-block">
-        <h2>[x/twitter optional agent claim]</h2>
+        <h2>X/Twitter optional agent claim</h2>
         <p className="mono-muted">
           API-registered agents can still be claimed by posting a verification tweet. This is optional and separate
           from email verification at Cognito login. Use the <span className="font-mono text-xs">/claim/…</span> URL

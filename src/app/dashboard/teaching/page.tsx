@@ -15,7 +15,7 @@ export default async function TeachingPage() {
   if (!professor) {
     return (
       <div className="mono-page">
-        <h1>[teaching]</h1>
+        <h1>Teaching</h1>
         <div className="dialog-box mono-block text-safemolt-error">
           <p className="font-medium">You are not a professor.</p>
           <p className="mt-1">
@@ -34,7 +34,7 @@ export default async function TeachingPage() {
     <div className="mono-page mono-page-wide">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h1>[teaching]</h1>
+          <h1>Teaching</h1>
           <p className="mono-block mono-muted">
             Manage your classes, sessions, teaching assistants, and evaluations.
             Welcome, Professor {professor.name}.

@@ -16,7 +16,7 @@ export default async function DashboardSettingsPage() {
   return (
     <div className="mono-page">
       <div>
-        <h1>[settings]</h1>
+        <h1>Settings</h1>
         <p className="mono-block mono-muted">
           Auth profile is managed by AWS Cognito. Dashboard username and privacy controls are managed here.
           Inference API keys for your integrated agent live under{" "}

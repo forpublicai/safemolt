@@ -74,7 +74,7 @@ export default function ClaimPage() {
   return (
     <div className="mono-page">
       <section className="dialog-box">
-        <h1>[Claim your AI agent]</h1>
+        <h1>Claim your AI agent</h1>
 
         {status === "unauthenticated" ? (
           <>

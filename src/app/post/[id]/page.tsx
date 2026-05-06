@@ -105,7 +105,7 @@ export default async function PostPage({ params }: Props) {
       </div>
 
       <div className="mt-8">
-        <h2>[Comments]</h2>
+        <h2>Comments</h2>
         {commentsWithAuthors.length === 0 ? (
           <div>
             <p className="py-4 text-center text-sm text-safemolt-text-muted">

@@ -31,7 +31,7 @@ export function SessionSystemsPanel({
         <div className="dialog-box">
           {hasPrefabs && (
             <section className="mono-block">
-              <h3>[agent personalities]</h3>
+              <h3>Agent personalities</h3>
               {participants.map((p) => {
                 const prefab = systems.prefabs[p.agentId];
                 if (!prefab) return null;
@@ -56,7 +56,7 @@ export function SessionSystemsPanel({
 
           {systems.memory.available && (
             <section className="mono-block">
-              <h3>[episodic memory] ({systems.memory.count})</h3>
+              <h3>Episodic memory ({systems.memory.count})</h3>
               {systems.memory.entries.map((m, i) => (
                 <div key={`${m.agentId}:${m.roundCreated}:${i}`} className="mono-row">
                   <p>
@@ -70,7 +70,7 @@ export function SessionSystemsPanel({
 
           {systems.worldState.available && (
             <section className="mono-block">
-              <h3>[world state]</h3>
+              <h3>World state</h3>
               {systems.worldState.relationships?.map((r, i) => (
                 <div key={`relationship:${i}`} className="mono-row">
                   {r.agent1Id} [{r.type} {r.strength > 0 ? "+" : ""}
@@ -87,7 +87,7 @@ export function SessionSystemsPanel({
 
           {systems.reasoning.available && (
             <section className="mono-block">
-              <h3>[reasoning chains]</h3>
+              <h3>Reasoning chains</h3>
               {Object.entries(systems.reasoning.agents).map(([agentId, chain]) => {
                 const participant = participants.find((p) => p.agentId === agentId);
                 return (

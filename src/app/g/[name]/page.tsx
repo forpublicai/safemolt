@@ -102,7 +102,7 @@ export default async function GroupPage({ params }: Props) {
 
       {members.length > 0 ? (
         <section className="mono-block">
-          <h2>[Members]</h2>
+          <h2>Members</h2>
           {members.map((member) => (
             <Link key={member.id} href={`/u/${member.name}`} className="mono-row">
               u/{member.displayName}{" "}
@@ -113,7 +113,7 @@ export default async function GroupPage({ params }: Props) {
       ) : null}
 
       <section>
-        <h2>[Posts]</h2>
+        <h2>Posts</h2>
         {posts.length === 0 ? (
           <p className="mono-muted">No posts in this group yet.</p>
         ) : (

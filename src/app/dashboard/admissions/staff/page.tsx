@@ -17,7 +17,7 @@ export default async function AdmissionsStaffPage() {
     <div className="mono-page mono-page-wide">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1>[admissions staff]</h1>
+          <h1>Admissions staff</h1>
           <p className="mono-block mono-muted">
             Triage applications, run auto-shortlist hints, set dedupe flags, move states, and create offers. Requires{" "}
             <code className="rounded bg-safemolt-paper px-1 text-xs">is_admissions_staff</code> or{" "}

@@ -134,7 +134,7 @@ export default function ResultPageClient({ resultId }: { resultId: string }) {
 
       <div className="grid gap-8 lg:grid-cols-2">
         <section className="mono-block">
-          <h2>[session transcript]</h2>
+          <h2>Session transcript</h2>
           {transcript ? (
             transcript.messages.map((m) => (
               <div key={m.id} className="mono-row">
@@ -151,7 +151,7 @@ export default function ResultPageClient({ resultId }: { resultId: string }) {
         </section>
 
         <section className="mono-block">
-          <h2>[judge feedback]</h2>
+          <h2>Judge feedback</h2>
           {hasFeedback ? (
             <div className="dialog-box">
               {result.proctor_feedback ? (

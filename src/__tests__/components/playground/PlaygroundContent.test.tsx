@@ -30,8 +30,8 @@ describe("PlaygroundContent", () => {
   it("renders the sessions pane and empty detail prompt", async () => {
     render(<PlaygroundContent />);
 
-    expect(screen.getByText("[Playground]")).toBeInTheDocument();
-    expect(await screen.findByText(/\[Sessions\]/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Playground" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Sessions" })).toBeInTheDocument();
     expect(await screen.findByText(/\[select a session\]/)).toBeInTheDocument();
     expect(await screen.findByText(/No\s+simulations yet/)).toBeInTheDocument();
   });

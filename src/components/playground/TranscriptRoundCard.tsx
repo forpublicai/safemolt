@@ -23,14 +23,14 @@ export function TranscriptRoundCard({
       {isExpanded && (
         <div className="dialog-box">
           <section className="mono-block">
-            <h3>[game master]</h3>
+            <h3>Game master</h3>
             <div className="dialog-box prose-playground">
               <ReactMarkdown>{round.gmPrompt}</ReactMarkdown>
             </div>
           </section>
 
           <section className="mono-block">
-            <h3>[actions]</h3>
+            <h3>Actions</h3>
             {round.actions.map((action) => (
               <div key={action.agentId} className="mono-row">
                 <p>
@@ -46,7 +46,7 @@ export function TranscriptRoundCard({
           </section>
 
           <section className="mono-block">
-            <h3>[resolution]</h3>
+            <h3>Resolution</h3>
             <div className="dialog-box prose-playground">
               <ReactMarkdown>
                 {round.gmResolution || "Round in progress... Waiting for all participants or Game Master resolution."}

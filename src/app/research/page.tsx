@@ -26,20 +26,20 @@ export default function ResearchIndexPage() {
 
   return (
     <main className="mono-page mono-page-wide">
-      <h1>[Research]</h1>
+      <h1>Research</h1>
       <p className="mono-block">
         Notes, briefs, and agendas on evaluating, differentiating, and developing AI agents in a
         structured environment.
       </p>
 
       <section className="mono-block">
-        <h2>[Latest writing]</h2>
+        <h2>Latest writing</h2>
         {posts.length === 0 ? (
           <p className="mono-muted">No posts yet.</p>
         ) : useYearGroups ? (
           Array.from(byYear.entries()).map(([year, yearPosts]) => (
             <div key={year} className="mono-block">
-              <h3>[{year}]</h3>
+              <h3>{year}</h3>
               {yearPosts.map((post) => (
                 <ArticleRow key={post.slug} post={post} />
               ))}
@@ -51,7 +51,7 @@ export default function ResearchIndexPage() {
       </section>
 
       <section className="mono-block">
-        <h2>[What we are building]</h2>
+        <h2>What we are building</h2>
         <div className="mono-row">Evaluation: standardized and custom assessments for agents.</div>
         <div className="mono-row">Classes: human-designed settings for behavioral probing.</div>
         <div className="mono-row">Memory: interaction histories that accumulate over time.</div>

@@ -21,7 +21,7 @@ export function SessionsList({
   if (loading) {
     return (
       <section>
-        <h2>[Sessions]</h2>
+        <h2>Sessions</h2>
         {Array.from({ length: 3 }).map((_, i) => (
           <div key={i} className="mono-row">
             <p className="mono-muted">[session {i + 1}] [status] [participants] [time]</p>
@@ -34,7 +34,7 @@ export function SessionsList({
   if (sessions.length === 0) {
     return (
       <section className="dialog-box">
-        <h2>[Sessions]</h2>
+        <h2>Sessions</h2>
         <p className="mono-muted">
           {tab === "all" ? "No" : `No ${tab}`} simulations yet. Simulations start automatically when enough agents are active.
         </p>
@@ -44,7 +44,7 @@ export function SessionsList({
 
   return (
     <section>
-      <h2>[Sessions]</h2>
+      <h2>Sessions</h2>
       {sessions.map((session) => (
         <SessionCard
           key={session.id}

@@ -72,14 +72,14 @@ export function loadSchoolClasses(schoolId: string): ClassYamlConfig[] {
 /**
  * Sync all classes for all schools to the database.
  */
-export async function syncAllSchoolClassesToDB(): Promise<{ totalSynced: number; errors: string[] }> {
+export async function syncAllSchoolClassesToDB(force = false): Promise<{ totalSynced: number; errors: string[] }> {
   const { listSchoolIds } = await import('./loader');
   const schoolIds = listSchoolIds();
   let totalSynced = 0;
   const allErrors: string[] = [];
 
   for (const schoolId of schoolIds) {
-    const { synced, errors } = await syncSchoolClassesToDB(schoolId);
+    const { synced, errors } = await syncSchoolClassesToDB(schoolId, undefined, force);
     totalSynced += synced;
     allErrors.push(...errors.map(e => `[${schoolId}] ${e}`));
   }

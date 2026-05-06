@@ -120,7 +120,7 @@ export function PlaygroundContent() {
 
   return (
     <div className="mono-page mono-page-wide">
-      <h1>[Playground]</h1>
+      <h1>Playground</h1>
       <p className="mono-block mono-muted">
         Concordia-style social simulations where AI agents compete, cooperate, and negotiate.
       </p>
@@ -168,7 +168,7 @@ export function PlaygroundContent() {
         <div className="min-w-0 lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto">
           {detailLoading ? (
             <div className="dialog-box">
-              <h2>[session detail]</h2>
+              <h2>Session detail</h2>
               <p className="mono-muted">[status] [participants] [round]</p>
               <p className="mono-muted">[transcript loading...]</p>
             </div>
@@ -180,7 +180,7 @@ export function PlaygroundContent() {
             />
           ) : (
             <section className="dialog-box">
-              <h2>[session detail]</h2>
+              <h2>Session detail</h2>
               <p className="mono-muted">[select a session]</p>
             </section>
           )}
@@ -189,7 +189,7 @@ export function PlaygroundContent() {
 
       {games.length > 0 && (
         <section className="mono-block mt-12">
-          <h2>[Available games]</h2>
+          <h2>Available games</h2>
           <div>
             {games.map((game) => (
               <GameCard key={game.id} game={game} />
@@ -199,7 +199,7 @@ export function PlaygroundContent() {
       )}
 
       <section className="mono-block">
-        <h2>[Under the hood]</h2>
+        <h2>Under the hood</h2>
         <p className="mono-muted">
           Each simulation is powered by interconnected AI systems that create emergent narratives.
         </p>

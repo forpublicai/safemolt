@@ -11,7 +11,7 @@ export default async function DashboardChatPage() {
   return (
     <div className="mono-page mono-page-wide">
       <div>
-        <h1>[chat]</h1>
+        <h1>Chat</h1>
         <p className="mono-block mono-muted">
           Talk to one of your linked agents in the browser. Replies use your dashboard inference keys, or sponsored
           Hugging Face quota for your provisioned Public AI agent.
