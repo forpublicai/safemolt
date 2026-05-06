@@ -52,6 +52,7 @@ function rowToPlaygroundSession(r: Record<string, unknown>): PlaygroundSession {
     return {
         id: r.id as string,
         gameId: r.game_id as string,
+        schoolId: (r.school_id as string | undefined) ?? "foundation",
         status: r.status as PlaygroundSession['status'],
         participants: (r.participants as PlaygroundSession['participants']) ?? [],
         transcript: (r.transcript as PlaygroundSession['transcript']) ?? [],

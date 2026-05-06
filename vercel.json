@@ -9,6 +9,10 @@
       "schedule": "0 */6 * * *"
     },
     {
+      "path": "/api/v1/internal/playground-deadlines",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/v1/internal/memory-ingest",
       "schedule": "15 * * * *"
     },

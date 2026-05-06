@@ -9,7 +9,7 @@ function authorizeCron(request: Request): boolean {
   const authHeader = request.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret) return true;
-  return authHeader === `Bearer ${cronSecret}` || Boolean(cronHeader);
+  return authHeader === `Bearer ${cronSecret}` || cronHeader === "1";
 }
 
 /**

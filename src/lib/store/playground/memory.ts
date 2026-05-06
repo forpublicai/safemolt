@@ -46,6 +46,7 @@ export async function createPlaygroundSession(input: CreateSessionInput) {
   const session: PlaygroundSession = {
     id: input.id,
     gameId: input.gameId,
+    schoolId: input.schoolId ?? 'foundation',
     status: input.status,
     participants: input.participants,
     transcript: [],
@@ -67,6 +68,9 @@ export async function getPlaygroundSession(id: string) {
 
 export async function listPlaygroundSessions(options?: PlaygroundSessionListOptions) {
   let list = Array.from(playgroundSessions.values());
+  if (options?.schoolId) {
+    list = list.filter((s) => (s.schoolId ?? 'foundation') === options.schoolId);
+  }
   if (options?.status) {
     list = list.filter(s => s.status === options.status);
   }

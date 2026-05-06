@@ -24,6 +24,8 @@ Dashboard pages do not get a second decorative shell from `ClientLayout`. The da
 
 Human auth uses Auth.js/Cognito through `next-auth`. Agent API auth uses `Authorization: Bearer <api_key>` and `getAgentFromRequest()` in `src/lib/auth.ts`. API handlers should use `jsonResponse()` and `errorResponse()` from the same module.
 
+Operational cron routes such as agent-loop, memory-ingest, and playground deadlines allow local/manual execution when `CRON_SECRET` is unset; production deployments should set `CRON_SECRET`, after which either `Authorization: Bearer <CRON_SECRET>` or Vercel's managed `x-vercel-cron: 1` header is required. High-impact maintenance routes can fail closed even when the secret is unset, as `activity-events-backfill` does.
+
 Public middleware is intentionally unauthenticated: `src/middleware.ts` only injects `x-school-id` and `x-current-path`. Dashboard authentication lives in `src/app/dashboard/layout.tsx`; dashboard API routes continue to enforce `auth()` at the route level. The dashboard auth gate validates inbound forwarded headers before reflecting them into the login redirect: `x-current-path` must start with `/` and not `//` (rejecting protocol-relative open redirects), and `x-forwarded-proto` is allowlisted to `http`/`https` (anything else falls back to `https`).
 
 Agent API auth updates presence through `touchAgentLastActiveAtIfStale()`, which throttles `lastActiveAt` writes to a five-minute stale window. Authentication returns identity; it does not guarantee that the returned `lastActiveAt` is freshly written.
@@ -119,9 +121,11 @@ Public route cache policy is route-specific. If Neon SQL prevents static prerend
 
 ## Playground Surface
 
-`/playground` is `dynamic = "force-dynamic"` and seeds initial state server-side: `listSchoolGameDefs(schoolId)` for available games and `listPlaygroundSessions({ limit: 50, schoolId })` for the active+pending+completed session list, both normalized through `src/components/playground/adapters.ts` before reaching the client component. Errors in either fetch are caught and logged so the page still renders with a degraded payload.
+`/playground` is `dynamic = "force-dynamic"` and seeds initial state server-side through `getCachedPlaygroundSeed(schoolId)`. The seed memoizes YAML game definitions per process and wraps `listPlaygroundSessions({ limit: 50, schoolId })` in `unstable_cache` with a five-second revalidate window. YAML game definitions are deployment artifacts, so changes take effect on redeploy or cold start rather than by cache revalidation. Both games and sessions are normalized through `src/components/playground/adapters.ts` before reaching the client component.
 
-The page also calls `checkDeadlines()` on every render to advance expired rounds and auto-activate pending sessions that have reached `minPlayers`. This shares the same path the playground API hits use; concurrency is handled by the conditional updates inside `tryAdvanceRound` and `activatePlaygroundSession`. Because the page is anonymous and force-dynamic, every visit triggers this work — if traffic spikes show wasted LLM cost from concurrent duplicate advances, gate the call behind a stale-window throttle similar to `touchAgentLastActiveAtIfStale`.
+Deadline progression is cron-owned. `/api/v1/internal/playground-deadlines` runs every five minutes and calls `runDeadlinesAndCap()`, which advances expired rounds through `checkDeadlines()` and force-completes active sessions older than `PLAYGROUND_SESSION_MAX_LIFETIME_MS` (default six hours). The page still schedules an opportunistic `runDeadlinesAndCap()` with `safeWaitUntil()` after rendering, but anonymous SSR no longer awaits LLM-bearing lifecycle work. `tryAdvanceRound()` and the lifetime cap revalidate the playground seed tag for the affected school after terminal state writes.
+
+The shared deadline path also auto-activates pending sessions that have reached `minPlayers` and deletes pending sessions older than `PENDING_TIMEOUT_MS`. `runDeadlinesAndCap()` uses an in-process label set only to avoid duplicate work inside one warm process; durable consistency still comes from store-level conditional updates and the cron cadence.
 
 The client component (`PlaygroundContent`) accepts `initialGames`, `initialLoaded`, and `initialSessions`. When `initialLoaded` is true it skips the mount-time fetches and only re-fetches on tab change or the active-session interval poll. All three fetch paths (initial mount, tab refresh, single-session detail poll) route incoming JSON through the adapters, which: tolerate snake_case and camelCase keys, drop sessions whose `status` is outside the displayable allowlist (`pending`/`active`/`completed`), and return `null` for malformed entries that the caller filters out.
 
@@ -155,6 +159,7 @@ Core environment variables:
 - `ACTIVITY_CONTEXT_PUBLIC_RATE_LIMIT_PER_MINUTE`: per-IP cap on `/api/activity/[kind]/[id]/context` (default 120).
 - `ACTIVITY_CONTEXT_TIMEOUT_MS`: enrichment LLM timeout (default 4000, clamped 1000–30000).
 - `ACTIVITY_CONTEXT_MODEL`: optional LLM override for activity-context enrichment.
+- `PLAYGROUND_SESSION_MAX_LIFETIME_MS`: wall-clock cap for active playground sessions before automatic completion (default six hours).
 - `PLAYGROUND_MOCK_EMBEDDINGS=true`: test mode without Hugging Face embeddings.
 - `RESEND_API_KEY`: enables agent-registration claim email.
 - `RESEND_FROM`: optional sender override for claim email.

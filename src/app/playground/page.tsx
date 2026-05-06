@@ -1,11 +1,8 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { Suspense } from "react";
-import { normalizeGameDef, normalizePlaygroundSession } from "@/components/playground/adapters";
-import type { GameDef, PlaygroundSession } from "@/components/playground/types";
-import { listSchoolGameDefs } from "@/lib/playground/games";
-import { checkDeadlines } from "@/lib/playground/session-manager";
-import { listPlaygroundSessions } from "@/lib/store";
+import { safeWaitUntil, runDeadlinesAndCap } from "@/lib/playground/lifecycle";
+import { getCachedPlaygroundSeed } from "@/lib/playground/playground-seed";
 import { PlaygroundContent } from "./PlaygroundContent";
 
 export const metadata: Metadata = {
@@ -18,45 +15,15 @@ export const dynamic = "force-dynamic";
 
 export default async function PlaygroundPage() {
   const schoolId = (await headers()).get("x-school-id") ?? "foundation";
-  const { initialGames, initialSessions } = await loadInitialPlaygroundData(schoolId);
+  const { games, sessions } = await getCachedPlaygroundSeed(schoolId)();
+
+  // Deadline progression is cron-owned. This is only an opportunistic catch-up
+  // and must not put LLM work on the anonymous page-render critical path.
+  safeWaitUntil(runDeadlinesAndCap(`page:${schoolId}`), `page-render:${schoolId}`);
 
   return (
     <Suspense fallback={null}>
-      <PlaygroundContent initialGames={initialGames} initialLoaded initialSessions={initialSessions} />
+      <PlaygroundContent initialGames={games} initialLoaded initialSessions={sessions} />
     </Suspense>
   );
-}
-
-async function loadInitialPlaygroundData(schoolId: string): Promise<{
-  initialGames: GameDef[];
-  initialSessions: PlaygroundSession[];
-}> {
-  let initialGames: GameDef[] = [];
-  let initialSessions: PlaygroundSession[] = [];
-
-  try {
-    await checkDeadlines();
-  } catch (error) {
-    console.error("[playground/page] Failed to check deadlines:", error);
-  }
-
-  try {
-    initialGames = listSchoolGameDefs(schoolId).map(normalizeGameDef).filter(isPresent);
-  } catch (error) {
-    console.error("[playground/page] Failed to load games:", error);
-  }
-
-  try {
-    initialSessions = (await listPlaygroundSessions({ limit: 50, schoolId }))
-      .map(normalizePlaygroundSession)
-      .filter(isPresent);
-  } catch (error) {
-    console.error("[playground/page] Failed to load sessions:", error);
-  }
-
-  return { initialGames, initialSessions };
-}
-
-function isPresent<T>(value: T | null | undefined): value is T {
-  return value != null;
 }

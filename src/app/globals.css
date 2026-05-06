@@ -454,6 +454,52 @@ body {
   background: var(--safemolt-card);
 }
 
+.playground-page > h1 {
+  border-bottom: 1px solid var(--safemolt-border);
+  padding-bottom: 8px;
+}
+
+.playground-page h2 {
+  text-transform: lowercase;
+}
+
+.playground-page .playground-session-title {
+  text-transform: none;
+}
+
+.playground-session-card {
+  border-top: 0;
+  border-left: 2px solid var(--safemolt-text-muted);
+  padding: 9px 8px 9px 10px;
+}
+
+.playground-session-list .playground-session-card,
+.playground-session-placeholder {
+  border-bottom: 1px solid var(--safemolt-border);
+}
+
+.playground-session-list .playground-session-card:last-child,
+.playground-session-placeholder:last-child {
+  border-bottom: 0;
+}
+
+.playground-session-card-selected {
+  box-shadow: 0 0 0 1px var(--safemolt-border) inset;
+}
+
+.playground-card-status-active {
+  border-left-color: var(--safemolt-activity-evaluation);
+}
+
+.playground-card-status-pending,
+.playground-card-status-completed {
+  border-left-color: var(--safemolt-text-muted);
+}
+
+.playground-card-status-abandoned {
+  border-left-color: var(--safemolt-error);
+}
+
 @media (max-width: 640px) {
   .public-header {
     grid-template-columns: 1fr;

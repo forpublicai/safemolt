@@ -1,4 +1,3 @@
-import { waitUntil } from '@vercel/functions';
 
 /**
  * Session Manager — orchestrates the async playground lifecycle.
@@ -14,6 +13,12 @@ import { getRandomPrefab, getPrefab } from './prefabs';
 import { initializeWorldState, clearWorldState, setRelationship, addWorldEvent, getWorldState } from './world-state';
 import { getAllComponents, createDefaultRegistry } from './components';
 import { clearReasoningChain } from './components/reasoning-component';
+import {
+    enforceSessionLifetimeCap,
+    revalidatePlaygroundSeed,
+    safeWaitUntil,
+    type PlaygroundDeadlineRunResult,
+} from './lifecycle';
 import type {
     PlaygroundGame,
     PlaygroundSession,
@@ -418,11 +423,8 @@ export async function submitAction(
 
     // Fire-and-forget: trigger round advancement asynchronously.
     // This prevents the HTTP request from hanging while the GM LLM resolves.
-    // We use waitUntil so Vercel keeps the lambda alive.
-    const advancePromise = tryAdvanceRound(sessionId).catch(err => {
-        console.error(`[playground] Async tryAdvanceRound failed for session ${sessionId}:`, err);
-    });
-    waitUntil(advancePromise);
+    // safeWaitUntil keeps Vercel alive and falls back cleanly in local dev.
+    safeWaitUntil(tryAdvanceRound(sessionId), `advance-round:${sessionId}`);
 
     // Return the session immediately (before GM resolution completes)
     return (await store.getPlaygroundSession(sessionId))!;
@@ -522,6 +524,7 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
             currentRoundPrompt: null,
             roundDeadline: null,
         });
+        revalidatePlaygroundSeed(session.schoolId);
 
         const gmParticipantIds = updatedParticipants.map((p) => p.agentId);
         schedulePlaygroundMemoryIngest(gmParticipantIds, newRound.gmResolution, {
@@ -579,6 +582,7 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
             currentRoundPrompt: null,
             roundDeadline: null,
         });
+        revalidatePlaygroundSeed(session.schoolId);
 
         // Clean up world state
         clearWorldState(sessionId);
@@ -722,8 +726,10 @@ export async function getActiveSession(
  * Check all active sessions for expired deadlines and advance them.
  * Called periodically (e.g., on any playground API hit or via cron).
  */
-export async function checkDeadlines(): Promise<void> {
+export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
     const store = await getStore();
+    let advanced = 0;
+    const advanceStartedAt = performance.now();
 
     // 1. Advance active sessions
     const activeSessions = await store.listPlaygroundSessions({ status: 'active', limit: 50 });
@@ -731,11 +737,17 @@ export async function checkDeadlines(): Promise<void> {
         if (session.roundDeadline && new Date(session.roundDeadline).getTime() <= Date.now()) {
             try {
                 await tryAdvanceRound(session.id);
+                advanced += 1;
             } catch (err) {
                 console.error(`[playground] Error advancing session ${session.id}:`, err);
             }
         }
     }
+    const advanceDurationMs = performance.now() - advanceStartedAt;
+
+    const capStartedAt = performance.now();
+    const { completed: capped } = await enforceSessionLifetimeCap();
+    const capDurationMs = performance.now() - capStartedAt;
 
     // 1b. Auto-activate pending sessions that have reached minPlayers
     try {
@@ -812,6 +824,8 @@ export async function checkDeadlines(): Promise<void> {
             }
         }
     }
+
+    return { advanced, capped, advanceDurationMs, capDurationMs };
 }
 
 // ============================================

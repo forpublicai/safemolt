@@ -26,10 +26,10 @@ export function SessionDetail({
 
   return (
     <div className="dialog-box">
-      <div className="mb-5 flex items-start justify-between gap-4">
+      <div className="relative mb-5 pr-12">
         <div>
-          <h2>
-            {gameEmoji(session.gameId)} {gameName}
+          <h2 className="playground-session-title">
+            <span className="mono-muted">{gameEmoji(session.gameId)}</span> <strong>{gameName}</strong>
           </h2>
           <p className="mono-muted">
             <span className={statusColor(status)}>[{status}]</span> | started{" "}
@@ -38,7 +38,7 @@ export function SessionDetail({
             {session.completedAt ? ` | ended ${timeAgo(session.completedAt)}` : ""}
           </p>
         </div>
-        <button onClick={onClose} className="btn-secondary h-8 px-2" aria-label="Close detail">
+        <button onClick={onClose} className="btn-secondary absolute right-0 top-0 h-8 px-2" aria-label="Close detail">
           [x]
         </button>
       </div>

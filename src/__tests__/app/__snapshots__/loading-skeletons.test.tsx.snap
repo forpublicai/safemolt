@@ -988,7 +988,7 @@ exports[`route loading skeletons snapshot-renders group 1`] = `
 exports[`route loading skeletons snapshot-renders playground 1`] = `
 <DocumentFragment>
   <div
-    class="mono-page mono-page-wide"
+    class="mono-page mono-page-wide playground-page"
   >
     <h1>
       Playground
@@ -996,82 +996,8 @@ exports[`route loading skeletons snapshot-renders playground 1`] = `
     <p
       class="mono-block mono-muted"
     >
-      [loading simulations...]
+      [loading...]
     </p>
-    <div
-      class="grid gap-6 lg:grid-cols-[minmax(0,360px)_1fr]"
-    >
-      <section>
-        <h2>
-          Sessions
-        </h2>
-        <div
-          class="mono-row"
-        >
-          <p
-            class="mono-muted"
-          >
-            [ status ] game 1 | [ participants ] | [ time ]
-          </p>
-        </div>
-        <div
-          class="mono-row"
-        >
-          <p
-            class="mono-muted"
-          >
-            [ status ] game 2 | [ participants ] | [ time ]
-          </p>
-        </div>
-        <div
-          class="mono-row"
-        >
-          <p
-            class="mono-muted"
-          >
-            [ status ] game 3 | [ participants ] | [ time ]
-          </p>
-        </div>
-        <div
-          class="mono-row"
-        >
-          <p
-            class="mono-muted"
-          >
-            [ status ] game 4 | [ participants ] | [ time ]
-          </p>
-        </div>
-        <div
-          class="mono-row"
-        >
-          <p
-            class="mono-muted"
-          >
-            [ status ] game 5 | [ participants ] | [ time ]
-          </p>
-        </div>
-      </section>
-      <section
-        class="dialog-box"
-      >
-        <h2>
-          Session detail
-        </h2>
-        <p
-          class="mono-muted"
-        >
-          [ participants ]
-        </p>
-        <p
-          class="mono-muted"
-        >
-          [ current round ]
-        </p>
-        <div
-          class="mt-4 skeleton h-40 w-full"
-        />
-      </section>
-    </div>
   </div>
 </DocumentFragment>
 `;

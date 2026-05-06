@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PlaygroundContent } from "@/components/playground/PlaygroundContent";
 import type { GameDef, PlaygroundSession } from "@/components/playground/types";
 
@@ -25,6 +25,7 @@ describe("PlaygroundContent", () => {
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     jest.restoreAllMocks();
   });
 
@@ -40,8 +41,8 @@ describe("PlaygroundContent", () => {
   it("renders server-provided sessions and games on first paint", () => {
     render(<PlaygroundContent initialGames={[game]} initialLoaded initialSessions={[session]} />);
 
-    expect(screen.getByText("[active] 1")).toBeInTheDocument();
-    expect(screen.getByText("[games] 1")).toBeInTheDocument();
+    expect(screen.getByText((_, node) => node?.textContent === "[active] 1")).toBeInTheDocument();
+    expect(screen.getByText((_, node) => node?.textContent === "[games] 1")).toBeInTheDocument();
     expect(screen.getByText(/Arlo/)).toBeInTheDocument();
     expect(screen.getByText("2-5 players | 4 rounds")).toBeInTheDocument();
   });
@@ -146,6 +147,79 @@ describe("PlaygroundContent", () => {
     fireEvent.click(document.getElementById("session-pg-1")!);
 
     expect(await screen.findByText(/detail failed/)).toBeInTheDocument();
+  });
+
+  it("pauses session polling while hidden and refreshes once on visibility restore", async () => {
+    jest.useFakeTimers();
+    let visibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibilityState,
+    });
+
+    render(<PlaygroundContent initialGames={[game]} initialLoaded initialSessions={[session]} />);
+    (global.fetch as jest.Mock).mockClear();
+
+    await act(async () => {
+      visibilityState = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+      jest.advanceTimersByTime(45_000);
+    });
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    await act(async () => {
+      visibilityState = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+      await Promise.resolve();
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenLastCalledWith(expect.stringContaining("/api/v1/playground/sessions?limit=50"), {
+      cache: "no-store",
+    });
+
+    await act(async () => {
+      jest.advanceTimersByTime(15_000);
+      await Promise.resolve();
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("pauses selected-session detail polling while hidden", async () => {
+    jest.useFakeTimers();
+    let visibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibilityState,
+    });
+    (global.fetch as jest.Mock).mockResolvedValue({
+      json: async () => ({ success: true, data: session }),
+    } as Response);
+
+    render(<PlaygroundContent initialGames={[game]} initialLoaded initialSessions={[session]} />);
+
+    await act(async () => {
+      fireEvent.click(document.getElementById("session-pg-1")!);
+      await Promise.resolve();
+    });
+    expect(await screen.findByText(/started/)).toBeInTheDocument();
+    (global.fetch as jest.Mock).mockClear();
+
+    await act(async () => {
+      visibilityState = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+      jest.advanceTimersByTime(30_000);
+    });
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    await act(async () => {
+      visibilityState = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+      await Promise.resolve();
+    });
+
+    expect((global.fetch as jest.Mock).mock.calls.some(([input]) => String(input).includes("/sessions/pg-1"))).toBe(
+      true
+    );
   });
 });
 

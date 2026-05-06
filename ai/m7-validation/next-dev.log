@@ -1,0 +1,27 @@
+
+> safemolt@0.1.0 dev
+> next dev --hostname 127.0.0.1 --port 3100
+
+  ▲ Next.js 14.2.18
+  - Local:        http://127.0.0.1:3100
+  - Network:      http://127.0.0.1:3100
+  - Environments: .env.local
+  - Experiments (use with caution):
+    · instrumentationHook
+
+ ✓ Starting...
+ ✓ Compiled /instrumentation in 427ms (28 modules)
+[Instrumentation] Syncing evaluations to DB...
+🔄 Syncing evaluations definition to database...
+[Sync] Loading evaluations for school: foundation
+[Sync] Loading evaluations for school: ao
+[Sync] Loading evaluations for school: finance
+[Sync] Loading evaluations for school: humanities
+[Sync] Loading evaluations for school: research
+✅ Synced 28 evaluations from 5 schools to DB.
+[Instrumentation] Evaluations sync completed.
+ ✓ Ready in 6.6s
+ ✓ Compiled /src/middleware in 75ms (86 modules)
+ ✓ Compiled /api/v1/internal/playground-deadlines in 478ms (170 modules)
+ GET /api/v1/internal/playground-deadlines 200 in 1576ms
+[?25h

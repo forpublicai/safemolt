@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { normalizeGameDefs, normalizePlaygroundSession, normalizePlaygroundSessions } from "./adapters";
 import { GameCard } from "./GameCard";
+import { useVisibleInterval } from "./hooks";
 import { SessionDetail } from "./SessionDetail";
 import { SessionsList } from "./SessionsList";
 import { SystemCard } from "./SystemCard";
@@ -91,11 +92,7 @@ export function PlaygroundContent({
     fetchSessions();
   }, [fetchSessions, tab]);
 
-  useEffect(() => {
-    if (tab !== "active" && tab !== "all") return;
-    const interval = setInterval(fetchSessions, 15_000);
-    return () => clearInterval(interval);
-  }, [tab, fetchSessions]);
+  useVisibleInterval(fetchSessions, 15_000, tab === "active" || tab === "all");
 
   const openSession = useCallback(async (id: string) => {
     setDetailLoading(true);
@@ -127,41 +124,50 @@ export function PlaygroundContent({
     openSession(targetSessionId);
   }, [targetSessionId, selectedSession?.id, openSession]);
 
-  useEffect(() => {
-    if (!selectedSession) return;
-    if (selectedSession.status !== "active" && selectedSession.status !== "pending") return;
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/v1/playground/sessions/${selectedSession.id}?_t=${Date.now()}`, {
-          cache: "no-store",
-        });
-        const data = await res.json();
-        if (data.success) {
-          const session = normalizePlaygroundSession(data.data);
-          if (session) setSelectedSession(session);
-        }
-      } catch {
-        // Polling is best-effort; the next interval or manual navigation can recover.
+  const refreshSelectedSession = useCallback(async () => {
+    if (!selectedSession?.id) return;
+
+    try {
+      const res = await fetch(`/api/v1/playground/sessions/${selectedSession.id}?_t=${Date.now()}`, {
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (data.success) {
+        const session = normalizePlaygroundSession(data.data);
+        if (session) setSelectedSession(session);
       }
-    }, 10_000);
-    return () => clearInterval(interval);
-  }, [selectedSession?.id, selectedSession?.status]);
+    } catch {
+      // Polling is best-effort; the next interval or manual navigation can recover.
+    }
+  }, [selectedSession?.id]);
+
+  useVisibleInterval(
+    refreshSelectedSession,
+    10_000,
+    Boolean(selectedSession && (selectedSession.status === "active" || selectedSession.status === "pending"))
+  );
 
   const getGameName = (gameId: string): string => games.find((g) => g.id === gameId)?.name || gameId;
   const activeSessionsCount = sessions.filter((s) => s.status === "active").length;
   const completedSessionsCount = sessions.filter((s) => s.status === "completed").length;
 
   return (
-    <div className="mono-page mono-page-wide">
+    <div className="mono-page mono-page-wide playground-page">
       <h1>Playground</h1>
       <p className="mono-block mono-muted">
         Concordia-style social simulations where AI agents compete, cooperate, and negotiate.
       </p>
 
       <div className="mono-block grid gap-0 sm:grid-cols-3">
-        <div className="mono-row">[active] {activeSessionsCount}</div>
-        <div className="mono-row">[completed] {completedSessionsCount}</div>
-        <div className="mono-row">[games] {games.length}</div>
+        <div className="mono-row">
+          <span className="mono-muted">[active]</span> <strong>{activeSessionsCount}</strong>
+        </div>
+        <div className="mono-row">
+          <span className="mono-muted">[completed]</span> <strong>{completedSessionsCount}</strong>
+        </div>
+        <div className="mono-row">
+          <span className="mono-muted">[games]</span> <strong>{games.length}</strong>
+        </div>
       </div>
 
       <div className="mono-block flex flex-wrap gap-2">

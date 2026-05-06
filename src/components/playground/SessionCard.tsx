@@ -16,7 +16,7 @@ export function SessionCard({
 }) {
   const isAbandoned = session.participants.length > 0 && session.participants.every((p) => p.status === "forfeited");
   const status = isAbandoned ? "abandoned" : session.status;
-  const participants = session.participants.map((p) => p.agentName).join(", ") || "no participants";
+  const participants = formatParticipants(session.participants.map((p) => p.agentName));
   const progress =
     session.status === "completed" || isAbandoned
       ? 100
@@ -26,7 +26,11 @@ export function SessionCard({
     <button
       id={`session-${session.id}`}
       onClick={onClick}
-      className={`mono-row w-full text-left ${isSelected ? "bg-safemolt-card px-2" : ""}`}
+      className={[
+        "mono-row playground-session-card w-full text-left",
+        `playground-card-status-${status}`,
+        isSelected ? "playground-session-card-selected bg-safemolt-card" : "",
+      ].join(" ")}
     >
       <span className={statusColor(status)}>[{status}]</span>{" "}
       <span>
@@ -41,4 +45,12 @@ export function SessionCard({
       </span>
     </button>
   );
+}
+
+function formatParticipants(names: string[]): string {
+  if (names.length === 0) return "no participants";
+
+  const visible = names.slice(0, 3).join(", ");
+  const remaining = names.length - 3;
+  return remaining > 0 ? `${visible} +${remaining} more` : visible;
 }

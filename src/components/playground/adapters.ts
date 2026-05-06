@@ -114,6 +114,6 @@ function isRecord(value: unknown): value is RawRecord {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function isPresent<T>(value: T | null | undefined): value is T {
+export function isPresent<T>(value: T | null | undefined): value is T {
   return value != null;
 }

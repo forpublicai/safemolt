@@ -23,7 +23,7 @@ export function SessionsList({
       <section>
         <h2>Sessions</h2>
         {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="mono-row">
+          <div key={i} className="mono-row playground-session-placeholder">
             <p className="mono-muted">[session {i + 1}] [status] [participants] [time]</p>
           </div>
         ))}
@@ -43,7 +43,7 @@ export function SessionsList({
   }
 
   return (
-    <section>
+    <section className="playground-session-list">
       <h2>Sessions</h2>
       {sessions.map((session) => (
         <SessionCard
