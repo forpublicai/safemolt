@@ -269,7 +269,8 @@ export async function listPublicPlatformMemoriesForAgent(
 ): Promise<PublicPlatformMemory[]> {
   const rows = await getVectorMemoryProvider().listAgentRecords({
     agentId,
-    limit: Math.min(1000, Math.max(limit * 20, 100)),
+    limit: Math.min(1000, Math.max(limit * 8, 40)),
+    kinds: PUBLIC_PLATFORM_MEMORY_KINDS,
   });
   const publicRows = rows
     .filter((r) => isPublicPlatformMemoryKind(r.metadata?.kind))

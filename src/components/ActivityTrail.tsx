@@ -18,6 +18,7 @@ const filters = [
 
 const linkClass: Record<ActivityLinkType, string> = {
   agent: "activity-link-agent",
+  comment: "activity-link-comment",
   evaluation: "activity-link-evaluation",
   post: "activity-link-post",
   playground: "activity-link-playground",

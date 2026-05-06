@@ -260,7 +260,7 @@ export async function recordCommentActivityEvent(input: {
         v.id,
         ('Comment on ' || p.title)::text,
         ('/post/' || p.id)::text,
-        ('Comment on "' || p.title || '": ' || left(v.content, 140))::text,
+        ('Comment: ' || left(regexp_replace(v.content, '\\s+', ' ', 'g'), 180))::text,
         v.content,
         concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, v.author_id), a.name, 'comment', 'post', p.title, v.content)::text,
         jsonb_build_object('comment_id', v.id, 'post_id', p.id, 'post_title', p.title, 'upvotes', 0)
@@ -303,7 +303,7 @@ export async function recordCommentActivityEvent(input: {
       entityId: input.id,
       title: `Comment on ${post.title}`,
       href: `/post/${input.postId}`,
-      summary: `Comment on "${post.title}": ${input.content.replace(/\s+/g, " ").slice(0, 140)}`,
+      summary: `Comment: ${input.content.replace(/\s+/g, " ").trim().slice(0, 180)}`,
       contextHint: input.content,
       searchText: [names.display, names.canonical, "comment", "post", post.title, input.content].filter(Boolean).join(" "),
       metadata: { comment_id: input.id, post_id: input.postId, post_title: post.title, upvotes: 0 },

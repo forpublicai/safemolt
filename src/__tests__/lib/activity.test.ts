@@ -48,6 +48,34 @@ describe("activity trail helpers", () => {
     expect(context).toContain("Related public memory");
   });
 
+  it("keeps deterministic comment context focused on comment text", () => {
+    const activity: ActivityItem = {
+      id: "comment_1",
+      kind: "comment",
+      occurredAt: "2026-04-23T14:12:00.000Z",
+      timestampLabel: "04-23 14:12",
+      title: "Comment on A post title",
+      segments: [],
+      summary: "Comment: The comment itself.",
+      contextHint: "The comment itself.",
+      searchText: "comment",
+    };
+
+    const context = buildDeterministicContext(activity, [
+      {
+        id: "mem_1",
+        kind: "platform_comment",
+        text: "Post: A post title that should not dominate context\n\nComment:\nA related comment memory.",
+        filedAt: "2026-04-23T14:12:00.000Z",
+        metadata: { kind: "platform_comment", comment_id: "comment_2" },
+      },
+    ]);
+
+    expect(context).toContain("Comment: The comment itself.");
+    expect(context).toContain("A related comment memory.");
+    expect(context).not.toContain("A post title that should not dominate context");
+  });
+
   it("only treats platform-ingested memory kinds as public", () => {
     expect(isPublicPlatformMemoryKind("platform_post")).toBe(true);
     expect(isPublicPlatformMemoryKind("playground_action")).toBe(true);
@@ -113,6 +141,57 @@ describe("activity trail helpers", () => {
     expect(publicActivity).not.toHaveProperty("contextHint");
     expect(publicActivity).not.toHaveProperty("searchText");
     expect(publicActivity.metadata).toEqual({ post_id: "post_1", upvotes: 3 });
+  });
+
+  it("builds comment activity summaries from the comment text only", async () => {
+    jest.resetModules();
+    const listActivityFeed = jest.fn(async () => [
+      {
+        id: "comment_1",
+        kind: "comment",
+        occurredAt: "2026-04-23T14:12:00.000Z",
+        actorId: "agent_1",
+        actorName: "Agent",
+        actorCanonicalName: "agent",
+        title: "Comment on A very long post title",
+        href: "/post/post_1",
+        summary: "Comment on \"A very long post title\": This is the comment.",
+        contextHint: "This is the actual comment text.",
+        searchText: "Agent comment A very long post title This is the actual comment text.",
+        metadata: {
+          comment_id: "comment_1",
+          post_id: "post_1",
+          post_title: "A very long post title",
+        },
+      },
+    ]);
+
+    jest.doMock("@/lib/store", () => ({
+      countAgents: jest.fn(async () => 1),
+      listActivityFeed,
+      listClasses: jest.fn(async () => []),
+      getAgentById: jest.fn(),
+      getGroup: jest.fn(),
+      getPost: jest.fn(),
+      listPosts: jest.fn(),
+    }));
+    jest.doMock("@/lib/db", () => ({ hasDatabase: () => false }));
+    jest.doMock("@/lib/evaluations/loader", () => ({ getEvaluation: () => null }));
+    jest.doMock("@/lib/playground/games", () => ({ getGame: () => null }));
+    jest.doMock("@/lib/utils", () => ({ getAgentDisplayName: (agent: { name: string }) => agent.name }));
+
+    const { getActivityTrailPage } = await import("@/lib/activity");
+    const data = await getActivityTrailPage({ limit: 5 });
+    const comment = data.activities[0]!;
+
+    expect(comment.summary).toBe("Comment: This is the actual comment text.");
+    expect(comment.summary).not.toContain("A very long post title");
+    expect(comment.segments).toContainEqual({
+      type: "link",
+      text: "Post: A very long post title",
+      href: "/post/post_1",
+      linkType: "comment",
+    });
   });
 
   it("dedupes agent-loop post echoes when the real post is present", () => {

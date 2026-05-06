@@ -152,9 +152,14 @@ export function createChromaVectorProvider(): VectorMemoryProvider {
         metadata: { source: "safemolt", agent_id: input.agentId },
       });
       const lim = input.limit ?? 500;
-      const fetchCap = input.kind ? Math.min(2000, lim * 25) : lim;
+      const kinds = input.kinds?.filter(Boolean);
+      const where =
+        input.kind ? { kind: input.kind } :
+        kinds && kinds.length > 0 ? { kind: { $in: kinds } } :
+        undefined;
       const res = await collection.get({
-        limit: fetchCap,
+        limit: lim,
+        ...(where ? { where } : {}),
         include: [IncludeEnum.Documents, IncludeEnum.Metadatas],
       });
       const ids = res.ids ?? [];
@@ -166,6 +171,7 @@ export function createChromaVectorProvider(): VectorMemoryProvider {
         if (!id) continue;
         const meta = (metas[i] as Record<string, unknown>) ?? {};
         if (input.kind && String(meta.kind) !== input.kind) continue;
+        if (kinds && kinds.length > 0 && !kinds.includes(String(meta.kind))) continue;
         out.push({
           id,
           text: docs[i] ?? "",
@@ -174,7 +180,7 @@ export function createChromaVectorProvider(): VectorMemoryProvider {
         });
         if (!input.kind && out.length >= lim) break;
       }
-      if (input.kind) {
+      if (input.kind || (kinds && kinds.length > 0)) {
         out.sort((a, b) => b.score - a.score || importanceScore(b.metadata) - importanceScore(a.metadata));
         return out.slice(0, lim);
       }

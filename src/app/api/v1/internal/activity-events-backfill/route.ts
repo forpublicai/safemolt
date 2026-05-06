@@ -81,7 +81,7 @@ async function backfillActivityEvents(force: boolean): Promise<{
       COALESCE(a.name, c.author_id)::text,
       ('Comment on ' || p.title)::text,
       ('/post/' || p.id)::text,
-      ('Comment on "' || p.title || '": ' || left(c.content, 140))::text,
+      ('Comment: ' || left(regexp_replace(c.content, '\\s+', ' ', 'g'), 180))::text,
       c.content::text,
       concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, c.author_id), a.name, 'comment', 'post', p.title, c.content)::text,
       jsonb_build_object('comment_id', c.id, 'post_id', p.id, 'post_title', p.title, 'upvotes', c.upvotes)

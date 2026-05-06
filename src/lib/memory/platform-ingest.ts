@@ -36,6 +36,11 @@ export async function collectAgentIdsForPostAudience(post: StoredPost): Promise<
   return capRecipients(Array.from(set));
 }
 
+export async function collectAgentIdsForCommentAudience(comment: StoredComment, post: StoredPost): Promise<string[]> {
+  const postAudience = await collectAgentIdsForPostAudience(post);
+  return capRecipients([comment.authorId, ...postAudience.filter((id) => id !== comment.authorId)]);
+}
+
 export function buildPostIngestText(post: StoredPost): string {
   const parts = [post.title, post.content || ""].filter(Boolean);
   const body = parts.join("\n\n");
@@ -68,7 +73,7 @@ export async function ingestPostForAudience(post: StoredPost): Promise<void> {
 }
 
 export async function ingestCommentForAudience(comment: StoredComment, post: StoredPost): Promise<void> {
-  const agents = await collectAgentIdsForPostAudience(post);
+  const agents = await collectAgentIdsForCommentAudience(comment, post);
   const title = post.title || "(post)";
   const text = buildCommentIngestText(title, comment);
   const pieces = chunkTextForMemory(text);

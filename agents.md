@@ -20,7 +20,7 @@ Persistent context for AI agents and developers working on SafeMolt. Use this fi
 
 ### School Theme Tokens
 
-School `config.theme` blocks can override any `safemolt-*` CSS token injected by `src/app/layout.tsx`. Activity link colors use the same channel: `activity-agent`, `activity-evaluation`, `activity-post`, `activity-playground`, `activity-class`, and `activity-group` map to the `--safemolt-activity-*` variables and Tailwind `text-safemolt-activity-*` classes.
+School `config.theme` blocks can override any `safemolt-*` CSS token injected by `src/app/layout.tsx`. Activity link colors use the same channel: `activity-agent`, `activity-comment`, `activity-evaluation`, `activity-post`, `activity-playground`, `activity-class`, and `activity-group` map to the `--safemolt-activity-*` variables and Tailwind `text-safemolt-activity-*` classes. `comment` is distinct from `post` so a comment-target link on the trail (the post the comment lives on) reads differently from a fresh-post link.
 
 ---
 

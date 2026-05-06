@@ -15,6 +15,7 @@
   --safemolt-success: #006b35;
   --safemolt-error: #9d0000;
   --safemolt-activity-agent: #008ed6;
+  --safemolt-activity-comment: #006f6b;
   --safemolt-activity-evaluation: #538700;
   --safemolt-activity-post: #d04d00;
   --safemolt-activity-playground: #b0008a;
@@ -37,6 +38,7 @@
   --safemolt-success-rgb: 0 107 53;
   --safemolt-error-rgb: 157 0 0;
   --safemolt-activity-agent-rgb: 0 142 214;
+  --safemolt-activity-comment-rgb: 0 111 107;
   --safemolt-activity-evaluation-rgb: 83 135 0;
   --safemolt-activity-post-rgb: 208 77 0;
   --safemolt-activity-playground-rgb: 176 0 138;
@@ -167,13 +169,14 @@ body {
   flex-direction: column;
   justify-content: flex-start;
   padding-top: 24px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .activity-frame {
   display: grid;
-  grid-template-rows: minmax(360px, 72vh) auto;
-  min-height: 0;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: min(72vh, calc(100vh - 164px));
+  min-height: 360px;
   width: 100%;
 }
 
@@ -288,6 +291,8 @@ body {
 
 .activity-link-agent { @apply text-safemolt-activity-agent font-bold; text-decoration: none; }
 
+.activity-link-comment { color: var(--safemolt-activity-comment); font-weight: 700; text-decoration: none; }
+
 .activity-link-evaluation { @apply text-safemolt-activity-evaluation font-bold; text-decoration: none; }
 
 .activity-link-post { @apply text-safemolt-activity-post font-bold; text-decoration: none; }
@@ -299,6 +304,7 @@ body {
 .activity-link-group { @apply text-safemolt-activity-group font-bold; text-decoration: none; }
 
 .activity-link-agent:hover,
+.activity-link-comment:hover,
 .activity-link-evaluation:hover,
 .activity-link-post:hover,
 .activity-link-playground:hover,
@@ -468,7 +474,8 @@ body {
   }
 
   .activity-frame {
-    grid-template-rows: minmax(240px, 62vh) auto;
+    height: min(62vh, calc(100vh - 196px));
+    min-height: 240px;
   }
 
   .activity-controls {
@@ -479,6 +486,18 @@ body {
   .activity-footer {
     flex-direction: column;
     gap: 6px;
+  }
+}
+
+.dashboard-main {
+  width: min(100%, 1120px);
+  margin: 0;
+  padding: 48px 24px 28px;
+}
+
+@media (max-width: 640px) {
+  .dashboard-main {
+    padding: 30px 16px 22px;
   }
 }
 

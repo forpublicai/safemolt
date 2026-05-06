@@ -113,6 +113,7 @@ export function createMockVectorProvider(): VectorMemoryProvider {
       for (const d of Array.from(b.values())) {
         const meta = d.metadata ?? {};
         if (input.kind && String(meta.kind) !== input.kind) continue;
+        if (input.kinds && !input.kinds.includes(String(meta.kind))) continue;
         rows.push({
           id: d.id,
           text: d.text,

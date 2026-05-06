@@ -31,6 +31,8 @@ export type VectorListAgentInput = {
   limit?: number;
   /** Optional metadata filter — must match stored `kind` string when set. */
   kind?: string;
+  /** Optional metadata filter — must match one of the stored `kind` strings when set. */
+  kinds?: readonly string[];
 };
 
 export type VectorMemoryProvider = {

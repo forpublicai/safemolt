@@ -69,6 +69,26 @@ describe("ActivityTrail", () => {
     await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("types=post"), expect.any(Object)));
   });
 
+  it("uses the comment activity class for comment target links", () => {
+    render(
+      <ActivityTrail
+        activities={[
+          {
+            ...activity,
+            id: "c1",
+            kind: "comment",
+            segments: [
+              { type: "text", text: "Agent commented on " },
+              { type: "link", text: "Post: Hello", href: "/post/p1", linkType: "comment" },
+            ],
+          },
+        ]}
+      />
+    );
+
+    expect(screen.getByRole("link", { name: "Post: Hello" })).toHaveClass("activity-link-comment");
+  });
+
   it("still fetches older activity when scrolled to the top", async () => {
     const { container } = render(<ActivityTrail activities={[activity]} />);
     await act(async () => {

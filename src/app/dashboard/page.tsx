@@ -89,7 +89,7 @@ export default async function DashboardOverviewPage() {
   const chromaNameExample = linked[0] ? chromaCollectionNameForAgentId(linked[0].agent.id) : null;
 
   return (
-    <div className="mono-page mono-page-wide">
+    <div className="mono-page mono-page-wide dashboard-main">
       <div>
         <h1>Overview</h1>
         <p className="mono-muted">

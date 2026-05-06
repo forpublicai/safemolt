@@ -5,6 +5,10 @@ import {
   upsertActivityContext,
 } from "@/lib/store";
 import { getActivityByRef, type ActivityItem } from "@/lib/activity";
+import {
+  isPublicPlatformMemoryKind,
+  listPublicPlatformMemoriesForAgent,
+} from "@/lib/memory/memory-service";
 
 type PublicPlatformMemory = {
   id: string;
@@ -17,17 +21,42 @@ type PublicPlatformMemory = {
 export const ACTIVITY_CONTEXT_FAST_PROMPT_VERSION = "activity-trail-fast-v1";
 export const ACTIVITY_CONTEXT_PROMPT_VERSION = "activity-trail-enriched-v1";
 
-const ACTIVITY_CONTEXT_PENDING_PROMPT_VERSION = `${ACTIVITY_CONTEXT_PROMPT_VERSION}.pending`;
+const ACTIVITY_CONTEXT_COMMENT_FAST_PROMPT_VERSION = "activity-trail-fast-v2";
+const ACTIVITY_CONTEXT_COMMENT_PROMPT_VERSION = "activity-trail-enriched-v2";
+
+function fastPromptVersion(kind: string): string {
+  return kind === "comment" ? ACTIVITY_CONTEXT_COMMENT_FAST_PROMPT_VERSION : ACTIVITY_CONTEXT_FAST_PROMPT_VERSION;
+}
+
+function enrichedPromptVersion(kind: string): string {
+  return kind === "comment" ? ACTIVITY_CONTEXT_COMMENT_PROMPT_VERSION : ACTIVITY_CONTEXT_PROMPT_VERSION;
+}
+
+function pendingPromptVersion(kind: string): string {
+  return `${enrichedPromptVersion(kind)}.pending`;
+}
 
 function truncateInline(value: string, max = 90): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}...`;
 }
 
-function contextMemoriesToPrompt(memories: PublicPlatformMemory[]): string {
+function commentOnlyFromMemoryText(text: string): string {
+  const match = text.match(/(?:^|\n)Comment:\s*([\s\S]*)$/i);
+  return (match?.[1] ?? text).trim();
+}
+
+function memoryTextForActivity(memory: PublicPlatformMemory, activity: ActivityItem): string {
+  if (activity.kind === "comment" && memory.kind === "platform_comment") {
+    return commentOnlyFromMemoryText(memory.text);
+  }
+  return memory.text;
+}
+
+function contextMemoriesToPrompt(memories: PublicPlatformMemory[], activity: ActivityItem): string {
   if (memories.length === 0) return "No public platform memories were found for this agent.";
   return memories
-    .map((memory, index) => `${index + 1}. [${memory.kind}${memory.filedAt ? ` ${memory.filedAt}` : ""}] ${truncateInline(memory.text, 500)}`)
+    .map((memory, index) => `${index + 1}. [${memory.kind}${memory.filedAt ? ` ${memory.filedAt}` : ""}] ${truncateInline(memoryTextForActivity(memory, activity), 500)}`)
     .join("\n");
 }
 
@@ -42,16 +71,61 @@ function startActivityContextEnrichmentFireAndForget(kind: string, id: string): 
   });
 }
 
-async function listPublicMemoriesForActivity(_activity: ActivityItem): Promise<PublicPlatformMemory[]> {
-  // The context route is public and hot. Keep vector-memory systems out of its
-  // serverless trace until there is a light public-memory projection to read.
-  return [];
+function isSameActivityMemory(memory: PublicPlatformMemory, activity: ActivityItem): boolean {
+  if (activity.kind === "comment") return memory.metadata.comment_id === activity.id;
+  if (activity.kind === "post") return memory.metadata.post_id === activity.id;
+  return false;
+}
+
+function removeSameActivityMemories(
+  memories: PublicPlatformMemory[],
+  activity: ActivityItem
+): PublicPlatformMemory[] {
+  return memories.filter((memory) => !isSameActivityMemory(memory, activity));
+}
+
+export async function listPublicMemoriesForActivity(activity: ActivityItem): Promise<PublicPlatformMemory[]> {
+  if (!activity.actorId) return [];
+
+  try {
+    return removeSameActivityMemories(
+      (await listPublicPlatformMemoriesForAgent(activity.actorId, 6))
+        .filter((memory) => isPublicPlatformMemoryKind(memory.kind)),
+      activity
+    ).slice(0, 4);
+  } catch {
+    return [];
+  }
+}
+
+function activityPromptLines(activity: ActivityItem, memories: PublicPlatformMemory[]): string[] {
+  if (activity.kind === "comment") {
+    return [
+      `Activity: ${activity.actorName ?? "Unknown"} commented on a post.`,
+      `Time: ${activity.occurredAt}`,
+      `Actor: ${activity.actorName ?? "Unknown"}`,
+      `Comment: ${activity.contextHint || activity.summary}`,
+      "Public platform memories:",
+      contextMemoriesToPrompt(memories, activity),
+    ];
+  }
+
+  return [
+    `Activity: ${activity.summary}`,
+    `Time: ${activity.occurredAt}`,
+    `Actor: ${activity.actorName ?? "Unknown"}`,
+    `Details: ${activity.contextHint || "(none)"}`,
+    `Metadata: ${JSON.stringify(activity.metadata ?? {})}`,
+    "Public platform memories:",
+    contextMemoriesToPrompt(memories, activity),
+  ];
 }
 
 async function enrichActivityContext(kind: string, id: string): Promise<void> {
-  const cached = await getCachedActivityContext(kind, id, ACTIVITY_CONTEXT_PROMPT_VERSION);
+  const promptVersion = enrichedPromptVersion(kind);
+  const cached = await getCachedActivityContext(kind, id, promptVersion);
   if (cached) return;
-  const claimed = await claimActivityContextEnrichment(kind, id, ACTIVITY_CONTEXT_PENDING_PROMPT_VERSION);
+  const claimed = await claimActivityContextEnrichment(kind, id, pendingPromptVersion(kind));
   if (!claimed) return;
 
   try {
@@ -65,19 +139,11 @@ async function enrichActivityContext(kind: string, id: string): Promise<void> {
         {
           role: "system",
           content:
-            "You write concise public context for SafeMolt activity. Explain why the action matters using only supplied public facts. Keep it under 90 words. Do not invent private information.",
+            "You write concise public context for SafeMolt activity. Explain why the action matters using only supplied public facts and public platform memories. Keep it under 90 words. Do not invent private information. For comments, center the comment itself and do not restate the post title.",
         },
         {
           role: "user",
-          content: [
-            `Activity: ${activity.summary}`,
-            `Time: ${activity.occurredAt}`,
-            `Actor: ${activity.actorName ?? "Unknown"}`,
-            `Details: ${activity.contextHint || "(none)"}`,
-            `Metadata: ${JSON.stringify(activity.metadata ?? {})}`,
-            "Public platform memories:",
-            contextMemoriesToPrompt(memories),
-          ].join("\n"),
+          content: activityPromptLines(activity, memories).join("\n"),
         },
       ],
       {
@@ -85,19 +151,21 @@ async function enrichActivityContext(kind: string, id: string): Promise<void> {
         timeoutMs: activityContextEnrichmentTimeoutMs(),
       }
     );
-    await upsertActivityContext(kind, id, ACTIVITY_CONTEXT_PROMPT_VERSION, content);
+    await upsertActivityContext(kind, id, promptVersion, content);
   } catch {
     return;
   } finally {
-    await clearActivityContextEnrichmentClaim(kind, id, ACTIVITY_CONTEXT_PENDING_PROMPT_VERSION);
+    await clearActivityContextEnrichmentClaim(kind, id, pendingPromptVersion(kind));
   }
 }
 
 export async function generateOrGetActivityContext(kind: string, id: string): Promise<{ content: string; cached: boolean; enriched: boolean }> {
-  const cached = await getCachedActivityContext(kind, id, ACTIVITY_CONTEXT_PROMPT_VERSION);
+  const promptVersion = enrichedPromptVersion(kind);
+  const fastVersion = fastPromptVersion(kind);
+  const cached = await getCachedActivityContext(kind, id, promptVersion);
   if (cached) return { content: cached.content, cached: true, enriched: true };
 
-  const fastCached = await getCachedActivityContext(kind, id, ACTIVITY_CONTEXT_FAST_PROMPT_VERSION);
+  const fastCached = await getCachedActivityContext(kind, id, fastVersion);
   if (fastCached) {
     startActivityContextEnrichmentFireAndForget(kind, id);
     return { content: fastCached.content, cached: true, enriched: false };
@@ -108,16 +176,19 @@ export async function generateOrGetActivityContext(kind: string, id: string): Pr
     return { content: "No activity context is available for this item.", cached: false, enriched: false };
   }
 
-  const memories = await listPublicMemoriesForActivity(activity);
-  const fallback = buildDeterministicContext(activity, memories);
-  const stored = await upsertActivityContext(kind, id, ACTIVITY_CONTEXT_FAST_PROMPT_VERSION, fallback);
+  const fallback = buildDeterministicContext(activity, []);
+  const stored = await upsertActivityContext(kind, id, fastVersion, fallback);
   startActivityContextEnrichmentFireAndForget(kind, id);
   return { content: stored.content, cached: false, enriched: false };
 }
 
 export function buildDeterministicContext(activity: ActivityItem, memories: PublicPlatformMemory[]): string {
   const memoryNote = memories[0]
-    ? ` Related public memory: ${truncateInline(memories[0].text, 160)}`
+    ? ` Related public memory: ${truncateInline(memoryTextForActivity(memories[0], activity), 160)}`
     : " No related public memories are currently visible.";
+  if (activity.kind === "comment") {
+    const comment = activity.contextHint || activity.summary.replace(/^Comment:\s*/, "");
+    return `Comment: ${truncateInline(comment, 220)}${memoryNote}`;
+  }
   return `${activity.summary}${memoryNote}`;
 }

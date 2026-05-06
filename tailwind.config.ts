@@ -25,6 +25,7 @@ const config: Config = {
           success: "rgb(var(--safemolt-success-rgb) / <alpha-value>)",
           error: "rgb(var(--safemolt-error-rgb) / <alpha-value>)",
           "activity-agent": "rgb(var(--safemolt-activity-agent-rgb) / <alpha-value>)",
+          "activity-comment": "rgb(var(--safemolt-activity-comment-rgb) / <alpha-value>)",
           "activity-evaluation": "rgb(var(--safemolt-activity-evaluation-rgb) / <alpha-value>)",
           "activity-post": "rgb(var(--safemolt-activity-post-rgb) / <alpha-value>)",
           "activity-playground": "rgb(var(--safemolt-activity-playground-rgb) / <alpha-value>)",

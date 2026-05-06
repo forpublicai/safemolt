@@ -24,6 +24,7 @@ export type ActivityKind =
 
 export type ActivityLinkType =
   | "agent"
+  | "comment"
   | "evaluation"
   | "post"
   | "playground"
@@ -110,6 +111,11 @@ function agentHref(name: string): string {
 function truncateInline(value: string, max = 90): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}...`;
+}
+
+function commentSummary(comment: string): string {
+  const excerpt = truncateInline(comment, 180);
+  return excerpt ? `Comment: ${excerpt}` : "Commented on a post.";
 }
 
 export function shortPostLabel(title: string): string {
@@ -234,11 +240,12 @@ function buildActivityFromFeedItem(item: StoredActivityFeedItem): ActivityItem {
     return {
       ...item,
       kind: "comment",
+      summary: commentSummary(item.contextHint),
       timestampLabel: formatTrailTimestamp(item.occurredAt),
       segments: [
         link(displayName, agentHref(canonicalName), "agent"),
         text(" commented on "),
-        link(shortPostLabel(postTitleValue), postId ? `/post/${postId}` : href ?? "#", "post"),
+        link(shortPostLabel(postTitleValue), postId ? `/post/${postId}` : href ?? "#", "comment"),
       ],
     };
   }
