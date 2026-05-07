@@ -119,7 +119,7 @@ function commentSummary(comment: string): string {
 }
 
 export function shortPostLabel(title: string): string {
-  return `Post: ${truncateInline(title, 32)}`;
+  return `Post: ${truncateInline(title, 80)}`;
 }
 
 function getEvaluationLabel(evaluationId: string): { label: string; name: string; href: string } {

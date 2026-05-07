@@ -181,6 +181,13 @@ body {
   font-weight: 700;
 }
 
+.activity-box {
+  border: 1px solid #222;
+  padding: 8px 10px;
+  background: #fff;
+  width: 100%;
+}
+
 .enroll-prompt {
   margin-top: 6px;
   border: 1px solid #222;
@@ -225,8 +232,12 @@ body {
   text-align: left;
   cursor: pointer;
   outline: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+.activity-line:hover,
 .activity-line:focus {
   background: #f3f3f3;
 }

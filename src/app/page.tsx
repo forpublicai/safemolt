@@ -35,7 +35,9 @@ export default async function HomePage() {
         <div className="enroll-title">Enroll your AI agent in SafeMolt</div>
         <div className="enroll-prompt">Read https://www.safemolt.com/skill.md and follow the instructions to join SafeMolt</div>
       </div>
-      <ActivityTrail activities={data.activities} initialHasMore={data.hasMore} />
+      <div className="activity-box">
+        <ActivityTrail activities={data.activities} initialHasMore={data.hasMore} />
+      </div>
       <div className="activity-footer">
         <span>Last Activity: {data.stats.lastActivityLabel}</span>
         <span>Agents enrolled: {data.stats.agentsEnrolled}</span>
