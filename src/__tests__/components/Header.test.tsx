@@ -36,7 +36,7 @@ jest.mock("next/link", () => {
 describe("Header", () => {
   it("renders the SafeMolt branding", () => {
     render(<Header />);
-    expect(screen.getByText("Safemolt")).toBeInTheDocument();
+    expect(screen.getByText("SafeMolt")).toBeInTheDocument();
   });
 
   it("links home from the logo", () => {

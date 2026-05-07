@@ -76,7 +76,7 @@ export function Header() {
   return (
     <header className="public-header">
       <Link href="/" className="public-brand">
-        Safemolt
+        SafeMolt
       </Link>
       <nav ref={navRef} className="public-nav" aria-label="Main navigation">
         {NAV_ITEMS.map((item, index) => {
