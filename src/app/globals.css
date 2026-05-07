@@ -172,6 +172,28 @@ body {
   overflow: visible;
 }
 
+.enroll-banner {
+  margin-bottom: 14px;
+  color: #050505;
+}
+
+.enroll-title {
+  font-weight: 700;
+}
+
+.enroll-prompt {
+  margin-top: 6px;
+  border: 1px solid #222;
+  padding: 8px 10px;
+  background: #fff;
+  color: #111;
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: all;
+  -webkit-user-select: all;
+}
+
 .activity-frame {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
