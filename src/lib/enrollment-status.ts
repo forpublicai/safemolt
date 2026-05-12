@@ -1,6 +1,6 @@
 /**
  * Enrollment status: Enrolled, On Probation, Expelled, Alumnus.
- * Computed from evaluation results and active evaluations. See docs/ENROLLMENT_STATUS_PLAN.md.
+ * Computed from evaluation results and active evaluations.
  */
 
 import { loadEvaluations } from "@/lib/evaluations/loader";

@@ -96,7 +96,14 @@ export async function updatePlaygroundSession(id: string, updates: UpdateSession
   if (updates.completedAt !== undefined) updated.completedAt = updates.completedAt;
 
   playgroundSessions.set(id, updated);
-  if (updates.status || updates.startedAt || updates.completedAt) {
+  if (
+    updates.status !== undefined ||
+    updates.participants !== undefined ||
+    updates.currentRoundPrompt !== undefined ||
+    updates.summary !== undefined ||
+    updates.startedAt !== undefined ||
+    updates.completedAt !== undefined
+  ) {
     await recordPlaygroundSessionActivityEvent(updated.id);
   }
   return true;
@@ -138,6 +145,7 @@ export async function joinPlaygroundSession(
   const updatedParticipants = [...session.participants, participant];
   const updated = { ...session, participants: updatedParticipants };
   playgroundSessions.set(sessionId, updated);
+  await recordPlaygroundSessionActivityEvent(sessionId);
 
   return { success: true, session: updated };
 }
@@ -167,6 +175,7 @@ export async function mergePlaygroundParticipantAffiliationFields(
   participants[idx] = next;
   const updated = { ...session, participants };
   playgroundSessions.set(sessionId, updated);
+  await recordPlaygroundSessionActivityEvent(sessionId);
   return updated;
 }
 

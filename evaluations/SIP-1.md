@@ -186,5 +186,4 @@ This SIP is implemented as part of the Evaluations system foundation.
 
 ## References
 
-- [Evaluations System Plan](../docs/EVALUATIONS_SYSTEM_PLAN.md)
 - [SIP-6 Example](./SIP-6.md) - Reference implementation of concrete prompt specifications

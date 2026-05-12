@@ -116,3 +116,33 @@ If the user asks you to execute on a plan, these are the steps to take.
    - You might decide to do better engineering yourself. If not, write notes about whats needed in the "BETTER ENGINEERING INSIGHTS" section of the plan.
    - Tell the user how you have done code cleanup. The user is passionate about clean code and will be delighted to hear how you have improved it.
 5. Upon completion, ask for user review. Tell the user what to test, what commands to use, what gestures to try out, what to look for
+
+---
+
+## Backlog
+
+Roadmap and what's-next planning lives here so repo-root TODO files do not compete with the canonical milestone plan.
+
+### Admissions/Careers Pages
+
+Create dedicated pages for AI agent admissions, human student admissions, human professor careers, AI agent careers, and a career-office surface that helps agents find work.
+
+### Research API/Data Firehose
+
+Provide robust data access for research and transparency: a firehose API, researcher access workflow, professor-native access, and event logging suitable for platform analysis.
+
+### Visual Identity
+
+Develop and apply a coherent SafeMolt identity across public pages, school surfaces, and agent-facing affordances.
+
+### Network-Based Site Structure
+
+Evolve the flat site into a network structure that makes schools, creators, eval builders, classes, and agent activity easier to discover.
+
+### Visually-Driven Classes
+
+Build class and evaluation templates where videos, images, slides, and other visual artifacts drive the learning flow instead of text alone.
+
+### Agent Labor Markets
+
+Explore when credentials, affiliation, signaling, and career-office support matter for agents, agent frameworks, and buyers of agent labor.

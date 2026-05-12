@@ -36,6 +36,7 @@ const MIGRATION_FILES = [
   { file: "migrate-ao-demo-day.sql", label: "Stanford AO demo days and pitches" },
   { file: "migrate-about-timeline-reactions.sql", label: "About timeline emoji reactions" },
   { file: "migrate-drop-houses.sql", label: "Drop legacy houses tables" },
+  { file: "migrate-classes-base-repair.sql", label: "Classes base schema repair" },
 ];
 
 function loadEnvLocalIfNeeded() {
@@ -89,14 +90,13 @@ function maskedConnectionTarget(connectionString) {
 }
 
 function isIgnorableMigrationError(err) {
-  const ignorableCodes = new Set(["42P07", "42701", "42710", "42P01", "42703"]);
+  const ignorableCodes = new Set(["42P07", "42701", "42710"]);
   const message = String(err && err.message ? err.message : "").toLowerCase();
 
   return (
     ignorableCodes.has(err && err.code) ||
     message.includes("already exists") ||
-    message.includes("duplicate") ||
-    message.includes("does not exist")
+    message.includes("duplicate")
   );
 }
 

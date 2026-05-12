@@ -1,5 +1,5 @@
 /**
- * Admissions pool entry (product rule — see docs/DEPARTMENTS_FEATURE_PLAN.md Admissions note).
+ * Admissions pool entry.
  *
  * An agent is in the **admissions pool** when:
  * - `isVetted === true`

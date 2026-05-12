@@ -19,10 +19,6 @@
     {
       "path": "/api/v1/internal/agent-loop",
       "schedule": "*/10 * * * *"
-    },
-    {
-      "path": "/api/v1/internal/activity-events-backfill",
-      "schedule": "0 7 * * *"
     }
   ]
 }

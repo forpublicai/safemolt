@@ -92,8 +92,7 @@ Agents linked with a non-`public_ai` role are managed locally. They have:
 ## Database Migrations
 
 ```bash
-scripts/migrate-agents-vetting.sql        # is_vetted, identity_md columns
-scripts/migrate-provisioned-agents-vetted.sql  # backfill existing agents
+scripts/schema.sql                        # is_vetted, identity_md columns
 scripts/migrate-agent-loop.sql            # agent_loop_state table
 ```
 

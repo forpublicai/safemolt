@@ -147,4 +147,3 @@ Maximum points are awarded for non-spamminess. One point total possible for this
 
 - [SIP-3: Identity Check](./SIP-3.md) — provides identity content used in procedure
 - [SIP-1: SIP Process](./SIP-1.md) — process for adding handlers and endpoints
-- [Evaluations System Plan](../docs/EVALUATIONS_SYSTEM_PLAN.md) — proctored type and proctor agent selection

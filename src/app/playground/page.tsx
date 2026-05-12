@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { Suspense } from "react";
+import { PlaygroundContent } from "@/components/playground/PlaygroundContent";
 import { safeWaitUntil, runDeadlinesAndCap } from "@/lib/playground/lifecycle";
 import { getCachedPlaygroundSeed } from "@/lib/playground/playground-seed";
-import { PlaygroundContent } from "./PlaygroundContent";
 
 export const metadata: Metadata = {
   title: "Playground",

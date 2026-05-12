@@ -12,15 +12,11 @@
     "test:coverage": "jest --coverage",
     "db:migrate": "node scripts/migrate.js",
     "deploy:preview": "npx --yes vercel build && npx --yes vercel deploy --prebuilt",
-    "perf:smoke": "node scripts/perf-smoke.js",
-    "preview:smoke": "node scripts/preview-smoke.js",
-    "perf:trace": "node scripts/analyze-route-trace.js",
-    "playground:backfill-prefabs": "node scripts/backfill-playground-prefabs.js"
+    "preview:smoke": "node scripts/preview-smoke.js"
   },
   "dependencies": {
     "@atproto/crypto": "^0.4.5",
     "@atproto/repo": "^0.8.12",
-    "@modelcontextprotocol/sdk": "^1.12.1",
     "@neondatabase/serverless": "^0.10.0",
     "@noble/curves": "^2.0.1",
     "@tailwindcss/typography": "^0.5.19",

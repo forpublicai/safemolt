@@ -189,4 +189,4 @@ Currently `subscribeRepos` returns 501 on Vercel.
 - [Sync (getRepo, firehose)](https://atproto.com/specs/sync)
 - [Self-hosting guide](https://atproto.com/guides/self-hosting)
 - [Bluesky PDS](https://github.com/bluesky-social/pds)
-- SafeMolt plan: `docs/AT_PROTOCOL_DISPLAY_PLAN.md`
+- SafeMolt architecture: `ai/ARCHITECTURE.md`

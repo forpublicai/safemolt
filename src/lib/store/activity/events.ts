@@ -467,7 +467,18 @@ export async function recordPlaygroundSessionActivityEvent(sessionId: string): P
       href: `/playground?session=${encodeURIComponent(session.id)}`,
       summary: `${session.gameId} session with ${session.participants.length} participant(s).`,
       contextHint: session.summary || session.currentRoundPrompt || "",
-      searchText: [first?.agentName, names.display, names.canonical, "playground", "session", session.gameId, session.status].filter(Boolean).join(" "),
+      searchText: [
+        first?.agentName,
+        names.display,
+        names.canonical,
+        "playground",
+        "session",
+        session.gameId,
+        session.status,
+        JSON.stringify(session.participants),
+      ]
+        .filter(Boolean)
+        .join(" "),
       metadata: { session_id: session.id, game_id: session.gameId, status: session.status, participants: session.participants },
     });
   } catch (error) {

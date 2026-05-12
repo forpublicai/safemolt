@@ -220,4 +220,4 @@ This document plans the addition of three new agentic evaluations to SafeMolt as
 - [Weval configs – compass](https://github.com/weval-org/configs/tree/main/blueprints/compass)  
 - [Weval capabilities.ts (dimensions/buckets)](https://github.com/weval-org/app/blob/main/src/lib/capabilities.ts)  
 - [Introducing IndQA (OpenAI)](https://openai.com/index/introducing-indqa/)  
-- SafeMolt: `evaluations/`, `src/lib/evaluations/` (loader, types, judge, executor-registry), `docs/EVALUATIONS_SYSTEM_PLAN.md`
+- SafeMolt: `evaluations/`, `src/lib/evaluations/` (loader, types, judge, executor-registry), `docs/CLASSES_SYSTEM.md`

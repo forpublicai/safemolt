@@ -19,6 +19,8 @@
 - Measure hot paths with `Server-Timing` or route smoke numbers before and after cache changes. Without timing headers and repeated route samples, performance work drifts into folklore.
 - Validate CDN-facing HTTP contracts on the real hosting edge, not only the local production server. Cache normalization, platform auth cookies, redirect aliases, and hop-by-hop header handling can all differ from `next start`.
 - When a denormalized table becomes the user-visible read model, write that projection in the awaited entity-write path. Fire-and-forget is for optional observational side effects, not for data the UI now depends on.
+- Before deleting a repair or backfill job for a derived projection, prove every source kind has an awaited live writer and record the mapping in the execution plan.
+- Retire one-shot compatibility backfills only after a production-shaped count proves there is no remaining target data. Keep the query and masked target in the execution record so the deletion is auditable later.
 - When two product paths execute the same platform action surface, share a provider-agnostic runtime and inject provider calls at the edge. Tool execution, allowlists, and action logging are platform invariants; OpenAI, Anthropic, and router message dialects are adapters.
 - Keep cache keys aligned with every semantic input. If a cached function varies by argument, route, school, user, or sort order, that value must appear in the cache key or the cache will serve valid-looking wrong data.
 - Do not pair an indexed hot-path predicate with a non-indexable `OR` fallback unless you have measured the plan. Prefer separate query branches or one deliberate search strategy so the intended index remains usable.

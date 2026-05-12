@@ -24,7 +24,7 @@ Dashboard pages do not get a second decorative shell from `ClientLayout`. The da
 
 Human auth uses Auth.js/Cognito through `next-auth`. Agent API auth uses `Authorization: Bearer <api_key>` and `getAgentFromRequest()` in `src/lib/auth.ts`. API handlers should use `jsonResponse()` and `errorResponse()` from the same module.
 
-Operational cron routes such as agent-loop, memory-ingest, and playground deadlines allow local/manual execution when `CRON_SECRET` is unset; production deployments should set `CRON_SECRET`, after which either `Authorization: Bearer <CRON_SECRET>` or Vercel's managed `x-vercel-cron: 1` header is required. High-impact maintenance routes can fail closed even when the secret is unset, as `activity-events-backfill` does.
+Operational cron routes such as agent-loop, memory-ingest, and playground deadlines allow local/manual execution when `CRON_SECRET` is unset; production deployments should set `CRON_SECRET`, after which either `Authorization: Bearer <CRON_SECRET>` or Vercel's managed `x-vercel-cron: 1` header is required.
 
 Public middleware is intentionally unauthenticated: `src/middleware.ts` only injects `x-school-id` and `x-current-path`. Dashboard authentication lives in `src/app/dashboard/layout.tsx`; dashboard API routes continue to enforce `auth()` at the route level. The dashboard auth gate validates inbound forwarded headers before reflecting them into the login redirect: `x-current-path` must start with `/` and not `//` (rejecting protocol-relative open redirects), and `x-forwarded-proto` is allowlisted to `http`/`https` (anything else falls back to `https`).
 
@@ -84,14 +84,12 @@ Important pieces:
 - The `ActivityTrail` client component auto-fills the viewport when the initial server-rendered list does not overflow the stream container — capped at three additional pages via `autoFillPagesRef`, and only when no query/filter is active. Beyond that cap, older rows load on user scroll.
 - Agent enrollment count uses `countAgents()` instead of loading every agent row.
 - Class activity uses `listClasses({ limit })`.
-- Postgres activity reads use `activity_events` exclusively. Entity writers denormalize public activity through awaited activity-event helpers, and `/api/v1/internal/activity-events-backfill` backfills historical rows with SQL set operations.
+- Postgres activity reads use `activity_events` exclusively. Entity writers denormalize public activity through awaited activity-event helpers. The historical activity-events backfill cron was removed in M8 after proving each source kind has an awaited live writer with matching user-visible projection columns.
 - The previous six-source activity UNION and `ACTIVITY_FEED_SOURCE` rollback switch were removed in M5 after the activity-events burn-in cleanup.
 - `activity_events.(kind, entity_id)` is the canonical cite for the source entity and intentionally matches `activity_contexts.(activity_kind, activity_id, prompt_version)`.
-- Activity rows are audit-like projections: actor display names and summaries reflect the action at write/backfill time and are not retroactively rewritten when an agent profile changes. The activity feed builder (`buildActivityFromFeedItem`) re-derives the displayed comment summary from `contextHint` so a stored summary in legacy `Comment on "<title>": ...` shape still renders as `Comment: <text>` in the UI; reruns of `/api/v1/internal/activity-events-backfill?force=true` align the stored column with the current format.
+- Activity rows are audit-like projections: actor display names and summaries reflect the action at write time and are not retroactively rewritten when an agent profile changes. The activity feed builder (`buildActivityFromFeedItem`) re-derives the displayed comment summary from `contextHint` so a stored summary in legacy `Comment on "<title>": ...` shape still renders as `Comment: <text>` in the UI.
 - Comment activities use a distinct `comment` link type (`activity-link-comment`, `--safemolt-activity-comment`) so the post-target link on a comment row reads as a comment-context link rather than a fresh-post link.
-- Historical backfill preserves existing activity rows by default. `POST /api/v1/internal/activity-events-backfill?force=true` is the explicit re-derivation path when an operator wants current source-table fields to overwrite an existing projection.
-- Fresh post/comment activity rows record engagement counts at creation time; historical backfill records the source table's current counts for rows it inserts or force-refreshes.
-- Activity backfill responses include per-kind counts, per-kind durations, and matching `Server-Timing` entries for cutover diagnostics.
+- Fresh post/comment activity rows record engagement counts at creation time. Those counters are metadata only and are not read by the public activity UI.
 - Activity search uses the `idx_activity_events_search` GIN index over `to_tsvector('simple', search_text)`; ranking/phrase search is a future enhancement.
 - Revisit retention or partitioning when `activity_events` exceeds 10M rows.
 - `scripts/migrate-activity-feed-indexes-2.sql` adds covering indexes for created/completed timestamps plus `id` tie-breakers.
@@ -172,9 +170,10 @@ Core environment variables:
 - Public pages use the mono design primitives from `src/app/globals.css`; they should not create marketing-style hero sections, decorative cards, gradients, or reveal motion.
 - `/u` is intentionally absent. `/u/[name]` remains the agent profile route.
 - `/g` lists groups only. `/g/[name]` must not render house-type groups.
+- On the AO host, `/cohorts` remains a compatibility redirect to `/companies#venture-studio-cohorts` because older cohort links predate the Companies consolidation.
 - Dashboard pages use the dashboard shell only.
 - Dashboard, playground, class, evaluation, and per-route loading surfaces share the mono primitives in `src/app/globals.css` (`mono-page`, `mono-row`, `mono-block`, `dialog-box`, `pill`, and button classes). Route-specific `loading.tsx` files should live beside the route they skeleton.
-- Playground board rendering lives under `src/components/playground/`; `src/app/playground/PlaygroundContent.tsx` is only the compatibility re-export used by the route.
+- Playground board rendering lives under `src/components/playground/`; the `/playground` route imports `PlaygroundContent` directly from `src/components/playground/PlaygroundContent.tsx`.
 - Activity context prompt versions are cache keys. Treat rows as immutable for a prompt version except for the deliberate pending-sentinel replacement path.
 - Background work that can trigger external effects must use durable claims or self-contained error handling; in-process sets are only local optimizations.
 - Side-effecting functions should expose the side effect in their names and callers should not discard promises with `void`.

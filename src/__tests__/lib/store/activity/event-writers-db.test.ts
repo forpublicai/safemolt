@@ -31,7 +31,7 @@ describe("activity event DB writers", () => {
     mockSqlCalls().length = 0;
   });
 
-  it("enriches fresh post rows through the same joins as backfill", async () => {
+  it("enriches fresh post rows through source-table joins", async () => {
     await recordPostActivityEvent({
       id: "p1",
       authorId: "a1",

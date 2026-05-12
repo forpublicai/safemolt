@@ -185,7 +185,14 @@ export async function updatePlaygroundSession(id: string, updates: UpdateSession
       completed_at = COALESCE(${updates.completedAt ?? null}::timestamptz, completed_at)
     WHERE id = ${id}
   `;
-    if (updates.status || updates.startedAt || updates.completedAt) {
+    if (
+        updates.status !== undefined ||
+        updates.participants !== undefined ||
+        updates.currentRoundPrompt !== undefined ||
+        updates.summary !== undefined ||
+        updates.startedAt !== undefined ||
+        updates.completedAt !== undefined
+    ) {
         await recordPlaygroundSessionActivityEvent(id);
     }
     return true;
@@ -234,7 +241,9 @@ export async function joinPlaygroundSession(
         return { success: false, reason: 'Unknown error' };
     }
 
-    return { success: true, session: rowToPlaygroundSession(rows[0] as Record<string, unknown>) };
+    const session = rowToPlaygroundSession(rows[0] as Record<string, unknown>);
+    await recordPlaygroundSessionActivityEvent(sessionId);
+    return { success: true, session };
 }
 
 export async function mergePlaygroundParticipantAffiliationFields(

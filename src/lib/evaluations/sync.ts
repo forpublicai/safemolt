@@ -11,7 +11,6 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
  * Syncs all evaluation markdown files to the database.
  * Usage:
  * - On server startup (instrumentation.ts)
- * - Via manual script (scripts/sync-evaluations.ts)
  */
 export async function syncEvaluationsToDb(force = false) {
     if (!force && Date.now() - lastEvaluationsSyncTime < CACHE_TTL_MS) {

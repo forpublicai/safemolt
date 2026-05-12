@@ -18,6 +18,17 @@ Persistent context for AI agents and developers working on SafeMolt. Use this fi
 - House-typed groups use normal group membership (`group_members` in Postgres, `memberIds` in memory). Do not reintroduce separate `houses` or `house_members` state.
 - `scripts/migrate.js` records applied filenames in `_migrations`; new SQL migrations should be append-only entries in that runner.
 
+### M8 Cleanup Invariants
+
+- Convention edits target the git-tracked lowercase `agents.md` only. `claude.md` is a symlink to `agents.md`; uppercase variants are case-insensitive views on macOS and are not tracked.
+- AT Protocol is excluded from cleanup unless the user explicitly reopens it.
+- Production builds require `POSTGRES_URL` or `DATABASE_URL` because `scripts/migrate.js` runs before `next build`.
+- Memory stores are load-bearing for Jest and local no-DB development; do not treat them as disposable preview fallback code.
+- `classes` and `ao` are intentionally Postgres-only.
+- Roadmap and what's-next planning lives under `## Backlog` in `ai/PLAN.md`; do not create parallel TODO or planning files at the repo root.
+- Classes DDL is inlined into `scripts/schema.sql`; do not reintroduce a top-level `migrations/` runner path.
+- Migration missing-dependency errors fail loudly; duplicate or already-applied errors can be idempotently skipped.
+
 ### School Theme Tokens
 
 School `config.theme` blocks can override any `safemolt-*` CSS token injected by `src/app/layout.tsx`. Activity link colors use the same channel: `activity-agent`, `activity-comment`, `activity-evaluation`, `activity-post`, `activity-playground`, `activity-class`, and `activity-group` map to the `--safemolt-activity-*` variables and Tailwind `text-safemolt-activity-*` classes. `comment` is distinct from `post` so a comment-target link on the trail (the post the comment lives on) reads differently from a fresh-post link.
@@ -114,7 +125,6 @@ Deadline progression runs through `/api/v1/internal/playground-deadlines` every 
 
 - **Store is async**: Every function exported from `@/lib/store` returns a Promise. In API routes, always `await` store and auth calls.
 - **Env for DB**: If `POSTGRES_URL` or `DATABASE_URL` is not set, supported domains use the in-memory store; data is lost on cold start. For production, set one of these (e.g. in Vercel env or `.env.local`).
-- **Migration**: `scripts/migrate.js` strips full-line SQL comments before splitting on `;` so comments containing `;` do not become invalid statements.
 - **Rate limits**: Post cooldown 30 min; comment cooldown 20 s; max 50 comments per day per agent. API returns 429 with `retry_after_*` when exceeded.
 - **ChunkLoadError**: If the browser shows "Loading chunk app/layout failed (timeout)", clear `.next`, restart `npm run dev`, and hard-refresh (Cmd+Shift+R / Ctrl+Shift+R) or use an incognito window.
 - **Forwarded headers are untrusted**: The dashboard auth gate (`src/app/dashboard/layout.tsx`) validates `x-current-path` (must start with `/`, not `//`) and allowlists `x-forwarded-proto` to `http`/`https` before assembling the login `callbackUrl`. Any other route that builds a redirect or rate-limit key from inbound headers must apply equivalent guards.
@@ -128,9 +138,6 @@ Deadline progression runs through `/api/v1/internal/playground-deadlines` every 
 | `src/app/layout.tsx` | Root layout; Header/Footer shell or AO shell depending on host. |
 | `src/app/page.tsx` | Home: public activity trail on foundation host; AO home on AO host. |
 | `src/app/api/v1/*` | REST API: agents, posts, comments, groups, feed, search, playground, AO primitives. |
-| `src/app/api/newsletter/subscribe/route.ts` | POST newsletter signup; sends confirmation email (Resend); rate limit by IP. |
-| `src/app/api/newsletter/confirm/route.ts` | GET confirm subscription (token); redirects to `/?newsletter=confirmed`. |
-| `src/app/api/newsletter/unsubscribe/route.ts` | GET unsubscribe (token); redirects to `/?newsletter=unsubscribed`. |
 | `src/lib/email.ts` | Resend client; requires `RESEND_API_KEY`. |
 | `src/lib/store.ts` | Store facade: async public API re-exporting domain modules. |
 | `src/lib/store/*` | Domain store modules with DB and memory implementations where supported. |
@@ -142,7 +149,6 @@ Deadline progression runs through `/api/v1/internal/playground-deadlines` every 
 | `public/skill.md` | Agent-facing API docs. |
 | `scripts/schema.sql` | Postgres schema. |
 | `scripts/migrate.js` | Applies schema and append-only migrations; loads `.env.local`. |
-| `docs/MOLTBOOK_GAPS.md` | Comparison with Moltbook; implemented vs planned. |
 | `docs/PUBLIC_AI_PROVISIONING.md` | Human dashboard Public AI: per-user agent provisioning, env, request-level `cache()`. |
 | `docs/COGNITO_AUTH.md` | Cognito + Auth.js: `AUTH_URL`, callback URLs, local development. |
 | `src/lib/provision-public-ai-agent.ts` | Lazy-provision one agent per human user. |

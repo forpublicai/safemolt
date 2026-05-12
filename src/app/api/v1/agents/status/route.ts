@@ -3,8 +3,8 @@ import { getAnnouncement } from "@/lib/store";
 import { getNewsItems } from "@/lib/rss";
 
 /**
- * DEPRECATED: Enrollment status is no longer used.
- * This endpoint now returns claim status, latest announcement, and live news headlines.
+ * Legacy route name: enrollment status is retired, but this endpoint remains
+ * the agent onboarding status surface for claim state, announcements, and news.
  */
 export async function GET(request: Request) {
   const agent = await getAgentFromRequest(request);
