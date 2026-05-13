@@ -1,0 +1,361 @@
+/**
+ * @jest-environment node
+ *
+ * UX3: GET /api/v1/agents/me/home (the command center).
+ * Verifies envelope contract, caps, payload_version, suggested poll interval,
+ * loop state inclusion via the safe loop-state wrapper, no PII leakage, and
+ * next-action shape for the empty-feed and onboarding paths.
+ */
+import { assertSuccessEnvelope, assertErrorEnvelope } from "@/__tests__/helpers/api-contract";
+
+jest.mock("@/lib/store", () => ({
+  getAgentByApiKey: jest.fn(),
+  touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
+  getAnnouncement: jest.fn().mockResolvedValue(null),
+  listGroups: jest.fn().mockResolvedValue([]),
+  isGroupMember: jest.fn().mockResolvedValue(false),
+  isSubscribed: jest.fn().mockResolvedValue(false),
+  getGroup: jest.fn().mockResolvedValue(null),
+  listFeed: jest.fn().mockResolvedValue([]),
+  listPlaygroundSessions: jest.fn().mockResolvedValue([]),
+  getPlaygroundActions: jest.fn().mockResolvedValue([]),
+  getGroupMemberCount: jest.fn().mockResolvedValue(0),
+  getFollowingCount: jest.fn().mockResolvedValue(0),
+}));
+
+jest.mock("@/lib/human-users", () => ({
+  listUserIdsLinkedToAgent: jest.fn().mockResolvedValue([]),
+}));
+
+jest.mock("@/lib/agent-home/loop-state", () => ({
+  readLoopStateSafely: jest.fn().mockResolvedValue(null),
+}));
+
+jest.mock("@/lib/rss", () => ({
+  getNewsItems: jest.fn().mockResolvedValue([]),
+}));
+
+const store = require("@/lib/store");
+const humanUsers = require("@/lib/human-users");
+const loopStateMod = require("@/lib/agent-home/loop-state");
+const rss = require("@/lib/rss");
+
+import { GET as getHome } from "@/app/api/v1/agents/me/home/route";
+
+function makeReq() {
+  return new Request("http://localhost/api/v1/agents/me/home", {
+    headers: { Authorization: "Bearer key_1" },
+  });
+}
+
+const baseAgent = {
+  id: "agent_1",
+  name: "Fresh",
+  description: "",
+  apiKey: "key_1",
+  points: 0,
+  followerCount: 0,
+  isClaimed: false,
+  createdAt: "2026-05-01T00:00:00.000Z",
+  isVetted: true,
+};
+
+describe("GET /api/v1/agents/me/home", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    store.getAgentByApiKey.mockResolvedValue(baseAgent);
+    store.getAnnouncement.mockResolvedValue(null);
+    store.listGroups.mockResolvedValue([]);
+    store.isGroupMember.mockResolvedValue(false);
+    store.isSubscribed.mockResolvedValue(false);
+    store.getGroup.mockResolvedValue(null);
+    store.listFeed.mockResolvedValue([]);
+    store.listPlaygroundSessions.mockResolvedValue([]);
+    store.getPlaygroundActions.mockResolvedValue([]);
+    store.getGroupMemberCount.mockResolvedValue(0);
+    store.getFollowingCount.mockResolvedValue(0);
+    humanUsers.listUserIdsLinkedToAgent.mockResolvedValue([]);
+    loopStateMod.readLoopStateSafely.mockResolvedValue(null);
+    rss.getNewsItems.mockResolvedValue([]);
+  });
+
+  it("401 when no Authorization header", async () => {
+    store.getAgentByApiKey.mockResolvedValue(null);
+    const req = new Request("http://localhost/api/v1/agents/me/home");
+    const res = await getHome(req);
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    assertErrorEnvelope(body);
+    expect(body.error_detail.code).toBe("unauthorized");
+  });
+
+  it("returns canonical envelope with payload_version, suggested_poll_interval_ms, generated_at, and request_id", async () => {
+    const res = await getHome(makeReq());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Request-Id")).toBeTruthy();
+    expect(res.headers.get("X-RateLimit-Limit")).toBe("100");
+    expect(res.headers.get("X-RateLimit-Remaining")).toBeTruthy();
+    const body = await res.json();
+    assertSuccessEnvelope(body, { requireMeta: true });
+    const meta = (body as { meta: Record<string, unknown> }).meta;
+    expect(meta.payload_version).toBe("1.0.0");
+    expect(meta.suggested_poll_interval_ms).toBe(15000);
+    expect(typeof meta.generated_at).toBe("string");
+    expect(typeof meta.request_id).toBe("string");
+  });
+
+  it("caps the response surface: next_actions ≤ 5, suggested groups ≤ 5, playground ≤ 3, news ≤ 5, announcements ≤ 3, inbox preview ≤ 3", async () => {
+    // Seed extra suggestions to make sure the route caps them.
+    const manyGroups = Array.from({ length: 20 }, (_, i) => ({
+      id: `g${i}`,
+      name: `g${i}`,
+      displayName: `g${i}`,
+      description: "",
+      type: "group" as const,
+      ownerId: "o",
+      memberIds: [],
+      moderatorIds: [],
+      pinnedPostIds: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }));
+    store.listGroups.mockResolvedValue(manyGroups);
+    const manyPending = Array.from({ length: 20 }, (_, i) => ({
+      id: `s${i}`,
+      gameId: "demo",
+      status: "pending",
+      currentRound: 0,
+      participants: [],
+      createdAt: "2026-05-01T00:00:00.000Z",
+    }));
+    store.listPlaygroundSessions.mockResolvedValue(manyPending);
+    const manyNews = Array.from({ length: 20 }, (_, i) => ({
+      title: `n${i}`,
+      url: `https://example.com/${i}`,
+      source: "s",
+    }));
+    rss.getNewsItems.mockResolvedValue(manyNews);
+
+    const res = await getHome(makeReq());
+    const body = await res.json();
+    const data = (body as { data: Record<string, unknown> }).data;
+
+    const nextActions = data.next_actions as Array<unknown>;
+    expect(Array.isArray(nextActions)).toBe(true);
+    expect(nextActions.length).toBeLessThanOrEqual(5);
+
+    const groups = data.groups as { suggested: unknown[] } | undefined;
+    expect(groups).toBeTruthy();
+    expect(Array.isArray(groups!.suggested)).toBe(true);
+    expect(groups!.suggested.length).toBeLessThanOrEqual(5);
+
+    const playground = data.playground as { sessions: unknown[] };
+    expect(Array.isArray(playground.sessions)).toBe(true);
+    expect(playground.sessions.length).toBeLessThanOrEqual(3);
+
+    const news = data.news as { headlines: unknown[] };
+    expect(Array.isArray(news.headlines)).toBe(true);
+    expect(news.headlines.length).toBeLessThanOrEqual(5);
+
+    const announcements = data.announcements as { items: unknown[] };
+    expect(announcements.items.length).toBeLessThanOrEqual(3);
+
+    const inbox = data.inbox as { items: unknown[] };
+    expect(Array.isArray(inbox.items)).toBe(true);
+    expect(inbox.items.length).toBeLessThanOrEqual(3);
+  });
+
+  it("each next_action follows the stable item schema {code, message, priority?, href?, cta_label?}", async () => {
+    const res = await getHome(makeReq());
+    const body = await res.json();
+    const nextActions = (body as { data: { next_actions: Array<Record<string, unknown>> } }).data.next_actions;
+    expect(nextActions.length).toBeGreaterThan(0);
+    for (const action of nextActions) {
+      expect(typeof action.code).toBe("string");
+      expect((action.code as string).length).toBeGreaterThan(0);
+      expect(typeof action.message).toBe("string");
+      if (action.priority !== undefined) {
+        expect(["high", "medium", "low"]).toContain(action.priority);
+      }
+      if (action.href !== undefined) expect(typeof action.href).toBe("string");
+      if (action.cta_label !== undefined) expect(typeof action.cta_label).toBe("string");
+    }
+  });
+
+  it("Public AI fixture includes loop state and agent_kind=public_ai_autonomous when loop is enabled", async () => {
+    const publicAi = {
+      ...baseAgent,
+      id: "public_ai_1",
+      metadata: { provisioned_public_ai: true },
+    };
+    store.getAgentByApiKey.mockResolvedValue(publicAi);
+    humanUsers.listUserIdsLinkedToAgent.mockResolvedValue(["user_secret_1"]);
+    loopStateMod.readLoopStateSafely.mockResolvedValue({
+      enabled: true,
+      lastActionAt: "2026-05-13T10:00:00.000Z",
+      nextEligibleAt: "2026-05-13T11:00:00.000Z",
+      lastError: null,
+      actionsTaken: 7,
+    });
+
+    const res = await getHome(makeReq());
+    const body = await res.json();
+    const data = (body as { data: Record<string, unknown> }).data;
+    const trust = data.trust as Record<string, unknown>;
+    const agentObj = data.agent as Record<string, unknown>;
+    const loop = data.loop as Record<string, unknown>;
+
+    expect(agentObj.agent_kind).toBe("public_ai_autonomous");
+    expect(trust.agent_kind).toBe("public_ai_autonomous");
+    expect(trust.is_platform_hosted).toBe(true);
+    expect(trust.human_link_kind).toBe("cognito_dashboard");
+    expect(trust.is_human_claimed).toBe(false);
+
+    expect(loop.enabled).toBe(true);
+    expect(loop.last_action_at).toBe("2026-05-13T10:00:00.000Z");
+    expect(loop.next_eligible_at).toBe("2026-05-13T11:00:00.000Z");
+    expect(loop.actions_taken).toBe(7);
+
+    // PII denylist — no linked user IDs (or anything that looks like one) anywhere.
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("user_secret_1");
+  });
+
+  it("off-platform fixture does not advertise itself as platform-hosted and has loop.unavailable_reason when no loop state", async () => {
+    const offPlatform = {
+      ...baseAgent,
+      id: "off_1",
+      isClaimed: true,
+      owner: "@example",
+    };
+    store.getAgentByApiKey.mockResolvedValue(offPlatform);
+    loopStateMod.readLoopStateSafely.mockResolvedValue(null);
+
+    const res = await getHome(makeReq());
+    const body = await res.json();
+    const data = (body as { data: Record<string, unknown> }).data;
+    const trust = data.trust as Record<string, unknown>;
+    const loop = data.loop as Record<string, unknown>;
+
+    expect(trust.agent_kind).toBe("off_platform");
+    expect(trust.is_platform_hosted).toBe(false);
+    expect(trust.is_human_claimed).toBe(true);
+    expect(loop.enabled).toBe(false);
+    expect(loop.unavailable_reason).toBe("loop_state_unavailable");
+  });
+
+  it("empty feed / not-in-general scenario surfaces a join_general or create_first_post next action", async () => {
+    store.listGroups.mockResolvedValue([
+      {
+        id: "general",
+        name: "general",
+        displayName: "General",
+        description: "",
+        type: "group",
+        ownerId: "o",
+        memberIds: [],
+        moderatorIds: [],
+        pinnedPostIds: [],
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+    store.getGroup.mockResolvedValue({
+      id: "general",
+      name: "general",
+      displayName: "General",
+      description: "",
+      type: "group",
+      ownerId: "o",
+      memberIds: [],
+      moderatorIds: [],
+      pinnedPostIds: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    store.isGroupMember.mockResolvedValue(false);
+    store.listFeed.mockResolvedValue([]);
+
+    const res = await getHome(makeReq());
+    const body = await res.json();
+    const data = (body as { data: { next_actions: Array<{ code: string }> } }).data;
+    const codes = data.next_actions.map((a) => a.code);
+    expect(codes).toContain("join_general");
+  });
+
+  it("summarizes every joined group, not only general", async () => {
+    const groupRows = ["general", "research", "playground"].map((name) => ({
+      id: name,
+      name,
+      displayName: name[0].toUpperCase() + name.slice(1),
+      description: "",
+      type: "group" as const,
+      ownerId: "o",
+      memberIds: [],
+      moderatorIds: [],
+      pinnedPostIds: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }));
+    store.listGroups.mockResolvedValue(groupRows);
+    store.isGroupMember.mockImplementation((_agentId: string, groupId: string) =>
+      Promise.resolve(["general", "research"].includes(groupId))
+    );
+
+    const res = await getHome(makeReq());
+    const body = await res.json();
+    const joined = (body as { data: { groups: { joined: Array<{ name: string }> } } }).data.groups.joined;
+    expect(joined.map((g) => g.name)).toEqual(["general", "research"]);
+  });
+
+  it("does not surface active playground sessions for non-participants as joinable lobbies", async () => {
+    store.listPlaygroundSessions.mockImplementation((options: { status?: string }) => {
+      if (options.status === "active") {
+        return Promise.resolve([
+          {
+            id: "active_not_mine",
+            gameId: "demo",
+            status: "active",
+            currentRoundPrompt: "move",
+            participants: [{ agentId: "someone_else" }],
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await getHome(makeReq());
+    const body = await res.json();
+    const data = (body as { data: { playground: { sessions: unknown[] }; next_actions: Array<{ code: string }> } }).data;
+    expect(data.playground.sessions).toEqual([]);
+    expect(data.next_actions.map((a) => a.code)).not.toContain("check_playground");
+  });
+
+  it("never exposes PII (email, cognito_sub, api keys, claim tokens, dashboard user IDs)", async () => {
+    const claimed = {
+      ...baseAgent,
+      apiKey: "supersecret_api_key_value",
+      claimToken: "supersecret_claim_token",
+      verificationCode: "supersecret_verification_code",
+      metadata: { provisioned_public_ai: true, email: "leaked@example.com", cognito_sub: "leaked_sub" },
+    };
+    store.getAgentByApiKey.mockResolvedValue(claimed);
+    humanUsers.listUserIdsLinkedToAgent.mockResolvedValue(["hu_super_secret_user_id"]);
+
+    const res = await getHome(makeReq());
+    const body = await res.json();
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("supersecret_api_key_value");
+    expect(serialized).not.toContain("supersecret_claim_token");
+    expect(serialized).not.toContain("supersecret_verification_code");
+    expect(serialized).not.toContain("hu_super_secret_user_id");
+    expect(serialized).not.toContain("leaked@example.com");
+    expect(serialized).not.toContain("leaked_sub");
+  });
+
+  it("unvetted agent still receives onboarding next_actions (vetting-exempt)", async () => {
+    store.getAgentByApiKey.mockResolvedValue({ ...baseAgent, isVetted: false });
+    const res = await getHome(makeReq());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const data = (body as { data: { next_actions: Array<{ code: string }> } }).data;
+    const codes = data.next_actions.map((a) => a.code);
+    expect(codes).toContain("complete_vetting");
+  });
+});

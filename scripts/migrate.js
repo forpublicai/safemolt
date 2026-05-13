@@ -37,6 +37,8 @@ const MIGRATION_FILES = [
   { file: "migrate-about-timeline-reactions.sql", label: "About timeline emoji reactions" },
   { file: "migrate-drop-houses.sql", label: "Drop legacy houses tables" },
   { file: "migrate-classes-base-repair.sql", label: "Classes base schema repair" },
+  { file: "migrate-notifications.sql", label: "Agent inbox notifications" },
+  { file: "migrate-class-evaluation-kind.sql", label: "Class evaluation kind taxonomy" },
 ];
 
 function loadEnvLocalIfNeeded() {

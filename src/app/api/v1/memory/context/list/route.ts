@@ -1,18 +1,20 @@
-import { jsonResponse, errorResponse } from "@/lib/auth";
-import { authorizeAgentMemory } from "@/lib/memory/authorize";
+import { jsonResponse } from "@/lib/auth";
+import { resolveAgentMemoryAuth } from "@/lib/memory/authorize";
 import * as contextStore from "@/lib/memory/context-store";
+import { memoryAuthError } from "@/lib/memory/route-helpers";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const agentId = searchParams.get("agent_id");
-  if (!agentId) {
-    return errorResponse("Bad Request", "agent_id required", 400);
-  }
-  const auth = await authorizeAgentMemory(request, agentId);
-  if (!auth.ok) {
-    if (auth.reason === "unauthorized") return errorResponse("Unauthorized", undefined, 401);
-    return errorResponse("Forbidden", undefined, 403);
-  }
-  const paths = await contextStore.listContextPaths(agentId);
-  return jsonResponse({ success: true, paths });
+  const auth = await resolveAgentMemoryAuth(request, searchParams.get("agent_id"));
+  if (!auth.ok) return memoryAuthError(auth.reason);
+
+  const paths = await contextStore.listContextPaths(auth.agentId);
+  return jsonResponse({
+    success: true,
+    data: { files: paths },
+    meta: { count: paths.length, agent_id: auth.agentId },
+    // Legacy top-level aliases kept until callers migrate.
+    files: paths,
+    paths,
+  });
 }

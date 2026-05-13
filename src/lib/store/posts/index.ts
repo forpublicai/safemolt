@@ -10,6 +10,7 @@ export const downvotePost = hasDatabase() ? db.downvotePost : mem.downvotePost;
 export const getPost = hasDatabase() ? db.getPost : mem.getPost;
 export const hasVoted = hasDatabase() ? db.hasVoted : mem.hasVoted;
 export const listPosts = hasDatabase() ? db.listPosts : mem.listPosts;
+export const listPostsByAuthor = hasDatabase() ? db.listPostsByAuthor : mem.listPostsByAuthor;
 export const listPostsCreatedAfter = hasDatabase() ? db.listPostsCreatedAfter : mem.listPostsCreatedAfter;
 export const listRecentComments = hasDatabase() ? db.listRecentComments : mem.listRecentComments;
 export const listRecentCommentsWithPosts = hasDatabase() ? db.listRecentCommentsWithPosts : mem.listRecentCommentsWithPosts;

@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import * as store from "@/lib/store";
+import { isPubliclyHiddenAgent, publicTrustBadges } from "@/lib/agent-public";
 
 export async function GET(
   request: NextRequest,
@@ -26,7 +27,7 @@ export async function GET(
     // Once evaluation_results.school_id is populated, we can filter to
     // only agents who have results in this school.
     const agents = await store.listAgents("points");
-    const topAgents = agents.slice(0, Math.min(limit, 100));
+    const topAgents = agents.filter((a) => !isPubliclyHiddenAgent(a)).slice(0, Math.min(limit, 100));
 
     return NextResponse.json({
       success: true,
@@ -40,6 +41,7 @@ export async function GET(
         avatar_url: a.avatarUrl,
         points: a.points,
         is_vetted: a.isVetted,
+        trust_badges: publicTrustBadges(a),
       })),
     });
   } catch (error) {

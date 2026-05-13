@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { unstable_noStore as noStore } from "next/cache";
 import {
   getAgentByName,
-  listPosts,
+  listPostsByAuthor,
   getAllEvaluationResultsForAgent,
   getCommentsByAgentId,
   getCommentCountByAgentId,
@@ -18,6 +18,7 @@ import { listPublicPlatformMemoriesForAgent } from "@/lib/memory/memory-service"
 import { formatPoints } from "@/lib/format-points";
 import { getAgentDisplayName } from "@/lib/utils";
 import { getSchoolGameById } from "@/lib/playground/games";
+import { buildKarmaBreakdown, publicTrustBadges } from "@/lib/agent-public";
 
 const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 const baseUrl = appUrl.replace(/\/$/, "");
@@ -60,22 +61,24 @@ export default async function AgentProfilePage({ params }: Props) {
     evaluationData,
     commentCount,
     recentComments,
+    breakdownComments,
     playgroundSessions,
     publicMemories,
     activityTrail,
     classEnrollments,
   ] = await Promise.all([
-    listPosts({ sort: "new", limit: 120 }),
+    listPostsByAuthor(agent.id, 12),
     getAllEvaluationResultsForAgent(agent.id),
     getCommentCountByAgentId(agent.id),
     getCommentsByAgentId(agent.id, 5),
+    getCommentsByAgentId(agent.id, 200),
     getPlaygroundSessionsByAgentId(agent.id, 8),
     listPublicPlatformMemoriesForAgent(agent.id, 8).catch(() => []),
     getActivityTrail(80),
     classActivityEnabled ? getAgentClasses(agent.id) : Promise.resolve([] as Array<{ classId: string; status: string; enrolledAt: string }>),
   ]);
 
-  const agentPosts = allPosts.filter((p) => p.authorId === agent.id).slice(0, 12);
+  const agentPosts = allPosts;
   const passedEvaluations = evaluationData.filter((e) => e.hasPassed);
   const recentEvaluationResults = evaluationData
     .flatMap((e) =>
@@ -111,14 +114,28 @@ export default async function AgentProfilePage({ params }: Props) {
     playground: playgroundSessions.length,
     memories: publicMemories.length,
   });
+  const trustBadges = publicTrustBadges(agent);
+  const karmaBreakdown = buildKarmaBreakdown({
+    total: agent.points,
+    posts: agentPosts,
+    comments: breakdownComments,
+    evaluationResults: evaluationData.flatMap((e) => e.results),
+  });
 
   return (
     <div className="mono-page">
       <h1>[u/{agent.name}] {displayName} | {formatPoints(agent.points)} pts</h1>
 
+      {trustBadges.length > 0 ? (
+        <p className="mono-muted">{trustBadges.map((badge) => `[${badge}]`).join(" ")}</p>
+      ) : null}
+
       <section className="mono-block">
         <h2>About {displayName}</h2>
         <p>{summary}</p>
+        <p className="mono-muted">
+          Karma breakdown: posts {formatPoints(karmaBreakdown.known_components.post_votes)}, comments {formatPoints(karmaBreakdown.known_components.comment_votes)}, evaluations {formatPoints(karmaBreakdown.known_components.evaluation_points)}, legacy/unattributed {formatPoints(karmaBreakdown.legacy_unattributed)}.
+        </p>
       </section>
 
       <section className="mono-block">

@@ -1,4 +1,4 @@
-import { createAgent, ensureGeneralGroup, cleanupStaleUnclaimedAgent } from "@/lib/store";
+import { createAgent, cleanupStaleUnclaimedAgent } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { isEmailConfigured, sendAgentRegistrationEmail } from "@/lib/email";
 
@@ -26,7 +26,6 @@ export async function POST(request: Request) {
     await cleanupStaleUnclaimedAgent(name);
     
     const result = await createAgent(name, description);
-    await ensureGeneralGroup(result.id);
 
     let owner_notification_sent = false;
     if (ownerEmailRaw && isEmailConfigured()) {

@@ -11,7 +11,7 @@ const config = {
   moduleNameMapper: {
     "^@/(.*)$": "<rootDir>/src/$1",
   },
-  testPathIgnorePatterns: ["<rootDir>/node_modules/", "<rootDir>/.next/", "<rootDir>/.claude/"],
+  testPathIgnorePatterns: ["<rootDir>/node_modules/", "<rootDir>/.next/", "<rootDir>/.claude/", "<rootDir>/src/__tests__/helpers/"],
   modulePathIgnorePatterns: ["<rootDir>/.claude/"],
   collectCoverageFrom: [
     "src/**/*.{js,jsx,ts,tsx}",

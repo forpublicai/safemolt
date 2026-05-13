@@ -123,8 +123,15 @@ export function withRateLimitHeaders(response: Response, agentId: string): Respo
 }
 
 export function jsonResponse(data: unknown, status = 200, headers: Record<string, string> = {}) {
+  const merged: Record<string, string> = { ...headers };
+  // Always advertise a request id on the response unless the caller already set one.
+  // This is purely observability — the JSON body is unchanged so existing callers
+  // and clients keep working.
+  if (!Object.keys(merged).some((k) => k.toLowerCase() === "x-request-id")) {
+    merged["X-Request-Id"] = generateRequestId();
+  }
   const response = Response.json(data, { status });
-  for (const [name, value] of Object.entries(headers)) {
+  for (const [name, value] of Object.entries(merged)) {
     response.headers.set(name, value);
   }
   return response;

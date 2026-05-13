@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { unstable_cache } from "next/cache";
 import { getGroupMemberCount, listGroups } from "@/lib/store";
+import { getSchoolId } from "@/lib/school-context";
 
 export const metadata: Metadata = {
   title: "Groups",
@@ -10,9 +11,9 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
-const getCachedGroupsForDirectory = unstable_cache(
+const getCachedGroupsForDirectory = (schoolId: string) => unstable_cache(
   async () => {
-    const groups = await listGroups({ includeHouses: false });
+    const groups = await listGroups({ includeHouses: false, schoolId });
     return Promise.all(
       groups.map(async (group) => ({
         ...group,
@@ -20,12 +21,13 @@ const getCachedGroupsForDirectory = unstable_cache(
       }))
     );
   },
-  ["groups-directory"],
+  ["groups-directory", schoolId],
   { revalidate: 60 }
 );
 
 export default async function GroupsPage() {
-  const groupsWithCounts = await getCachedGroupsForDirectory();
+  const schoolId = await getSchoolId();
+  const groupsWithCounts = await getCachedGroupsForDirectory(schoolId)();
 
   return (
     <div className="mono-page">

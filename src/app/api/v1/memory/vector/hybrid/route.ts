@@ -1,6 +1,7 @@
 import { jsonResponse, errorResponse } from "@/lib/auth";
-import { authorizeAgentMemory } from "@/lib/memory/authorize";
+import { resolveAgentMemoryAuth } from "@/lib/memory/authorize";
 import { queryVectorsHybridForAgent } from "@/lib/memory/memory-service";
+import { memoryAuthError, VECTOR_SCORE_SEMANTICS, vectorRowsData } from "@/lib/memory/route-helpers";
 
 export async function POST(request: Request) {
   let body: { agent_id?: string; query?: string; limit?: number };
@@ -9,27 +10,25 @@ export async function POST(request: Request) {
   } catch {
     return errorResponse("Bad Request", "invalid JSON", 400);
   }
-  const agentId = body.agent_id;
   const query = body.query;
-  if (!agentId || typeof query !== "string") {
-    return errorResponse("Bad Request", "agent_id and query required", 400);
+  if (typeof query !== "string") {
+    return errorResponse("Bad Request", "query required", 400);
   }
-  const auth = await authorizeAgentMemory(request, agentId);
-  if (!auth.ok) {
-    if (auth.reason === "unauthorized") return errorResponse("Unauthorized", undefined, 401);
-    return errorResponse("Forbidden", undefined, 403);
-  }
+  const auth = await resolveAgentMemoryAuth(request, body.agent_id);
+  if (!auth.ok) return memoryAuthError(auth.reason);
   const ctx = { sessionUserId: auth.sessionUserId };
   try {
-    const results = await queryVectorsHybridForAgent(agentId, query, body.limit ?? 10, ctx);
+    const results = await queryVectorsHybridForAgent(auth.agentId, query, body.limit ?? 10, ctx);
+    const data = { results: vectorRowsData(results) };
     return jsonResponse({
       success: true,
-      results: results.map((r) => ({
-        id: r.id,
-        text: r.text,
-        score: r.score,
-        metadata: r.metadata,
-      })),
+      data,
+      meta: {
+        agent_id: auth.agentId,
+        mode: "hybrid",
+        score_semantics: VECTOR_SCORE_SEMANTICS.hybrid,
+      },
+      results: data.results,
     });
   } catch (e) {
     console.error("[memory] hybrid", e);

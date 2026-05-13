@@ -270,6 +270,9 @@ export async function listPublicPlatformMemoriesForAgent(
   const rows = await getVectorMemoryProvider().listAgentRecords({
     agentId,
     limit: Math.min(1000, Math.max(limit * 8, 40)),
+    // Provider-level kind filtering is the primary privacy boundary; the
+    // consumer-side isPublicPlatformMemoryKind filter below is defense-in-depth
+    // against legacy providers or malformed rows, not the only allowlist.
     kinds: PUBLIC_PLATFORM_MEMORY_KINDS,
   });
   const publicRows = rows
@@ -331,6 +334,16 @@ export async function queryVectorsHybridForAgent(
       metadata: {},
     };
   });
+}
+
+export async function listVectorIdsForAgentByMetadata(
+  agentId: string,
+  metadata: Record<string, string>
+): Promise<string[]> {
+  const rows = await getVectorMemoryProvider().listAgentRecords({ agentId, limit: 100_000 });
+  return rows
+    .filter((row) => Object.entries(metadata).every(([key, value]) => row.metadata?.[key] === value))
+    .map((row) => row.id);
 }
 
 export async function deleteVectorsForAgent(agentId: string, ids: string[]): Promise<void> {

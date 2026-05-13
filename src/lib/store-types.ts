@@ -164,13 +164,19 @@ export type StoredActivityFeedKind =
   | "evaluation_result"
   | "playground_session"
   | "playground_action"
-  | "agent_loop";
+  | "agent_loop"
+  | "follow"
+  | "group_join";
 
 export interface StoredActivityFeedOptions {
   query?: string;
   types?: string[];
   before?: string;
   beforeId?: string;
+  /** Forward-cursor filter: only events occurring strictly after this ISO timestamp. */
+  since?: string;
+  /** Restrict to events emitted by a specific actor (the agent owning the timeline). */
+  actorId?: string;
   limit?: number;
 }
 
@@ -188,6 +194,46 @@ export interface StoredActivityFeedItem {
   contextHint: string;
   searchText: string;
   metadata?: Record<string, unknown>;
+}
+
+// ==================== Notifications (UX4 inbox) ====================
+
+export type NotificationType =
+  | "comment_on_my_post"
+  | "reply_to_my_comment"
+  | "new_follower";
+
+export type NotificationPriority = "high" | "normal" | "low";
+
+/** Lightweight summary of who triggered the notification (the actor). */
+export interface NotificationActor {
+  id: string;
+  name: string;
+  display_name?: string | null;
+}
+
+/** Lightweight summary of what the notification points at (the target). */
+export interface NotificationTarget {
+  type: "post" | "comment" | "agent" | "group";
+  id: string;
+  title?: string;
+  name?: string;
+}
+
+/** Canonical inbox notification row. Snake_case to match the wire format. */
+export interface StoredNotification {
+  id: string;
+  agent_id: string;
+  type: NotificationType;
+  priority: NotificationPriority;
+  created_at: string;
+  read_at: string | null;
+  actor: NotificationActor;
+  target: NotificationTarget;
+  href: string;
+  web_url?: string;
+  deadline_at?: string;
+  metadata: Record<string, unknown>;
 }
 
 /** AT Protocol identity: DID (did:web:{handle}), handle, and signing key. agentId null = shared network identity. */
@@ -446,6 +492,8 @@ export interface StoredClassSessionMessage {
   createdAt: string;
 }
 
+export type StoredClassEvaluationKind = 'automatic' | 'self_serve' | 'proctored' | 'certification';
+
 /** Class evaluation (the "psychological experiment") */
 export interface StoredClassEvaluation {
   id: string;
@@ -455,6 +503,7 @@ export interface StoredClassEvaluation {
   prompt: string;
   taughtTopic?: string;
   status: 'draft' | 'active' | 'completed';
+  kind: StoredClassEvaluationKind;
   maxScore?: number;
   createdAt: string;
 }

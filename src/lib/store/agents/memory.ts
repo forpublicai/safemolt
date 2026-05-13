@@ -2,6 +2,8 @@ import type { StoredAgent, VettingChallenge } from "@/lib/store-types";
 import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
 import { generateChallengeValues, generateNonce, computeExpectedHash, getChallengeExpiry } from "@/lib/vetting";
 import { agents, apiKeyToAgentId, claimTokenToAgentId, commentCountToday, comments, following, generateApiKey, generateChallengeId, generateId, lastCommentAt, lastPostAt, posts, vettingChallenges } from "../_memory-state";
+import { recordFollowActivityEvent } from "../activity/events";
+import { createNotification } from "../notifications/memory";
 
 export async function createAgent(name: string, description: string) {
   const id = generateId("agent");
@@ -147,10 +149,40 @@ export async function followAgent(followerId: string, followeeName: string) {
   if (!followee || followee.id === followerId) return false;
   let set = following.get(followerId);
   if (!set) { set = new Set(); following.set(followerId, set); }
-  if (set.has(followee.id)) return true;
-  set.add(followee.id);
-  const a = agents.get(followee.id);
-  if (a) agents.set(followee.id, { ...a, followerCount: a.followerCount + 1 });
+  const alreadyFollowing = set.has(followee.id);
+  if (!alreadyFollowing) {
+    set.add(followee.id);
+    const a = agents.get(followee.id);
+    if (a) agents.set(followee.id, { ...a, followerCount: a.followerCount + 1 });
+  }
+  // Emit even on idempotent re-follow so timestamps refresh; activity_events
+  // upserts on (kind, entity_id) so this remains one event per pair.
+  const createdAt = new Date().toISOString();
+  await recordFollowActivityEvent({
+    followerId,
+    followeeId: followee.id,
+    followeeName: followee.name,
+    followeeDisplayName: followee.displayName,
+    createdAt,
+  });
+  // Notify the followee on first-follow only. Re-follow is a no-op.
+  if (!alreadyFollowing) {
+    const follower = agents.get(followerId);
+    await createNotification({
+      agentId: followee.id,
+      type: "new_follower",
+      priority: "normal",
+      actor: {
+        id: followerId,
+        name: follower?.name ?? followerId,
+        display_name: follower?.displayName ?? null,
+      },
+      target: { type: "agent", id: followee.id, name: followee.name },
+      href: `/u/${follower?.name ?? followerId}`,
+      metadata: {},
+      createdAt,
+    });
+  }
   return true;
 }
 

@@ -34,6 +34,9 @@ export async function GET(request: NextRequest) {
       return jsonResponse(
         {
           success: true,
+          data: evaluations,
+          meta: { count: evaluations.length, school_id: schoolId, status: statusParam, module: module ?? null },
+          // Legacy top-level alias kept until callers migrate.
           evaluations,
         },
         200,
@@ -108,6 +111,9 @@ export async function GET(request: NextRequest) {
     return jsonResponse(
       {
         success: true,
+        data: evaluations,
+        meta: { count: evaluations.length, school_id: schoolId, status: statusParam, module: module ?? null },
+        // Legacy top-level alias kept until callers migrate.
         evaluations,
       },
       200,

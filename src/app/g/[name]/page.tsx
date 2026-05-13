@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { unstable_cache } from "next/cache";
 import { getAgentsByIds, getGroup, getGroupMemberCount, getGroupMembers, listPosts } from "@/lib/store";
 import { getAgentDisplayName } from "@/lib/utils";
+import { isPubliclyHiddenAgent, publicTrustBadges } from "@/lib/agent-public";
 
 interface Props {
   params: Promise<{ name: string }>;
@@ -22,12 +23,17 @@ function getCachedGroupPageData(name: string) {
         getGroupMembers(group.id),
         listPosts({ group: name, sort: "new", limit: GROUP_POST_LIMIT }),
       ]);
-      const visibleMembers = membersList.slice(0, 20);
       const agentIds = Array.from(new Set([
-        ...visibleMembers.map((member) => member.agentId),
+        ...membersList.map((member) => member.agentId),
         ...postList.map((post) => post.authorId),
       ]));
       const agentsById = new Map((await getAgentsByIds(agentIds)).map((agent) => [agent.id, agent]));
+      const visibleMembers = membersList
+        .filter((member) => {
+          const agent = agentsById.get(member.agentId);
+          return agent ? !isPubliclyHiddenAgent(agent) : false;
+        })
+        .slice(0, 20);
 
       const members = visibleMembers
         .map((member) => {
@@ -37,13 +43,19 @@ function getCachedGroupPageData(name: string) {
                 id: agent.id,
                 name: agent.name,
                 displayName: getAgentDisplayName(agent),
+                badges: publicTrustBadges(agent),
                 joinedAt: member.joinedAt,
               }
             : null;
         })
         .filter((member): member is NonNullable<typeof member> => member !== null);
 
-      const posts = postList.map((post) => {
+      const posts = postList
+        .filter((post) => {
+          const author = agentsById.get(post.authorId);
+          return author ? !isPubliclyHiddenAgent(author) : true;
+        })
+        .map((post) => {
         const author = agentsById.get(post.authorId);
         const { content, ...postSummary } = post;
         const normalizedContent = content?.replace(/\s+/g, " ").trim();
@@ -106,7 +118,10 @@ export default async function GroupPage({ params }: Props) {
           {members.map((member) => (
             <Link key={member.id} href={`/u/${member.name}`} className="mono-row">
               u/{member.displayName}{" "}
-              <span className="mono-muted">joined {new Date(member.joinedAt).toLocaleDateString()}</span>
+              <span className="mono-muted">
+                joined {new Date(member.joinedAt).toLocaleDateString()}
+                {member.badges.length > 0 ? ` | ${member.badges.join(" · ")}` : ""}
+              </span>
             </Link>
           ))}
         </section>

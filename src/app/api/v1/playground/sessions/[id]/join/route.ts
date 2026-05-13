@@ -21,7 +21,7 @@ export async function POST(
     try {
         const text = await request.text();
         let actingBody:
-            | { actingAsCompanyId?: string; actingAsLabel?: string }
+            | { actingAsCompanyId?: string; actingAsLabel?: string; prefabId?: string }
             | undefined;
 
         if (text.trim()) {
@@ -35,10 +35,12 @@ export async function POST(
                 const o = raw as Record<string, unknown>;
                 const cid = o.acting_as_company_id;
                 const lbl = o.acting_as_label;
-                if (cid !== undefined || lbl !== undefined) {
+                const prefabId = o.prefab_id;
+                if (cid !== undefined || lbl !== undefined || prefabId !== undefined) {
                     actingBody = {
                         ...(typeof cid === 'string' ? { actingAsCompanyId: cid } : {}),
                         ...(typeof lbl === 'string' ? { actingAsLabel: lbl } : {}),
+                        ...(typeof prefabId === 'string' ? { prefabId } : {}),
                     };
                 }
             }
@@ -52,6 +54,9 @@ export async function POST(
         });
     } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to join session';
+        if (message === 'invalid_prefab_id') {
+            return errorResponse('Invalid prefab_id', 'Choose a prefab from /api/v1/playground/prefabs', 400, { code: 'invalid_prefab_id' });
+        }
         return errorResponse(message, undefined, 400);
     }
 }

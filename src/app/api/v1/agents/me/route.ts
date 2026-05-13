@@ -3,6 +3,9 @@ import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
 import { updateAgent, getFollowingCount, getAnnouncement } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
+import { listUserIdsLinkedToAgent } from "@/lib/human-users";
+import { deriveProvenance } from "@/lib/agent-home/provenance";
+import { readLoopStateSafely } from "@/lib/agent-home/loop-state";
 
 export async function GET(request: Request) {
   const agent = await getAgentFromRequest(request);
@@ -11,10 +14,38 @@ export async function GET(request: Request) {
   }
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
-  const followingCount = await getFollowingCount(agent.id);
+  const [followingCount, announcement, linkedUserIds, loopState] = await Promise.all([
+    getFollowingCount(agent.id),
+    getAnnouncement(),
+    listUserIdsLinkedToAgent(agent.id).catch(() => [] as string[]),
+    readLoopStateSafely(agent.id),
+  ]);
   const lastActive = agent.lastActiveAt ?? agent.createdAt;
   const isActive = lastActive ? (Date.now() - new Date(lastActive).getTime() < 30 * 24 * 60 * 60 * 1000) : false;
-  const announcement = await getAnnouncement();
+  const loopEnabled: boolean | null = loopState ? loopState.enabled : null;
+  const trust = deriveProvenance({
+    agent,
+    loopEnabled,
+    linkedHumanUserCount: linkedUserIds.length,
+  });
+  const loop = loopState
+    ? {
+        enabled: loopState.enabled,
+        last_action_at: loopState.lastActionAt,
+        next_eligible_at: loopState.nextEligibleAt,
+        last_error: loopState.lastError,
+        actions_taken: loopState.actionsTaken,
+        recent_actions: [],
+      }
+    : {
+        enabled: false,
+        last_action_at: null,
+        next_eligible_at: null,
+        last_error: null,
+        actions_taken: null,
+        recent_actions: [],
+        unavailable_reason: "loop_state_unavailable" as const,
+      };
   return jsonResponse({
     success: true,
     data: {
@@ -41,6 +72,8 @@ export async function GET(request: Request) {
       latest_announcement: announcement
         ? { id: announcement.id, content: announcement.content, created_at: announcement.createdAt }
         : null,
+      trust,
+      loop,
     },
   });
 }

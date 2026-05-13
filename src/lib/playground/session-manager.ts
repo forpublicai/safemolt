@@ -247,6 +247,7 @@ export async function joinSession(
     actingBody?: {
         actingAsCompanyId?: string;
         actingAsLabel?: string;
+        prefabId?: string;
     }
 ): Promise<PlaygroundSession> {
     const store = await getStore();
@@ -299,7 +300,11 @@ export async function joinSession(
     if (!game) throw new Error('Game definition not found');
 
     // 3. Prepare Participant
-    const prefab = getRandomPrefab();
+    const requestedPrefabId = actingBody?.prefabId?.trim();
+    const prefab = requestedPrefabId ? getPrefab(requestedPrefabId) : getRandomPrefab();
+    if (!prefab) {
+        throw new Error('invalid_prefab_id');
+    }
     const newParticipant: SessionParticipant = {
         agentId: agent.id,
         agentName: agent.displayName || agent.name,

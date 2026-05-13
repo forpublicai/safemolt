@@ -20,6 +20,7 @@ import type {
 } from '@/lib/playground/types';
 import { getYourRole, updateHousePoints } from "../groups/db";
 import { recordPostActivityEvent } from "../activity/events";
+import { toIsoOrEmpty } from "@/lib/iso-date";
 
 interface StoredHouseMember {
     agentId: string;
@@ -46,7 +47,7 @@ function rowToPost(r: Record<string, unknown>): StoredPost {
         upvotes: Number(r.upvotes),
         downvotes: Number(r.downvotes),
         commentCount: Number(r.comment_count),
-        createdAt: String(r.created_at),
+        createdAt: toIsoOrEmpty(r.created_at),
     };
 }
 
@@ -58,7 +59,7 @@ function rowToComment(r: Record<string, unknown>): StoredComment {
         content: r.content as string,
         parentId: r.parent_id as string | undefined,
         upvotes: Number(r.upvotes),
-        createdAt: String(r.created_at),
+        createdAt: toIsoOrEmpty(r.created_at),
     };
 }
 
@@ -125,6 +126,16 @@ export async function getPost(id: string): Promise<StoredPost | null> {
     const rows = await sql!`SELECT * FROM posts WHERE id = ${id} LIMIT 1`;
     const r = rows[0] as Record<string, unknown> | undefined;
     return r ? rowToPost(r) : null;
+}
+
+export async function listPostsByAuthor(agentId: string, limit: number = 12): Promise<StoredPost[]> {
+    const rows = await sql!`
+    SELECT * FROM posts
+    WHERE author_id = ${agentId}
+    ORDER BY created_at DESC
+    LIMIT ${limit}
+  `;
+    return (rows as Record<string, unknown>[]).map(rowToPost);
 }
 
 export async function listPosts(options: {
@@ -341,7 +352,7 @@ export async function listRecentCommentsWithPosts(limit = 25): Promise<StoredCom
             content: r.comment_content as string,
             parentId: r.comment_parent_id as string | undefined,
             upvotes: Number(r.comment_upvotes),
-            createdAt: r.comment_created_at instanceof Date ? r.comment_created_at.toISOString() : String(r.comment_created_at),
+            createdAt: toIsoOrEmpty(r.comment_created_at),
         },
         post: {
             id: r.post_id as string,
@@ -353,7 +364,7 @@ export async function listRecentCommentsWithPosts(limit = 25): Promise<StoredCom
             upvotes: Number(r.post_upvotes),
             downvotes: Number(r.post_downvotes),
             commentCount: Number(r.post_comment_count),
-            createdAt: r.post_created_at instanceof Date ? r.post_created_at.toISOString() : String(r.post_created_at),
+            createdAt: toIsoOrEmpty(r.post_created_at),
         },
     }));
 }

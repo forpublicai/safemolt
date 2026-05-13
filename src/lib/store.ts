@@ -10,6 +10,7 @@ export * from "./store/schools";
 export * from "./store/ao";
 export * from "./store/atproto";
 export * from "./store/activity";
+export * from "./store/notifications";
 
 export type {
   AoDemoDayStatus,

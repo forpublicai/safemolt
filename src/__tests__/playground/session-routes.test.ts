@@ -12,13 +12,19 @@ jest.mock('@/lib/auth', () => ({
   getAgentFromRequest: jest.fn(),
   jsonResponse: (data: unknown, status = 200, headers: Record<string, string> = {}) =>
     Response.json(data, { status, headers }),
-  errorResponse: (error: string, hint?: string, status = 400) =>
-    Response.json({ success: false, error, hint }, { status }),
+  errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
+    Response.json({
+      success: false,
+      error,
+      hint,
+      ...(options.code ? { error_detail: { code: options.code, message: error, hint } } : {}),
+    }, { status }),
 }));
 
 jest.mock('@/lib/playground/session-manager', () => ({
   checkDeadlines: jest.fn(),
   getActiveSession: jest.fn(),
+  joinSession: jest.fn(),
 }));
 
 jest.mock('@/lib/store', () => ({
@@ -30,9 +36,10 @@ jest.mock('@/lib/store', () => ({
 import { GET as getActiveRoute } from '@/app/api/v1/playground/sessions/active/route';
 import { GET as getSessionsRoute } from '@/app/api/v1/playground/sessions/route';
 import { GET as getSessionByIdRoute } from '@/app/api/v1/playground/sessions/[id]/route';
+import { POST as joinSessionRoute } from '@/app/api/v1/playground/sessions/[id]/join/route';
 
 const { getAgentFromRequest } = require('@/lib/auth');
-const { checkDeadlines, getActiveSession } = require('@/lib/playground/session-manager');
+const { checkDeadlines, getActiveSession, joinSession } = require('@/lib/playground/session-manager');
 const { listPlaygroundSessions, getPlaygroundSession, getPlaygroundActions } = require('@/lib/store');
 
 describe('Playground session GET routes', () => {
@@ -94,6 +101,7 @@ describe('Playground session GET routes', () => {
       expect(body.data).not.toBeNull();
       expect(body.data.session_id).toBe('pg_pending');
       expect(body.data.game_id).toBe('tennis');
+      expect(body.data.status).toBe('pending');
       expect(body.data.is_pending).toBe(true);
       expect(body.data.needs_action).toBe(false);
       expect(body.poll_interval_ms).toBe(60000);
@@ -126,6 +134,7 @@ describe('Playground session GET routes', () => {
       expect(response.status).toBe(200);
       expect(body.poll_interval_ms).toBe(30000);
       expect(body.data.session_id).toBe('pg_1');
+      expect(body.data.status).toBe('active');
       expect(body.data.game_id).toBe('prisoners-dilemma');
       expect(body.data.needs_action).toBe(true);
       expect(body.data.current_prompt).toBe('You must decide now.');
@@ -135,6 +144,68 @@ describe('Playground session GET routes', () => {
         agent_name: 'Alpha',
         status: 'active',
       });
+    });
+
+    it('hides a completed session if the manager ever leaks one through', async () => {
+      getAgentFromRequest.mockResolvedValue({ id: 'agent_1' });
+      getActiveSession.mockResolvedValue({
+        needsAction: false,
+        session: {
+          id: 'pg_done',
+          gameId: 'finished-game',
+          status: 'completed',
+          currentRound: 4,
+          maxRounds: 4,
+          transcript: [],
+          participants: [],
+        },
+      });
+
+      const response = await getActiveRoute(new Request('http://localhost/api/v1/playground/sessions/active'));
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(true);
+      expect(body.data).toBeNull();
+    });
+  });
+
+  describe('POST /api/v1/playground/sessions/[id]/join', () => {
+    it('passes prefab_id through to the session manager', async () => {
+      getAgentFromRequest.mockResolvedValue({ id: 'agent_1' });
+      joinSession.mockResolvedValue({ id: 'pg_1', participants: [{ agentId: 'agent_1', prefabId: 'diplomat' }] });
+
+      const response = await joinSessionRoute(
+        new Request('http://localhost/api/v1/playground/sessions/pg_1/join', {
+          method: 'POST',
+          body: JSON.stringify({ prefab_id: 'diplomat' }),
+        }),
+        { params: Promise.resolve({ id: 'pg_1' }) }
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.success).toBe(true);
+      expect(joinSession).toHaveBeenCalledWith('pg_1', 'agent_1', { prefabId: 'diplomat' });
+    });
+
+    it('returns a stable 400 code for invalid prefab_id', async () => {
+      getAgentFromRequest.mockResolvedValue({ id: 'agent_1' });
+      joinSession.mockRejectedValue(new Error('invalid_prefab_id'));
+
+      const response = await joinSessionRoute(
+        new Request('http://localhost/api/v1/playground/sessions/pg_1/join', {
+          method: 'POST',
+          body: JSON.stringify({ prefab_id: 'not-real' }),
+        }),
+        { params: Promise.resolve({ id: 'pg_1' }) }
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(body.success).toBe(false);
+      expect(body.error).toBe('Invalid prefab_id');
+      expect(body.error_detail?.code ?? body.code).toBe('invalid_prefab_id');
     });
   });
 

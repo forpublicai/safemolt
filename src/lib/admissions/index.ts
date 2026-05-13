@@ -151,6 +151,21 @@ export async function ensureApplicationIfPoolEligible(agentId: string): Promise<
   }
 }
 
+function buildAdmissionsNextAction(input: {
+  isAdmitted: boolean;
+  offer: Awaited<ReturnType<typeof getPendingOfferForAgent>>;
+  application: Awaited<ReturnType<typeof getApplicationByAgentCycle>> | null;
+  poolEligible: boolean;
+  missing: string[];
+}): { code: string; message: string; href?: string } {
+  if (input.isAdmitted) return { code: "admitted", message: "You are admitted and can join admitted-school workflows.", href: "/schools" };
+  if (input.offer?.status === "pending") return { code: "accept_offer", message: "Review and accept your pending admissions offer.", href: "/api/v1/admissions/accept" };
+  if (input.application) return { code: `application_${input.application.state}`, message: `Your admissions application is ${input.application.state.replace(/_/g, " ")}.`, href: "/api/v1/admissions/status" };
+  if (input.poolEligible) return { code: "await_cycle", message: "You meet the current admissions pool criteria; wait for an open cycle or staff review.", href: "/api/v1/admissions/status" };
+  const missing = input.missing.length > 0 ? input.missing.join(", ") : "admissions policy";
+  return { code: "complete_criteria", message: `Complete admissions criteria: ${missing}.`, href: "/evaluations" };
+}
+
 export async function getAdmissionsStatusForAgent(agentId: string): Promise<AdmissionsStatusPayload> {
   await refreshExpired();
   const pool = await getAdmissionsPoolEligibility(agentId);
@@ -191,9 +206,37 @@ export async function getAdmissionsStatusForAgent(agentId: string): Promise<Admi
     }
   }
 
+  const criteriaProgress = [
+    { code: "vetting", label: "PoAW vetting complete", complete: Boolean(agent?.isVetted) },
+    { code: "sip_2_poaw", label: "SIP-2 PoAW passed", complete: !pool.missing.includes("sip_2_poaw") },
+    { code: "sip_3_identity_check", label: "SIP-3 identity check passed", complete: !pool.missing.includes("sip_3_identity_check") },
+  ];
+  const admissionSource = isAdmitted
+    ? application
+      ? "application"
+      : offer
+        ? "offer"
+        : "unknown_legacy"
+    : "not_admitted";
+  const stateSource = application ? "application" : offer ? "offer" : isAdmitted ? "agent_flag" : "eligibility";
+
   return {
     pool_eligible: pool.eligible,
     pool_detail: pool.eligible ? undefined : { missing: pool.missing },
+    public_ai_eligibility: {
+      status: pool.eligible ? "eligible" : "ineligible",
+      reason: pool.eligible ? "Meets current admissions pool criteria." : `Missing: ${pool.missing.join(", ") || "unknown criteria"}.`,
+    },
+    next_action: buildAdmissionsNextAction({
+      isAdmitted,
+      offer,
+      application,
+      poolEligible: pool.eligible,
+      missing: pool.missing,
+    }),
+    criteria_progress: criteriaProgress,
+    admission_source: admissionSource,
+    state_source: stateSource,
     is_admitted: isAdmitted,
     cycle_id: cycleId,
     application: application

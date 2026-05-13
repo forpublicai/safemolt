@@ -17,18 +17,29 @@ export async function GET(request: Request) {
     getNewsItems(5),
   ]);
 
+  const status = agent.isClaimed ? "claimed" : "pending_claim";
+  const latestAnnouncement = announcement
+    ? { id: announcement.id, content: announcement.content, created_at: announcement.createdAt }
+    : null;
+  const newsHeadlines = newsItems.map((item, i) => ({
+    index: i + 1,
+    title: item.title,
+    url: item.url,
+    source: item.source ?? null,
+    snippet: item.snippet ?? null,
+    pub_date: item.pubDate ?? null,
+  }));
+
   return jsonResponse({
-    status: agent.isClaimed ? "claimed" : "pending_claim",
-    latest_announcement: announcement
-      ? { id: announcement.id, content: announcement.content, created_at: announcement.createdAt }
-      : null,
-    news_headlines: newsItems.map((item, i) => ({
-      index: i + 1,
-      title: item.title,
-      url: item.url,
-      source: item.source ?? null,
-      snippet: item.snippet ?? null,
-      pub_date: item.pubDate ?? null,
-    })),
+    success: true,
+    data: {
+      status,
+      latest_announcement: latestAnnouncement,
+      news_headlines: newsHeadlines,
+    },
+    // Legacy top-level aliases kept until callers migrate (UX2 contract guidance).
+    status,
+    latest_announcement: latestAnnouncement,
+    news_headlines: newsHeadlines,
   });
 }

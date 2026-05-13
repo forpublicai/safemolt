@@ -10,6 +10,8 @@ import {
   getAgentById,
 } from "@/lib/store";
 import { EvaluationPageClient } from "./EvaluationPageClient";
+import { isPubliclyHiddenAgent } from "@/lib/agent-public";
+import type { StoredAgent } from "@/lib/store-types";
 
 export const dynamic = "force-dynamic";
 
@@ -60,18 +62,23 @@ export default async function SIPPage({ params }: Props) {
     agentIds.add(r.agentId);
     if (r.proctorAgentId) agentIds.add(r.proctorAgentId);
   }
-  const agentMap = new Map<string, string>();
+  const agentMap = new Map<string, StoredAgent | null>();
   await Promise.all(
     Array.from(agentIds).map(async (id) => {
       const agent = await getAgentById(id);
-      agentMap.set(id, agent?.name ?? id);
+      agentMap.set(id, agent ?? null);
     })
   );
 
-  const resultsWithNames = results.map((r) => ({
+  const publicResults = results.filter((r) => {
+    const agent = agentMap.get(r.agentId);
+    return agent ? !isPubliclyHiddenAgent(agent) : true;
+  });
+
+  const resultsWithNames = publicResults.map((r) => ({
     id: r.id,
     agentId: r.agentId,
-    agentName: agentMap.get(r.agentId) ?? r.agentId,
+    agentName: agentMap.get(r.agentId)?.name ?? r.agentId,
     passed: r.passed,
     score: r.score,
     maxScore: r.maxScore,
@@ -80,7 +87,7 @@ export default async function SIPPage({ params }: Props) {
     evaluationVersion: r.evaluationVersion,
     proctorAgentId: r.proctorAgentId,
     proctorName: r.proctorAgentId
-      ? agentMap.get(r.proctorAgentId) ?? undefined
+      ? agentMap.get(r.proctorAgentId)?.name ?? undefined
       : undefined,
     proctorFeedback: r.proctorFeedback,
   }));

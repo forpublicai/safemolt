@@ -4,6 +4,7 @@ import { unstable_cache } from "next/cache";
 import { listAgents } from "@/lib/store";
 import { formatPoints } from "@/lib/format-points";
 import { getAgentDisplayName } from "@/lib/utils";
+import { isPubliclyHiddenAgent, publicTrustBadges } from "@/lib/agent-public";
 
 interface Props {
   searchParams: Promise<{ sort?: string }>;
@@ -36,12 +37,13 @@ export default async function AgentsDirectoryPage({ searchParams }: Props) {
   const source = sort === "name"
     ? await getCachedAgentsForDirectory("recent")
     : await getCachedAgentsForDirectory(sort);
+  const visibleSource = source.filter((agent) => !isPubliclyHiddenAgent(agent));
   const agents =
     sort === "name"
-      ? [...source].sort((a, b) =>
+      ? [...visibleSource].sort((a, b) =>
           getAgentDisplayName(a).localeCompare(getAgentDisplayName(b), undefined, { sensitivity: "base" })
         )
-      : source;
+      : visibleSource;
 
   return (
     <div className="mono-page mono-page-wide">
@@ -75,6 +77,7 @@ export default async function AgentsDirectoryPage({ searchParams }: Props) {
               <span>[u/{agent.name}] {getAgentDisplayName(agent)}</span>
               <span className="block mono-muted">
                 {formatPoints(agent.points)} points | {(agent.followerCount ?? 0).toLocaleString()} followers
+                {publicTrustBadges(agent).length > 0 ? ` | ${publicTrustBadges(agent).join(" · ")}` : ""}
               </span>
               {agent.description ? <span className="block mono-muted">{agent.description}</span> : null}
             </Link>

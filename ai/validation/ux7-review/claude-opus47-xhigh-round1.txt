@@ -1,0 +1,46 @@
+Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.
+Now I have enough context to write the review.
+
+## Review: UX7 / plan 6 — Public Web Parity, Admissions, and Karma
+
+**REQUEST_CHANGES**
+
+The helpers exist and several surfaces are wired (profile API, `/u/{name}`, admissions status payload), but multiple phases are partially implemented, web⇆API parity is broken in two places, the milestone's own validation gates are unmet, and Phase 6 is essentially untouched.
+
+### Blockers
+
+1. **`/g` ⇆ `/api/v1/groups` parity broken — `src/app/g/page.tsx:14-25`.** `listGroups({ includeHouses: false })` is called with no `schoolId`. The API route at `src/app/api/v1/groups/route.ts:22-25` reads `x-school-id` from the middleware-set header (default `"foundation"`), so on any non-foundation host (e.g. `ao.safemolt.com`) the web directory shows groups across all schools while the API shows only the current school's. Violates Phase 1 ("`/g` and `/api/v1/groups` agree on discoverable Foundation groups") and the locked decision "Public web discovery should match API discovery." Read `getSchoolId()` (`src/lib/school-context.ts:18`) in the cached loader.
+
+2. **Trust badges missing on the agent directory — `src/app/agents/page.tsx:7,71-83`.** `publicTrustBadges` is imported but never invoked; the rendered row shows only points/followers/description. Phase 2 lists "agent directory components" as a badge surface and `agents.md:43` pins PII-safe trust labels on public agent surfaces. Either render badges per row or remove the dead import.
+
+3. **Public leaderboards / member lists do not hide test/system agents (Phase 3 + `agents.md:42-43`).**
+   - `src/app/api/v1/schools/[id]/leaderboard/route.ts:28-44` ships raw `listAgents("points")` rows with no `isPubliclyHiddenAgent` filter and no trust badges.
+   - Evaluations leaderboard: `src/app/evaluations/[sip]/page.tsx:53-86` passes all results to `EvaluationPageClient.tsx:47-70`, which ranks every agent including probes/fixtures.
+   - `src/app/g/[name]/page.tsx:25,32-44` lists group members with no agent-kind filter and no badges.
+   The plan was explicit: "Use explicit metadata/flags where available; fallback name-pattern filter only as bridge." That helper already exists (`src/lib/agent-public.ts:11`) but is only used in `/agents`.
+
+4. **Karma breakdown disagrees between API and web for the same agent.**
+   - `src/app/api/v1/agents/profile/route.ts:22,38-43` feeds `buildKarmaBreakdown` with `getCommentsByAgentId(agent.id, 200)`.
+   - `src/app/u/[name]/page.tsx:72,116-121` feeds it with `recentComments` (limit 5 from line 72).
+   For any agent with >5 comments, `comment_votes` and therefore `legacy_unattributed` will differ between `/api/v1/agents/profile?name=X` and `/u/X`. That directly violates the locked decision "Public web discovery should match API discovery" and Phase 5's reliance on a stable breakdown shape. Use the same comment window (and ideally a dedicated vote-tally query) in both paths.
+
+5. **AI Validation Plan items have no tests, and milestone artifacts are unfinished.** The plan's validation checklist (`ai/agent-ux-plans/06-public-web-admissions-karma.md:154-159`) calls for tests on profile-recent-posts parity, leaderboard test-agent filtering, admissions `next_action`/source fields, and karma breakdown shape; none exist. `src/__tests__/api/v1/envelope-contract.test.ts:87-117` only asserts envelope shape (it mocks `listPostsByAuthor` to `[]`, never inspects `trust`, `trust_badges`, `karma_breakdown`, or `is_admitted`). `src/__tests__/lib/admissions-pool.test.ts` covers pool policy, not `getAdmissionsStatusForAgent`. The plan's "AI VALIDATION RESULTS" section at line 164 still says "_To be filled by executor._" and the only review artifact (`ai/validation/ux7-review/claude-opus47-xhigh-round1.txt`) is an empty stub with `"no stdin data received"` — the plan's own protocol says to abort and report if a Claude review couldn't run.
+
+6. **Phase 6 (docs/OpenAPI polish) not implemented.**
+   - `public/skill.md` is still 1631 lines (`wc -l`); Phase 6 calls for short security/quickstart/first-heartbeat with links to a separate reference.
+   - `public/quickstart.md`, `public/reference.md`, `public/planned.md`, `public/guides/` do not exist.
+   - No `/api/v1/openapi.json` route or static file.
+   - `public/skill.json` version is still `"1.1.0"` despite UX2/UX3 envelope and `agents.md` contract-pin doc changes that touched behavior.
+
+### Non-blockers worth fixing
+
+- **`public_ai_eligibility.status` has a dead arm.** `src/lib/admissions/types.ts:81` declares `"not_yet_defined"` but `src/lib/admissions/index.ts:226-228` only emits `eligible` / `ineligible` (it just mirrors `pool.eligible`). Either delete the third arm or wire it to a real "Public AI policy isn't defined yet" branch — Phase 4 was explicit that this state should be reachable.
+- **`admission_source` doesn't distinguish admin from legacy.** `src/lib/admissions/index.ts:214-220` collapses every admitted-but-no-application case to `"unknown_legacy"`; the typed `"legacy_admin"` and `"admin"` values from `types.ts:94` are never assigned. Phase 4 called these out specifically. Use the signal you already have (e.g. `createdByStaffHumanId` on offers, or an explicit admin-set flag) to discriminate.
+- **`buildKarmaBreakdown` lies in its `note`.** `src/lib/agent-public.ts:53-55` tallies `post_votes` from only the N most-recent posts the caller passed in (12 via profile route). Any older post's upvotes silently fall into `legacy_unattributed`, but the `note` says "current known post/comment vote totals." Either compute totals with a dedicated SQL aggregate or change the note to reflect the window.
+- **Cleanup hygiene.** `src/app/agents/page.tsx:7` has the unused `publicTrustBadges` import noted in #2; lint suppresses `no-unused-vars` globally so this won't fail CI, but the helper should either be used or removed.
+
+### What's solid (so reviewers can stop checking)
+
+- Phase 1 author-history helper: `listPostsByAuthor` is implemented in both DB and memory stores (`src/lib/store/posts/db.ts:131`, `memory.ts:55`) and used by both `/api/v1/agents/profile` and `/u/{name}`. ✅
+- Phase 2 helpers (`isPubliclyHiddenAgent`, `publicAgentProvenance`, `publicTrustBadges`, `buildKarmaBreakdown`) live in `src/lib/agent-public.ts` and are consumed by the profile API and `/u/{name}`. ✅
+- Phase 4 fields `next_action`, `criteria_progress`, `public_ai_eligibility`, `admission_source`, `state_source` are present in both `AdmissionsStatusPayload` and the resolver (`src/lib/admissions/index.ts:209-239`). ✅

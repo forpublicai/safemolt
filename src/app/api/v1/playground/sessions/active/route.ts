@@ -7,12 +7,10 @@
  */
 import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
 import { checkDeadlines, getActiveSession } from '@/lib/playground/session-manager';
-import { hasDatabase, sql } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
 const ROUND_DURATION_SEC = 60 * 60;
-const PENDING_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 function noStoreHeaders() {
     return {
@@ -27,6 +25,7 @@ function noSessionResponse() {
         success: true,
         data: null,
         poll_interval_ms: 60000,
+        suggested_retry_ms: 60000,
         message: 'No active playground session for you right now.',
     }, 200, noStoreHeaders());
 }
@@ -38,19 +37,11 @@ export async function GET(request: Request) {
     }
 
     try {
-        // 1. Clean up stale sessions first
+        // Deadline progression is still invoked for this legacy active-session
+        // surface, but direct SQL cleanup has moved back to the cron-owned
+        // lifecycle path so this read route no longer performs ad hoc deletes.
         await checkDeadlines();
 
-        // 2. Also delete any stale pending sessions directly from DB (belt-and-suspenders)
-        if (hasDatabase() && sql) {
-            await sql`
-                DELETE FROM playground_sessions
-                WHERE status = 'pending'
-                  AND created_at < NOW() - INTERVAL '24 hours'
-            `;
-        }
-
-        // 3. Get active session via session manager (queries DB authoritatively)
         const active = await getActiveSession(agent.id);
         if (!active) {
             return noSessionResponse();
@@ -58,62 +49,22 @@ export async function GET(request: Request) {
 
         const session = active.session;
 
-        // 4. DEFENSIVE: Never expose terminal sessions regardless of what getActiveSession returned
+        // DEFENSIVE: Never expose terminal sessions regardless of what getActiveSession returned
         if (session.status === 'completed') {
             return noSessionResponse();
         }
 
-        // 5. AUTHORITATIVE DB guard: verify the session is STILL active/pending.
-        //    This is the final defense against any stale data from the store layer.
-        if (hasDatabase() && sql) {
-            const rows = await sql`
-                SELECT status, created_at
-                FROM playground_sessions
-                WHERE id = ${session.id}
-                LIMIT 1
-            `;
-
-            const row = rows[0] as { status?: string; created_at?: string | Date } | undefined;
-
-            // Session doesn't exist in DB anymore
-            if (!row) {
-                return noSessionResponse();
-            }
-
-            const dbStatus = String(row.status).trim().toLowerCase();
-
-            // Session is in a terminal state — never return it
-            if (dbStatus === 'completed') {
-                return noSessionResponse();
-            }
-
-            // Pending session past 24h timeout — delete and return nothing
-            if (dbStatus === 'pending' && row.created_at) {
-                const createdAtMs = new Date(String(row.created_at)).getTime();
-                if (Number.isFinite(createdAtMs) && Date.now() - createdAtMs >= PENDING_TIMEOUT_MS) {
-                    await sql`
-                        DELETE FROM playground_sessions
-                        WHERE id = ${session.id} AND status = 'pending'
-                    `;
-                    return noSessionResponse();
-                }
-            }
-
-            // If DB says a different non-terminal status than expected, double-check
-            if (dbStatus !== 'active' && dbStatus !== 'pending') {
-                return noSessionResponse();
-            }
-        }
-
-        // 5. Build response
+        // Build response
         const isPending = active.isPending === true;
         const hasRoundDeadline = Boolean(session.roundDeadline);
 
         return jsonResponse({
             success: true,
             poll_interval_ms: active.needsAction ? 30000 : 60000,
+            suggested_retry_ms: active.needsAction ? 30000 : 60000,
             data: {
                 session_id: session.id,
+                status: session.status,
                 game_id: session.gameId,
                 current_round: session.currentRound,
                 max_rounds: session.maxRounds,

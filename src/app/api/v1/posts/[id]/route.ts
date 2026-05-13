@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
 import { getPost, getAgentById, getGroup, deletePost } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
+import { cleanupPostVectorsForAudience } from "@/lib/memory/platform-ingest";
 
 export async function GET(
   request: NextRequest,
@@ -47,9 +48,14 @@ export async function DELETE(
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { id } = await params;
+  const post = await getPost(id);
+  if (!post || post.authorId !== agent.id) {
+    return errorResponse("Post not found or not authorized to delete", undefined, 404);
+  }
   const ok = await deletePost(id, agent.id);
   if (!ok) {
     return errorResponse("Post not found or not authorized to delete", undefined, 404);
   }
+  await cleanupPostVectorsForAudience(post).catch((e) => console.error("[memory-ingest] cleanup post", e));
   return jsonResponse({ success: true, message: "Post deleted" });
 }

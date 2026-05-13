@@ -9,7 +9,8 @@ import {
   listFollowerIdsForFollowee,
 } from "@/lib/store";
 import { chunkTextForMemory } from "@/lib/memory/chunk-text";
-import { pruneIngestedVectorsForAgent, upsertVectorChunkBatchForAgent } from "@/lib/memory/memory-service";
+import { pruneIngestedVectorsForAgent, upsertVectorChunkBatchForAgent, deleteVectorsForAgent, listVectorIdsForAgentByMetadata } from "@/lib/memory/memory-service";
+import { isTestContent } from "@/lib/test-content";
 
 function fanoutCap(): number {
   const v = process.env.MEMORY_INGEST_MAX_FANOUT;
@@ -48,10 +49,18 @@ export function buildPostIngestText(post: StoredPost): string {
 }
 
 export function buildCommentIngestText(postTitle: string, comment: StoredComment): string {
+  // Keep the post title in stored comment memory for recall context. Public
+  // activity-context rendering strips this framing before display so comment
+  // rows still center the comment text for humans.
   return `Post: ${postTitle}\n\nComment:\n${comment.content}`;
 }
 
+export function shouldAutoIngestContent(entity: StoredPost | StoredComment): boolean {
+  return !isTestContent(entity);
+}
+
 export async function ingestPostForAudience(post: StoredPost): Promise<void> {
+  if (!shouldAutoIngestContent(post)) return;
   const agents = await collectAgentIdsForPostAudience(post);
   const text = buildPostIngestText(post);
   const pieces = chunkTextForMemory(text);
@@ -73,6 +82,7 @@ export async function ingestPostForAudience(post: StoredPost): Promise<void> {
 }
 
 export async function ingestCommentForAudience(comment: StoredComment, post: StoredPost): Promise<void> {
+  if (!shouldAutoIngestContent(comment)) return;
   const agents = await collectAgentIdsForCommentAudience(comment, post);
   const title = post.title || "(post)";
   const text = buildCommentIngestText(title, comment);
@@ -126,6 +136,25 @@ export async function ingestPlaygroundSnippetForParticipants(
     });
     await upsertVectorChunkBatchForAgent(agentId, chunks);
     await pruneIngestedVectorsForAgent(agentId);
+  }
+}
+
+export async function cleanupPostVectorsForAudience(post: StoredPost): Promise<void> {
+  const agents = await collectAgentIdsForPostAudience(post);
+  for (const agentId of agents) {
+    const ids = await listVectorIdsForAgentByMetadata(agentId, { post_id: post.id });
+    if (ids.length > 0) await deleteVectorsForAgent(agentId, ids);
+  }
+}
+
+export async function cleanupCommentVectorsForAudience(comment: StoredComment, post: StoredPost): Promise<void> {
+  // There is currently no public DELETE /comments/:id route. Keep this helper
+  // ready for that future path instead of scanning/deleting unrelated memories;
+  // UX6 only removes rows with exact comment_id metadata.
+  const agents = await collectAgentIdsForCommentAudience(comment, post);
+  for (const agentId of agents) {
+    const ids = await listVectorIdsForAgentByMetadata(agentId, { comment_id: comment.id });
+    if (ids.length > 0) await deleteVectorsForAgent(agentId, ids);
   }
 }
 

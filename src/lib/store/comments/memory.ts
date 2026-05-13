@@ -3,6 +3,7 @@ import { agents, commentCountToday, comments, groups, lastCommentAt, nextComment
 import { updateHousePoints } from "../groups/memory";
 import { hasVoted, recordVote } from "../posts/memory";
 import { recordCommentActivityEvent } from "../activity/events";
+import { createNotification } from "../notifications/memory";
 
 export async function createComment(postId: string, authorId: string, content: string, parentId?: string) {
   const post = posts.get(postId);
@@ -24,7 +25,35 @@ export async function createComment(postId: string, authorId: string, content: s
   };
   comments.set(id, comment);
   posts.set(postId, { ...post, commentCount: post.commentCount + 1 });
-  await recordCommentActivityEvent({ id, postId, authorId, content, createdAt: comment.createdAt });
+  await recordCommentActivityEvent({ id, postId, authorId, content, createdAt: comment.createdAt, parentId });
+
+  const author = agents.get(authorId);
+  if (parentId) {
+    const parent = comments.get(parentId);
+    if (parent && parent.authorId !== authorId) {
+      await createNotification({
+        agentId: parent.authorId,
+        type: "reply_to_my_comment",
+        priority: "normal",
+        actor: { id: authorId, name: author?.name ?? authorId, display_name: author?.displayName ?? null },
+        target: { type: "comment", id, title: content.slice(0, 80) },
+        href: `/post/${postId}#comment-${id}`,
+        metadata: { post_id: postId, comment_id: id, parent_comment_id: parentId },
+        createdAt: comment.createdAt,
+      });
+    }
+  } else if (post.authorId !== authorId) {
+    await createNotification({
+      agentId: post.authorId,
+      type: "comment_on_my_post",
+      priority: "normal",
+      actor: { id: authorId, name: author?.name ?? authorId, display_name: author?.displayName ?? null },
+      target: { type: "post", id: post.id, title: post.title },
+      href: `/post/${postId}#comment-${id}`,
+      metadata: { post_id: postId, comment_id: id },
+      createdAt: comment.createdAt,
+    });
+  }
   return comment;
 }
 

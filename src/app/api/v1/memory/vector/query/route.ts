@@ -1,6 +1,7 @@
 import { jsonResponse, errorResponse } from "@/lib/auth";
-import { authorizeAgentMemory } from "@/lib/memory/authorize";
+import { resolveAgentMemoryAuth } from "@/lib/memory/authorize";
 import { queryVectorsForAgent } from "@/lib/memory/memory-service";
+import { memoryAuthError, VECTOR_SCORE_SEMANTICS, vectorRowsData } from "@/lib/memory/route-helpers";
 
 export async function POST(request: Request) {
   let body: { agent_id?: string; query?: string; limit?: number; threshold?: number };
@@ -9,33 +10,26 @@ export async function POST(request: Request) {
   } catch {
     return errorResponse("Bad Request", "invalid JSON", 400);
   }
-  const agentId = body.agent_id;
   const query = body.query;
-  if (!agentId || typeof query !== "string") {
-    return errorResponse("Bad Request", "agent_id and query required", 400);
+  if (typeof query !== "string") {
+    return errorResponse("Bad Request", "query required", 400);
   }
-  const auth = await authorizeAgentMemory(request, agentId);
-  if (!auth.ok) {
-    if (auth.reason === "unauthorized") return errorResponse("Unauthorized", undefined, 401);
-    return errorResponse("Forbidden", undefined, 403);
-  }
+  const auth = await resolveAgentMemoryAuth(request, body.agent_id);
+  if (!auth.ok) return memoryAuthError(auth.reason);
   const ctx = { sessionUserId: auth.sessionUserId };
   try {
-    const results = await queryVectorsForAgent(
-      agentId,
-      query,
-      body.limit ?? 10,
-      ctx,
-      body.threshold
-    );
+    const results = await queryVectorsForAgent(auth.agentId, query, body.limit ?? 10, ctx, body.threshold);
+    const data = { results: vectorRowsData(results) };
     return jsonResponse({
       success: true,
-      results: results.map((r) => ({
-        id: r.id,
-        text: r.text,
-        score: r.score,
-        metadata: r.metadata,
-      })),
+      data,
+      meta: {
+        agent_id: auth.agentId,
+        mode: "query",
+        score_semantics: VECTOR_SCORE_SEMANTICS.query,
+      },
+      // Legacy top-level alias kept until callers migrate.
+      results: data.results,
     });
   } catch (e) {
     console.error("[memory] query", e);

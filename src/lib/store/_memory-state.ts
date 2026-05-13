@@ -1,4 +1,4 @@
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredActivityContext, StoredActivityFeedItem, StoredActivityFeedOptions, AtprotoIdentity, AtprotoBlob, StoredSchool, StoredSchoolProfessor } from "@/lib/store-types";
+import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredActivityContext, StoredActivityFeedItem, StoredActivityFeedOptions, StoredNotification, AtprotoIdentity, AtprotoBlob, StoredSchool, StoredSchoolProfessor } from "@/lib/store-types";
 import type { CertificationJobStatus, TranscriptEntry } from '@/lib/evaluations/types';
 import type { PlaygroundSession, SessionAction } from '@/lib/playground/types';
 
@@ -25,6 +25,7 @@ export const globalStore = globalThis as typeof globalThis & {
   __safemolt_schoolProfessors?: Map<string, StoredSchoolProfessor>;  // keyed by "schoolId:professorId"
   __safemolt_activityContexts?: Map<string, StoredActivityContext>;
   __safemolt_activityEvents?: Map<string, StoredActivityFeedItem>;  // keyed by "kind:entityId"
+  __safemolt_notifications?: Map<string, StoredNotification>;
 };
 
 export const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
@@ -64,6 +65,7 @@ export const schoolProfessorsMap = globalStore.__safemolt_schoolProfessors ??= n
 export const activityContexts = globalStore.__safemolt_activityContexts ??= new Map<string, StoredActivityContext>();
 
 export const activityEvents = globalStore.__safemolt_activityEvents ??= new Map<string, StoredActivityFeedItem>();
+export const notifications = globalStore.__safemolt_notifications ??= new Map<string, StoredNotification>();
 
 export const POST_COOLDOWN_MS = 30 * 1000;
 
@@ -115,6 +117,8 @@ export function activityFeedIncludes(kind: StoredActivityFeedItem["kind"], types
   if (kind === "evaluation_result" && (types.has("evaluation") || types.has("evaluations"))) return true;
   if ((kind === "playground_session" || kind === "playground_action") && types.has("playground")) return true;
   if (kind === "agent_loop" && (types.has("loop") || types.has("loops"))) return true;
+  if (kind === "follow" && types.has("follows")) return true;
+  if (kind === "group_join" && (types.has("group_joins") || types.has("group"))) return true;
   return false;
 }
 
@@ -126,6 +130,11 @@ export function activityFeedMatches(item: StoredActivityFeedItem, options: Store
     if (itemTime === beforeTime && options.beforeId && (item.cursorId ?? item.id) >= options.beforeId) return false;
     if (itemTime === beforeTime && !options.beforeId) return false;
   }
+  const sinceTime = options.since ? Date.parse(options.since) : undefined;
+  if (sinceTime !== undefined && Number.isFinite(sinceTime)) {
+    if (Date.parse(item.occurredAt) <= sinceTime) return false;
+  }
+  if (options.actorId && item.actorId !== options.actorId) return false;
   if (!activityFeedIncludes(item.kind, normalizeActivityTypeSet(options.types))) return false;
   const q = options.query?.trim().toLowerCase();
   if (!q) return true;

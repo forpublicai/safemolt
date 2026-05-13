@@ -58,6 +58,9 @@ export async function GET(request: NextRequest) {
       : [];
     return jsonResponse({
       success: true,
+      data: formatted,
+      meta: { count: formatted.length, query: q, type },
+      // Legacy top-level aliases kept until callers migrate.
       query: q,
       type,
       results: formatted,

@@ -559,18 +559,19 @@ export async function createClassEvaluation(
     prompt: string,
     description?: string,
     taughtTopic?: string,
-    maxScore?: number
+    maxScore?: number,
+    kind: StoredClassEvaluation['kind'] = 'automatic'
 ): Promise<StoredClassEvaluation> {
     const resolvedClassId = await resolveClassId(classId);
     if (!resolvedClassId) throw new Error("Class not found");
     const id = generateClassId('ceval');
     const createdAt = new Date().toISOString();
     await sql!`
-        INSERT INTO class_evaluations (id, class_id, title, description, prompt, taught_topic, max_score, created_at)
+        INSERT INTO class_evaluations (id, class_id, title, description, prompt, taught_topic, max_score, kind, created_at)
         VALUES (${id}, ${resolvedClassId}, ${title}, ${description ?? null}, ${prompt},
-                ${taughtTopic ?? null}, ${maxScore ?? null}, ${createdAt})
+                ${taughtTopic ?? null}, ${maxScore ?? null}, ${kind}, ${createdAt})
     `;
-    return { id, classId: resolvedClassId, title, description, prompt, taughtTopic, status: 'draft', maxScore, createdAt };
+    return { id, classId: resolvedClassId, title, description, prompt, taughtTopic, status: 'draft', kind, maxScore, createdAt };
 }
 
 export async function getClassEvaluation(evaluationId: string): Promise<StoredClassEvaluation | null> {
@@ -585,6 +586,7 @@ export async function getClassEvaluation(evaluationId: string): Promise<StoredCl
         prompt: r.prompt as string,
         taughtTopic: r.taught_topic as string | undefined,
         status: r.status as StoredClassEvaluation['status'],
+        kind: (r.kind as StoredClassEvaluation['kind'] | undefined) ?? 'automatic',
         maxScore: r.max_score != null ? Number(r.max_score) : undefined,
         createdAt: String(r.created_at),
     };
@@ -602,6 +604,7 @@ export async function listClassEvaluations(classId: string): Promise<StoredClass
         prompt: r.prompt as string,
         taughtTopic: r.taught_topic as string | undefined,
         status: r.status as StoredClassEvaluation['status'],
+        kind: (r.kind as StoredClassEvaluation['kind'] | undefined) ?? 'automatic',
         maxScore: r.max_score != null ? Number(r.max_score) : undefined,
         createdAt: String(r.created_at),
     }));
@@ -609,10 +612,13 @@ export async function listClassEvaluations(classId: string): Promise<StoredClass
 
 export async function updateClassEvaluation(
     evaluationId: string,
-    updates: Partial<Pick<StoredClassEvaluation, 'title' | 'description' | 'prompt' | 'taughtTopic' | 'status' | 'maxScore'>>
+    updates: Partial<Pick<StoredClassEvaluation, 'title' | 'description' | 'prompt' | 'taughtTopic' | 'status' | 'kind' | 'maxScore'>>
 ): Promise<boolean> {
     if (updates.status !== undefined) {
         await sql!`UPDATE class_evaluations SET status = ${updates.status} WHERE id = ${evaluationId}`;
+    }
+    if (updates.kind !== undefined) {
+        await sql!`UPDATE class_evaluations SET kind = ${updates.kind} WHERE id = ${evaluationId}`;
     }
     if (updates.title !== undefined) {
         await sql!`UPDATE class_evaluations SET title = ${updates.title} WHERE id = ${evaluationId}`;

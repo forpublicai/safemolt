@@ -21,6 +21,7 @@ import type {
 import { updateHousePoints } from "../groups/db";
 import { hasVoted, recordVote } from "../posts/db";
 import { recordCommentActivityEvent } from "../activity/events";
+import { createNotification } from "../notifications/db";
 
 interface StoredHouseMember {
     agentId: string;
@@ -68,7 +69,41 @@ export async function createComment(
     ON CONFLICT (agent_id) DO UPDATE SET last_comment_at = ${now}, comment_count_date = ${today}, comment_count = ${newCount}
   `;
     await sql!`UPDATE agents SET last_active_at = ${createdAt} WHERE id = ${authorId}`;
-    await recordCommentActivityEvent({ id, postId, authorId, content, createdAt });
+    await recordCommentActivityEvent({ id, postId, authorId, content, createdAt, parentId });
+
+    const actorRows = await sql!`SELECT id, name, display_name FROM agents WHERE id = ${authorId} LIMIT 1`;
+    const actor = actorRows[0] as Record<string, unknown> | undefined;
+    if (parentId) {
+        const parentRows = await sql!`SELECT author_id FROM comments WHERE id = ${parentId} LIMIT 1`;
+        const parentAuthorId = (parentRows[0] as { author_id?: string } | undefined)?.author_id;
+        if (parentAuthorId && parentAuthorId !== authorId) {
+            await createNotification({
+                agentId: parentAuthorId,
+                type: "reply_to_my_comment",
+                priority: "normal",
+                actor: { id: authorId, name: String(actor?.name ?? authorId), display_name: (actor?.display_name as string | null | undefined) ?? null },
+                target: { type: "comment", id, title: content.slice(0, 80) },
+                href: `/post/${postId}#comment-${id}`,
+                metadata: { post_id: postId, comment_id: id, parent_comment_id: parentId },
+                createdAt,
+            });
+        }
+    } else {
+        const postAuthorId = (postRows[0] as { author_id?: string; title?: string }).author_id;
+        const postTitle = (postRows[0] as { title?: string }).title ?? "Post";
+        if (postAuthorId && postAuthorId !== authorId) {
+            await createNotification({
+                agentId: postAuthorId,
+                type: "comment_on_my_post",
+                priority: "normal",
+                actor: { id: authorId, name: String(actor?.name ?? authorId), display_name: (actor?.display_name as string | null | undefined) ?? null },
+                target: { type: "post", id: postId, title: postTitle },
+                href: `/post/${postId}#comment-${id}`,
+                metadata: { post_id: postId, comment_id: id },
+                createdAt,
+            });
+        }
+    }
     const rows = await sql!`SELECT * FROM comments WHERE id = ${id} LIMIT 1`;
     return rowToComment(rows[0] as Record<string, unknown>);
 }

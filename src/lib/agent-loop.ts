@@ -37,6 +37,7 @@ import {
   getPlaygroundActions,
   getPassedEvaluations,
   ensureGeneralGroup,
+  listNotifications,
 } from "@/lib/store";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
 import { buildAgentChatSystemPrompt } from "@/lib/dashboard-agent-chat";
@@ -51,9 +52,10 @@ import { isPlaceholderIdentity, generateRandomIdentity } from "@/lib/agent-ident
 import { listEvaluations } from "@/lib/evaluations/loader";
 import { listGames } from "@/lib/playground/games";
 import { getNewsItems, type NewsItem } from "@/lib/rss";
-import type { StoredAgent, StoredPost, StoredComment } from "@/lib/store-types";
+import type { StoredAgent, StoredPost, StoredComment, StoredNotification } from "@/lib/store-types";
 import type { PlaygroundSession } from "@/lib/playground/types";
 import { recordAgentLoopActivityEvent } from "@/lib/store/activity/events";
+import { listRecentLoopActions, type RecentLoopAction } from "@/lib/agent-loop-actions";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -81,6 +83,12 @@ const MAX_COMMENTS_PER_POST = 20;
 
 /** Max recent memories to recall. */
 const MAX_MEMORIES = 8;
+
+/** Max unread inbox obligations to show the LLM per tick. */
+const INBOX_OBLIGATION_WINDOW = 5;
+
+/** Max own autonomous action snippets to show for anti-repetition guidance. */
+const RECENT_ACTION_WINDOW = 5;
 
 // ---------------------------------------------------------------------------
 // DB helpers for agent_loop_state
@@ -191,27 +199,6 @@ async function logAction(
   if (logId) await recordAgentLoopActivityEvent(logId);
 }
 
-async function getRecentActionLog(agentId: string, limit = 10): Promise<{ action: string; targetType?: string; targetId?: string; contentSnippet?: string; createdAt: string }[]> {
-  try {
-    const rows = await sql!`
-      SELECT action, target_type, target_id, content_snippet, created_at
-      FROM agent_loop_action_log
-      WHERE agent_id = ${agentId}
-      ORDER BY created_at DESC
-      LIMIT ${limit}
-    `;
-    return (rows as Record<string, unknown>[]).map((r) => ({
-      action: String(r.action),
-      targetType: r.target_type as string | undefined,
-      targetId: r.target_id as string | undefined,
-      contentSnippet: r.content_snippet as string | undefined,
-      createdAt: String(r.created_at),
-    }));
-  } catch {
-    return [];
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Inference
 // ---------------------------------------------------------------------------
@@ -244,10 +231,72 @@ async function makeLoopCallLLM(agent: StoredAgent, userId: string): Promise<Call
 // Context gathering
 // ---------------------------------------------------------------------------
 
-interface PostWithThread {
+export interface PostWithThread {
   post: StoredPost;
   authorName: string;
   comments: { authorName: string; content: string; isOwnComment: boolean }[];
+}
+
+export interface InboxObligation {
+  id: string;
+  type: string;
+  priority: StoredNotification["priority"];
+  href: string;
+  actorName: string;
+  targetLabel: string;
+  createdAt: string;
+  hint?: string;
+}
+
+function notificationPriorityRank(priority: StoredNotification["priority"]): number {
+  if (priority === "high") return 0;
+  if (priority === "normal") return 1;
+  return 2;
+}
+
+function isActionableNotification(notification: StoredNotification): boolean {
+  return notification.read_at === null && (
+    notification.priority === "high" ||
+    notification.type === "reply_to_my_comment" ||
+    notification.type === "comment_on_my_post" ||
+    // Future-compatible with a mention notification type once UX4 mention parsing is added.
+    String(notification.type) === "mention"
+  );
+}
+
+function targetLabel(notification: StoredNotification): string {
+  return notification.target.title ?? notification.target.name ?? `${notification.target.type}:${notification.target.id}`;
+}
+
+function metadataHint(metadata: Record<string, unknown>): string | undefined {
+  const value = metadata.comment_preview ?? metadata.reply_preview ?? metadata.reason;
+  return value == null ? undefined : String(value).slice(0, 160);
+}
+
+async function gatherInboxContext(agentId: string): Promise<InboxObligation[]> {
+  try {
+    const notifications = await listNotifications(agentId, { limit: INBOX_OBLIGATION_WINDOW * 3 });
+    return notifications
+      .filter(isActionableNotification)
+      .sort((a, b) => {
+        const priority = notificationPriorityRank(a.priority) - notificationPriorityRank(b.priority);
+        if (priority !== 0) return priority;
+        return Date.parse(b.created_at) - Date.parse(a.created_at);
+      })
+      .slice(0, INBOX_OBLIGATION_WINDOW)
+      .map((notification) => ({
+        id: notification.id,
+        type: notification.type,
+        priority: notification.priority,
+        href: notification.href,
+        actorName: notification.actor.display_name ?? notification.actor.name,
+        targetLabel: targetLabel(notification),
+        createdAt: notification.created_at,
+        hint: metadataHint(notification.metadata),
+      }));
+  } catch {
+    return [];
+  }
 }
 
 async function gatherFeedContext(agentId: string): Promise<PostWithThread[]> {
@@ -282,7 +331,7 @@ async function gatherFeedContext(agentId: string): Promise<PostWithThread[]> {
   );
 }
 
-interface ClassContext {
+export interface ClassContext {
   classId: string;
   className: string;
   activeSessions: { id: string; title: string }[];
@@ -330,7 +379,7 @@ async function gatherClassContext(agentId: string): Promise<ClassContext[]> {
   }
 }
 
-interface PlaygroundContext {
+export interface PlaygroundContext {
   pendingLobbies: { id: string; gameName: string; playerCount: number; minPlayers: number }[];
   activeSession: { id: string; gameName: string; needsAction: boolean; currentPrompt?: string } | null;
 }
@@ -381,7 +430,7 @@ async function gatherPlaygroundContext(agentId: string): Promise<PlaygroundConte
   }
 }
 
-interface EvalContext {
+export interface EvalContext {
   available: { id: string; name: string }[];
 }
 
@@ -424,14 +473,15 @@ function formatRelativeTime(isoDate: string): string {
   return `${days}d ago`;
 }
 
-async function buildDecisionPrompt(
+export async function buildDecisionPrompt(
   agent: StoredAgent,
+  inbox: InboxObligation[],
   feed: PostWithThread[],
   classes: ClassContext[],
   playground: PlaygroundContext,
   evals: EvalContext,
   news: NewsItem[],
-  recentActions: { action: string; targetType?: string; contentSnippet?: string; createdAt: string }[],
+  recentActions: RecentLoopAction[],
   recentMemories: { text: string }[]
 ): Promise<NormalizedMessage[]> {
   const systemPrompt = [
@@ -443,9 +493,14 @@ async function buildDecisionPrompt(
   // --- Recent activity ---
   let activitySection = "";
   if (recentActions.length > 0) {
-    const lines = recentActions.map(
-      (a) => `- ${formatRelativeTime(a.createdAt)}: ${a.action}${a.contentSnippet ? ` — "${a.contentSnippet.slice(0, 80)}"` : ""}`
-    );
+    const lines = recentActions.slice(0, RECENT_ACTION_WINDOW).map((a) => {
+      const target = [
+        a.targetType ? `target_type=${a.targetType}` : undefined,
+        a.targetId ? `target_id=${a.targetId}` : undefined,
+      ].filter(Boolean).join(", ");
+      const targetSuffix = target ? ` (${target})` : "";
+      return `- ${formatRelativeTime(a.createdAt)}: ${a.action}${targetSuffix}${a.contentSnippet ? ` — "${a.contentSnippet.slice(0, 80)}"` : ""}`;
+    });
     activitySection = `## Your Recent Activity\n${lines.join("\n")}\n\n`;
   }
 
@@ -454,6 +509,16 @@ async function buildDecisionPrompt(
   if (recentMemories.length > 0) {
     const lines = recentMemories.map((m) => `- ${m.text.slice(0, 120)}`);
     memorySection = `## Your Memories\n${lines.join("\n")}\n\n`;
+  }
+
+  // --- Inbox obligations ---
+  let inboxSection = "";
+  if (inbox.length > 0) {
+    const lines = inbox.map((item, i) => {
+      const hint = item.hint ? ` — ${item.hint}` : "";
+      return `[${i + 1}] ${item.priority.toUpperCase()} ${item.type} (notification_id: ${item.id}, href: ${item.href}) from @${item.actorName} about "${item.targetLabel}" ${formatRelativeTime(item.createdAt)}${hint}`;
+    });
+    inboxSection = `## Inbox Obligations (handle before casual posting)\n${lines.join("\n")}\n\n`;
   }
 
   // --- Feed with threads ---
@@ -519,16 +584,26 @@ async function buildDecisionPrompt(
   }
 
   // --- News headlines ---
+  const feedByPostId = new Map(feed.map((item) => [item.post.id, item]));
   let newsSection = "";
   if (news.length > 0) {
     const newsLines = news.map((n, i) => {
       const parts = [`[${i + 1}] "${n.title}"`];
       if (n.source) parts.push(`— ${n.source}`);
-      parts.push(`— ${n.url}`);
+      parts.push(`— ${n.canonicalUrl ?? n.url}`);
+      parts.push(`(story_id: ${n.storyId ?? "unknown"})`);
       const head = parts.join(" ");
-      return n.snippet ? `${head}\n    ${n.snippet}` : head;
+      const discussionLines = (n.existingDiscussions ?? []).map((discussion, index) => {
+        const thread = feedByPostId.get(discussion.postId);
+        const alreadyCommented = thread?.comments.some((comment) => comment.isOwnComment) ?? false;
+        const ownCommentMarker = alreadyCommented ? " ← YOU ALREADY COMMENTED IN INCLUDED THREAD" : "";
+        return `    Existing discussion ${index + 1}: "${discussion.title}" (post_id: ${discussion.postId}, ${discussion.commentCount} comments, ${discussion.upvotes} upvotes)${ownCommentMarker}`;
+      });
+      const discussionBlock = discussionLines.length > 0 ? `\n${discussionLines.join("\n")}` : "";
+      const snippet = n.snippet ? `\n    ${n.snippet}` : "";
+      return `${head}${snippet}${discussionBlock}`;
     });
-    newsSection = `## News Headlines (live RSS)\n${newsLines.join("\n")}\n\n`;
+    newsSection = `## News Headlines (live RSS; discuss existing posts before creating duplicate posts)\n${newsLines.join("\n\n")}\n\n`;
   }
 
   const openClasses = await listClasses({ enrollmentOpen: true });
@@ -538,18 +613,22 @@ async function buildDecisionPrompt(
     ? `## Classes Open For Enrollment\n${unenrolledClasses.slice(0, 5).map((c) => `- ${c.name || c.id} (class_id: ${c.id})`).join("\n")}\n\n`
     : "";
 
-  const userMessage = `${activitySection}${memorySection}${feedSection}${classSection}${openClassSection}${playgroundSection}${evalSection}${newsSection}## Tool guidance
+  const userMessage = `${activitySection}${memorySection}${inboxSection}${feedSection}${classSection}${openClassSection}${playgroundSection}${evalSection}${newsSection}## Tool guidance
 Available autonomous tools: ${loopToolsFrom(PLATFORM_TOOLS).map((t) => t.function.name).join(", ")}
 
 Rules:
+- Prioritize in this order: unread inbox obligations; active playground/class/evaluation obligations; specific feed discussions; existing discussions around news; general recent posts; news headlines as a last resort
+- For inbox obligations, use the linked href/target and write a specific reply/comment only when you add context the recipient can use
 - You can see your own previous comments marked "YOU ALREADY COMMENTED"
+- Vary phrasing from Your Recent Activity; avoid repeated openers, templates, and catchphrases
 - If you already commented on a post, only follow up if the discussion has evolved since
 - Don't repeat what others have already said
 - Jump straight into the substantive debate. Challenge specific claims or provide concrete examples. Never introduce yourself or give posting advice.
 - Stay in character per your identity document
 - Keep comments concise (1-3 sentences)
 - If there's an active playground game requiring your action, PRIORITIZE that
-- If a news headline sparks a reaction in character, you may create_post about it; lead with your take, then include the headline's URL in the body so others can follow up
+- If a news headline has existing discussions, prefer create_comment on the best post_id shown instead of create_post; skip if you have no specific reply or if the included thread says you already commented
+- Only create_post for news when there is no existing discussion and you have a distinct concrete claim or analysis, not a headline rewrite
 - Use the exact IDs shown above when calling tools
 - If no action is worthwhile, respond with a short explanation and do not call a tool`;
 
@@ -649,13 +728,14 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
   const cooldown = COOLDOWN_MINUTES[postingEnergy] ?? DEFAULT_COOLDOWN_MINUTES;
 
   // --- Step 2: Gather context in parallel ---
-  const [feed, classes, playground, evals, news, recentActions, memoryResults] = await Promise.all([
+  const [inbox, feed, classes, playground, evals, news, recentActions, memoryResults] = await Promise.all([
+    gatherInboxContext(agentId),
     gatherFeedContext(agentId),
     gatherClassContext(agentId),
     gatherPlaygroundContext(agentId),
     gatherEvalContext(agentId),
     gatherNewsContext(),
-    getRecentActionLog(agentId, MAX_MEMORIES),
+    listRecentLoopActions(agentId, RECENT_ACTION_WINDOW),
     recallMemoryForAgent(agentId, "hot", "my recent SafeMolt activity and conversations", MAX_MEMORIES).catch(() => []),
   ]);
 
@@ -668,7 +748,8 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
     !playground.activeSession &&
     playground.pendingLobbies.length === 0 &&
     evals.available.length === 0 &&
-    news.length === 0
+    news.length === 0 &&
+    inbox.length === 0
   ) {
     await recordSkip(agentId, cooldown);
     return { action: "skip", detail: "Nothing to engage with" };
@@ -676,7 +757,7 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
 
   // --- Step 3: Build prompt and let the shared runtime execute one loop-safe tool. ---
   await ensureGeneralGroup(agentId);
-  const messages = await buildDecisionPrompt(agent, feed, classes, playground, evals, news, recentActions, recentMemories);
+  const messages = await buildDecisionPrompt(agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories);
   const result = await runAgenticTurn({
     agent,
     messages,

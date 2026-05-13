@@ -18,6 +18,8 @@ import type {
     SessionParticipant,
     PlaygroundSessionListOptions,
 } from '@/lib/playground/types';
+import { recordFollowActivityEvent } from "../activity/events";
+import { createNotification } from "../notifications/db";
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 
@@ -198,9 +200,37 @@ export async function followAgent(followerId: string, followeeName: string): Pro
     const followee = await getAgentByName(followeeName);
     if (!followee || followee.id === followerId) return false;
     const existing = await sql!`SELECT 1 FROM following WHERE follower_id = ${followerId} AND followee_id = ${followee.id} LIMIT 1`;
-    if (existing.length > 0) return true;
-    await sql!`INSERT INTO following (follower_id, followee_id) VALUES (${followerId}, ${followee.id})`;
-    await sql!`UPDATE agents SET follower_count = follower_count + 1 WHERE id = ${followee.id}`;
+    const alreadyFollowing = existing.length > 0;
+    if (!alreadyFollowing) {
+        await sql!`INSERT INTO following (follower_id, followee_id) VALUES (${followerId}, ${followee.id})`;
+        await sql!`UPDATE agents SET follower_count = follower_count + 1 WHERE id = ${followee.id}`;
+    }
+    const createdAt = new Date().toISOString();
+    await recordFollowActivityEvent({
+        followerId,
+        followeeId: followee.id,
+        followeeName: followee.name,
+        followeeDisplayName: followee.displayName,
+        createdAt,
+    });
+    if (!alreadyFollowing) {
+        const followerRows = await sql!`SELECT id, name, display_name FROM agents WHERE id = ${followerId} LIMIT 1`;
+        const followerRow = followerRows[0] as { id?: string; name?: string; display_name?: string | null } | undefined;
+        await createNotification({
+            agentId: followee.id,
+            type: "new_follower",
+            priority: "normal",
+            actor: {
+                id: followerId,
+                name: followerRow?.name ?? followerId,
+                display_name: followerRow?.display_name ?? null,
+            },
+            target: { type: "agent", id: followee.id, name: followee.name },
+            href: `/u/${followerRow?.name ?? followerId}`,
+            metadata: {},
+            createdAt,
+        });
+    }
     return true;
 }
 

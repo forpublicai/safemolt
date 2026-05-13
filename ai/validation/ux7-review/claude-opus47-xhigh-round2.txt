@@ -1,0 +1,42 @@
+Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.
+I reviewed the UX7 implementation against plan 6's requirements and the four flagged blockers. Here is my finding.
+
+## PASS
+
+The four blockers listed in `ai/agent-ux-plans/06-public-web-admissions-karma.md` lines 192–197 are all resolved, and the supporting code and tests are coherent.
+
+### Evidence
+
+**Blocker 1 — `/g` ⇆ `/api/v1/groups` school parity**
+- `src/app/g/page.tsx:29-30` now reads `await getSchoolId()` and passes `schoolId` into `listGroups({ includeHouses: false, schoolId })`. The cache key (line 24) is keyed on `schoolId`, so subdomain switching does not bleed entries. `/api/v1/groups` (`src/app/api/v1/groups/route.ts:22`) reads the same `x-school-id` header. `getSchoolId()` in `src/lib/school-context.ts:18-21` is the single source.
+
+**Blocker 2 — Public test/system/probe filtering on remaining surfaces**
+- School leaderboard: `src/app/api/v1/schools/[id]/leaderboard/route.ts:30` filters via `isPubliclyHiddenAgent` before slicing the top N (so the limit isn't silently reduced).
+- Evaluation leaderboard: `src/app/evaluations/[sip]/page.tsx:73-76` filters server-side; the client memo at `EvaluationPageClient.tsx:47-70` derives the leaderboard from already-filtered rows.
+- Group member page: `src/app/g/[name]/page.tsx:31-36, 53-57` filters both `members` and `posts` by hidden-agent status. Members are filtered before slicing 20, so a hidden agent can't displace a real member.
+- Agents directory: `src/app/agents/page.tsx:40` filters the source before sorting, so name sort still produces the right alphabetization.
+- Helper coverage: `src/lib/agent-public.ts:5,11-14` matches name-prefix patterns and metadata flags (`system`, `test`, `source: "test"`).
+
+**Blocker 3 — Karma breakdown parity (`/api/v1/agents/profile` vs `/u/{agent}`)**
+- Both call sites compute over the same windows: 12 posts (`listPostsByAuthor(agent.id, 12)`), 200 comments (`getCommentsByAgentId(agent.id, 200)`), and all evaluation results.
+  - `src/app/api/v1/agents/profile/route.ts:20-24, 38-43` — uses 200 comments for the breakdown.
+  - `src/app/u/[name]/page.tsx:69-79, 118-123` — `breakdownComments` is a dedicated 200-comment fetch separate from the 5-comment display fetch.
+- Both routes use the same `listPostsByAuthor` DB helper (`src/lib/store/posts/db.ts:131-139` and `memory.ts:55-60`), so neither derives "recent posts" from a globally-limited page.
+
+**Blocker 4 — Phase 6 docs/OpenAPI split deferred**
+- `ai/agent-ux-plans/08-docs-openapi-polish.md` exists and explicitly says "Deferred follow-up from UX7." Per the user's instruction, this is intentional and not a UX7 gate.
+
+### Additional checks that hold
+
+- **AGENTS.md conventions (`agents.md:37-45`)**: contract pins for public profile parity, public hidden-agent filtering, admissions next_action/source, and karma `legacy_unattributed` are present and match implementation.
+- **Admissions clarity (Phase 4)**: `src/lib/admissions/index.ts:169-267` returns `next_action`, `criteria_progress`, `public_ai_eligibility`, `admission_source` (admitted-no-application maps to `unknown_legacy`, not null), and `state_source`. Types in `src/lib/admissions/types.ts:77-118` declare the full union.
+- **Trust badges (Phase 2)**: `publicTrustBadges` in `src/lib/agent-public.ts:24-34` emits PII-safe labels only; no Cognito identifiers or owner metadata leak through. `/agents/profile` route exposes `trust`, `trust_badges`, `is_vetted`, `is_admitted` (`route.ts:36-37, 52-55`).
+- **Store convention**: All app/API code uses `@/lib/store` (the test at `ux7-contracts.test.ts:5` imports `posts/memory` directly, which is legitimate for tests — AGENTS.md restricts only app/API code).
+- **Tests**: `src/__tests__/api/v1/ux7-contracts.test.ts` covers author-history isolation, hidden-agent filtering + PII-safe badge set, and karma `legacy_unattributed` accounting (3 tests). Plan's recorded validation logs the full suite at 70 suites / 386 tests passing.
+
+### Minor non-blocking observations (not UX7 gates)
+
+- `/g` passes `includeHouses: false` but `/api/v1/groups` defaults to including houses when neither `type` nor `include_houses` query is present. This is a defensible split (houses aren't part of "discoverable" public Foundation groups, and the API exposes a query knob), and the previously-flagged blocker only required school-scope parity, which is now in place.
+- `public_ai_eligibility.status` only emits `eligible | ineligible` from `index.ts:226-228`; the `not_yet_defined` variant is reserved in the type union but unused. Acceptable while pool policy is fully defined.
+
+No remaining UX7 blockers.

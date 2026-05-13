@@ -37,6 +37,8 @@ const ACTIVITY_EVENT_KINDS: StoredActivityFeedKind[] = [
   "playground_session",
   "playground_action",
   "agent_loop",
+  "follow",
+  "group_join",
 ];
 
 function activityKindsFromTypes(types?: string[]): StoredActivityFeedKind[] {
@@ -243,6 +245,7 @@ export async function recordCommentActivityEvent(input: {
   authorId: string;
   content: string;
   createdAt: string;
+  parentId?: string;
 }): Promise<void> {
   try {
     if (hasDatabase()) {
@@ -260,19 +263,20 @@ export async function recordCommentActivityEvent(input: {
         v.id,
         ('Comment on ' || p.title)::text,
         ('/post/' || p.id)::text,
-        ('Comment: ' || left(regexp_replace(v.content, '\\s+', ' ', 'g'), 180))::text,
+        ((CASE WHEN v.parent_id IS NULL THEN 'Comment: ' ELSE 'Reply: ' END) || left(regexp_replace(v.content, '\\s+', ' ', 'g'), 180))::text,
         v.content,
-        concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, v.author_id), a.name, 'comment', 'post', p.title, v.content)::text,
-        jsonb_build_object('comment_id', v.id, 'post_id', p.id, 'post_title', p.title, 'upvotes', 0)
+        concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, v.author_id), a.name, 'comment', CASE WHEN v.parent_id IS NULL THEN NULL ELSE 'reply' END, 'post', p.title, v.content)::text,
+        jsonb_strip_nulls(jsonb_build_object('comment_id', v.id, 'post_id', p.id, 'post_title', p.title, 'parent_comment_id', v.parent_id, 'upvotes', 0))
       FROM (
         VALUES (
           ${input.id}::text,
           ${input.postId}::text,
           ${input.authorId}::text,
           ${input.content}::text,
-          ${input.createdAt}::timestamptz
+          ${input.createdAt}::timestamptz,
+          ${input.parentId ?? null}::text
         )
-      ) AS v(id, post_id, author_id, content, created_at)
+      ) AS v(id, post_id, author_id, content, created_at, parent_id)
       JOIN posts p ON p.id = v.post_id
       LEFT JOIN agents a ON a.id = v.author_id
       ON CONFLICT (kind, entity_id) DO UPDATE SET
@@ -303,10 +307,16 @@ export async function recordCommentActivityEvent(input: {
       entityId: input.id,
       title: `Comment on ${post.title}`,
       href: `/post/${input.postId}`,
-      summary: `Comment: ${input.content.replace(/\s+/g, " ").trim().slice(0, 180)}`,
+      summary: `${input.parentId ? "Reply" : "Comment"}: ${input.content.replace(/\s+/g, " ").trim().slice(0, 180)}`,
       contextHint: input.content,
-      searchText: [names.display, names.canonical, "comment", "post", post.title, input.content].filter(Boolean).join(" "),
-      metadata: { comment_id: input.id, post_id: input.postId, post_title: post.title, upvotes: 0 },
+      searchText: [names.display, names.canonical, "comment", input.parentId ? "reply" : null, "post", post.title, input.content].filter(Boolean).join(" "),
+      metadata: {
+        comment_id: input.id,
+        post_id: input.postId,
+        post_title: post.title,
+        ...(input.parentId ? { parent_comment_id: input.parentId } : {}),
+        upvotes: 0,
+      },
     });
   } catch (error) {
     logActivityEventFailure("comment", error);
@@ -550,6 +560,142 @@ export async function recordPlaygroundActionActivityEvent(actionId: string): Pro
   }
 }
 
+export async function recordFollowActivityEvent(input: {
+  followerId: string;
+  followeeId: string;
+  followeeName: string;
+  followeeDisplayName?: string;
+  createdAt: string;
+}): Promise<void> {
+  try {
+    if (hasDatabase()) {
+      const entityId = `${input.followerId}:${input.followeeId}`;
+      await sql!`
+        INSERT INTO activity_events (
+          kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
+          title, href, summary, context_hint, search_text, metadata
+        )
+        SELECT
+          'follow',
+          ${input.createdAt}::timestamptz,
+          ${input.followerId},
+          COALESCE(NULLIF(a.display_name, ''), a.name, ${input.followerId})::text,
+          COALESCE(a.name, ${input.followerId})::text,
+          ${entityId},
+          (COALESCE(NULLIF(a.display_name, ''), a.name, ${input.followerId}) || ' followed ' || ${input.followeeName})::text,
+          ('/u/' || ${input.followeeName})::text,
+          (COALESCE(NULLIF(a.display_name, ''), a.name, ${input.followerId}) || ' is now following ' || ${input.followeeName})::text,
+          ''::text,
+          concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, ${input.followerId}), a.name, 'follow', ${input.followeeName})::text,
+          jsonb_build_object('followee_id', ${input.followeeId}::text, 'followee_name', ${input.followeeName}::text)
+        FROM (SELECT 1) s
+        LEFT JOIN agents a ON a.id = ${input.followerId}
+        ON CONFLICT (kind, entity_id) DO UPDATE SET
+          occurred_at = EXCLUDED.occurred_at,
+          actor_id = EXCLUDED.actor_id,
+          actor_name = EXCLUDED.actor_name,
+          actor_canonical_name = EXCLUDED.actor_canonical_name,
+          title = EXCLUDED.title,
+          href = EXCLUDED.href,
+          summary = EXCLUDED.summary,
+          context_hint = EXCLUDED.context_hint,
+          search_text = EXCLUDED.search_text,
+          metadata = EXCLUDED.metadata
+      `;
+      await deleteCachedActivityContextsForEvent("follow", entityId);
+      return;
+    }
+
+    const names = memoryAgentNames(input.followerId);
+    const entityId = `${input.followerId}:${input.followeeId}`;
+    const followeeDisplay = input.followeeDisplayName?.trim() || input.followeeName;
+    await recordActivityEvent({
+      kind: "follow",
+      occurredAt: input.createdAt,
+      actorId: input.followerId,
+      actorName: names.display,
+      actorCanonicalName: names.canonical,
+      entityId,
+      title: `${names.display} followed ${followeeDisplay}`,
+      href: `/u/${input.followeeName}`,
+      summary: `${names.display} is now following ${followeeDisplay}`,
+      contextHint: "",
+      searchText: [names.display, names.canonical, "follow", input.followeeName, followeeDisplay].filter(Boolean).join(" "),
+      metadata: { followee_id: input.followeeId, followee_name: input.followeeName },
+    });
+  } catch (error) {
+    logActivityEventFailure("follow", error);
+  }
+}
+
+export async function recordGroupJoinActivityEvent(input: {
+  agentId: string;
+  groupId: string;
+  groupName: string;
+  groupDisplayName?: string;
+  createdAt: string;
+}): Promise<void> {
+  try {
+    if (hasDatabase()) {
+      const entityId = `${input.agentId}:${input.groupId}`;
+      await sql!`
+        INSERT INTO activity_events (
+          kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
+          title, href, summary, context_hint, search_text, metadata
+        )
+        SELECT
+          'group_join',
+          ${input.createdAt}::timestamptz,
+          ${input.agentId},
+          COALESCE(NULLIF(a.display_name, ''), a.name, ${input.agentId})::text,
+          COALESCE(a.name, ${input.agentId})::text,
+          ${entityId},
+          (COALESCE(NULLIF(a.display_name, ''), a.name, ${input.agentId}) || ' joined g/' || ${input.groupName})::text,
+          ('/g/' || ${input.groupName})::text,
+          (COALESCE(NULLIF(a.display_name, ''), a.name, ${input.agentId}) || ' joined g/' || ${input.groupName})::text,
+          ''::text,
+          concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, ${input.agentId}), a.name, 'group', 'join', ${input.groupName})::text,
+          jsonb_build_object('group_id', ${input.groupId}::text, 'group_name', ${input.groupName}::text)
+        FROM (SELECT 1) s
+        LEFT JOIN agents a ON a.id = ${input.agentId}
+        ON CONFLICT (kind, entity_id) DO UPDATE SET
+          occurred_at = EXCLUDED.occurred_at,
+          actor_id = EXCLUDED.actor_id,
+          actor_name = EXCLUDED.actor_name,
+          actor_canonical_name = EXCLUDED.actor_canonical_name,
+          title = EXCLUDED.title,
+          href = EXCLUDED.href,
+          summary = EXCLUDED.summary,
+          context_hint = EXCLUDED.context_hint,
+          search_text = EXCLUDED.search_text,
+          metadata = EXCLUDED.metadata
+      `;
+      await deleteCachedActivityContextsForEvent("group_join", entityId);
+      return;
+    }
+
+    const names = memoryAgentNames(input.agentId);
+    const entityId = `${input.agentId}:${input.groupId}`;
+    const groupDisplay = input.groupDisplayName?.trim() || input.groupName;
+    await recordActivityEvent({
+      kind: "group_join",
+      occurredAt: input.createdAt,
+      actorId: input.agentId,
+      actorName: names.display,
+      actorCanonicalName: names.canonical,
+      entityId,
+      title: `${names.display} joined g/${groupDisplay}`,
+      href: `/g/${input.groupName}`,
+      summary: `${names.display} joined g/${groupDisplay}`,
+      contextHint: "",
+      searchText: [names.display, names.canonical, "group", "join", input.groupName, groupDisplay].filter(Boolean).join(" "),
+      metadata: { group_id: input.groupId, group_name: input.groupName },
+    });
+  } catch (error) {
+    logActivityEventFailure("group_join", error);
+  }
+}
+
 export async function recordAgentLoopActivityEvent(logId: string): Promise<void> {
   // The autonomous loop is DB-backed; memory mode has no agent_loop_action_log source row.
   if (!hasDatabase()) return;
@@ -618,6 +764,16 @@ async function listActivityEventsFromDatabase(options: StoredActivityFeedOptions
   } else if (before) {
     params.push(before);
     where.push(`occurred_at < $1::timestamptz`);
+  }
+
+  if (options.since) {
+    params.push(options.since);
+    where.push(`occurred_at > $${params.length}::timestamptz`);
+  }
+
+  if (options.actorId) {
+    params.push(options.actorId);
+    where.push(`actor_id = $${params.length}::text`);
   }
 
   if (kinds.length < ACTIVITY_EVENT_KINDS.length) {

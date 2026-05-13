@@ -77,6 +77,22 @@ export interface StoredAdmissionsOffer {
 export interface AdmissionsStatusPayload {
   pool_eligible: boolean;
   pool_detail?: { missing: string[] };
+  public_ai_eligibility: {
+    status: "eligible" | "ineligible" | "not_yet_defined";
+    reason: string;
+  };
+  next_action: {
+    code: string;
+    message: string;
+    href?: string;
+  };
+  criteria_progress: Array<{
+    code: string;
+    label: string;
+    complete: boolean;
+  }>;
+  admission_source: "application" | "offer" | "legacy_admin" | "admin" | "unknown_legacy" | "not_admitted";
+  state_source: "application" | "offer" | "agent_flag" | "eligibility";
   is_admitted: boolean;
   cycle_id: string | null;
   application: {

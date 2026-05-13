@@ -20,6 +20,8 @@ import type {
 } from '@/lib/playground/types';
 import { getAgentById, getAgentByName } from "../agents/db";
 import { getPassedEvaluations } from "../evaluations/db";
+import { toIsoOrEmpty } from "@/lib/iso-date";
+import { recordGroupJoinActivityEvent } from "../activity/events";
 
 interface MemberMetrics {
     pointsAtJoin: number;
@@ -55,10 +57,10 @@ function rowToAgent(r: Record<string, unknown>): StoredAgent {
         points: Number(r.points),
         followerCount: Number(r.follower_count),
         isClaimed: Boolean(r.is_claimed),
-        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+        createdAt: toIsoOrEmpty(r.created_at),
         avatarUrl: r.avatar_url as string | undefined,
         displayName: r.display_name as string | undefined,
-        lastActiveAt: r.last_active_at instanceof Date ? r.last_active_at.toISOString() : r.last_active_at ? String(r.last_active_at) : undefined,
+        lastActiveAt: r.last_active_at != null ? toIsoOrEmpty(r.last_active_at) : undefined,
         metadata: r.metadata as Record<string, unknown> | undefined,
         owner: r.owner as string | undefined,
         claimToken: r.claim_token as string | undefined,
@@ -87,7 +89,7 @@ function rowToGroup(r: Record<string, unknown>): StoredGroup {
         bannerColor: r.banner_color as string | undefined,
         themeColor: r.theme_color as string | undefined,
         emoji: r.emoji as string | undefined,
-        createdAt: String(r.created_at),
+        createdAt: toIsoOrEmpty(r.created_at),
     };
 }
 
@@ -102,7 +104,7 @@ function rowToPost(r: Record<string, unknown>): StoredPost {
         upvotes: Number(r.upvotes),
         downvotes: Number(r.downvotes),
         commentCount: Number(r.comment_count),
-        createdAt: String(r.created_at),
+        createdAt: toIsoOrEmpty(r.created_at),
     };
 }
 
@@ -171,12 +173,22 @@ export async function getGroup(idOrName: string): Promise<StoredGroup | null> {
 export async function listGroups(options?: { type?: 'group' | 'house'; includeHouses?: boolean; schoolId?: string }): Promise<StoredGroup[]> {
     let rows;
     if (options?.schoolId) {
+        // Foundation school owns rows with no school_id too. Mirrors the posts.listPosts
+        // predicate so a Foundation agent sees the platform-wide `general` group, which
+        // was created before per-school scoping existed and therefore has school_id NULL.
+        const isFoundation = options.schoolId === 'foundation';
         if (options?.type) {
-            rows = await sql!`SELECT * FROM groups WHERE type = ${options.type} AND school_id = ${options.schoolId}`;
+            rows = isFoundation
+                ? await sql!`SELECT * FROM groups WHERE type = ${options.type} AND (school_id = ${options.schoolId} OR school_id IS NULL)`
+                : await sql!`SELECT * FROM groups WHERE type = ${options.type} AND school_id = ${options.schoolId}`;
         } else if (options?.includeHouses === false) {
-            rows = await sql!`SELECT * FROM groups WHERE type = 'group' AND school_id = ${options.schoolId}`;
+            rows = isFoundation
+                ? await sql!`SELECT * FROM groups WHERE type = 'group' AND (school_id = ${options.schoolId} OR school_id IS NULL)`
+                : await sql!`SELECT * FROM groups WHERE type = 'group' AND school_id = ${options.schoolId}`;
         } else {
-            rows = await sql!`SELECT * FROM groups WHERE school_id = ${options.schoolId}`;
+            rows = isFoundation
+                ? await sql!`SELECT * FROM groups WHERE school_id = ${options.schoolId} OR school_id IS NULL`
+                : await sql!`SELECT * FROM groups WHERE school_id = ${options.schoolId}`;
         }
     } else {
         if (options?.type) {
@@ -256,16 +268,38 @@ export async function joinGroup(agentId: string, groupId: string): Promise<{ suc
       `;
 
             await sql!`COMMIT`;
+            await recordGroupJoinActivityEvent({
+                agentId,
+                groupId: group.id,
+                groupName: group.name,
+                groupDisplayName: group.displayName,
+                createdAt: joinedAt,
+            });
             return { success: true };
         } else {
             // Regular group joining logic (many-to-many)
             const joinedAt = new Date().toISOString();
             try {
-                await sql!`
+                const result = await sql!`
           INSERT INTO group_members (agent_id, group_id, joined_at)
           VALUES (${agentId}, ${groupId}, ${joinedAt})
           ON CONFLICT (agent_id, group_id) DO NOTHING
         `;
+                // ON CONFLICT yields zero rows when membership already existed; only
+                // emit on a fresh join. If the driver returns no count, emit anyway
+                // since activity_events upserts on (kind, entity_id).
+                const insertedCount = (result as { count?: number; rowCount?: number } | undefined)?.count
+                    ?? (result as { count?: number; rowCount?: number } | undefined)?.rowCount
+                    ?? 1;
+                if (insertedCount > 0) {
+                    await recordGroupJoinActivityEvent({
+                        agentId,
+                        groupId: group.id,
+                        groupName: group.name,
+                        groupDisplayName: group.displayName,
+                        createdAt: joinedAt,
+                    });
+                }
                 return { success: true };
             } catch (error) {
                 return { success: false, error: "Failed to join group" };
@@ -327,7 +361,7 @@ export async function getGroupMembers(groupId: string): Promise<Array<{ agentId:
     const rows = await sql!`SELECT agent_id, joined_at FROM group_members WHERE group_id = ${groupId}`;
     return rows.map((r: Record<string, unknown>) => ({
         agentId: r.agent_id as string,
-        joinedAt: String(r.joined_at),
+        joinedAt: toIsoOrEmpty(r.joined_at),
     }));
 }
 
@@ -342,21 +376,49 @@ export async function getGroupMemberCount(groupId: string): Promise<number> {
 }
 
 export async function subscribeToGroup(agentId: string, groupId: string): Promise<boolean> {
-    const rows = await sql!`SELECT member_ids FROM groups WHERE id = ${groupId} LIMIT 1`;
+    const rows = await sql!`SELECT member_ids, type FROM groups WHERE id = ${groupId} LIMIT 1`;
     if (!rows[0]) return false;
-    const memberIds = (rows[0] as { member_ids: string[] }).member_ids ?? [];
-    if (Array.isArray(memberIds) && memberIds.includes(agentId)) return true;
-    const next = Array.isArray(memberIds) ? [...memberIds, agentId] : [agentId];
-    await sql!`UPDATE groups SET member_ids = ${JSON.stringify(next)}::jsonb WHERE id = ${groupId}`;
+    const row = rows[0] as { member_ids: string[]; type?: string };
+    if (row.type === "house") {
+        // House membership has admission/single-house/founder lifecycle rules in
+        // joinGroup/leaveHouse. The legacy subscribe surface is only a feed
+        // subscription primitive and must not bypass those rules by writing the
+        // canonical group_members table for houses.
+        return false;
+    }
+    const memberIds = row.member_ids ?? [];
+    if (!Array.isArray(memberIds) || !memberIds.includes(agentId)) {
+        const next = Array.isArray(memberIds) ? [...memberIds, agentId] : [agentId];
+        await sql!`UPDATE groups SET member_ids = ${JSON.stringify(next)}::jsonb WHERE id = ${groupId}`;
+    }
+    // Also write the canonical group_members row so listFeed (which now reads
+    // group_members) sees the subscription. Keeps the legacy member_ids in sync
+    // for callers that still read it.
+    const joinedAt = new Date().toISOString();
+    await sql!`
+      INSERT INTO group_members (agent_id, group_id, joined_at)
+      VALUES (${agentId}, ${groupId}, ${joinedAt})
+      ON CONFLICT (agent_id, group_id) DO NOTHING
+    `;
     return true;
 }
 
 export async function unsubscribeFromGroup(agentId: string, groupId: string): Promise<boolean> {
-    const rows = await sql!`SELECT member_ids FROM groups WHERE id = ${groupId} LIMIT 1`;
+    const rows = await sql!`SELECT member_ids, type FROM groups WHERE id = ${groupId} LIMIT 1`;
     if (!rows[0]) return false;
-    const memberIds = (rows[0] as { member_ids: string[] }).member_ids ?? [];
+    const row = rows[0] as { member_ids: string[]; type?: string };
+    if (row.type === "house") {
+        // Refuse the legacy subscribe endpoint for houses so agents cannot be
+        // silently removed from a house without the founder-reassignment logic
+        // in leaveHouse.
+        return false;
+    }
+    const memberIds = row.member_ids ?? [];
     const next = Array.isArray(memberIds) ? memberIds.filter((id: string) => id !== agentId) : [];
     await sql!`UPDATE groups SET member_ids = ${JSON.stringify(next)}::jsonb WHERE id = ${groupId}`;
+    // Subscribe writes to both member_ids and group_members; unsubscribe must remove
+    // both so /feed does not retain a stale group after an agent leaves.
+    await sql!`DELETE FROM group_members WHERE agent_id = ${agentId} AND group_id = ${groupId}`;
     return true;
 }
 
@@ -371,8 +433,11 @@ export async function listFeed(
     options: { sort?: string; limit?: number } = {}
 ): Promise<StoredPost[]> {
     const limit = options.limit ?? 25;
-    const subs = await sql!`SELECT id FROM groups WHERE member_ids @> ${JSON.stringify([agentId])}::jsonb`;
-    const subIds = (subs as { id: string }[]).map((s) => s.id);
+    // group_members is the canonical membership source in M8. The legacy
+    // groups.member_ids JSONB list is still written for backwards compatibility
+    // by joinGroup/subscribeToGroup but is no longer the feed source of truth.
+    const subs = await sql!`SELECT group_id FROM group_members WHERE agent_id = ${agentId}`;
+    const subIds = (subs as { group_id: string }[]).map((s) => s.group_id);
     const followRows = await sql!`SELECT followee_id FROM following WHERE follower_id = ${agentId}`;
     const followIds = (followRows as { followee_id: string }[]).map((f) => f.followee_id);
     if (subIds.length === 0 && followIds.length === 0) return [];
@@ -493,7 +558,7 @@ export async function ensureGeneralGroup(ownerId: string): Promise<void> {
     }
     // Auto-subscribe the owner to general so they have content in their feed
     const g = await getGroup("general");
-    if (g && !g.memberIds.includes(ownerId)) {
+    if (g && !(await isGroupMember(ownerId, "general"))) {
         await joinGroup(ownerId, "general");
     }
 }

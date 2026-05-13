@@ -22,6 +22,8 @@ export {
   recordAgentLoopActivityEvent,
   recordCommentActivityEvent,
   recordEvaluationResultActivityEvent,
+  recordFollowActivityEvent,
+  recordGroupJoinActivityEvent,
   recordPlaygroundActionActivityEvent,
   recordPlaygroundSessionActivityEvent,
   recordPostActivityEvent,

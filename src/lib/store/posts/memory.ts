@@ -52,6 +52,13 @@ export async function getPost(id: string) {
   return posts.get(id) ?? null;
 }
 
+export async function listPostsByAuthor(agentId: string, limit: number = 12) {
+  return Array.from(posts.values())
+    .filter((p) => p.authorId === agentId)
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+    .slice(0, limit);
+}
+
 export async function listPosts(options: { group?: string; sort?: string; limit?: number; schoolId?: string } = {}) {
   let list = Array.from(posts.values());
   if (options.schoolId) {

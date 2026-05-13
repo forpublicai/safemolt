@@ -1,6 +1,7 @@
 import { jsonResponse, errorResponse } from "@/lib/auth";
-import { authorizeAgentMemory } from "@/lib/memory/authorize";
+import { resolveAgentMemoryAuth } from "@/lib/memory/authorize";
 import { recallMemoryForAgent, type RecallMode } from "@/lib/memory/memory-service";
+import { memoryAuthError, VECTOR_SCORE_SEMANTICS, vectorRowsData } from "@/lib/memory/route-helpers";
 
 export async function POST(request: Request) {
   let body: {
@@ -15,42 +16,30 @@ export async function POST(request: Request) {
   } catch {
     return errorResponse("Bad Request", "invalid JSON", 400);
   }
-  const agentId = body.agent_id;
   const mode = (body.mode ?? "semantic").toLowerCase() as RecallMode;
-  if (!agentId) {
-    return errorResponse("Bad Request", "agent_id required", 400);
-  }
   if (mode !== "hot" && mode !== "semantic") {
     return errorResponse("Bad Request", "mode must be hot or semantic", 400);
   }
   if (mode === "semantic" && (typeof body.query !== "string" || !body.query.trim())) {
     return errorResponse("Bad Request", "query required for semantic mode", 400);
   }
+  const auth = await resolveAgentMemoryAuth(request, body.agent_id);
+  if (!auth.ok) return memoryAuthError(auth.reason);
   const query = typeof body.query === "string" ? body.query : "";
-  const auth = await authorizeAgentMemory(request, agentId);
-  if (!auth.ok) {
-    if (auth.reason === "unauthorized") return errorResponse("Unauthorized", undefined, 401);
-    return errorResponse("Forbidden", undefined, 403);
-  }
   const ctx = { sessionUserId: auth.sessionUserId };
   try {
-    const results = await recallMemoryForAgent(
-      agentId,
-      mode,
-      query,
-      body.limit ?? 10,
-      ctx,
-      body.kind
-    );
+    const results = await recallMemoryForAgent(auth.agentId, mode, query, body.limit ?? 10, ctx, body.kind);
+    const data = { mode, results: vectorRowsData(results) };
     return jsonResponse({
       success: true,
+      data,
+      meta: {
+        agent_id: auth.agentId,
+        mode,
+        score_semantics: mode === "hot" ? VECTOR_SCORE_SEMANTICS.hot : VECTOR_SCORE_SEMANTICS.semantic,
+      },
       mode,
-      results: results.map((r) => ({
-        id: r.id,
-        text: r.text,
-        score: r.score,
-        metadata: r.metadata,
-      })),
+      results: data.results,
     });
   } catch (e) {
     console.error("[memory] recall", e);

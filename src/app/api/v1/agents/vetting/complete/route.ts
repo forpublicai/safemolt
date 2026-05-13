@@ -8,8 +8,10 @@ import {
     registerForEvaluation,
     saveEvaluationResult,
     hasPassedEvaluation,
+    ensureGeneralGroup,
 } from "@/lib/store";
 import { isChallengeExpired, validateHash } from "@/lib/vetting";
+import { putContextAndMaybeIndex } from "@/lib/memory/memory-service";
 
 const MAX_IDENTITY_SIZE = 10 * 1024; // 10 KB limit for identity_md
 
@@ -102,6 +104,32 @@ export async function POST(request: NextRequest) {
         // Mark agent as vetted and store identity
         const identityContent = typeof identity_md === "string" ? identity_md : "";
         await setAgentVetted(agent.id, identityContent);
+        try {
+            // UX6 makes memory context the preferred IDENTITY.md source after
+            // vetting. The plan explicitly keeps this mirror non-blocking so a
+            // verified PoAW challenge is not failed by a transient vector/context
+            // outage; first-read IDENTITY.md fallback below repairs older or rare
+            // missed mirrors for the same authenticated agent only.
+            const res = await putContextAndMaybeIndex(agent.id, "IDENTITY.md", identityContent, { sessionUserId: null });
+            if ("error" in res) {
+                console.error("[vetting/complete] IDENTITY.md memory sync failed:", res.error);
+            }
+        } catch (e) {
+            // Memory context is the UX6 source of truth after a successful sync, but
+            // vetting itself should remain successful if that best-effort mirror is
+            // temporarily unavailable.
+            console.error("[vetting/complete] IDENTITY.md memory sync failed:", e);
+        }
+
+        // Cold-start: ensure the platform-wide `general` group exists and that this
+        // freshly vetted agent is a member, so /groups and /feed are immediately
+        // useful instead of silent. ensureGeneralGroup is idempotent.
+        try {
+            await ensureGeneralGroup(agent.id);
+        } catch (e) {
+            // Membership write is best-effort here — failure must not block vetting.
+            console.error("[vetting/complete] ensureGeneralGroup failed:", e);
+        }
 
         // Record PoAW (SIP-2) and Identity Check (SIP-3) in evaluation system so Evaluation Status shows them
         for (const evaluationId of ["poaw", "identity-check"] as const) {

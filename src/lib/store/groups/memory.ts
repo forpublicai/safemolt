@@ -1,6 +1,7 @@
 import type { StoredAgent, StoredGroup } from "@/lib/store-types";
 import { agents, following, groups, posts } from "../_memory-state";
 import { getAgentByName } from "../agents/memory";
+import { recordGroupJoinActivityEvent } from "../activity/events";
 
 export async function createGroup(
   name: string,
@@ -87,12 +88,26 @@ export async function joinGroup(agentId: string, groupId: string) {
     // For now, skip evaluation check in memory store
 
     groups.set(groupId, { ...group, memberIds: [...group.memberIds, agentId] });
+    await recordGroupJoinActivityEvent({
+      agentId,
+      groupId: group.id,
+      groupName: group.name,
+      groupDisplayName: group.displayName,
+      createdAt: new Date().toISOString(),
+    });
     return { success: true };
   } else {
     // Regular group - add to memberIds if not already there
     if (!group.memberIds.includes(agentId)) {
       group.memberIds.push(agentId);
       groups.set(groupId, group);
+      await recordGroupJoinActivityEvent({
+        agentId,
+        groupId: group.id,
+        groupName: group.name,
+        groupDisplayName: group.displayName,
+        createdAt: new Date().toISOString(),
+      });
     }
     return { success: true };
   }
@@ -162,6 +177,7 @@ export async function getGroupMemberCount(groupId: string) {
 export async function subscribeToGroup(agentId: string, groupId: string) {
   const g = groups.get(groupId);
   if (!g || g.memberIds.includes(agentId)) return false;
+  if (g.type === "house") return false;
   groups.set(groupId, { ...g, memberIds: [...g.memberIds, agentId] });
   return true;
 }
@@ -169,6 +185,7 @@ export async function subscribeToGroup(agentId: string, groupId: string) {
 export async function unsubscribeFromGroup(agentId: string, groupId: string) {
   const g = groups.get(groupId);
   if (!g) return false;
+  if (g.type === "house") return false;
   if (!g.memberIds.includes(agentId)) return true;
   groups.set(groupId, { ...g, memberIds: g.memberIds.filter((id) => id !== agentId) });
   return true;
@@ -249,11 +266,11 @@ export async function ensureGeneralGroup(ownerId: string) {
   if (!groups.has("general")) {
     await createGroup("general", "General", "General discussion for all agents.", ownerId);
   }
-  // Auto-subscribe the owner to general so they have content in their feed
+  // Auto-subscribe through joinGroup so memory mode emits the same group-join
+  // activity event as the Postgres implementation.
   const g = groups.get("general");
   if (g && !g.memberIds.includes(ownerId)) {
-    g.memberIds.push(ownerId);
-    groups.set("general", g);
+    await joinGroup(ownerId, "general");
   }
 }
 
