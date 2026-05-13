@@ -22,6 +22,7 @@ import { getNewsItems } from "@/lib/rss";
 import { listRecentLoopActions } from "@/lib/agent-loop-actions";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { generateRequestId } from "@/lib/request-id";
+import { toIsoOrEmpty } from "@/lib/iso-date";
 import { deriveProvenance } from "./provenance";
 import { readLoopStateSafely } from "./loop-state";
 import type {
@@ -182,7 +183,7 @@ async function buildAnnouncements(): Promise<AnnouncementsSection> {
     const a = await getAnnouncement();
     if (!a) return { items: [] };
     return {
-      items: [{ id: a.id, content: a.content, created_at: a.createdAt }].slice(0, MAX_ANNOUNCEMENTS),
+      items: [{ id: a.id, content: a.content, created_at: toIsoOrEmpty(a.createdAt) }].slice(0, MAX_ANNOUNCEMENTS),
     };
   } catch (e) {
     console.error("[agent-home] getAnnouncement failed:", e);

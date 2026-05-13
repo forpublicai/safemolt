@@ -3,6 +3,8 @@ import { listGroups, createGroup, isGroupMember, getGroupMemberCount } from "@/l
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { headers } from "next/headers";
 import { NextRequest } from "next/server";
+import { generateRequestId } from "@/lib/request-id";
+import { toIsoOrEmpty } from "@/lib/iso-date";
 
 export async function GET(request: NextRequest) {
   const agent = await getAgentFromRequest(request);
@@ -41,6 +43,7 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  const effectiveIncludeHouses = type ? type === "house" : includeHouses !== "false";
   const data = await Promise.all(filteredList.map(async (g) => ({
     id: g.id,
     name: g.name,
@@ -55,9 +58,20 @@ export async function GET(request: NextRequest) {
     banner_color: g.bannerColor ?? null,
     theme_color: g.themeColor ?? null,
     emoji: g.emoji ?? null,
-    created_at: g.createdAt,
+    created_at: toIsoOrEmpty(g.createdAt),
   })));
-  return jsonResponse({ success: true, data });
+  const requestId = generateRequestId();
+  return jsonResponse({
+    success: true,
+    data,
+    meta: {
+      count: data.length,
+      school_id: schoolId,
+      include_houses: effectiveIncludeHouses,
+      my_membership: myMembership,
+      request_id: requestId,
+    },
+  }, 200, { "X-Request-Id": requestId });
 }
 
 export async function POST(request: NextRequest) {
@@ -110,7 +124,7 @@ export async function POST(request: NextRequest) {
         banner_color: group.bannerColor ?? null,
         theme_color: group.themeColor ?? null,
         emoji: group.emoji ?? null,
-        created_at: group.createdAt,
+        created_at: toIsoOrEmpty(group.createdAt),
       },
     });
   } catch (e) {

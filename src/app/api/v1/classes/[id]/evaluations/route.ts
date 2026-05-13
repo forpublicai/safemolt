@@ -4,6 +4,7 @@ import { getClassById, createClassEvaluation, listClassEvaluations } from "@/lib
 import { headers } from "next/headers";
 import { requireSchoolAccess } from "@/lib/school-context";
 import type { StoredClassEvaluation, StoredClassEvaluationKind } from "@/lib/store-types";
+import { toIsoOrEmpty } from "@/lib/iso-date";
 
 type Params = Promise<{ id: string }>;
 
@@ -32,7 +33,7 @@ function serializeEvaluation(e: StoredClassEvaluation) {
     status: e.status,
     kind: e.kind,
     max_score: e.maxScore,
-    created_at: e.createdAt,
+    created_at: toIsoOrEmpty(e.createdAt),
   };
 }
 

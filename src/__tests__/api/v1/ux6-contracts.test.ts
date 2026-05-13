@@ -173,6 +173,61 @@ describe("UX6 class evaluation contract", () => {
     expect(body.data[0].taughtTopic).toBeUndefined();
   });
 
+  it("normalizes non-ISO class evaluation timestamps at the route boundary", async () => {
+    jest.doMock("next/headers", () => ({ headers: jest.fn(async () => new Headers({ "x-school-id": "foundation" })) }));
+    jest.doMock("@/lib/auth-professor", () => ({ getProfessorFromRequest: jest.fn(async () => null) }));
+    jest.doMock("@/lib/auth", () => ({
+      getAgentFromRequest: jest.fn(async () => agent()),
+      jsonResponse: (body: unknown, status = 200) => Response.json(body, { status }),
+      errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
+        Response.json({ success: false, error, hint, error_detail: { code: options.code ?? "bad_request", message: error, hint }, request_id: "req-test" }, { status }),
+    }));
+    jest.doMock("@/lib/school-context", () => ({ requireSchoolAccess: jest.fn(() => null) }));
+    jest.doMock("@/lib/store", () => ({
+      getClassById: jest.fn(async () => ({ id: "class-uuid", slug: "class-slug", professorId: "prof-1", name: "Class", status: "active", enrollmentOpen: true, createdAt: "Tue Apr 14 2026 06:25:09 GMT+0000 (Coordinated Universal Time)" })),
+      createClassEvaluation: jest.fn(),
+      listClassEvaluations: jest.fn(async () => [{ id: "eval-1", classId: "class-uuid", title: "Eval", prompt: "Answer this", status: "active", kind: "automatic", createdAt: "Tue Apr 14 2026 06:25:09 GMT+0000 (Coordinated Universal Time)" }]),
+    }));
+
+    const { GET } = await import("@/app/api/v1/classes/[id]/evaluations/route");
+    const res = await GET(new Request("https://safe.test"), { params: Promise.resolve({ id: "class-slug" }) });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.data[0].created_at).toBe("2026-04-14T06:25:09.000Z");
+  });
+
+  it("classes list exposes snake_case aliases while preserving legacy camelCase", async () => {
+    jest.doMock("next/headers", () => ({ headers: jest.fn(async () => new Headers({ "x-school-id": "foundation" })) }));
+    jest.doMock("@/lib/auth-professor", () => ({ getProfessorFromRequest: jest.fn(async () => null) }));
+    jest.doMock("@/lib/auth", () => ({
+      getAgentFromRequest: jest.fn(async () => agent()),
+      jsonResponse: (body: unknown, status = 200, headers: Record<string, string> = {}) => Response.json(body, { status, headers }),
+      errorResponse: (error: string, hint?: string, status = 400) => Response.json({ success: false, error, hint }, { status }),
+    }));
+    jest.doMock("@/lib/school-context", () => ({ requireSchoolAccess: jest.fn(() => null) }));
+    jest.doMock("@/lib/store", () => ({
+      listClasses: jest.fn(async () => [{ id: "class-uuid", slug: "class-slug", name: "Class", description: "Desc", status: "active", enrollmentOpen: true, maxStudents: 10, syllabus: {}, createdAt: "Tue Apr 14 2026 06:25:09 GMT+0000 (Coordinated Universal Time)" }]),
+      getClassEnrollmentCount: jest.fn(async () => 3),
+      getClassAssistants: jest.fn(async () => []),
+      createClass: jest.fn(),
+    }));
+
+    const { GET } = await import("@/app/api/v1/classes/route");
+    const res = await GET(new Request("https://safe.test/api/v1/classes", { headers: { Authorization: "Bearer key" } }));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.data[0]).toMatchObject({
+      enrollment_open: true,
+      max_students: 10,
+      created_at: "2026-04-14T06:25:09.000Z",
+      enrollmentOpen: true,
+      maxStudents: 10,
+      createdAt: "2026-04-14T06:25:09.000Z",
+    });
+  });
+
   it("submits a class evaluation by class slug and returns synchronous result hints", async () => {
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent()),

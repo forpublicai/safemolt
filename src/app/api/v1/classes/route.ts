@@ -3,6 +3,29 @@ import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { createClass, listClasses, getClassEnrollmentCount, getClassAssistants } from "@/lib/store";
 import { headers } from "next/headers";
 import { requireSchoolAccess } from "@/lib/school-context";
+import { toIsoOrEmpty } from "@/lib/iso-date";
+import type { StoredClass } from "@/lib/store-types";
+
+async function serializeClassSummary(cls: StoredClass) {
+  const syllabus = (cls.syllabus ?? {}) as Record<string, unknown>;
+  const createdAt = toIsoOrEmpty(cls.createdAt);
+  return {
+    id: cls.id,
+    slug: cls.slug,
+    name: cls.name,
+    description: cls.description,
+    status: cls.status,
+    enrollment_open: cls.enrollmentOpen,
+    max_students: cls.maxStudents,
+    preview_image: typeof syllabus.preview_image === "string" ? syllabus.preview_image : undefined,
+    enrollment_count: await getClassEnrollmentCount(cls.id),
+    created_at: createdAt,
+    // Legacy aliases kept for current UI/API clients while agents migrate to snake_case.
+    enrollmentOpen: cls.enrollmentOpen,
+    maxStudents: cls.maxStudents,
+    createdAt,
+  };
+}
 
 /** POST: Create a class (professor only, school-scoped) */
 export async function POST(request: Request) {
@@ -38,21 +61,7 @@ export async function GET(request: Request) {
   if (!hasAuthHeader) {
     const classes = await listClasses({ enrollmentOpen: true, schoolId });
     const enriched = await Promise.all(
-      classes.map(async (cls) => {
-        const syllabus = (cls.syllabus ?? {}) as Record<string, unknown>;
-        return {
-          id: cls.id,
-          slug: cls.slug,
-          name: cls.name,
-          description: cls.description,
-          status: cls.status,
-          enrollmentOpen: cls.enrollmentOpen,
-          maxStudents: cls.maxStudents,
-          preview_image: typeof syllabus.preview_image === "string" ? syllabus.preview_image : undefined,
-          enrollment_count: await getClassEnrollmentCount(cls.id),
-          createdAt: cls.createdAt,
-        };
-      })
+      classes.map(serializeClassSummary)
     );
     return jsonResponse(
       { success: true, data: enriched },
@@ -66,11 +75,18 @@ export async function GET(request: Request) {
   if (professor) {
     const classes = await listClasses({ professorId: professor.id, schoolId });
     const enriched = await Promise.all(
-      classes.map(async (cls) => ({
-        ...cls,
-        enrollment_count: await getClassEnrollmentCount(cls.id),
-        assistants: await getClassAssistants(cls.id),
-      }))
+      classes.map(async (cls) => {
+        const createdAt = toIsoOrEmpty(cls.createdAt);
+        return {
+          ...cls,
+          enrollment_open: cls.enrollmentOpen,
+          max_students: cls.maxStudents,
+          created_at: createdAt,
+          createdAt,
+          enrollment_count: await getClassEnrollmentCount(cls.id),
+          assistants: await getClassAssistants(cls.id),
+        };
+      })
     );
     return jsonResponse({ success: true, data: enriched });
   }
@@ -85,21 +101,7 @@ export async function GET(request: Request) {
 
   const classes = await listClasses({ enrollmentOpen: true, schoolId });
   const enriched = await Promise.all(
-    classes.map(async (cls) => {
-      const syllabus = (cls.syllabus ?? {}) as Record<string, unknown>;
-      return {
-        id: cls.id,
-        slug: cls.slug,
-        name: cls.name,
-        description: cls.description,
-        status: cls.status,
-        enrollmentOpen: cls.enrollmentOpen,
-        maxStudents: cls.maxStudents,
-        preview_image: typeof syllabus.preview_image === "string" ? syllabus.preview_image : undefined,
-        enrollment_count: await getClassEnrollmentCount(cls.id),
-        createdAt: cls.createdAt,
-      };
-    })
+    classes.map(serializeClassSummary)
   );
   return jsonResponse(
     { success: true, data: enriched },

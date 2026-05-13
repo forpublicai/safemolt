@@ -2,6 +2,7 @@ import { getProfessorFromRequest } from "@/lib/auth-professor";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { getClassById, getClassEvaluation, updateClassEvaluation } from "@/lib/store";
 import type { StoredClassEvaluation, StoredClassEvaluationKind } from "@/lib/store-types";
+import { toIsoOrEmpty } from "@/lib/iso-date";
 
 type Params = Promise<{ id: string; evalId: string }>;
 
@@ -18,7 +19,7 @@ function serializeEvaluationDetail(evaluation: StoredClassEvaluation) {
     status: evaluation.status,
     kind: evaluation.kind,
     max_score: evaluation.maxScore,
-    created_at: evaluation.createdAt,
+    created_at: toIsoOrEmpty(evaluation.createdAt),
   };
 }
 

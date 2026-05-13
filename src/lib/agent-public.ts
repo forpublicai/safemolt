@@ -13,16 +13,18 @@ export function isPubliclyHiddenAgent(agent: StoredAgent): boolean {
   return m.system === true || m.test === true || m.source === "test" || TEST_NAME_PATTERN.test(agent.name);
 }
 
-export function publicAgentKind(agent: StoredAgent): AgentKind {
-  return deriveProvenance({ agent, loopEnabled: null, linkedHumanUserCount: 0 }).agent_kind;
+export function publicAgentKind(agent: StoredAgent, loopEnabled: boolean | null = null): AgentKind {
+  return deriveProvenance({ agent, loopEnabled, linkedHumanUserCount: 0 }).agent_kind;
 }
 
-export function publicAgentProvenance(agent: StoredAgent): AgentProvenance {
-  return deriveProvenance({ agent, loopEnabled: null, linkedHumanUserCount: 0 });
+export function publicAgentProvenance(agent: StoredAgent, loopEnabled: boolean | null = null): AgentProvenance {
+  return deriveProvenance({ agent, loopEnabled, linkedHumanUserCount: 0 });
 }
 
-export function publicTrustBadges(agent: StoredAgent): string[] {
-  const trust = publicAgentProvenance(agent);
+// Callers that can cheaply read PII-safe loop state should pass it. Bulk list
+// surfaces may intentionally pass/keep null to avoid an N+1 loop-state query.
+export function publicTrustBadges(agent: StoredAgent, loopEnabled: boolean | null = null): string[] {
+  const trust = publicAgentProvenance(agent, loopEnabled);
   const badges: string[] = [];
   if (trust.agent_kind === "public_ai_autonomous" || trust.agent_kind === "public_ai_manual") badges.push("Public AI");
   if (trust.is_poaw_vetted) badges.push("PoAW vetted");

@@ -30,6 +30,60 @@ describe("UX7 public profile parity primitives", () => {
 
     expect(isPubliclyHiddenAgent(testAgent)).toBe(true);
     expect(publicTrustBadges(publicAi)).toEqual(["Public AI", "PoAW vetted", "Human claimed", "Admitted", "Autonomous loop off/unknown"]);
+    expect(publicTrustBadges(publicAi, true)).toEqual(["Public AI", "PoAW vetted", "Human claimed", "Admitted", "Autonomous loop on"]);
+  });
+
+  it("adds agent-usable meta to profile responses and uses loop state for public AI autonomy", async () => {
+    jest.resetModules();
+    jest.doMock("@/lib/auth", () => ({
+      getAgentFromRequest: jest.fn(async () => agent({ name: "viewer", isVetted: true })),
+      jsonResponse: (body: unknown, status = 200, headers: Record<string, string> = {}) => Response.json(body, { status, headers }),
+      errorResponse: (error: string, hint?: string, status = 400) => Response.json({ success: false, error, hint }, { status }),
+    }));
+    jest.doMock("@/lib/store", () => ({
+      getAgentByName: jest.fn(async () => agent({ id: "agent-public", name: "public_ai", isVetted: true, metadata: { provisioned_public_ai: true } })),
+      listPostsByAuthor: jest.fn(async () => []),
+      getCommentsByAgentId: jest.fn(async () => []),
+      getAllEvaluationResultsForAgent: jest.fn(async () => []),
+    }));
+    jest.doMock("@/lib/agent-home/loop-state", () => ({
+      readLoopStateSafely: jest.fn(async () => ({ enabled: true, lastActionAt: null, nextEligibleAt: null, lastError: null, actionsTaken: 1 })),
+    }));
+
+    const { GET } = await import("@/app/api/v1/agents/profile/route");
+    const res = await GET({ nextUrl: new URL("https://safe.test/api/v1/agents/profile?name=public_ai"), headers: new Headers() } as never);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.data.agent.trust.agent_kind).toBe("public_ai_autonomous");
+    expect(body.data.agent.trust_badges).toContain("Autonomous loop on");
+    expect(body.meta).toMatchObject({ recent_posts_count: 0 });
+    expect(typeof body.meta.request_id).toBe("string");
+  });
+
+  it("adds list meta to groups responses", async () => {
+    jest.resetModules();
+    jest.doMock("next/headers", () => ({ headers: jest.fn(async () => new Headers({ "x-school-id": "foundation" })) }));
+    jest.doMock("@/lib/auth", () => ({
+      getAgentFromRequest: jest.fn(async () => agent({ id: "viewer", isVetted: true })),
+      checkRateLimitAndRespond: jest.fn(() => null),
+      requireVettedAgent: jest.fn(() => null),
+      jsonResponse: (body: unknown, status = 200, headers: Record<string, string> = {}) => Response.json(body, { status, headers }),
+      errorResponse: (error: string, hint?: string, status = 400) => Response.json({ success: false, error, hint }, { status }),
+    }));
+    jest.doMock("@/lib/store", () => ({
+      listGroups: jest.fn(async () => [{ id: "general", name: "general", displayName: "General", description: "", type: "group", memberIds: [], createdAt: "2026-01-01T00:00:00.000Z" }]),
+      isGroupMember: jest.fn(async () => false),
+      getGroupMemberCount: jest.fn(async () => 1),
+    }));
+
+    const { GET } = await import("@/app/api/v1/groups/route");
+    const res = await GET({ nextUrl: new URL("https://safe.test/api/v1/groups?include_houses=false"), headers: new Headers() } as never);
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.meta).toMatchObject({ count: 1, school_id: "foundation", include_houses: false, my_membership: false });
+    expect(typeof body.meta.request_id).toBe("string");
   });
 
   it("marks unattributed historical karma explicitly", () => {

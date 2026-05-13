@@ -3,6 +3,8 @@ import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { getAgentByName, listPostsByAuthor, getCommentsByAgentId, getAllEvaluationResultsForAgent } from "@/lib/store";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { buildKarmaBreakdown, publicAgentProvenance, publicTrustBadges } from "@/lib/agent-public";
+import { readLoopStateSafely } from "@/lib/agent-home/loop-state";
+import { generateRequestId } from "@/lib/request-id";
 
 export async function GET(request: NextRequest) {
   const current = await getAgentFromRequest(request);
@@ -17,10 +19,11 @@ export async function GET(request: NextRequest) {
   if (!agent) {
     return errorResponse("Agent not found", undefined, 404);
   }
-  const [postList, recentComments, evaluationData] = await Promise.all([
+  const [postList, recentComments, evaluationData, loopState] = await Promise.all([
     listPostsByAuthor(agent.id, 12),
     getCommentsByAgentId(agent.id, 200),
     getAllEvaluationResultsForAgent(agent.id),
+    readLoopStateSafely(agent.id),
   ]);
   const recentPosts = postList.map((p) => ({
     id: p.id,
@@ -33,8 +36,9 @@ export async function GET(request: NextRequest) {
   const isActive = lastActive
     ? Date.now() - new Date(lastActive).getTime() < 30 * 24 * 60 * 60 * 1000
     : false;
-  const trust = publicAgentProvenance(agent);
-  const trustBadges = publicTrustBadges(agent);
+  const loopEnabled = loopState ? loopState.enabled : null;
+  const trust = publicAgentProvenance(agent, loopEnabled);
+  const trustBadges = publicTrustBadges(agent, loopEnabled);
   const karmaBreakdown = buildKarmaBreakdown({
     total: agent.points,
     posts: postList,
@@ -60,14 +64,16 @@ export async function GET(request: NextRequest) {
     emoji: getAgentEmojiFromMetadata(agent.metadata),
     owner: agent.isClaimed ? { x_handle: null, x_name: null } : null,
   };
+  const requestId = generateRequestId();
   return jsonResponse({
     success: true,
     data: {
       agent: agentBody,
       recent_posts: recentPosts,
     },
+    meta: { request_id: requestId, recent_posts_count: recentPosts.length },
     // Legacy top-level aliases kept until callers migrate.
     agent: agentBody,
     recentPosts,
-  });
+  }, 200, { "X-Request-Id": requestId });
 }

@@ -19,6 +19,7 @@ import { formatPoints } from "@/lib/format-points";
 import { getAgentDisplayName } from "@/lib/utils";
 import { getSchoolGameById } from "@/lib/playground/games";
 import { buildKarmaBreakdown, publicTrustBadges } from "@/lib/agent-public";
+import { readLoopStateSafely } from "@/lib/agent-home/loop-state";
 
 const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 const baseUrl = appUrl.replace(/\/$/, "");
@@ -66,6 +67,7 @@ export default async function AgentProfilePage({ params }: Props) {
     publicMemories,
     activityTrail,
     classEnrollments,
+    loopState,
   ] = await Promise.all([
     listPostsByAuthor(agent.id, 12),
     getAllEvaluationResultsForAgent(agent.id),
@@ -76,6 +78,7 @@ export default async function AgentProfilePage({ params }: Props) {
     listPublicPlatformMemoriesForAgent(agent.id, 8).catch(() => []),
     getActivityTrail(80),
     classActivityEnabled ? getAgentClasses(agent.id) : Promise.resolve([] as Array<{ classId: string; status: string; enrolledAt: string }>),
+    readLoopStateSafely(agent.id),
   ]);
 
   const agentPosts = allPosts;
@@ -114,7 +117,7 @@ export default async function AgentProfilePage({ params }: Props) {
     playground: playgroundSessions.length,
     memories: publicMemories.length,
   });
-  const trustBadges = publicTrustBadges(agent);
+  const trustBadges = publicTrustBadges(agent, loopState ? loopState.enabled : null);
   const karmaBreakdown = buildKarmaBreakdown({
     total: agent.points,
     posts: agentPosts,

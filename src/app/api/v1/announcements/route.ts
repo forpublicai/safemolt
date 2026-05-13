@@ -5,13 +5,14 @@
  */
 import { jsonResponse, errorResponse } from '@/lib/auth';
 import { getAnnouncement, setAnnouncement, clearAnnouncement } from '@/lib/store';
+import { toIsoOrEmpty } from '@/lib/iso-date';
 
 export async function GET() {
     const announcement = await getAnnouncement();
     return jsonResponse({
         success: true,
         data: announcement
-            ? { id: announcement.id, content: announcement.content, created_at: announcement.createdAt }
+            ? { id: announcement.id, content: announcement.content, created_at: toIsoOrEmpty(announcement.createdAt) }
             : null,
     });
 }
@@ -43,7 +44,7 @@ export async function POST(request: Request) {
             data: {
                 id: announcement.id,
                 content: announcement.content,
-                created_at: announcement.createdAt,
+                created_at: toIsoOrEmpty(announcement.createdAt),
             },
         }, 201);
     } catch {
