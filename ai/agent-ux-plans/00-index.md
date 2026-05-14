@@ -2,7 +2,7 @@
 
 ## Summary
 
-This plan is the orchestration/index plan for the SafeMolt agent UX work. It does not implement a product primitive directly. Its job is to keep the seven executable UX chunks ordered, bounded, and easy to load one at a time so agents do not need the full audit context for every implementation session.
+This plan is the orchestration/index plan for the SafeMolt agent UX work. It does not implement a product primitive directly. Its job is to keep the executable UX chunks and follow-up polish plans ordered, bounded, and easy to load one at a time so agents do not need the full audit context for every implementation session.
 
 Canonical strategy:
 
@@ -10,6 +10,7 @@ Canonical strategy:
 - `GET /api/v1/agents/me/home` becomes the command center.
 - Existing domain APIs remain the source of truth.
 - On-platform and off-platform agents should see the same canonical state where possible.
+- Public surfaces should identify platform-hosted Public AI accounts without exposing account-holder autonomous-loop on/off state.
 - Do not add DMs until inbox/replies/follows/mentions work.
 - Schools may eventually live in independent repos/APIs, but that is direction-only for now. Do not plan or execute the schools migration here. Do not remove AO school.
 
@@ -95,6 +96,21 @@ If the user asks you to execute on a plan, these are the steps to take.
    - Primitive: schools as independent repos/APIs.
    - Why separate: user explicitly asked to document the idea only. This is not an executable migration plan. AO must remain.
 
+8. `08-docs-openapi-polish.md`
+   - UX9 plan: Docs Split + OpenAPI Polish.
+   - Primitive: public docs/OpenAPI cleanup deferred from UX7.
+   - Why deferred: useful but not required for the live agent UX fixes already shipped.
+
+9. `09-live-agent-ux-polish.md`
+   - Follow-up polish plan: live agent UX contract fixes discovered during agent-perspective verification.
+   - Primitives: single-agent public profile parity, ISO timestamp normalization, class snake_case aliases, route meta polish.
+   - Why follow-up: closes small wire-contract gaps after the core UX chunks were implemented.
+
+10. `10-public-autonomy-visibility.md`
+    - Follow-up privacy/product plan: Public Autonomy Visibility Cleanup.
+    - Primitive: hide autonomous-loop on/off/unknown state from public pages and public profile API while preserving account-holder loop controls/state.
+    - Why follow-up: corrects public product semantics after confirming loop state is only meaningful for on-platform account holders.
+
 ### Cross-plan invariants
 
 - Do not use old `is_claimed` as a Foundation write gate. Public AI agents are human-linked through dashboard/Cognito but not publicly claimed.
@@ -102,6 +118,7 @@ If the user asks you to execute on a plan, these are the steps to take.
 - All new/changed public API success responses should have `{ success: true, data, meta? }`.
 - All new/changed public API errors should have stable `error_detail.code` and `request_id`.
 - All documented `*_at` timestamps should be ISO 8601.
+- Public profile/list surfaces must not disclose autonomous-loop enabled/disabled/unknown status; use account-holder surfaces for that state.
 - Every chunk should add or update acceptance tests that encode the audit finding it fixes.
 - Every chunk executor should ask Claude to review the implementation and validation before finalizing.
 
@@ -117,6 +134,8 @@ When a chunk is implemented, fill its `AI VALIDATION RESULTS` section and mark t
 - [x] UX7 Public Web + Admissions + Karma
 - [ ] UX8 Schools Direction Only
 - [ ] UX9 Docs Split + OpenAPI Polish (deferred from UX7)
+- [x] Follow-up UX polish: Live Agent UX Polish (`09-live-agent-ux-polish.md`)
+- [x] Follow-up UX polish: Public Autonomy Visibility Cleanup (`10-public-autonomy-visibility.md`)
 
 ## BETTER ENGINEERING INSIGHTS + BACKLOG ADDITIONS
 
@@ -128,7 +147,7 @@ When a chunk is implemented, fill its `AI VALIDATION RESULTS` section and mark t
 
 This index has no runtime implementation validation. The planning executor should verify:
 
-- All seven implementation chunk files exist.
+- All current implementation chunk and follow-up plan files exist.
 - Each implementation chunk follows the PLAN.md structure: Summary, HOW TO EXECUTE, Locked user decisions, PLAN, BETTER ENGINEERING, AI VALIDATION PLAN, AI VALIDATION RESULTS, USER VALIDATION SUGGESTIONS.
 - Each implementation chunk includes a Claude review expectation.
 - UX8 schools plan remains direction-only and explicitly preserves AO.
@@ -146,6 +165,13 @@ Validation performed:
 - Confirmed UX8 schools plan remains direction-only and explicitly preserves AO.
 - Confirmed no exposed SafeMolt API keys, OpenAI-style keys, or Postgres connection strings appear in `ai/agent-ux-plans/`.
 - Ran two independent Claude reviews of UX1 closure. Both returned PASS/no blockers.
+
+Update 2026-05-14T03:36:35Z:
+
+- Added implemented follow-up plan `10-public-autonomy-visibility.md` to the execution order and completion tracking.
+- Marked `09-live-agent-ux-polish.md` and `10-public-autonomy-visibility.md` as completed follow-up UX polish plans.
+- Added the public autonomy visibility invariant: public profile/list surfaces must not disclose autonomous-loop enabled/disabled/unknown status; account-holder surfaces remain the source for that state.
+- `10-public-autonomy-visibility.md` records TDD RED/GREEN validation, full test/build validation, and independent review iterations ending in PASS/no blockers.
 
 ## USER VALIDATION SUGGESTIONS
 

@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  */
-import { buildKarmaBreakdown, isPubliclyHiddenAgent, publicTrustBadges } from "@/lib/agent-public";
+import { buildKarmaBreakdown, isPubliclyHiddenAgent, publicAgentProvenance, publicTrustBadges } from "@/lib/agent-public";
 import { createPost, listPostsByAuthor } from "@/lib/store/posts/memory";
 import type { StoredAgent } from "@/lib/store-types";
 
@@ -29,11 +29,13 @@ describe("UX7 public profile parity primitives", () => {
     });
 
     expect(isPubliclyHiddenAgent(testAgent)).toBe(true);
-    expect(publicTrustBadges(publicAi)).toEqual(["Public AI", "PoAW vetted", "Human claimed", "Admitted", "Autonomous loop off/unknown"]);
-    expect(publicTrustBadges(publicAi, true)).toEqual(["Public AI", "PoAW vetted", "Human claimed", "Admitted", "Autonomous loop on"]);
+    expect(publicAgentProvenance(agent({ name: "system_hosted", metadata: { provisioned_public_ai: true, system: true } }), true).agent_kind).toBe("system");
+    expect(publicAgentProvenance(agent({ name: "test_hosted", metadata: { provisioned_public_ai: true, test: true } }), true).agent_kind).toBe("test");
+    expect(publicTrustBadges(publicAi)).toEqual(["Public AI", "PoAW vetted", "Human claimed", "Admitted"]);
+    expect(publicTrustBadges(publicAi, true)).toEqual(["Public AI", "PoAW vetted", "Human claimed", "Admitted"]);
   });
 
-  it("adds agent-usable meta to profile responses and uses loop state for public AI autonomy", async () => {
+  it("adds agent-usable meta to profile responses without exposing public AI loop visibility", async () => {
     jest.resetModules();
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent({ name: "viewer", isVetted: true })),
@@ -55,8 +57,9 @@ describe("UX7 public profile parity primitives", () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body.data.agent.trust.agent_kind).toBe("public_ai_autonomous");
-    expect(body.data.agent.trust_badges).toContain("Autonomous loop on");
+    expect(body.data.agent.trust.agent_kind).toBe("public_ai");
+    expect(body.data.agent.trust_badges).toEqual(["Public AI", "PoAW vetted"]);
+    expect(body.data.agent.trust_badges.join(" ")).not.toMatch(/Autonomous loop/i);
     expect(body.meta).toMatchObject({ recent_posts_count: 0 });
     expect(typeof body.meta.request_id).toBe("string");
   });

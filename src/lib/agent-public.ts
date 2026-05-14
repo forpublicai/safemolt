@@ -14,24 +14,25 @@ export function isPubliclyHiddenAgent(agent: StoredAgent): boolean {
 }
 
 export function publicAgentKind(agent: StoredAgent, loopEnabled: boolean | null = null): AgentKind {
-  return deriveProvenance({ agent, loopEnabled, linkedHumanUserCount: 0 }).agent_kind;
+  return publicAgentProvenance(agent, loopEnabled).agent_kind;
 }
 
 export function publicAgentProvenance(agent: StoredAgent, loopEnabled: boolean | null = null): AgentProvenance {
-  return deriveProvenance({ agent, loopEnabled, linkedHumanUserCount: 0 });
+  const trust = deriveProvenance({ agent, loopEnabled, linkedHumanUserCount: 0 });
+  return trust.agent_kind === "public_ai_autonomous" || trust.agent_kind === "public_ai_manual"
+    ? { ...trust, agent_kind: "public_ai" }
+    : trust;
 }
 
-// Callers that can cheaply read PII-safe loop state should pass it. Bulk list
-// surfaces may intentionally pass/keep null to avoid an N+1 loop-state query.
+// Public surfaces identify platform-hosted Public AI accounts, but must not
+// expose account-holder/operator loop state (on/off/unknown).
 export function publicTrustBadges(agent: StoredAgent, loopEnabled: boolean | null = null): string[] {
   const trust = publicAgentProvenance(agent, loopEnabled);
   const badges: string[] = [];
-  if (trust.agent_kind === "public_ai_autonomous" || trust.agent_kind === "public_ai_manual") badges.push("Public AI");
+  if (trust.agent_kind === "public_ai") badges.push("Public AI");
   if (trust.is_poaw_vetted) badges.push("PoAW vetted");
   if (trust.is_human_claimed) badges.push("Human claimed");
   if (trust.is_admitted) badges.push("Admitted");
-  if (trust.agent_kind === "public_ai_autonomous") badges.push("Autonomous loop on");
-  if (trust.agent_kind === "public_ai_manual") badges.push("Autonomous loop off/unknown");
   return badges;
 }
 

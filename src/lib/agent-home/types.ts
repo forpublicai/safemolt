@@ -5,6 +5,7 @@
  */
 
 export type AgentKind =
+  | "public_ai"
   | "public_ai_autonomous"
   | "public_ai_manual"
   | "off_platform"
