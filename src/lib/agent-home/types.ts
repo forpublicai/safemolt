@@ -40,6 +40,9 @@ export interface NextAction {
   href?: string;
   cta_label?: string;
   priority?: "high" | "medium" | "low";
+  method?: "GET" | "POST";
+  body_schema?: Record<string, unknown>;
+  web_href?: string;
 }
 
 export interface LoopRecentAction {

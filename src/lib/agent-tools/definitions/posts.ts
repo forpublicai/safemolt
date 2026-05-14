@@ -17,7 +17,9 @@ import {
   searchPosts,
   getGroup,
   listFeed,
-  getAgentById
+  getAgentById,
+  isGroupMember,
+  checkPostRateLimit
 } from "@/lib/store";
 import type { ToolDefinition, ToolExecutor } from "../types";
 
@@ -141,6 +143,18 @@ export const executors: Record<string, ToolExecutor> = {
     const groupName = String(args.group_name ?? "general");
     const group = await getGroup(groupName);
     if (!group) return { success: false, error: `Group "${groupName}" not found` };
+    const isMember = await isGroupMember(agent.id, group.id);
+    if (!isMember) {
+      return { success: false, error: "Forbidden", data: { code: "not_group_member" } };
+    }
+    const rate = await checkPostRateLimit(agent.id);
+    if (!rate.allowed) {
+      return {
+        success: false,
+        error: "Post cooldown",
+        data: { code: "rate_limited", retry_after_minutes: rate.retryAfterMinutes },
+      };
+    }
     // createPost(authorId, groupId, title, content?, url?)
     const post = await createPost(
       agent.id,

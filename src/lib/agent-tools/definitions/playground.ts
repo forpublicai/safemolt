@@ -9,15 +9,14 @@
 
 import {
   listPlaygroundSessions,
-  joinPlaygroundSession,
   getPlaygroundSession,
   getPlaygroundActions,
   createPlaygroundAction
 } from "@/lib/store";
+import { joinSession } from "@/lib/playground/session-manager";
 import { getSchoolGameById, listGames } from "@/lib/playground/games";
-import { getRandomPrefab } from "@/lib/playground/prefabs";
-import type { SessionStatus } from "@/lib/playground/types";
-import type { ToolDefinition, ToolExecutor } from "../types";
+import type { PlaygroundSession, SessionStatus } from "@/lib/playground/types";
+import type { ToolCallResult, ToolDefinition, ToolExecutor } from "../types";
 
 export const definitions: ToolDefinition[] = [
 {
@@ -97,6 +96,60 @@ export const definitions: ToolDefinition[] = [
   },
 ];
 
+function summarizeJoinResult(
+  sessionId: string,
+  session: PlaygroundSession,
+  alreadyJoined: boolean
+): ToolCallResult {
+  return {
+    success: true,
+    data: {
+      session_id: sessionId,
+      joined: true,
+      already_joined: alreadyJoined,
+      status: session.status,
+      participants: session.participants?.length ?? 0,
+    },
+  };
+}
+
+function joinErrorCode(message: string): string {
+  if (message === "Session full") return "session_full";
+  if (message === "Session not found") return "session_not_found";
+  if (message === "Agent not found") return "agent_not_found";
+  if (message === "Game definition not found") return "game_not_found";
+  if (message === "invalid_prefab_id") return "invalid_prefab_id";
+  if (message === "Session is not in pending state" || message === "Session not pending") {
+    return "session_not_pending";
+  }
+  return "join_failed";
+}
+
+async function formatJoinFailure(
+  sessionId: string,
+  agentId: string,
+  message: string
+): Promise<ToolCallResult> {
+  const session = await getPlaygroundSession(sessionId);
+  const participantCount = session?.participants?.length ?? 0;
+  const alreadyJoined = Boolean(session?.participants?.some((p) => p.agentId === agentId));
+
+  if (alreadyJoined && session) {
+    return summarizeJoinResult(sessionId, session, true);
+  }
+
+  return {
+    success: false,
+    error: message,
+    data: {
+      code: joinErrorCode(message),
+      session_id: sessionId,
+      status: session?.status ?? null,
+      participants: participantCount,
+    },
+  };
+}
+
 export const executors: Record<string, ToolExecutor> = {
   list_playground_games: async (args, { agent }) => {
     const games = listGames();
@@ -140,20 +193,13 @@ export const executors: Record<string, ToolExecutor> = {
 
   join_playground_session: async (args, { agent }) => {
     const sessionId = String(args.session_id);
-    const pending = await listPlaygroundSessions({ status: "pending", limit: 50 });
-    const target = pending.find((s) => s.id === sessionId);
-    if (!target) return { success: false, error: "Session not found or not in 'pending' state" };
-    const game = getSchoolGameById(target.schoolId ?? "foundation", target.gameId);
-    const maxPlayers = game?.maxPlayers ?? 8;
-    const prefab = getRandomPrefab();
-    const result = await joinPlaygroundSession(sessionId, {
-      agentId: agent.id,
-      agentName: agent.displayName || agent.name,
-      status: "active",
-      prefabId: prefab.id,
-    }, maxPlayers);
-    if (!result.success) return { success: false, error: result.reason ?? "Could not join session" };
-    return { success: true, data: { session_id: sessionId, joined: true, participants: result.session?.participants?.length } };
+    try {
+      const session = await joinSession(sessionId, agent.id);
+      return summarizeJoinResult(sessionId, session, false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to join session";
+      return formatJoinFailure(sessionId, agent.id, message);
+    }
   },
 
   get_playground_session: async (args, { agent }) => {

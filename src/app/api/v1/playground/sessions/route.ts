@@ -7,6 +7,7 @@ import { checkDeadlines } from '@/lib/playground/session-manager';
 import { listPlaygroundSessions } from '@/lib/store';
 import type { SessionStatus } from '@/lib/playground/types';
 import { headers } from 'next/headers';
+import { toIsoOrNull } from '@/lib/iso-date';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,14 +49,20 @@ export async function GET(request: Request) {
         const listData = sessions.map((session) => ({
             id: session.id,
             gameId: session.gameId,
+            game_id: session.gameId,
             status: session.status,
             currentRound: session.currentRound,
+            current_round: session.currentRound,
             maxRounds: session.maxRounds,
+            max_rounds: session.maxRounds,
             participants: session.participants,
             summary: session.summary,
             createdAt: session.createdAt,
+            created_at: toIsoOrNull(session.createdAt),
             startedAt: session.startedAt,
+            started_at: toIsoOrNull(session.startedAt),
             completedAt: session.completedAt,
+            completed_at: toIsoOrNull(session.completedAt),
         }));
 
         return jsonResponse({

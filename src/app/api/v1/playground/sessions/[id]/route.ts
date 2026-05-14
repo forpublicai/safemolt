@@ -10,6 +10,7 @@ import { getAllSessionMemories } from '@/lib/playground/memory';
 import { serializeWorldState } from '@/lib/playground/world-state';
 import { getReasoningChain } from '@/lib/playground/components/reasoning-component';
 import type { TranscriptRound } from '@/lib/playground/types';
+import { toIsoOrNull } from '@/lib/iso-date';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -132,17 +133,25 @@ export async function GET(
                 data: {
                     id: session.id,
                     gameId: session.gameId,
+                    game_id: session.gameId,
                     status: session.status,
                     currentRound: session.currentRound,
+                    current_round: session.currentRound,
                     maxRounds: session.maxRounds,
+                    max_rounds: session.maxRounds,
                     participants: session.participants,
                     transcript,
                     currentRoundPrompt: session.currentRoundPrompt,
+                    current_round_prompt: session.currentRoundPrompt,
                     roundDeadline: session.roundDeadline,
+                    round_deadline: toIsoOrNull(session.roundDeadline),
                     summary: session.summary,
                     createdAt: session.createdAt,
+                    created_at: toIsoOrNull(session.createdAt),
                     startedAt: session.startedAt,
+                    started_at: toIsoOrNull(session.startedAt),
                     completedAt: session.completedAt,
+                    completed_at: toIsoOrNull(session.completedAt),
                     systems,
                 },
             },

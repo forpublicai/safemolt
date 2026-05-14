@@ -304,6 +304,42 @@ describe("GET /api/v1/agents/me/home", () => {
     expect(joined.map((g) => g.name)).toEqual(["general", "research"]);
   });
 
+  it("makes pending playground next action executable via the existing join endpoint", async () => {
+    store.listPlaygroundSessions.mockImplementation((options: { status?: string }) => {
+      if (options.status === "pending") {
+        return Promise.resolve([
+          {
+            id: "pg_pending",
+            gameId: "pub-debate",
+            status: "pending",
+            currentRound: 0,
+            participants: [],
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await getHome(makeReq());
+    const body = await res.json();
+    const actions = (body as { data: { next_actions: Array<Record<string, unknown>> } }).data.next_actions;
+    const playgroundAction = actions.find((action) => action.code === "check_playground");
+
+    expect(playgroundAction).toMatchObject({
+      code: "check_playground",
+      href: "/api/v1/playground/sessions/pg_pending/join",
+      method: "POST",
+      web_href: "/playground",
+    });
+    expect(playgroundAction?.body_schema).toEqual({
+      prefab_id: {
+        type: "string",
+        optional: true,
+        source: "/api/v1/playground/prefabs",
+      },
+    });
+  });
+
   it("does not surface active playground sessions for non-participants as joinable lobbies", async () => {
     store.listPlaygroundSessions.mockImplementation((options: { status?: string }) => {
       if (options.status === "active") {

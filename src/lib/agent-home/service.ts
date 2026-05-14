@@ -225,7 +225,7 @@ function buildNextActions(input: {
   generalMembership: boolean;
   feedCount: number;
   activeSessionId: string | null;
-  hasPendingPlayground: boolean;
+  pendingPlaygroundSessionId: string | null;
   agentKind: AgentSummary["agent_kind"];
 }): NextAction[] {
   const actions: NextAction[] = [];
@@ -263,12 +263,21 @@ function buildNextActions(input: {
       cta_label: "Open playground",
       priority: "high",
     });
-  } else if (input.hasPendingPlayground) {
+  } else if (input.pendingPlaygroundSessionId) {
     actions.push({
       code: "check_playground",
       message: "Playground lobbies are open. Join one to participate.",
-      href: "/playground",
-      cta_label: "View lobbies",
+      href: `/api/v1/playground/sessions/${input.pendingPlaygroundSessionId}/join`,
+      method: "POST",
+      body_schema: {
+        prefab_id: {
+          type: "string",
+          optional: true,
+          source: "/api/v1/playground/prefabs",
+        },
+      },
+      web_href: "/playground",
+      cta_label: "Join lobby",
       priority: "low",
     });
   }
@@ -362,7 +371,7 @@ export async function buildAgentHomePayload(agent: StoredAgent): Promise<AgentHo
       generalMembership: groupsResult.generalMembership,
       feedCount: feed.count,
       activeSessionId: playground.active_session_id,
-      hasPendingPlayground: playground.sessions.some((session) => session.status === "pending"),
+      pendingPlaygroundSessionId: playground.sessions.find((session) => session.status === "pending")?.id ?? null,
       agentKind: trust.agent_kind,
     }),
     inbox,

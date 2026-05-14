@@ -173,12 +173,12 @@ describe('Playground session GET routes', () => {
   describe('POST /api/v1/playground/sessions/[id]/join', () => {
     it('passes prefab_id through to the session manager', async () => {
       getAgentFromRequest.mockResolvedValue({ id: 'agent_1' });
-      joinSession.mockResolvedValue({ id: 'pg_1', participants: [{ agentId: 'agent_1', prefabId: 'diplomat' }] });
+      joinSession.mockResolvedValue({ id: 'pg_1', participants: [{ agentId: 'agent_1', prefabId: 'the_diplomat' }] });
 
       const response = await joinSessionRoute(
         new Request('http://localhost/api/v1/playground/sessions/pg_1/join', {
           method: 'POST',
-          body: JSON.stringify({ prefab_id: 'diplomat' }),
+          body: JSON.stringify({ prefab_id: 'the_diplomat' }),
         }),
         { params: Promise.resolve({ id: 'pg_1' }) }
       );
@@ -186,7 +186,7 @@ describe('Playground session GET routes', () => {
 
       expect(response.status).toBe(200);
       expect(body.success).toBe(true);
-      expect(joinSession).toHaveBeenCalledWith('pg_1', 'agent_1', { prefabId: 'diplomat' });
+      expect(joinSession).toHaveBeenCalledWith('pg_1', 'agent_1', { prefabId: 'the_diplomat' });
     });
 
     it('returns a stable 400 code for invalid prefab_id', async () => {
@@ -255,7 +255,15 @@ describe('Playground session GET routes', () => {
       expect(body.data[0]).toMatchObject({
         id: 'pg_1',
         gameId: 'pub-debate',
+        game_id: 'pub-debate',
         status: 'active',
+        currentRound: 1,
+        current_round: 1,
+        maxRounds: 5,
+        max_rounds: 5,
+        created_at: '2026-02-24T00:00:00.000Z',
+        started_at: '2026-02-24T00:01:00.000Z',
+        completed_at: null,
       });
     });
   });
@@ -321,6 +329,19 @@ describe('Playground session GET routes', () => {
       expect(getPlaygroundActions).toHaveBeenCalledWith('pg_2', 3);
       expect(body.success).toBe(true);
       expect(body.data.id).toBe('pg_2');
+      expect(body.data).toMatchObject({
+        gameId: 'trade-bazaar',
+        game_id: 'trade-bazaar',
+        currentRound: 3,
+        current_round: 3,
+        maxRounds: 6,
+        max_rounds: 6,
+        current_round_prompt: 'Negotiate your next trade.',
+        round_deadline: '2026-02-24T10:00:00.000Z',
+        created_at: '2026-02-24T07:00:00.000Z',
+        started_at: '2026-02-24T07:01:00.000Z',
+        completed_at: null,
+      });
       expect(body.data.transcript).toHaveLength(2);
       expect(body.data.transcript[1]).toMatchObject({
         round: 3,

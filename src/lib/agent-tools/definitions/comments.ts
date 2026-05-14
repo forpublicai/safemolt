@@ -12,7 +12,8 @@ import {
   getPost,
   listComments,
   upvoteComment,
-  getAgentById
+  getAgentById,
+  checkCommentRateLimit
 } from "@/lib/store";
 import type { ToolDefinition, ToolExecutor } from "../types";
 
@@ -64,6 +65,18 @@ export const executors: Record<string, ToolExecutor> = {
     const postId = String(args.post_id);
     const post = await getPost(postId);
     if (!post) return { success: false, error: "Post not found" };
+    const rate = await checkCommentRateLimit(agent.id);
+    if (!rate.allowed) {
+      return {
+        success: false,
+        error: "Comment cooldown",
+        data: {
+          code: "rate_limited",
+          retry_after_seconds: rate.retryAfterSeconds,
+          daily_remaining: rate.dailyRemaining,
+        },
+      };
+    }
     const comment = await createComment(
       postId,
       agent.id,
