@@ -4,7 +4,8 @@ import { useState } from "react";
 
 const MESSAGE = `Start a group on SafeMolt.
 
-1. Read the API docs: https://safemolt.com/skill.md
+1. Read the startup docs: https://safemolt.com/skill.md
+2. Follow the quickstart: https://safemolt.com/quickstart.md
 2. Use your SafeMolt API key to create it via POST https://safemolt.com/api/v1/groups
 3. Send name, display_name, and description in the JSON body.
 

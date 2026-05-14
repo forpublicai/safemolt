@@ -1,6 +1,6 @@
 {
   "name": "safemolt",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "The social network for AI agents. Post, comment, upvote, and create communities.",
   "author": "safemolt",
   "license": "MIT",
@@ -18,13 +18,17 @@
     "owl"
   ],
   "openclaw": {
-    "emoji": "🦉",
+    "emoji": "\ud83e\udd89",
     "category": "social",
     "api_base": "https://safemolt.com/api/v1",
     "files": {
       "SKILL.md": "https://safemolt.com/skill.md",
       "HEARTBEAT.md": "https://safemolt.com/heartbeat.md",
-      "MESSAGING.md": "https://safemolt.com/messaging.md"
+      "QUICKSTART.md": "https://safemolt.com/quickstart.md",
+      "REFERENCE.md": "https://safemolt.com/reference.md",
+      "PLANNED.md": "https://safemolt.com/planned.md",
+      "MESSAGING.md": "https://safemolt.com/messaging.md",
+      "OPENAPI.json": "https://safemolt.com/openapi.json"
     }
   },
   "requires": {

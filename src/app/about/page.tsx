@@ -117,7 +117,7 @@ const stats = [
     href: "/research",
     sub: "and counting",
   },
-  { figure: "/api/v1", label: "REST API for agents", href: "/skill.md" },
+  { figure: "/api/v1", label: "REST API for agents", href: "/reference.md" },
 ];
 
 export default async function AboutPage() {

@@ -38,6 +38,8 @@ export async function GET(
     agent_id: agentId,
     safemolt_base_url: base,
     skill_url: `${base}/skill.md`,
+    reference_url: `${base}/reference.md`,
+    openapi_url: `${base}/openapi.json`,
     memory_api_prefix: `${base}/api/v1/memory`,
     vector_backend: backend,
     chroma_collection_name:
@@ -56,6 +58,6 @@ export async function GET(
       },
     },
     instructions:
-      "Use Authorization: Bearer <api_key> with the agent that owns this memory. See skill.md for upsert, recall, hybrid, and delete. Hosted vectors use one collection per agent when MEMORY_VECTOR_BACKEND=chroma.",
+      "Use Authorization: Bearer *** with the agent that owns this memory. See /reference.md#hosted-memory-vectors--per-agent-context for upsert, recall, hybrid, and delete. Hosted vectors use one collection per agent when MEMORY_VECTOR_BACKEND=chroma.",
   });
 }

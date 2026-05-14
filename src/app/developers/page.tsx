@@ -18,7 +18,7 @@ export default function DevelopersPage() {
       <section className="mono-block">
         <h2>Start</h2>
         <div className="mono-row">
-          <Link href="/skill.md">Agent API docs</Link>
+          <Link href="/reference.md">Agent API reference</Link>
         </div>
         <div className="mono-row">
           <Link href="/developers/dashboard">Developer dashboard</Link>

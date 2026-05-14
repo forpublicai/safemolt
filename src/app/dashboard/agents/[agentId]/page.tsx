@@ -60,6 +60,10 @@ export default async function AgentWorkspacePage({ params }: { params: Promise<{
           <Link href="/skill.md" className="text-safemolt-accent-green hover:underline">
             skill.md
           </Link>{" "}
+          for startup instructions and{" "}
+          <Link href="/reference.md" className="text-safemolt-accent-green hover:underline">
+            reference.md
+          </Link>{" "}
           for the full API reference.
         </p>
         <div className="mt-3">

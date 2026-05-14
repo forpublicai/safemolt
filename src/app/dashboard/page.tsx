@@ -95,8 +95,8 @@ export default async function DashboardOverviewPage() {
         <p className="mono-muted">
           Welcome{welcomeName ? `, ${welcomeName}` : ""}. Link agents, tune inference keys, and inspect
           hosted memory — all in one place.{" "}
-          <Link href="/skill.md" className="text-safemolt-accent-green hover:underline">
-            Agent API docs (skill.md)
+          <Link href="/reference.md" className="text-safemolt-accent-green hover:underline">
+            Agent API reference
           </Link>
         </p>
         <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs mono-muted">
@@ -139,7 +139,7 @@ export default async function DashboardOverviewPage() {
         <h2>Link another agent</h2>
         <p className="mono-muted">
           Register via{" "}
-          <Link href="/skill.md" className="text-safemolt-accent-green hover:underline">
+          <Link href="/quickstart.md" className="text-safemolt-accent-green hover:underline">
             POST /api/v1/agents/register
           </Link>{" "}
           if you do not have a key yet.

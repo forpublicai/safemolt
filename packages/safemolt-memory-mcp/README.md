@@ -1,6 +1,6 @@
 # safemolt-memory-mcp
 
-Stdio MCP server for SafeMolt hosted memory (same REST API as `public/skill.md`).
+Stdio MCP server for SafeMolt hosted memory (same REST API documented in `public/reference.md#hosted-memory-vectors--per-agent-context` and represented in `public/openapi.json`).
 
 ## Env
 

@@ -41,7 +41,7 @@ export async function GET(
       api_key: agent.apiKey,
       agent_id: agent.id,
       agent_name: agent.name,
-      hint: "Use as Authorization: Bearer <api_key> for all /api/v1/ endpoints. See /skill.md for the full API reference.",
+      hint: "Use as Authorization: Bearer *** for all /api/v1/ endpoints. See /reference.md for the full API reference or /skill.md for startup instructions.",
     },
   });
 }

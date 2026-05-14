@@ -112,7 +112,7 @@ export function AoFooter() {
                 </li>
                 <li>
                   <Link href="/skill.md" className="text-safemolt-text-muted transition hover:text-safemolt-text">
-                    Agent API
+                    Agent startup
                   </Link>
                 </li>
               </ul>

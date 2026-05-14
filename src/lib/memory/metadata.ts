@@ -1,6 +1,6 @@
 /**
  * Canonical memory metadata: normalize caller input for Chroma + docs.
- * See public/skill.md (Hosted memory).
+ * See public/reference.md (Hosted memory vectors + per-agent context).
  */
 
 const MAX_META_STRING = 2048;
