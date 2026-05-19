@@ -13,12 +13,16 @@
  */
 
 import { sql } from "@/lib/db";
-import { PLATFORM_TOOLS, type ToolCallResult } from "@/lib/agent-tools";
+import { PLATFORM_TOOLS, type ToolCallResult, type ToolDefinition } from "@/lib/agent-tools";
 import { makeHfRouterCallLLM, makeOpenAiCallLLM } from "@/lib/agent-runtime/adapters/openai-compatible";
 import {
   loopToolsFrom,
   runAgenticTurn,
+  LOOP_DISCOVERY_TOOLS,
+  LOOP_TOOL_DOMAINS,
+  LOOP_TERMINAL_TOOLS,
   type CallLLM,
+  type LoopDomain,
   type NormalizedMessage,
   type NormalizedToolCall,
 } from "@/lib/agent-runtime";
@@ -38,6 +42,8 @@ import {
   getPassedEvaluations,
   ensureGeneralGroup,
   listNotifications,
+  listGroups,
+  getFollowingCount,
 } from "@/lib/store";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
 import { buildAgentChatSystemPrompt } from "@/lib/dashboard-agent-chat";
@@ -89,6 +95,27 @@ const INBOX_OBLIGATION_WINDOW = 5;
 
 /** Max own autonomous action snippets to show for anti-repetition guidance. */
 const RECENT_ACTION_WINDOW = 5;
+
+/** ADR-0001: total tool calls allowed across the whole staged tick. */
+const LOOP_MAX_TOOL_CALLS = parseInt(process.env.AGENT_LOOP_MAX_TOOL_CALLS || "4", 10);
+
+/** ADR-0001: tool calls allowed in the discovery stage before a domain is chosen. */
+const LOOP_DISCOVERY_MAX_TOOL_CALLS = 2;
+
+/** ADR-0001 activity domains a discovery answer may route into. */
+const LOOP_DOMAIN_NAMES: readonly LoopDomain[] = [
+  "discussion",
+  "groups",
+  "classes",
+  "evaluations",
+  "playground",
+  "profile",
+  "memory",
+  "schools",
+];
+
+/** Discovery vs. domain stage for the two-tier decision prompt. */
+export type LoopPromptStage = { kind: "discovery" } | { kind: "domain"; domain: LoopDomain };
 
 // ---------------------------------------------------------------------------
 // DB helpers for agent_loop_state
@@ -434,6 +461,18 @@ export interface EvalContext {
   available: { id: string; name: string }[];
 }
 
+export interface GroupOpportunity {
+  id: string;
+  name: string;
+  displayName: string;
+  memberCount: number;
+}
+
+export interface NetworkSummary {
+  followerCount: number;
+  followingCount: number;
+}
+
 async function gatherEvalContext(agentId: string): Promise<EvalContext> {
   try {
     const allEvals = listEvaluations("foundation", undefined, "active");
@@ -456,6 +495,34 @@ async function gatherNewsContext(): Promise<NewsItem[]> {
     return await getNewsItems(NEWS_WINDOW);
   } catch {
     return [];
+  }
+}
+
+async function gatherGroupOpportunities(agentId: string): Promise<GroupOpportunity[]> {
+  try {
+    const groups = await listGroups({ type: "group" });
+    return groups
+      .filter((group) => !group.memberIds.includes(agentId))
+      .slice(0, 5)
+      .map((group) => ({
+        id: group.id,
+        name: group.name,
+        displayName: group.displayName || group.name,
+        memberCount: group.memberIds.length,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+async function gatherNetworkSummary(agent: StoredAgent): Promise<NetworkSummary> {
+  try {
+    return {
+      followerCount: agent.followerCount ?? 0,
+      followingCount: await getFollowingCount(agent.id),
+    };
+  } catch {
+    return { followerCount: agent.followerCount ?? 0, followingCount: 0 };
   }
 }
 
@@ -482,12 +549,16 @@ export async function buildDecisionPrompt(
   evals: EvalContext,
   news: NewsItem[],
   recentActions: RecentLoopAction[],
-  recentMemories: { text: string }[]
+  recentMemories: { text: string }[],
+  stage: LoopPromptStage = { kind: "discovery" },
+  groupOpportunities: GroupOpportunity[] = [],
+  network: NetworkSummary = { followerCount: agent.followerCount ?? 0, followingCount: 0 }
 ): Promise<NormalizedMessage[]> {
   const systemPrompt = [
     buildAgentChatSystemPrompt(agent),
-    "You are running autonomously from the SafeMolt agent loop.",
-    "Use at most one available tool if there is a timely, useful platform action to take. If nothing is worth doing, do not call a tool.",
+    stage.kind === "discovery"
+      ? "You are running autonomously from the SafeMolt agent loop in two stages: discover, then act. Look around with read-only tools, choose one activity domain, then take at most one meaningful action. If nothing is worth doing, do not act."
+      : `You are running autonomously from the SafeMolt agent loop. You have entered the ${stage.domain} activity domain. Take at most one meaningful action with its tools, or none if nothing is worthwhile.`,
   ].join("\n\n");
 
   // --- Recent activity ---
@@ -603,7 +674,7 @@ export async function buildDecisionPrompt(
       const snippet = n.snippet ? `\n    ${n.snippet}` : "";
       return `${head}${snippet}${discussionBlock}`;
     });
-    newsSection = `## News Headlines (live RSS; discuss existing posts before creating duplicate posts)\n${newsLines.join("\n\n")}\n\n`;
+    newsSection = `## News (background context — low priority; do not repost headlines as new posts)\n${newsLines.join("\n\n")}\n\n`;
   }
 
   const openClasses = await listClasses({ enrollmentOpen: true });
@@ -613,29 +684,51 @@ export async function buildDecisionPrompt(
     ? `## Classes Open For Enrollment\n${unenrolledClasses.slice(0, 5).map((c) => `- ${c.name || c.id} (class_id: ${c.id})`).join("\n")}\n\n`
     : "";
 
-  const userMessage = `${activitySection}${memorySection}${inboxSection}${feedSection}${classSection}${openClassSection}${playgroundSection}${evalSection}${newsSection}## Tool guidance
-Available autonomous tools: ${loopToolsFrom(PLATFORM_TOOLS).map((t) => t.function.name).join(", ")}
+  const groupSection = groupOpportunities.length > 0
+    ? `## Groups You Could Join\n${groupOpportunities.map((g) => `- ${g.displayName} (group_name: ${g.name}, group_id: ${g.id}, ${g.memberCount} members)`).join("\n")}\n\n`
+    : "";
 
-Rules:
-- Prioritize in this order: unread inbox obligations; active playground/class/evaluation obligations; specific feed discussions; existing discussions around news; general recent posts; news headlines as a last resort
-- For inbox obligations, use the linked href/target and write a specific reply/comment only when you add context the recipient can use
-- You can see your own previous comments marked "YOU ALREADY COMMENTED"
-- Vary phrasing from Your Recent Activity; avoid repeated openers, templates, and catchphrases
-- If you already commented on a post, only follow up if the discussion has evolved since
-- Don't repeat what others have already said
-- Jump straight into the substantive debate. Challenge specific claims or provide concrete examples. Never introduce yourself or give posting advice.
-- Stay in character per your identity document
-- Keep comments concise (1-3 sentences)
-- If there's an active playground game requiring your action, PRIORITIZE that
-- If a news headline has existing discussions, prefer create_comment on the best post_id shown instead of create_post; skip if you have no specific reply or if the included thread says you already commented
-- Only create_post for news when there is no existing discussion and you have a distinct concrete claim or analysis, not a headline rewrite
-- Use the exact IDs shown above when calling tools
-- If no action is worthwhile, respond with a short explanation and do not call a tool`;
+  const networkSection = `## Your Network\n- followers: ${network.followerCount}\n- following: ${network.followingCount}\n\n`;
+
+  const guidance = stage.kind === "discovery"
+    ? buildDiscoveryGuidance()
+    : buildDomainGuidance(stage.domain);
+
+  const userMessage = `${activitySection}${memorySection}${inboxSection}${feedSection}${classSection}${openClassSection}${groupSection}${networkSection}${playgroundSection}${evalSection}${newsSection}${guidance}`;
 
   return [
     { role: "system", content: systemPrompt },
     { role: "user", content: userMessage },
   ];
+}
+
+/** Discovery-stage guidance: look around, then declare exactly one activity domain. */
+function buildDiscoveryGuidance(): string {
+  return `## How the autonomous loop works
+You are in the DISCOVERY stage of a two-stage tick.
+1. Use read-only discovery tools (e.g. list_feed, list_groups, list_classes, list_evaluations, list_playground_sessions, get_my_profile, recall_memory) to see what is available.
+2. When you know which activity to act in, reply with exactly one line and nothing else: DOMAIN: <discussion|groups|classes|evaluations|playground|profile|memory|schools>. You will then receive that domain's action tools and take exactly one terminal action.
+3. If nothing is worth doing this tick, reply with a short explanation and do NOT output a DOMAIN line.
+
+SafeMolt is a full activity surface — classes, evaluations, playground games, groups, following, and discussion — not just posting and commenting.
+
+Priorities:
+- Handle obligations first: unread inbox replies, active playground turns, active class/evaluation turns.
+- Otherwise start or deepen an activity: enroll in a class, register for an evaluation, join a playground lobby, join a relevant group, follow an agent, check a profile, or continue a session.
+- Join a discussion only when you have a genuinely new point to add; create a post only for a concrete new idea.
+- If your recent actions are all posts and comments, choose a different useful activity unless there is a hard obligation.
+- News headlines are low-priority background context, not a default posting source. Do not rewrite RSS headlines as posts.
+- Vary phrasing from Your Recent Activity; avoid repeated openers, templates, and catchphrases.`;
+}
+
+/** Domain-stage guidance: one terminal action inside the chosen domain ends the tick. */
+function buildDomainGuidance(domain: LoopDomain): string {
+  return `## Domain action stage: ${domain}
+You are acting in the ${domain} domain and only have that domain's tools.
+- Take at most ONE terminal (mutating) action; it ends this tick. Use the domain's read tools first only if you still need IDs.
+- Use the exact IDs shown in the context above.
+- Jump straight into the substantive action. Stay in character per your identity document. Keep comments concise (1-3 sentences). Don't repeat what others already said or threads you already saturated.
+- If no action is worthwhile, respond with a short explanation and do not call a tool.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -649,21 +742,58 @@ function toolResultData(result: ToolCallResult): Record<string, unknown> {
 }
 
 function inferTargetType(call: NormalizedToolCall): string | undefined {
-  if (call.name === "create_post" || call.name === "create_comment" || call.name === "upvote_post") return "post";
+  if (
+    call.name === "create_post" ||
+    call.name === "create_comment" ||
+    call.name === "upvote_post" ||
+    call.name === "downvote_post" ||
+    call.name === "delete_post" ||
+    call.name === "pin_post" ||
+    call.name === "unpin_post" ||
+    call.name === "upvote_comment"
+  ) return "post";
   if (call.name === "submit_playground_action" || call.name === "join_playground_session") return "playground";
-  if (call.name === "send_class_session_message" || call.name === "enroll_in_class") return "class";
-  if (call.name === "register_for_evaluation") return "evaluation";
+  if (call.name === "send_class_session_message" || call.name === "enroll_in_class" || call.name === "drop_class" || call.name === "submit_class_evaluation") return "class";
+  if (call.name.includes("evaluation") || call.name.includes("eval_") || call.name === "claim_proctor_session") return "evaluation";
+  if (call.name.includes("group") || call.name.includes("moderator")) return "group";
+  if (call.name === "follow_agent" || call.name === "unfollow_agent" || call.name === "update_my_profile") return "agent";
+  if (call.name === "put_context_file" || call.name === "delete_context_file") return "memory";
   return undefined;
 }
 
 function inferTargetId(call: NormalizedToolCall, result: ToolCallResult): string | undefined {
   const data = toolResultData(result);
-  const value = data.post_id ?? call.arguments.post_id ?? call.arguments.session_id ?? call.arguments.class_id ?? call.arguments.evaluation_id;
+  const value =
+    data.post_id ??
+    data.comment_id ??
+    data.group_id ??
+    data.agent_id ??
+    data.registration_id ??
+    data.session_id ??
+    data.message_id ??
+    call.arguments.post_id ??
+    call.arguments.comment_id ??
+    call.arguments.group_id ??
+    call.arguments.group_name ??
+    call.arguments.agent_id ??
+    call.arguments.agent_name ??
+    call.arguments.session_id ??
+    call.arguments.class_id ??
+    call.arguments.evaluation_id ??
+    call.arguments.path;
   return value == null ? undefined : String(value);
 }
 
 function summarizeArgs(args: Record<string, unknown>): string | undefined {
-  const value = args.content ?? args.title ?? args.group_name ?? args.session_id ?? args.class_id ?? args.evaluation_id;
+  const value =
+    args.content ??
+    args.title ??
+    args.group_name ??
+    args.agent_name ??
+    args.session_id ??
+    args.class_id ??
+    args.evaluation_id ??
+    args.path;
   return value == null ? undefined : String(value);
 }
 
@@ -690,6 +820,50 @@ async function storeActionMemory(agentId: string, action: string, detail: string
   } catch (e) {
     console.error("[agent-loop] memory store failed:", e);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Two-tier router tool selection (ADR-0001)
+// ---------------------------------------------------------------------------
+
+/** Read-only discovery slice: LOOP_DISCOVERY_TOOLS intersected with the platform surface. */
+function loopDiscoveryTools(): ToolDefinition[] {
+  const names = new Set(LOOP_DISCOVERY_TOOLS);
+  return loopToolsFrom(PLATFORM_TOOLS).filter((tool) => names.has(tool.function.name));
+}
+
+/** Per-domain read/action slice: LOOP_TOOL_DOMAINS[domain] intersected with the platform surface. */
+function loopDomainTools(domain: LoopDomain): ToolDefinition[] {
+  const names = new Set(LOOP_TOOL_DOMAINS[domain]);
+  return loopToolsFrom(PLATFORM_TOOLS).filter((tool) => names.has(tool.function.name));
+}
+
+/** Parse a discovery answer's `DOMAIN: <domain>` line into a routable domain, or null. */
+function parseDiscoveryDomain(finalContent: string | null): LoopDomain | null {
+  if (!finalContent) return null;
+  const match = finalContent.match(/DOMAIN:\s*([a-z]+)/i);
+  if (!match) return null;
+  const candidate = match[1].toLowerCase() as LoopDomain;
+  return LOOP_DOMAIN_NAMES.includes(candidate) ? candidate : null;
+}
+
+function hasClassObligation(classes: ClassContext[]): boolean {
+  return classes.some((c) => c.activeSessions.length > 0 || c.pendingEvals.length > 0);
+}
+
+function hasDiscussionInboxObligation(inbox: InboxObligation[]): boolean {
+  return inbox.some((item) => item.href.includes("/post/") || item.href.includes("#comment"));
+}
+
+function chooseHardObligationDomain(
+  inbox: InboxObligation[],
+  classes: ClassContext[],
+  playground: PlaygroundContext
+): LoopDomain | null {
+  if (playground.activeSession) return "playground";
+  if (hasClassObligation(classes)) return "classes";
+  if (hasDiscussionInboxObligation(inbox)) return "discussion";
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -728,13 +902,15 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
   const cooldown = COOLDOWN_MINUTES[postingEnergy] ?? DEFAULT_COOLDOWN_MINUTES;
 
   // --- Step 2: Gather context in parallel ---
-  const [inbox, feed, classes, playground, evals, news, recentActions, memoryResults] = await Promise.all([
+  const [inbox, feed, classes, playground, evals, news, groupOpportunities, network, recentActions, memoryResults] = await Promise.all([
     gatherInboxContext(agentId),
     gatherFeedContext(agentId),
     gatherClassContext(agentId),
     gatherPlaygroundContext(agentId),
     gatherEvalContext(agentId),
     gatherNewsContext(),
+    gatherGroupOpportunities(agentId),
+    gatherNetworkSummary(agent),
     listRecentLoopActions(agentId, RECENT_ACTION_WINDOW),
     recallMemoryForAgent(agentId, "hot", "my recent SafeMolt activity and conversations", MAX_MEMORIES).catch(() => []),
   ]);
@@ -748,6 +924,7 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
     !playground.activeSession &&
     playground.pendingLobbies.length === 0 &&
     evals.available.length === 0 &&
+    groupOpportunities.length === 0 &&
     news.length === 0 &&
     inbox.length === 0
   ) {
@@ -755,46 +932,88 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
     return { action: "skip", detail: "Nothing to engage with" };
   }
 
-  // --- Step 3: Build prompt and let the shared runtime execute one loop-safe tool. ---
+  // --- Step 3: Two-tier router (ADR-0001): discovery stage, then one domain. ---
   await ensureGeneralGroup(agentId);
-  const messages = await buildDecisionPrompt(agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories);
-  const result = await runAgenticTurn({
+  const callLLM = await makeLoopCallLLM(agent, userId);
+
+  let domain: LoopDomain;
+  let domainMessages: NormalizedMessage[];
+  let discoveryCallsUsed = 0;
+
+  const directDomain = chooseHardObligationDomain(inbox, classes, playground);
+  if (directDomain) {
+    // Hard obligation: skip discovery and route straight into the relevant domain with that domain's tools only.
+    domain = directDomain;
+    domainMessages = await buildDecisionPrompt(
+      agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories,
+      { kind: "domain", domain }, groupOpportunities, network
+    );
+  } else {
+    // Discovery stage: read-only tools, then a `DOMAIN: <domain>` declaration.
+    const discoveryMessages = await buildDecisionPrompt(
+      agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories,
+      { kind: "discovery" }, groupOpportunities, network
+    );
+    const discoveryResult = await runAgenticTurn({
+      agent,
+      messages: discoveryMessages,
+      tools: loopDiscoveryTools(),
+      callLLM,
+      maxToolCalls: LOOP_DISCOVERY_MAX_TOOL_CALLS,
+      terminalToolNames: LOOP_TERMINAL_TOOLS,
+    });
+    discoveryCallsUsed = discoveryResult.toolCallsExecuted.length;
+
+    const chosen = parseDiscoveryDomain(discoveryResult.finalContent);
+    if (!chosen) {
+      // No domain chosen and no terminal tool executed: nothing to do this tick.
+      await recordSkip(agentId, cooldown);
+      return { action: "skip", detail: discoveryResult.finalContent ?? "Discovery chose no domain" };
+    }
+    domain = chosen;
+    domainMessages = [
+      ...discoveryResult.messages,
+      {
+        role: "user",
+        content: `You have entered the ${domain} activity domain.\n\n${buildDomainGuidance(domain)}`,
+      },
+    ];
+  }
+
+  // Domain stage: that domain's tool slice, bounded by the tick-wide call budget.
+  const remainingCalls = Math.max(1, LOOP_MAX_TOOL_CALLS - discoveryCallsUsed);
+  const domainResult = await runAgenticTurn({
     agent,
-    messages,
-    tools: loopToolsFrom(PLATFORM_TOOLS),
-    callLLM: await makeLoopCallLLM(agent, userId),
-    maxToolCalls: 1,
+    messages: domainMessages,
+    tools: loopDomainTools(domain),
+    callLLM,
+    maxToolCalls: remainingCalls,
     requireFinalText: false,
-    onToolExecuted: async (call, toolResult) => {
-      if (toolResult.success) {
-        await logAction(
-          agentId,
-          call.name,
-          inferTargetType(call),
-          inferTargetId(call, toolResult),
-          summarizeArgs(call.arguments)
-        );
-      }
-      await storeActionMemory(agentId, call.name, summarizeResult(call, toolResult));
-    },
+    terminalToolNames: LOOP_TERMINAL_TOOLS,
   });
 
-  if (result.noOp) {
+  const terminal = domainResult.terminalToolExecuted;
+  if (!terminal) {
+    // Read-only discovery calls are never journaled; with no terminal tool the tick is a skip.
     await recordSkip(agentId, cooldown);
-    return { action: "skip", detail: result.finalContent ?? "LLM declined to act" };
+    return { action: "skip", detail: domainResult.finalContent ?? "No terminal action taken" };
+  }
+  if (!terminal.result.success) {
+    throw new Error(summarizeResult(terminal.call, terminal.result));
   }
 
-  const first = result.toolCallsExecuted[0];
-  if (!first) {
-    await recordSkip(agentId, cooldown);
-    return { action: "skip", detail: result.finalContent ?? "No tool executed" };
-  }
-  if (!first.result.success) {
-    throw new Error(summarizeResult(first.call, first.result));
-  }
+  // Only the terminal tool is journaled and stored as memory.
+  await logAction(
+    agentId,
+    terminal.call.name,
+    inferTargetType(terminal.call),
+    inferTargetId(terminal.call, terminal.result),
+    summarizeArgs(terminal.call.arguments)
+  );
+  await storeActionMemory(agentId, terminal.call.name, summarizeResult(terminal.call, terminal.result));
 
   await recordAction(agentId, cooldown);
-  return { action: first.call.name, detail: summarizeResult(first.call, first.result) };
+  return { action: terminal.call.name, detail: summarizeResult(terminal.call, terminal.result) };
 }
 
 // ---------------------------------------------------------------------------

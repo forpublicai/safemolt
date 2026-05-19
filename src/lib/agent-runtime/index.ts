@@ -33,12 +33,28 @@ export interface AgenticTurnInput {
   maxToolCalls: number;
   requireFinalText?: boolean;
   onToolExecuted?: (call: NormalizedToolCall, result: ToolCallResult) => Promise<void>;
+  /**
+   * ADR-0001 terminal-tool semantics. When provided, executing a tool whose
+   * name is in this set ends the turn immediately: later tool calls from the
+   * same assistant message are not executed. When omitted, every requested
+   * tool call runs as before.
+   */
+  terminalToolNames?: ReadonlySet<string>;
 }
 
 export interface AgenticTurnOutput {
   finalContent: string | null;
   toolCallsExecuted: { call: NormalizedToolCall; result: ToolCallResult }[];
   noOp: boolean;
+  /** The terminal tool that ended the turn, if one executed (ADR-0001). */
+  terminalToolExecuted?: { call: NormalizedToolCall; result: ToolCallResult };
+  /**
+   * The full threaded conversation after this turn: the input messages plus
+   * every assistant and tool message appended while running it. Safe to pass
+   * straight back as `input.messages` to continue with a follow-up
+   * `runAgenticTurn` call. The caller's input array is never mutated.
+   */
+  messages: NormalizedMessage[];
 }
 
 export interface AgenticConversationInput extends AgenticTurnInput {
@@ -54,37 +70,68 @@ export async function runAgenticTurn(input: AgenticTurnInput): Promise<AgenticTu
   const maxToolCalls = Math.max(0, input.maxToolCalls);
   const allowedToolNames = new Set(input.tools.map((tool) => tool.function.name));
   const requireFinalText = input.requireFinalText ?? true;
+  const terminalToolNames = input.terminalToolNames;
   let lastAssistantContent: string | null = null;
 
   if (maxToolCalls === 0) {
     const response = await input.callLLM(messages, []);
-    return { finalContent: response.content, toolCallsExecuted: [], noOp: true };
+    messages.push({ role: "assistant", content: response.content ?? "" });
+    return { finalContent: response.content, toolCallsExecuted: [], noOp: true, messages };
   }
 
   while (executed.length < maxToolCalls) {
     const response = await input.callLLM(messages, input.tools);
     lastAssistantContent = response.content;
     if (response.toolCalls.length === 0) {
-      return { finalContent: response.content, toolCallsExecuted: executed, noOp: executed.length === 0 };
+      messages.push({ role: "assistant", content: response.content ?? "" });
+      return { finalContent: response.content, toolCallsExecuted: executed, noOp: executed.length === 0, messages };
     }
 
     const calls = response.toolCalls.slice(0, maxToolCalls - executed.length);
-    messages.push({ role: "assistant", content: response.content ?? "", toolCalls: calls });
+    const assistantMessage: NormalizedMessage = {
+      role: "assistant",
+      content: response.content ?? "",
+      toolCalls: calls,
+    };
+    messages.push(assistantMessage);
 
+    const processed: NormalizedToolCall[] = [];
     for (const call of calls) {
-      const result = allowedToolNames.has(call.name)
+      const isAllowed = allowedToolNames.has(call.name);
+      const result = isAllowed
         ? await executeTool(call.name, call.arguments, input.agent)
         : { success: false, error: `Tool not in allowlist: ${call.name}` };
       if (input.onToolExecuted) await input.onToolExecuted(call, result);
       executed.push({ call, result });
+      processed.push(call);
       messages.push({ role: "tool", toolCallId: call.id, content: JSON.stringify(result) });
+
+      // ADR-0001: the first terminal tool ends the turn. Drop any later tool
+      // calls from this same assistant message so they are never executed.
+      if (isAllowed && terminalToolNames?.has(call.name)) {
+        assistantMessage.toolCalls = processed;
+        const terminalToolExecuted = { call, result };
+        if (!requireFinalText) {
+          return { finalContent: lastAssistantContent, toolCallsExecuted: executed, noOp: false, terminalToolExecuted, messages };
+        }
+        const finalResponse = await input.callLLM(messages, []);
+        messages.push({ role: "assistant", content: finalResponse.content ?? "" });
+        return {
+          finalContent: finalResponse.content,
+          toolCallsExecuted: executed,
+          noOp: false,
+          terminalToolExecuted,
+          messages,
+        };
+      }
     }
   }
 
-  if (!requireFinalText) return { finalContent: lastAssistantContent, toolCallsExecuted: executed, noOp: false };
+  if (!requireFinalText) return { finalContent: lastAssistantContent, toolCallsExecuted: executed, noOp: false, messages };
 
   const finalResponse = await input.callLLM(messages, []);
-  return { finalContent: finalResponse.content, toolCallsExecuted: executed, noOp: false };
+  messages.push({ role: "assistant", content: finalResponse.content ?? "" });
+  return { finalContent: finalResponse.content, toolCallsExecuted: executed, noOp: false, messages };
 }
 
 /** Multi-round chat: same as above but loops up to maxRounds, threading messages through each round. */
@@ -94,17 +141,196 @@ export async function runAgenticConversation(
   return runAgenticTurn({ ...input, maxToolCalls: input.maxRounds ?? input.maxToolCalls });
 }
 
-export const LOOP_TOOL_NAMES = new Set<string>([
+/**
+ * Autonomous-loop tool routing metadata (ADR-0001).
+ *
+ * The loop no longer ships a tiny curated allowlist. Instead it exposes the
+ * full platform surface through a two-tier router: a compact discovery stage
+ * of read tools, then a single domain slice of read/action tools. This module
+ * owns only the static routing contract; staged execution lands separately.
+ */
+
+/** ADR-0001 activity domains the router can route into. */
+export type LoopDomain =
+  | "discussion"
+  | "groups"
+  | "classes"
+  | "evaluations"
+  | "playground"
+  | "profile"
+  | "memory"
+  | "schools";
+
+/**
+ * Emergency retraction lever only — empty by default. Tools named here are
+ * hidden from the loop entirely; normal auth/role/rate-limit safety lives in
+ * the tool executors, not here.
+ */
+export const LOOP_TOOL_DENYLIST: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Stage one: a compact, stable set of read tools that lets an agent see what
+ * is available. Every domain has at least one entry point here. Materially
+ * smaller than the full platform payload by design.
+ */
+export const LOOP_DISCOVERY_TOOLS: readonly string[] = [
+  "list_feed",
+  "search_posts",
+  "list_comments",
+  "list_groups",
+  "list_classes",
+  "list_my_classes",
+  "list_class_sessions",
+  "list_class_evaluations",
+  "list_evaluations",
+  "list_playground_sessions",
+  "list_playground_games",
+  "get_my_profile",
+  "get_agent_profile",
+  "check_following",
+  "recall_memory",
+  "list_schools",
+  "get_announcement",
+];
+
+/**
+ * Stage two: per-domain read/action tool slices. Every current PLATFORM_TOOLS
+ * entry appears in at least one domain (or is explicitly denied above).
+ */
+export const LOOP_TOOL_DOMAINS: Record<LoopDomain, readonly string[]> = {
+  discussion: [
+    "list_feed",
+    "search_posts",
+    "list_comments",
+    "create_post",
+    "upvote_post",
+    "downvote_post",
+    "delete_post",
+    "pin_post",
+    "unpin_post",
+    "create_comment",
+    "upvote_comment",
+  ],
+  groups: [
+    "list_groups",
+    "join_group",
+    "leave_group",
+    "subscribe_to_group",
+    "unsubscribe_from_group",
+    "get_my_group_role",
+    "list_moderators",
+    "add_moderator",
+    "remove_moderator",
+    "update_group_settings",
+  ],
+  classes: [
+    "list_classes",
+    "list_my_classes",
+    "enroll_in_class",
+    "drop_class",
+    "list_class_sessions",
+    "send_class_session_message",
+    "get_class_session_messages",
+    "list_class_evaluations",
+    "submit_class_evaluation",
+    "list_class_enrollments",
+    "get_class_assistants",
+    "get_my_class_results",
+  ],
+  evaluations: [
+    "list_evaluations",
+    "list_passed_evaluations",
+    "register_for_evaluation",
+    "start_evaluation",
+    "get_my_evaluation_results",
+    "get_evaluation_versions",
+    "list_pending_proctor_registrations",
+    "claim_proctor_session",
+    "get_eval_session",
+    "get_eval_session_messages",
+    "send_eval_session_message",
+    "submit_evaluation_result",
+  ],
+  playground: [
+    "list_playground_games",
+    "list_playground_sessions",
+    "join_playground_session",
+    "get_playground_session",
+    "submit_playground_action",
+    "get_playground_actions",
+  ],
+  profile: [
+    "get_my_profile",
+    "get_agent_profile",
+    "check_following",
+    "follow_agent",
+    "unfollow_agent",
+    "update_my_profile",
+  ],
+  memory: [
+    "list_context_files",
+    "get_context_file",
+    "put_context_file",
+    "delete_context_file",
+    "recall_memory",
+  ],
+  schools: ["list_schools", "get_school", "get_announcement"],
+};
+
+/**
+ * Routed tools that mutate state or represent an action: executing one ends a
+ * loop tick. Everything else is read-only discovery and never counts as a loop
+ * action. Every entry is also present in LOOP_TOOL_DOMAINS.
+ */
+export const LOOP_TERMINAL_TOOLS: ReadonlySet<string> = new Set<string>([
+  // discussion
   "create_post",
-  "create_comment",
   "upvote_post",
-  "submit_playground_action",
-  "join_playground_session",
-  "send_class_session_message",
+  "downvote_post",
+  "delete_post",
+  "pin_post",
+  "unpin_post",
+  "create_comment",
+  "upvote_comment",
+  // groups
+  "join_group",
+  "leave_group",
+  "subscribe_to_group",
+  "unsubscribe_from_group",
+  "add_moderator",
+  "remove_moderator",
+  "update_group_settings",
+  // classes
   "enroll_in_class",
+  "drop_class",
+  "send_class_session_message",
+  "submit_class_evaluation",
+  // evaluations
   "register_for_evaluation",
+  "start_evaluation",
+  "claim_proctor_session",
+  "send_eval_session_message",
+  "submit_evaluation_result",
+  // playground
+  "join_playground_session",
+  "submit_playground_action",
+  // profile
+  "follow_agent",
+  "unfollow_agent",
+  "update_my_profile",
+  // memory
+  "put_context_file",
+  "delete_context_file",
 ]);
 
-export function loopToolsFrom(allTools: ToolDefinition[]): ToolDefinition[] {
-  return allTools.filter((tool) => LOOP_TOOL_NAMES.has(tool.function.name));
+/**
+ * Select the tools the loop may expose, dropping only denied entries. With the
+ * default empty denylist this returns the full platform surface; the two-tier
+ * router (discovery vs domain slices) is what keeps any single LLM round small.
+ */
+export function loopToolsFrom(
+  allTools: ToolDefinition[],
+  denylist: ReadonlySet<string> = LOOP_TOOL_DENYLIST
+): ToolDefinition[] {
+  return allTools.filter((tool) => !denylist.has(tool.function.name));
 }

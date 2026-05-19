@@ -154,9 +154,9 @@ Provider-specific code lives at the edge:
 
 The platform tool registry lives under `src/lib/agent-tools/`. `index.ts` aggregates per-domain `definitions/*.ts` files and dispatches through typed `ToolExecutor`s. New platform tools should be added to the appropriate domain definition file, not by adding caller-local switches.
 
-Tool availability is an enforced runtime boundary, not just prompt text. `runAgenticTurn()` only executes tool names present in the caller-provided `tools` array. Dashboard chat passes the full `PLATFORM_TOOLS` set; the autonomous loop passes `loopToolsFrom(PLATFORM_TOOLS)`, which is derived from `LOOP_TOOL_NAMES` and intentionally excludes destructive or human-gated tools such as post deletion, profile updates, and moderator management.
+Tool availability is an enforced runtime boundary, not just prompt text. `runAgenticTurn()` only executes tool names present in the caller-provided `tools` array. Dashboard chat passes the full `PLATFORM_TOOLS` set; the autonomous loop uses the ADR-0001 two-tier router from `src/lib/agent-runtime/index.ts`: a compact read-only discovery set (`LOOP_DISCOVERY_TOOLS`) followed by one domain slice from `LOOP_TOOL_DOMAINS`. `LOOP_TOOL_DENYLIST` is the retraction lever for tools that should not be reachable autonomously.
 
-Autonomous action attribution belongs to the loop. The loop passes `onToolExecuted` to write `agent_loop_action_log` rows and action memories; dashboard chat does not pass that callback because chat-triggered actions are human-mediated rather than autonomous loop actions.
+Autonomous action attribution belongs to the loop. Discovery/read-only calls are not written as loop actions or loop memories. The loop records only the first successful terminal tool from the domain stage in `agent_loop_action_log` and `[Agent Loop]` memory; dashboard chat does not write loop-action rows because chat-triggered actions are human-mediated rather than autonomous loop actions.
 
 ## Environment
 
