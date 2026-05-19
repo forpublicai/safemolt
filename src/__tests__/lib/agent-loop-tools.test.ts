@@ -28,6 +28,13 @@ const PLATFORM_TOOLS = [
 
 type LlmResponse = { content?: string | null; toolCalls?: unknown[] };
 
+const ORIGINAL_HF_TOKEN = process.env.HF_TOKEN;
+
+afterEach(() => {
+  if (ORIGINAL_HF_TOKEN === undefined) delete process.env.HF_TOKEN;
+  else process.env.HF_TOKEN = ORIGINAL_HF_TOKEN;
+});
+
 function baseStore(overrides: Record<string, unknown> = {}) {
   return {
     getAgentById: jest.fn(async (id: string) =>
@@ -58,6 +65,11 @@ async function setup(opts: {
   store?: Record<string, unknown>;
   executeTool?: jest.Mock;
   evaluations?: { id: string; name: string; status?: string }[];
+  linkedUserIds?: string[];
+  inferenceSecrets?: Record<string, unknown> | null;
+  sponsored?: boolean;
+  hfToken?: string | null;
+  sponsoredUsage?: { count: number; limit: number };
 }) {
   jest.resetModules();
 
@@ -70,22 +82,34 @@ async function setup(opts: {
   );
   const executeTool =
     opts.executeTool ?? jest.fn(async (name: string) => ({ success: true, data: { tool: name } }));
+  if (Object.prototype.hasOwnProperty.call(opts, "hfToken")) {
+    if (opts.hfToken == null) delete process.env.HF_TOKEN;
+    else process.env.HF_TOKEN = opts.hfToken;
+  } else {
+    process.env.HF_TOKEN = ORIGINAL_HF_TOKEN ?? "platform-token";
+  }
+  const makeHfRouterCallLLM = jest.fn(() => callLLM);
+  const incrementSponsoredInferenceUsage = jest.fn(async () => opts.sponsoredUsage ?? { count: 1, limit: 100 });
 
   jest.doMock("@/lib/db", () => ({ sql }));
   jest.doMock("@/lib/agent-tools", () => ({ PLATFORM_TOOLS, executeTool }));
   jest.doMock("@/lib/agent-runtime/adapters/openai-compatible", () => ({
-    makeHfRouterCallLLM: () => callLLM,
+    makeHfRouterCallLLM,
     makeOpenAiCallLLM: jest.fn(),
   }));
   jest.doMock("@/lib/store", () => baseStore(opts.store));
   jest.doMock("@/lib/human-users", () => ({
-    listUserIdsLinkedToAgent: jest.fn(async () => ["user_1"]),
-    getUserInferenceSecrets: jest.fn(async () => ({ hf_token_override: "token" })),
+    listUserIdsLinkedToAgent: jest.fn(async () => opts.linkedUserIds ?? ["user_1"]),
+    getUserInferenceSecrets: jest.fn(async () =>
+      Object.prototype.hasOwnProperty.call(opts, "inferenceSecrets")
+        ? opts.inferenceSecrets
+        : { hf_token_override: "token" }
+    ),
     getUserInferenceTokenOverride: jest.fn(),
-    incrementSponsoredInferenceUsage: jest.fn(),
+    incrementSponsoredInferenceUsage,
   }));
   jest.doMock("@/lib/memory/sponsored-public-ai", () => ({
-    isSponsoredPublicAiAgent: jest.fn(async () => false),
+    isSponsoredPublicAiAgent: jest.fn(async () => opts.sponsored ?? false),
   }));
   jest.doMock("@/lib/memory/memory-service", () => ({
     recallMemoryForAgent: jest.fn(async () => []),
@@ -102,7 +126,7 @@ async function setup(opts: {
   jest.doMock("@/lib/agent-loop-actions", () => ({ listRecentLoopActions: jest.fn(async () => []) }));
 
   const { tickAgent } = await import("@/lib/agent-loop");
-  return { tickAgent, executeTool, sql, callLLM };
+  return { tickAgent, executeTool, sql, callLLM, makeHfRouterCallLLM, incrementSponsoredInferenceUsage };
 }
 
 const toolNames = (defs: unknown): string[] =>
@@ -244,6 +268,102 @@ describe("agent loop two-tier router (ADR-0001)", () => {
     expect(callLLM).toHaveBeenCalledTimes(3);
     expect(executeTool.mock.calls.map((c) => c[0])).toEqual(["list_feed", "list_groups", "join_group"]);
     expect(loggedActions(sql)).toEqual(["join_group"]);
+  });
+
+  it("allows an unlinked agent to participate through platform inference", async () => {
+    const { tickAgent, executeTool, sql, makeHfRouterCallLLM, incrementSponsoredInferenceUsage } = await setup({
+      linkedUserIds: [],
+      hfToken: "platform-token",
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        {
+          content: null,
+          toolCalls: [{ id: "t1", name: "create_comment", arguments: { post_id: "post_1", content: "joining in" } }],
+        },
+        { content: "commented", toolCalls: [] },
+      ],
+    });
+
+    const result = await tickAgent(agent.id);
+
+    expect(result.action).toBe("create_comment");
+    expect(executeTool.mock.calls.map((c) => c[0])).toEqual(["create_comment"]);
+    expect(loggedActions(sql)).toEqual(["create_comment"]);
+    expect(makeHfRouterCallLLM).toHaveBeenCalledWith({ apiKey: "platform-token", billToPublicAi: true });
+    expect(incrementSponsoredInferenceUsage).not.toHaveBeenCalled();
+  });
+
+  it("falls back to platform inference when a linked owner has no configured provider", async () => {
+    const { tickAgent, executeTool, makeHfRouterCallLLM, incrementSponsoredInferenceUsage } = await setup({
+      linkedUserIds: ["user_without_provider"],
+      inferenceSecrets: null,
+      hfToken: "platform-token",
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        {
+          content: null,
+          toolCalls: [{ id: "t1", name: "create_comment", arguments: { post_id: "post_1", content: "fallback works" } }],
+        },
+        { content: "commented", toolCalls: [] },
+      ],
+    });
+
+    const result = await tickAgent(agent.id);
+
+    expect(result.action).toBe("create_comment");
+    expect(executeTool.mock.calls.map((c) => c[0])).toEqual(["create_comment"]);
+    expect(incrementSponsoredInferenceUsage).toHaveBeenCalledWith("user_without_provider");
+    expect(makeHfRouterCallLLM).toHaveBeenCalledWith({ apiKey: "platform-token", billToPublicAi: true });
+  });
+
+  it("rejects linked platform fallback when sponsored daily usage is exhausted", async () => {
+    const { tickAgent, incrementSponsoredInferenceUsage } = await setup({
+      linkedUserIds: ["limited_user"],
+      inferenceSecrets: null,
+      hfToken: "platform-token",
+      sponsoredUsage: { count: 101, limit: 100 },
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [],
+    });
+
+    await expect(tickAgent(agent.id)).rejects.toThrow("Sponsored daily limit reached");
+    expect(incrementSponsoredInferenceUsage).toHaveBeenCalledWith("limited_user");
+  });
+
+  it("fails unlinked agents only when no platform inference token is configured", async () => {
+    const { tickAgent } = await setup({
+      linkedUserIds: [],
+      hfToken: null,
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [],
+    });
+
+    await expect(tickAgent(agent.id)).rejects.toThrow("No inference provider configured for unlinked agent");
+  });
+
+  it("uses a linked owner's HF override without platform billing", async () => {
+    const { tickAgent, makeHfRouterCallLLM, incrementSponsoredInferenceUsage } = await setup({
+      linkedUserIds: ["owner_with_token"],
+      inferenceSecrets: { hf_token_override: "owner-token" },
+      hfToken: "platform-token",
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        {
+          content: null,
+          toolCalls: [{ id: "t1", name: "create_comment", arguments: { post_id: "post_1", content: "owner token" } }],
+        },
+        { content: "commented", toolCalls: [] },
+      ],
+    });
+
+    const result = await tickAgent(agent.id);
+
+    expect(result.action).toBe("create_comment");
+    expect(makeHfRouterCallLLM).toHaveBeenCalledWith({ apiKey: "owner-token", billToPublicAi: false });
+    expect(incrementSponsoredInferenceUsage).not.toHaveBeenCalled();
   });
 
   it("records a skip when discovery chooses no domain", async () => {

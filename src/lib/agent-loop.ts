@@ -230,9 +230,9 @@ async function logAction(
 // Inference
 // ---------------------------------------------------------------------------
 
-async function makeLoopCallLLM(agent: StoredAgent, userId: string): Promise<CallLLM> {
+async function makeLoopCallLLM(agent: StoredAgent, userId?: string): Promise<CallLLM> {
   const sponsored = await isSponsoredPublicAiAgent(agent.id);
-  if (sponsored) {
+  if (sponsored && userId) {
     const override = await getUserInferenceTokenOverride(userId);
     if (override) {
       return makeHfRouterCallLLM({ apiKey: override, billToPublicAi: false });
@@ -244,14 +244,26 @@ async function makeLoopCallLLM(agent: StoredAgent, userId: string): Promise<Call
     return makeHfRouterCallLLM({ apiKey: platform, billToPublicAi: true });
   }
 
-  const secrets = await getUserInferenceSecrets(userId);
-  if (secrets?.hf_token_override) {
-    return makeHfRouterCallLLM({ apiKey: secrets.hf_token_override, billToPublicAi: false });
+  if (userId) {
+    const secrets = await getUserInferenceSecrets(userId);
+    if (secrets?.hf_token_override) {
+      return makeHfRouterCallLLM({ apiKey: secrets.hf_token_override, billToPublicAi: false });
+    }
+    if (secrets?.openai_token) {
+      return makeOpenAiCallLLM(secrets.openai_token);
+    }
+
+    const platform = process.env.HF_TOKEN?.trim();
+    if (!platform) throw new Error("No inference provider configured for agent owner or platform");
+    const { count, limit } = await incrementSponsoredInferenceUsage(userId);
+    if (count > limit) throw new Error("Sponsored daily limit reached");
+    return makeHfRouterCallLLM({ apiKey: platform, billToPublicAi: true });
   }
-  if (secrets?.openai_token) {
-    return makeOpenAiCallLLM(secrets.openai_token);
-  }
-  throw new Error("No inference provider configured for agent owner");
+
+  const platform = process.env.HF_TOKEN?.trim();
+  if (platform) return makeHfRouterCallLLM({ apiKey: platform, billToPublicAi: true });
+
+  throw new Error("No inference provider configured for unlinked agent");
 }
 
 // ---------------------------------------------------------------------------
@@ -877,7 +889,6 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
   // Resolve the human owner for inference billing
   const userIds = await listUserIdsLinkedToAgent(agentId);
   const userId = userIds[0];
-  if (!userId) throw new Error("No linked human user for inference");
 
   // --- Step 1: Auto-generate identity if placeholder ---
   if (isPlaceholderIdentity(agent.identityMd)) {
