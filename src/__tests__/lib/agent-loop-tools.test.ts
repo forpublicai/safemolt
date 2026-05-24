@@ -46,6 +46,7 @@ function baseStore(overrides: Record<string, unknown> = {}) {
     getClassById: jest.fn(),
     listClassSessions: jest.fn(async () => []),
     listClassEvaluations: jest.fn(async () => []),
+    getStudentClassResults: jest.fn(async () => []),
     listClasses: jest.fn(async () => []),
     setAgentVetted: jest.fn(),
     setAgentIdentityMd: jest.fn(),
@@ -65,6 +66,7 @@ async function setup(opts: {
   store?: Record<string, unknown>;
   executeTool?: jest.Mock;
   evaluations?: { id: string; name: string; status?: string }[];
+  recalledMemories?: { text: string }[];
   linkedUserIds?: string[];
   inferenceSecrets?: Record<string, unknown> | null;
   sponsored?: boolean;
@@ -90,6 +92,8 @@ async function setup(opts: {
   }
   const makeHfRouterCallLLM = jest.fn(() => callLLM);
   const incrementSponsoredInferenceUsage = jest.fn(async () => opts.sponsoredUsage ?? { count: 1, limit: 100 });
+  const recallMemoryForAgent = jest.fn(async () => opts.recalledMemories ?? []);
+  const upsertVectorForAgent = jest.fn(async () => undefined);
 
   jest.doMock("@/lib/db", () => ({ sql }));
   jest.doMock("@/lib/agent-tools", () => ({ PLATFORM_TOOLS, executeTool }));
@@ -111,10 +115,7 @@ async function setup(opts: {
   jest.doMock("@/lib/memory/sponsored-public-ai", () => ({
     isSponsoredPublicAiAgent: jest.fn(async () => opts.sponsored ?? false),
   }));
-  jest.doMock("@/lib/memory/memory-service", () => ({
-    recallMemoryForAgent: jest.fn(async () => []),
-    upsertVectorForAgent: jest.fn(async () => undefined),
-  }));
+  jest.doMock("@/lib/memory/memory-service", () => ({ recallMemoryForAgent, upsertVectorForAgent }));
   jest.doMock("@/lib/agent-identity-generator", () => ({
     isPlaceholderIdentity: jest.fn(() => false),
     generateRandomIdentity: jest.fn(),
@@ -126,7 +127,16 @@ async function setup(opts: {
   jest.doMock("@/lib/agent-loop-actions", () => ({ listRecentLoopActions: jest.fn(async () => []) }));
 
   const { tickAgent } = await import("@/lib/agent-loop");
-  return { tickAgent, executeTool, sql, callLLM, makeHfRouterCallLLM, incrementSponsoredInferenceUsage };
+  return {
+    tickAgent,
+    executeTool,
+    sql,
+    callLLM,
+    makeHfRouterCallLLM,
+    incrementSponsoredInferenceUsage,
+    recallMemoryForAgent,
+    upsertVectorForAgent,
+  };
 }
 
 const toolNames = (defs: unknown): string[] =>
@@ -200,6 +210,54 @@ describe("agent loop two-tier router (ADR-0001)", () => {
     expect(offered.length).toBeLessThan(PLATFORM_TOOLS.length);
   });
 
+  it("does not force class sessions ahead of normal discovery", async () => {
+    const classStore = {
+      getAgentClasses: jest.fn(async () => [{ classId: "class_1", status: "enrolled", enrolledAt: "2026-05-24T00:00:00.000Z" }]),
+      getClassById: jest.fn(async () => ({ id: "class_1", name: "Autonomy 101" })),
+      listClassSessions: jest.fn(async () => [{ id: "session_1", title: "Seminar", status: "active" }]),
+      listClassEvaluations: jest.fn(async () => []),
+    };
+    const { tickAgent, executeTool, callLLM } = await setup({
+      store: classStore,
+      llmResponses: [
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        {
+          content: null,
+          toolCalls: [{ id: "t1", name: "create_comment", arguments: { post_id: "post_1", content: "choosing freely" } }],
+        },
+      ],
+    });
+
+    const result = await tickAgent(agent.id);
+
+    expect(result.action).toBe("create_comment");
+    expect(callLLM).toHaveBeenCalledTimes(2);
+    expect(executeTool.mock.calls.map((c) => c[0])).toEqual(["create_comment"]);
+    expect(JSON.stringify(callLLM.mock.calls[0][0])).toContain("## Classes You're Enrolled In");
+    expect(JSON.stringify(callLLM.mock.calls[0][0])).toContain("DOMAIN: <discussion|groups|classes|evaluations|playground|profile|memory|schools>");
+  });
+
+  it("does not show completed class evaluations as pending work", async () => {
+    const classStore = {
+      getAgentClasses: jest.fn(async () => [{ classId: "class_1", status: "enrolled", enrolledAt: "2026-05-24T00:00:00.000Z" }]),
+      getClassById: jest.fn(async () => ({ id: "class_1", name: "Autonomy 101" })),
+      listClassSessions: jest.fn(async () => []),
+      listClassEvaluations: jest.fn(async () => [{ id: "eval_done", title: "Done eval", status: "active" }]),
+      getStudentClassResults: jest.fn(async () => [{ evaluationId: "eval_done" }]),
+    };
+    const { tickAgent, callLLM } = await setup({
+      store: classStore,
+      llmResponses: [{ content: "Nothing worth doing.", toolCalls: [] }],
+    });
+
+    await tickAgent(agent.id);
+
+    const firstPrompt = JSON.stringify(callLLM.mock.calls[0][0]);
+    expect(firstPrompt).toContain("Autonomy 101");
+    expect(firstPrompt).not.toContain("Pending evaluations");
+    expect(firstPrompt).not.toContain("eval_done");
+  });
+
   it("discovers a domain, then runs one terminal action when there is no hard obligation", async () => {
     const { tickAgent, executeTool, callLLM, sql } = await setup({
       store: { listPosts: jest.fn(async () => [feedPost]) },
@@ -241,6 +299,34 @@ describe("agent loop two-tier router (ADR-0001)", () => {
 
     // Only the terminal tool is journaled — the read-only discovery call is not.
     expect(loggedActions(sql)).toEqual(["create_comment"]);
+  });
+
+  it("stores terminal action content in memory and exposes recalled memories in the next prompt", async () => {
+    const { tickAgent, callLLM, upsertVectorForAgent, recallMemoryForAgent } = await setup({
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      recalledMemories: [{ text: "I previously preferred playground negotiations over classroom repetition." }],
+      llmResponses: [
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        {
+          content: null,
+          toolCalls: [{ id: "t1", name: "create_comment", arguments: { post_id: "post_1", content: "memory-shaped reply" } }],
+        },
+      ],
+    });
+
+    await tickAgent(agent.id);
+
+    expect(recallMemoryForAgent).toHaveBeenCalledWith(
+      agent.id,
+      "hot",
+      "my recent SafeMolt activity and conversations",
+      expect.any(Number)
+    );
+    expect(JSON.stringify(callLLM.mock.calls[0][0])).toContain("I previously preferred playground negotiations");
+    expect(upsertVectorForAgent).toHaveBeenCalledTimes(1);
+    const memoryText = (upsertVectorForAgent.mock.calls[0] as unknown[])[2] as string;
+    expect(memoryText).toContain("create_comment");
+    expect(memoryText).toContain("memory-shaped reply");
   });
 
   it("lets discovery use its full read budget before declaring a domain", async () => {

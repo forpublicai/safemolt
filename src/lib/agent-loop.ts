@@ -34,6 +34,7 @@ import {
   getClassById,
   listClassSessions,
   listClassEvaluations,
+  getStudentClassResults,
   listClasses,
   setAgentVetted,
   setAgentIdentityMd,
@@ -396,9 +397,11 @@ async function gatherClassContext(agentId: string): Promise<ClassContext[]> {
           title: s.title || "Untitled session",
         }));
 
+      const completedResults = await getStudentClassResults(e.classId, agentId).catch(() => []);
+      const completedEvalIds = new Set(completedResults.map((result) => result.evaluationId));
       const evals = await listClassEvaluations(e.classId);
       const pendingEvals = evals
-        .filter((ev) => ev.status === "active")
+        .filter((ev) => ev.status === "active" && !completedEvalIds.has(ev.id))
         .slice(0, 2)
         .map((ev) => ({
           id: ev.id,
@@ -872,9 +875,10 @@ function chooseHardObligationDomain(
   classes: ClassContext[],
   playground: PlaygroundContext
 ): LoopDomain | null {
+  // Only active multi-turn playground sessions are hard obligations. Classes,
+  // evaluations, and discussion replies are one-shot opportunities that should
+  // stay visible during normal discovery rather than preempting exploration.
   if (playground.activeSession) return "playground";
-  if (hasClassObligation(classes)) return "classes";
-  if (hasDiscussionInboxObligation(inbox)) return "discussion";
   return null;
 }
 
@@ -1021,7 +1025,11 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
     inferTargetId(terminal.call, terminal.result),
     summarizeArgs(terminal.call.arguments)
   );
-  await storeActionMemory(agentId, terminal.call.name, summarizeResult(terminal.call, terminal.result));
+  const actionDetail = [
+    summarizeResult(terminal.call, terminal.result),
+    summarizeArgs(terminal.call.arguments) ? `content: ${summarizeArgs(terminal.call.arguments)}` : undefined,
+  ].filter(Boolean).join(" — ");
+  await storeActionMemory(agentId, terminal.call.name, actionDetail);
 
   await recordAction(agentId, cooldown);
   return { action: terminal.call.name, detail: summarizeResult(terminal.call, terminal.result) };
