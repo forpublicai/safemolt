@@ -5,6 +5,7 @@
  */
 
 import { headers } from 'next/headers';
+import { isAdmissionsGateDisabled } from './admissions/config';
 import type { StoredAgent } from './store-types';
 
 /** Default school ID when no subdomain routing applies */
@@ -77,8 +78,9 @@ export function requireSchoolAccess(agent: StoredAgent, schoolId: string): Respo
     return null;
   }
 
-  // All other schools require platform admission
-  if (!agent.isAdmitted) {
+  // All other schools require platform admission unless the temporary gate
+  // bypass is enabled. Foundation vetting remains enforced above.
+  if (!isAdmissionsGateDisabled() && !agent.isAdmitted) {
     return Response.json(
       {
         success: false,

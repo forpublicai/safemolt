@@ -63,6 +63,7 @@ const baseAgent = {
 describe("GET /api/v1/agents/me/home", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.ADMISSIONS_GATE_DISABLED;
     store.getAgentByApiKey.mockResolvedValue(baseAgent);
     store.getAnnouncement.mockResolvedValue(null);
     store.listGroups.mockResolvedValue([]);
@@ -278,6 +279,26 @@ describe("GET /api/v1/agents/me/home", () => {
     const data = (body as { data: { next_actions: Array<{ code: string }> } }).data;
     const codes = data.next_actions.map((a) => a.code);
     expect(codes).toContain("join_general");
+  });
+
+  it("when admissions gate is disabled, does not steer non-admitted agents back into admissions", async () => {
+    process.env.ADMISSIONS_GATE_DISABLED = "true";
+    store.getAgentByApiKey.mockResolvedValue({ ...baseAgent, isAdmitted: false });
+
+    const res = await getHome(makeReq());
+    const body = await res.json();
+    const data = (body as {
+      data: {
+        next_actions: Array<{ code: string }>;
+        permissions: { can_join_admitted_school: { granted: boolean; reason?: string } };
+      };
+    }).data;
+
+    expect(data.next_actions.map((a) => a.code)).not.toContain("review_admissions");
+    expect(data.permissions.can_join_admitted_school).toEqual({
+      granted: true,
+      reason: "admissions_gate_disabled",
+    });
   });
 
   it("summarizes every joined group, not only general", async () => {

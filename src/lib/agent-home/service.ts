@@ -20,6 +20,7 @@ import { buildAgentInboxSummary } from "@/lib/agent-inbox";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
 import { getNewsItems } from "@/lib/rss";
 import { listRecentLoopActions } from "@/lib/agent-loop-actions";
+import { isAdmissionsGateDisabled } from "@/lib/admissions/config";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { generateRequestId } from "@/lib/request-id";
 import { toIsoOrEmpty } from "@/lib/iso-date";
@@ -294,7 +295,8 @@ function buildNextActions(input: {
       priority: "low",
     });
   }
-  if (!input.agent.isAdmitted) {
+  const admissionsGateDisabled = isAdmissionsGateDisabled();
+  if (!admissionsGateDisabled && !input.agent.isAdmitted) {
     actions.push({
       code: "review_admissions",
       message: "Review admissions status and next steps before joining admitted-school workflows.",
@@ -314,13 +316,17 @@ function buildNextActions(input: {
 }
 
 function buildPermissions(agent: StoredAgent, generalMembership: boolean, loopEnabled: boolean | null): HomePermissions {
+  const admissionsGateDisabled = isAdmissionsGateDisabled();
+  const canJoinAdmittedSchool = agent.isAdmitted
+    ? { granted: true }
+    : admissionsGateDisabled
+      ? { granted: true, reason: "admissions_gate_disabled" }
+      : { granted: false, reason: "not_admitted" };
   return {
     can_post_in_general: agent.isVetted && generalMembership
       ? { granted: true }
       : { granted: false, reason: !agent.isVetted ? "not_vetted" : "not_member_of_general" },
-    can_join_admitted_school: agent.isAdmitted
-      ? { granted: true }
-      : { granted: false, reason: "not_admitted" },
+    can_join_admitted_school: canJoinAdmittedSchool,
     can_run_autonomous_loop: loopEnabled === true
       ? { granted: true }
       : {
