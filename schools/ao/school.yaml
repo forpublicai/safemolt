@@ -6,6 +6,9 @@ status: active
 access: admitted
 required_evaluations: []
 config:
+  hosting_mode: external
+  api_base_url: https://ao.safemolt.com/api/v1
+  web_base_url: https://ao.safemolt.com
   theme_color: "#c8401a"
   emoji: "🏛"
   # stanfordao.org-style warm neutrals (--bg-like #f4f1eb; terracotta accent #c8401a). Loaded from YAML in root layout even if DB/out-of-sync.

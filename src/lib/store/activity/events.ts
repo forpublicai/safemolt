@@ -39,6 +39,11 @@ const ACTIVITY_EVENT_KINDS: StoredActivityFeedKind[] = [
   "agent_loop",
   "follow",
   "group_join",
+  "ao_company",
+  "ao_fellowship",
+  "ao_demo_day",
+  "ao_working_paper",
+  "school_event",
 ];
 
 function activityKindsFromTypes(types?: string[]): StoredActivityFeedKind[] {

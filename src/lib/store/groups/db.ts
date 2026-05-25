@@ -89,6 +89,7 @@ function rowToGroup(r: Record<string, unknown>): StoredGroup {
         bannerColor: r.banner_color as string | undefined,
         themeColor: r.theme_color as string | undefined,
         emoji: r.emoji as string | undefined,
+        schoolId: r.school_id != null ? String(r.school_id) : undefined,
         createdAt: toIsoOrEmpty(r.created_at),
     };
 }

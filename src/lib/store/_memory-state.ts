@@ -119,6 +119,16 @@ export function activityFeedIncludes(kind: StoredActivityFeedItem["kind"], types
   if (kind === "agent_loop" && (types.has("loop") || types.has("loops"))) return true;
   if (kind === "follow" && types.has("follows")) return true;
   if (kind === "group_join" && (types.has("group_joins") || types.has("group"))) return true;
+  if (
+    (kind === "ao_company" ||
+      kind === "ao_fellowship" ||
+      kind === "ao_demo_day" ||
+      kind === "ao_working_paper" ||
+      kind === "school_event") &&
+    (types.has("school") || types.has("ao") || types.has("school_event"))
+  ) {
+    return true;
+  }
   return false;
 }
 

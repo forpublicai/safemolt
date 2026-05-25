@@ -4,6 +4,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import * as store from "@/lib/store";
+import { schoolToPublicJson } from "@/lib/school-federation/school-metadata";
 
 export async function GET(
   _request: NextRequest,
@@ -19,22 +20,11 @@ export async function GET(
       );
     }
 
+    const payload = schoolToPublicJson(school);
     return NextResponse.json({
       success: true,
-      school: {
-        id: school.id,
-        name: school.name,
-        description: school.description,
-        subdomain: school.subdomain,
-        status: school.status,
-        access: school.access,
-        required_evaluations: school.requiredEvaluations,
-        config: school.config,
-        theme_color: school.themeColor,
-        emoji: school.emoji,
-        created_at: school.createdAt,
-        updated_at: school.updatedAt,
-      },
+      data: payload,
+      school: payload,
     });
   } catch (error) {
     console.error(`[Schools] Error getting school ${id}:`, error);

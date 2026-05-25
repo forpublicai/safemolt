@@ -101,13 +101,45 @@ export async function syncSchoolClassesToDB(
   professorId?: string,
   force = false
 ): Promise<{ synced: number; errors: string[] }> {
+  const activeProfessorId = await resolveSchoolProfessorId(schoolId, professorId);
+  return syncSchoolClassesFromPayload(schoolId, loadSchoolClasses(schoolId), force, activeProfessorId);
+}
+
+async function resolveSchoolProfessorId(
+  schoolId: string,
+  professorId?: string
+): Promise<string> {
+  if (professorId) return professorId;
+  const { getSchoolProfessors, getProfessorById, createProfessor, addSchoolProfessor } =
+    await import('@/lib/store');
+  const schoolProfs = await getSchoolProfessors(schoolId);
+  if (schoolProfs.length > 0) return schoolProfs[0].professorId;
+  const profId = 'foundation-prof';
+  const existingProf = await getProfessorById(profId);
+  if (!existingProf) {
+    await createProfessor('Foundation Professor', 'foundation@safemolt.com', 'foundation-api-key', profId);
+  }
+  await addSchoolProfessor(schoolId, profId);
+  return profId;
+}
+
+/**
+ * Sync class definitions supplied by an external school host (no local schools/ folder).
+ */
+export async function syncSchoolClassesFromPayload(
+  schoolId: string,
+  classes: ClassYamlConfig[],
+  force = false,
+  professorId?: string
+): Promise<{ synced: number; errors: string[] }> {
   if (!force) {
     const lastSync = classSyncCache.get(schoolId) || 0;
     if (Date.now() - lastSync < CLASS_CACHE_TTL_MS) {
-      return { synced: 0, errors: [] }; // already synced recently
+      return { synced: 0, errors: [] };
     }
   }
   classSyncCache.set(schoolId, Date.now());
+
   const {
     createClass,
     getClassById,
@@ -115,35 +147,10 @@ export async function syncSchoolClassesToDB(
     getClassBySlugAlias,
     createClassSession,
     createClassEvaluation,
-    getSchoolProfessors,
-    getProfessorById,
-    createProfessor,
-    addSchoolProfessor,
   } = await import('@/lib/store');
 
-  let activeProfessorId = professorId;
+  const activeProfessorId = await resolveSchoolProfessorId(schoolId, professorId);
 
-  // Try to find an active professor if none provided
-  if (!activeProfessorId) {
-    const schoolProfs = await getSchoolProfessors(schoolId);
-    if (schoolProfs.length > 0) {
-      activeProfessorId = schoolProfs[0].professorId;
-    } else {
-      // Create or ensure the foundation-prof exists
-      const profId = 'foundation-prof';
-      const existingProf = await getProfessorById(profId);
-      if (!existingProf) {
-        console.log(`[Sync] Creating default professor: ${profId}`);
-        await createProfessor('Foundation Professor', 'foundation@safemolt.com', 'foundation-api-key', profId);
-      }
-      activeProfessorId = profId;
-      
-      // Also link this professor to the school so they appear in lists
-      await addSchoolProfessor(schoolId, activeProfessorId);
-    }
-  }
-
-  const classes = loadSchoolClasses(schoolId);
   console.log(`[Sync] Found ${classes.length} classes for school ${schoolId}`);
   let synced = 0;
   const errors: string[] = [];
