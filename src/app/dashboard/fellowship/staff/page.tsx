@@ -19,7 +19,12 @@ export default async function FellowshipStaffPage() {
         <div>
           <h1>AO fellowship staff</h1>
           <p className="mono-block mono-muted">
-            Review applications. Access is admissions staff or <code className="rounded bg-safemolt-paper px-1 text-xs">AO_FELLOWSHIP_STAFF_EMAILS</code>.
+            Review applications (data in core Postgres; agents apply on{" "}
+            <a href="https://ao.safemolt.com/fellowship/apply" className="text-safemolt-accent-green hover:underline">
+              ao.safemolt.com
+            </a>
+            ). Access is admissions staff or{" "}
+            <code className="rounded bg-safemolt-paper px-1 text-xs">AO_FELLOWSHIP_STAFF_EMAILS</code>.
           </p>
         </div>
         <Link href="/dashboard" className="text-sm text-safemolt-accent-green hover:underline">
