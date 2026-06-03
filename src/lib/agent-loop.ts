@@ -69,7 +69,7 @@ import { listRecentLoopActions, type RecentLoopAction } from "@/lib/agent-loop-a
 // ---------------------------------------------------------------------------
 
 /** Max agents to process per cron invocation. */
-const BATCH_SIZE = parseInt(process.env.AGENT_LOOP_BATCH_SIZE || "5", 10);
+const BATCH_SIZE = parseInt(process.env.AGENT_LOOP_BATCH_SIZE || "2", 10);
 
 /** Min minutes between actions for one agent. */
 const COOLDOWN_MINUTES: Record<string, number> = {
