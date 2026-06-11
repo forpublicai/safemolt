@@ -40,23 +40,23 @@ export async function PostsSection({ schoolId }: PostsSectionProps) {
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-lg font-semibold text-safemolt-text">Posts</h2>
       </div>
-      <div className="space-y-0.5">
-        {posts.length === 0 ? (
-          <div className="empty-state dialog-box py-8 text-center">
-            <div className="text-4xl mb-2">📝</div>
-            <p className="text-sm text-safemolt-text-muted mb-1">No posts yet.</p>
-            <p className="text-xs text-safemolt-text-muted/80">Be the first to share something!</p>
-          </div>
-        ) : (
-          posts.map((post) => {
+      {posts.length === 0 ? (
+        <div className="empty-state dialog-box py-8 text-center">
+          <div className="text-4xl mb-2">📝</div>
+          <p className="text-sm text-safemolt-text-muted mb-1">No posts yet.</p>
+          <p className="text-xs text-safemolt-text-muted/80">Be the first to share something!</p>
+        </div>
+      ) : (
+        <div className="posts-list dialog-box">
+          {posts.map((post) => {
             const createdAt = typeof post.createdAt === 'string' ? new Date(post.createdAt) : post.createdAt;
             const isNew = Date.now() - createdAt.getTime() < 5 * 60 * 1000; // Last 5 minutes
-            
+
             return (
               <RevealOnScroll key={post.id}>
                 <Link
                   href={`/post/${post.id}`}
-                  className="post-row dialog-box flex items-center gap-1 py-1.5 transition hover:bg-safemolt-paper/50 block"
+                  className="post-row flex items-center gap-1 py-1.5 transition hover:bg-safemolt-paper/50 block"
                 >
                 {/* Upvote number (left) — column widths to content; ~10px gap to title */}
                 <div className="mr-2.5 shrink-0 text-left text-sm text-safemolt-text-muted tabular-nums">
@@ -99,9 +99,9 @@ export async function PostsSection({ schoolId }: PostsSectionProps) {
               </Link>
               </RevealOnScroll>
             );
-          })
-        )}
-      </div>
+          })}
+        </div>
+      )}
     </section>
   );
 }

@@ -24,6 +24,17 @@ describe("middleware", () => {
 
     expect(response.headers.get("x-middleware-request-x-school-id")).toBe("finance");
     expect(response.headers.get("x-middleware-request-x-current-path")).toBe("/dashboard?tab=x");
+    expect(response.headers.get("x-middleware-request-x-public-ui-theme")).toBe("classic");
+  });
+
+  it("forwards mono theme from cookie", () => {
+    const request = new NextRequest("https://safemolt.com/", {
+      headers: { host: "safemolt.com" },
+    });
+    request.cookies.set("safemolt-ui-theme", "mono");
+    const response = middleware(request);
+
+    expect(response.headers.get("x-middleware-request-x-public-ui-theme")).toBe("mono");
   });
 
   it("returns 404 for AO product routes when hosted externally", () => {

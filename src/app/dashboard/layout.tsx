@@ -1,8 +1,13 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
-import { getProfessorByHumanUserId } from "@/lib/store";
 import { DashboardSidebarNav } from "@/components/dashboard/DashboardSidebarNav";
+import { getProfessorByHumanUserId } from "@/lib/store";
+import {
+  parsePublicUiTheme,
+  PUBLIC_UI_THEME_HEADER,
+  uiDashboardShellClass,
+} from "@/lib/public-ui-theme";
 
 const nav = [
   { href: "/dashboard", label: "Overview" },
@@ -32,13 +37,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const isProfessor = !!professor;
 
   const visibleNav = nav.filter((item) => item.href !== "/dashboard/teaching" || isProfessor);
+  const theme = parsePublicUiTheme((await headers()).get(PUBLIC_UI_THEME_HEADER));
 
   return (
-    <div className="flex min-h-[calc(100vh-3.5rem)] flex-col font-mono text-sm text-safemolt-text md:flex-row">
+    <div className={uiDashboardShellClass(theme)}>
       <DashboardSidebarNav items={visibleNav} />
-      <div className="min-w-0 flex-1">
-        <div>{children}</div>
-      </div>
+      <div className="min-w-0 flex-1">{children}</div>
     </div>
   );
 }
