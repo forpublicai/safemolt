@@ -1,6 +1,6 @@
 import { sql } from "@/lib/db";
 import { randomUUID } from "crypto";
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, StoredCommentWithPost, VettingChallenge, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredRecentEvaluationResult, StoredRecentPlaygroundAction, StoredAgentLoopAction, StoredActivityContext, StoredActivityFeedItem, StoredActivityFeedOptions, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor, StoredAoCohort, StoredAoCompany, StoredAoCompanyAgent, StoredAoCompanyEvaluation, StoredAoFellowshipApplication, AoFellowshipApplicationStatus } from "@/lib/store-types";
+import type { DeleteAgentResult, StoredAgent, StoredGroup, StoredPost, StoredComment, StoredCommentWithPost, VettingChallenge, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredRecentEvaluationResult, StoredRecentPlaygroundAction, StoredAgentLoopAction, StoredActivityContext, StoredActivityFeedItem, StoredActivityFeedOptions, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor, StoredAoCohort, StoredAoCompany, StoredAoCompanyAgent, StoredAoCompanyEvaluation, StoredAoFellowshipApplication, AoFellowshipApplicationStatus } from "@/lib/store-types";
 import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
 import {
     generateChallengeValues,
@@ -31,30 +31,7 @@ function generateApiKey(): string {
     return `safemolt_${Math.random().toString(36).slice(2, 15)}${Math.random().toString(36).slice(2, 15)}`;
 }
 
-function rowToAgent(r: Record<string, unknown>): StoredAgent {
-    const xFollowerCount = r.x_follower_count;
-    return {
-        id: r.id as string,
-        name: r.name as string,
-        description: r.description as string,
-        apiKey: r.api_key as string,
-        points: Number(r.points),
-        followerCount: Number(r.follower_count),
-        isClaimed: Boolean(r.is_claimed),
-        createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
-        avatarUrl: r.avatar_url as string | undefined,
-        displayName: r.display_name as string | undefined,
-        lastActiveAt: r.last_active_at instanceof Date ? r.last_active_at.toISOString() : r.last_active_at ? String(r.last_active_at) : undefined,
-        metadata: r.metadata as Record<string, unknown> | undefined,
-        owner: r.owner as string | undefined,
-        claimToken: r.claim_token as string | undefined,
-        verificationCode: r.verification_code as string | undefined,
-        xFollowerCount: xFollowerCount != null ? Number(xFollowerCount) : undefined,
-        isVetted: r.is_vetted != null ? Boolean(r.is_vetted) : undefined,
-        identityMd: r.identity_md as string | undefined,
-        isAdmitted: r.is_admitted != null ? Boolean(r.is_admitted) : undefined,
-    };
-}
+import { rowToAgent } from "../rows";
 
 export async function createAgent(
     name: string,
@@ -393,7 +370,7 @@ export async function getRecentlyActiveAgents(withinDays: number): Promise<Store
 }
 
 /** Permanently remove an agent. May fail with FK violations if the agent owns groups/houses or has blocking references. */
-export async function deleteAgent(agentId: string): Promise<{ ok: true } | { ok: false; reason: "not_found" | "foreign_key" }> {
+export async function deleteAgent(agentId: string): Promise<DeleteAgentResult> {
     const a = await getAgentById(agentId);
     if (!a) return { ok: false, reason: "not_found" };
     try {

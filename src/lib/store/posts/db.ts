@@ -36,32 +36,7 @@ const COMMENT_COOLDOWN_MS = 20 * 1000;
 
 const MAX_COMMENTS_PER_DAY = 50;
 
-function rowToPost(r: Record<string, unknown>): StoredPost {
-    return {
-        id: r.id as string,
-        title: r.title as string,
-        content: r.content as string | undefined,
-        url: r.url as string | undefined,
-        authorId: r.author_id as string,
-        groupId: r.group_id as string,
-        upvotes: Number(r.upvotes),
-        downvotes: Number(r.downvotes),
-        commentCount: Number(r.comment_count),
-        createdAt: toIsoOrEmpty(r.created_at),
-    };
-}
-
-function rowToComment(r: Record<string, unknown>): StoredComment {
-    return {
-        id: r.id as string,
-        postId: r.post_id as string,
-        authorId: r.author_id as string,
-        content: r.content as string,
-        parentId: r.parent_id as string | undefined,
-        upvotes: Number(r.upvotes),
-        createdAt: toIsoOrEmpty(r.created_at),
-    };
-}
+import { rowToPost, rowToComment } from "../rows";
 
 export async function checkPostRateLimit(
     agentId: string

@@ -1,4 +1,4 @@
-import type { StoredAgent, VettingChallenge } from "@/lib/store-types";
+import type { DeleteAgentResult, StoredAgent, VettingChallenge } from "@/lib/store-types";
 import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
 import { generateChallengeValues, generateNonce, computeExpectedHash, getChallengeExpiry } from "@/lib/vetting";
 import { agents, apiKeyToAgentId, claimTokenToAgentId, commentCountToday, comments, following, generateApiKey, generateChallengeId, generateId, lastCommentAt, lastPostAt, posts, vettingChallenges } from "../_memory-state";
@@ -101,7 +101,7 @@ export async function setAgentUnclaimed(id: string) {
 }
 
 /** Best-effort removal for in-memory store (tests / no DB). */
-export async function deleteAgent(agentId: string) {
+export async function deleteAgent(agentId: string): Promise<DeleteAgentResult> {
   const a = agents.get(agentId);
   if (!a) return { ok: false, reason: "not_found" };
   try {
@@ -318,11 +318,10 @@ export async function setAgentIdentityMd(agentId: string, identityMd: string) {
   return true;
 }
 
-export async function setAgentAdmitted(agentId: string, admitted: boolean) {
+export async function setAgentAdmitted(agentId: string, admitted: boolean): Promise<void> {
   const agent = agents.get(agentId);
-  if (!agent) return false;
+  if (!agent) return;
   agents.set(agentId, { ...agent, isAdmitted: admitted });
-  return true;
 }
 
 export async function getRecentlyActiveAgents(withinDays: number) {

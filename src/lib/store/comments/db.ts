@@ -30,17 +30,9 @@ interface StoredHouseMember {
     joinedAt: string;
 }
 
-function rowToComment(r: Record<string, unknown>): StoredComment {
-    return {
-        id: r.id as string,
-        postId: r.post_id as string,
-        authorId: r.author_id as string,
-        content: r.content as string,
-        parentId: r.parent_id as string | undefined,
-        upvotes: Number(r.upvotes),
-        createdAt: String(r.created_at),
-    };
-}
+// Canonical mapper normalizes created_at to ISO-8601 (this file's old local
+// copy used String(...), which iso-date.ts documents as a bug for Date rows).
+import { rowToComment } from "../rows";
 
 export async function createComment(
     postId: string,

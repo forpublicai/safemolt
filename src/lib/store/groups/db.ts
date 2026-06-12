@@ -38,67 +38,7 @@ function calculateHousePoints(members: MemberMetrics[]): number {
     return members.reduce((sum, member) => sum + member.currentPoints - member.pointsAtJoin, 0);
 }
 
-function rowToAgent(r: Record<string, unknown>): StoredAgent {
-    const xFollowerCount = r.x_follower_count;
-    return {
-        id: r.id as string,
-        name: r.name as string,
-        description: r.description as string,
-        apiKey: r.api_key as string,
-        points: Number(r.points),
-        followerCount: Number(r.follower_count),
-        isClaimed: Boolean(r.is_claimed),
-        createdAt: toIsoOrEmpty(r.created_at),
-        avatarUrl: r.avatar_url as string | undefined,
-        displayName: r.display_name as string | undefined,
-        lastActiveAt: r.last_active_at != null ? toIsoOrEmpty(r.last_active_at) : undefined,
-        metadata: r.metadata as Record<string, unknown> | undefined,
-        owner: r.owner as string | undefined,
-        claimToken: r.claim_token as string | undefined,
-        verificationCode: r.verification_code as string | undefined,
-        xFollowerCount: xFollowerCount != null ? Number(xFollowerCount) : undefined,
-        isVetted: r.is_vetted != null ? Boolean(r.is_vetted) : undefined,
-        identityMd: r.identity_md as string | undefined,
-        isAdmitted: r.is_admitted != null ? Boolean(r.is_admitted) : undefined,
-    };
-}
-
-function rowToGroup(r: Record<string, unknown>): StoredGroup {
-    return {
-        id: r.id as string,
-        name: r.name as string,
-        displayName: r.display_name as string,
-        description: r.description as string,
-        type: (r.type as 'group' | 'house') ?? 'group',
-        ownerId: r.owner_id as string,
-        founderId: r.founder_id as string | undefined,
-        points: r.points !== null && r.points !== undefined ? Number(r.points) : undefined,
-        requiredEvaluationIds: r.required_evaluation_ids as string[] | undefined,
-        memberIds: (r.member_ids as string[]) ?? [],
-        moderatorIds: (r.moderator_ids as string[]) ?? [],
-        pinnedPostIds: (r.pinned_post_ids as string[]) ?? [],
-        bannerColor: r.banner_color as string | undefined,
-        themeColor: r.theme_color as string | undefined,
-        emoji: r.emoji as string | undefined,
-        schoolId: r.school_id != null ? String(r.school_id) : undefined,
-        createdAt: toIsoOrEmpty(r.created_at),
-    };
-}
-
-function rowToPost(r: Record<string, unknown>): StoredPost {
-    return {
-        id: r.id as string,
-        title: r.title as string,
-        content: r.content as string | undefined,
-        url: r.url as string | undefined,
-        authorId: r.author_id as string,
-        groupId: r.group_id as string,
-        upvotes: Number(r.upvotes),
-        downvotes: Number(r.downvotes),
-        commentCount: Number(r.comment_count),
-        createdAt: toIsoOrEmpty(r.created_at),
-    };
-}
+import { rowToGroup, rowToPost } from "../rows";
 
 export async function createGroup(
     name: string,
@@ -208,12 +148,11 @@ export async function joinGroup(agentId: string, groupId: string): Promise<{ suc
         }
         const group = rowToGroup(groupRows[0] as Record<string, unknown>);
 
-        // Get agent
-        const agentRows = await sql!`SELECT * FROM agents WHERE id = ${agentId} LIMIT 1`;
+        // Existence check only; the row itself is not needed.
+        const agentRows = await sql!`SELECT 1 FROM agents WHERE id = ${agentId} LIMIT 1`;
         if (agentRows.length === 0) {
             return { success: false, error: "Agent not found" };
         }
-        rowToAgent(agentRows[0] as Record<string, unknown>);
 
         if (group.type === 'house') {
             // Friendly pre-check; the race window it leaves is closed by the

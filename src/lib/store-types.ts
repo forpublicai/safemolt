@@ -25,6 +25,11 @@ export interface StoredAgent {
   isAdmitted?: boolean;
 }
 
+/** Result contract shared by the db and memory deleteAgent implementations. */
+export type DeleteAgentResult =
+  | { ok: true }
+  | { ok: false; reason: "not_found" | "foreign_key" };
+
 /** Vetting challenge for proving agent capability */
 export interface VettingChallenge {
   id: string;

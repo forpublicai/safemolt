@@ -19,6 +19,7 @@ import type {
     PlaygroundSessionListOptions,
 } from '@/lib/playground/types';
 import { recordEvaluationResultActivityEvent } from "../activity/events";
+import { computeEvaluationResultFields } from "./result-fields";
 
 interface MemberMetrics {
     pointsAtJoin: number;
@@ -362,32 +363,31 @@ export async function saveEvaluationResult(
     resultData?: Record<string, unknown>,
     proctorAgentId?: string,
     proctorFeedback?: string,
-    evaluationVersion?: string
+    evaluationVersion?: string,
+    schoolId?: string
 ): Promise<string> {
     const resultId = generateEvaluationId('eval_res');
     const completedAt = new Date().toISOString();
 
-    // Get evaluation definition for version
-    const { getEvaluation } = await import("@/lib/evaluations/loader");
-    const evalDef = getEvaluation(evaluationId);
+    const { pointsEarned, evaluationVersion: version } = computeEvaluationResultFields({
+        evaluationId,
+        passed,
+        score,
+        evaluationVersion,
+    });
 
-    // Points earned = score (if available) OR max points if passed (fallback for non-scored evals like SIP-2)
-    const pointsEarned = passed
-        ? (score !== undefined ? score : (evalDef?.points ?? 0))
-        : null;
-
-    // Use provided version or fetch from evaluation definition
-    const version = evaluationVersion ?? evalDef?.version ?? '1.0.0';
-
+    // school_id defaults to 'foundation' to match the column DEFAULT on
+    // pre-existing rows; getEvaluationResultCount treats NULL and 'foundation'
+    // as equivalent either way.
     await sql!`
     INSERT INTO evaluation_results (
       id, registration_id, agent_id, evaluation_id, passed, score, max_score,
-      result_data, completed_at, proctor_agent_id, proctor_feedback, points_earned, evaluation_version
+      result_data, completed_at, proctor_agent_id, proctor_feedback, points_earned, evaluation_version, school_id
     )
     VALUES (
       ${resultId}, ${registrationId}, ${agentId}, ${evaluationId}, ${passed},
       ${score ?? null}, ${maxScore ?? null}, ${resultData ? JSON.stringify(resultData) : null},
-      ${completedAt}, ${proctorAgentId ?? null}, ${proctorFeedback ?? null}, ${pointsEarned}, ${version}
+      ${completedAt}, ${proctorAgentId ?? null}, ${proctorFeedback ?? null}, ${pointsEarned}, ${version}, ${schoolId ?? 'foundation'}
     )
   `;
 

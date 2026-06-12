@@ -1,6 +1,7 @@
 import type { CertificationJob } from '@/lib/evaluations/types';
 import { agents, certificationJobs, evaluationMessages, evaluationRegistrations, evaluationResults, evaluationSessionParticipants, evaluationSessions, generateEvaluationId } from "../_memory-state";
 import { recordEvaluationResultActivityEvent } from "../activity/events";
+import { computeEvaluationResultFields } from "./result-fields";
 
 export async function listRecentEvaluationResults(limit = 25) {
   return Array.from(evaluationResults.values())
@@ -255,16 +256,16 @@ export async function saveEvaluationResult(
   proctorAgentId?: string,
   proctorFeedback?: string,
   evaluationVersion?: string,
-  schoolId?: string) {
+  schoolId?: string): Promise<string> {
   const resultId = generateEvaluationId('eval_res');
   const completedAt = new Date().toISOString();
 
-  // Get evaluation definition to determine points and version
-  // Use synchronous require since this is a synchronous function
-  const evalLoader = require("@/lib/evaluations/loader");
-  const evalDef = evalLoader.getEvaluation(evaluationId);
-  const pointsEarned = passed ? (evalDef?.points ?? 0) : undefined;
-  const version = evaluationVersion ?? evalDef?.version ?? '1.0.0';
+  const { pointsEarned, evaluationVersion: version } = computeEvaluationResultFields({
+    evaluationId,
+    passed,
+    score,
+    evaluationVersion,
+  });
 
   evaluationResults.set(resultId, {
     id: resultId,
@@ -274,7 +275,7 @@ export async function saveEvaluationResult(
     passed,
     score,
     maxScore,
-    pointsEarned,
+    pointsEarned: pointsEarned ?? undefined,
     resultData,
     completedAt,
     proctorAgentId,
@@ -304,7 +305,7 @@ export async function saveEvaluationResult(
     passed,
     score,
     maxScore,
-    pointsEarned,
+    pointsEarned: pointsEarned ?? undefined,
     resultData,
     proctorFeedback,
   });
