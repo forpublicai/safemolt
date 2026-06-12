@@ -23,24 +23,15 @@ import { getPassedEvaluations } from "../evaluations/db";
 import { toIsoOrEmpty } from "@/lib/iso-date";
 import { recordGroupJoinActivityEvent } from "../activity/events";
 
+const ALREADY_IN_HOUSE_ERROR = "You are already in a house. Leave your current house first.";
+
+function isUniqueViolation(error: unknown): boolean {
+    return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
+}
+
 interface MemberMetrics {
     pointsAtJoin: number;
     currentPoints: number;
-}
-
-interface StoredHouse {
-    id: string;
-    name: string;
-    founderId: string;
-    points: number;
-    createdAt: string;
-}
-
-interface StoredHouseMember {
-    agentId: string;
-    houseId: string;
-    pointsAtJoin: number;
-    joinedAt: string;
 }
 
 function calculateHousePoints(members: MemberMetrics[]): number {
@@ -225,31 +216,24 @@ export async function joinGroup(agentId: string, groupId: string): Promise<{ suc
         rowToAgent(agentRows[0] as Record<string, unknown>);
 
         if (group.type === 'house') {
-            // House joining logic
-            await sql!`BEGIN`;
-
-            // Check if already in a house
+            // Friendly pre-check; the race window it leaves is closed by the
+            // partial unique index below.
             const existingHouseMembership = await sql!`
-        SELECT 1
-        FROM group_members gm
-        JOIN groups g ON g.id = gm.group_id
-        WHERE gm.agent_id = ${agentId} AND g.type = 'house'
+        SELECT 1 FROM group_members
+        WHERE agent_id = ${agentId} AND is_house
         LIMIT 1
       `;
             if (existingHouseMembership.length > 0) {
-                await sql!`ROLLBACK`;
-                return { success: false, error: "You are already in a house. Leave your current house first." };
+                return { success: false, error: ALREADY_IN_HOUSE_ERROR };
             }
 
             // Check evaluation requirements
             if (group.requiredEvaluationIds && group.requiredEvaluationIds.length > 0) {
-                // Import getPassedEvaluations - it's defined later in this file
                 const passedEvaluations = await getPassedEvaluations(agentId);
                 const missingEvaluations = group.requiredEvaluationIds.filter(
                     evalId => !passedEvaluations.includes(evalId)
                 );
                 if (missingEvaluations.length > 0) {
-                    await sql!`ROLLBACK`;
                     return {
                         success: false,
                         error: `Missing required evaluations: ${missingEvaluations.join(', ')}`
@@ -257,18 +241,27 @@ export async function joinGroup(agentId: string, groupId: string): Promise<{ suc
                 }
             }
 
-            // Lock the group row
-            await sql!`SELECT * FROM groups WHERE id = ${groupId} FOR UPDATE`;
-
-            // Add to the unified group membership table.
+            // Single-house membership is enforced by uniq_group_members_single_house
+            // (partial unique index on agent_id WHERE is_house). The Neon HTTP driver
+            // has no session affinity, so multi-statement BEGIN/FOR UPDATE/COMMIT
+            // sequences cannot protect this write; the index can.
             const joinedAt = new Date().toISOString();
-            await sql!`
-        INSERT INTO group_members (agent_id, group_id, joined_at)
-        VALUES (${agentId}, ${groupId}, ${joinedAt})
+            try {
+                await sql!`
+        INSERT INTO group_members (agent_id, group_id, joined_at, is_house)
+        VALUES (${agentId}, ${groupId}, ${joinedAt}, TRUE)
         ON CONFLICT (agent_id, group_id) DO NOTHING
       `;
+            } catch (error) {
+                // ON CONFLICT covers the same-house re-join, so any unique violation
+                // here is the single-house index: the agent joined another house
+                // between the pre-check and this insert.
+                if (isUniqueViolation(error)) {
+                    return { success: false, error: ALREADY_IN_HOUSE_ERROR };
+                }
+                throw error;
+            }
 
-            await sql!`COMMIT`;
             await recordGroupJoinActivityEvent({
                 agentId,
                 groupId: group.id,
@@ -307,7 +300,6 @@ export async function joinGroup(agentId: string, groupId: string): Promise<{ suc
             }
         }
     } catch (error) {
-        await sql!`ROLLBACK`;
         return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
     }
 }
@@ -323,18 +315,28 @@ export async function leaveGroup(agentId: string, groupId: string): Promise<{ su
         if (groupRows.length === 0) {
             return { success: false, error: "Group not found" };
         }
-        rowToGroup(groupRows[0] as Record<string, unknown>);
+        const group = rowToGroup(groupRows[0] as Record<string, unknown>);
 
         const checkRows = await sql!`
-        SELECT 1 FROM group_members 
+        SELECT 1 FROM group_members
         WHERE agent_id = ${agentId} AND group_id = ${groupId}
         LIMIT 1
       `;
         if (checkRows.length === 0) {
-            return { success: false, error: "Not a member of this group" };
+            return { success: false, error: group.type === 'house' ? "Not a member of this house" : "Not a member of this group" };
         }
+
+        if (group.type === 'house') {
+            // Houses carry founder-promotion/dissolution lifecycle rules; run them
+            // atomically instead of bare-deleting the membership row.
+            const left = await leaveHouse(agentId, groupId);
+            return left
+                ? { success: true }
+                : { success: false, error: "Not a member of this house" };
+        }
+
         await sql!`
-        DELETE FROM group_members 
+        DELETE FROM group_members
         WHERE agent_id = ${agentId} AND group_id = ${groupId}
       `;
         return { success: true };
@@ -564,98 +566,49 @@ export async function ensureGeneralGroup(ownerId: string): Promise<void> {
     }
 }
 
-// Legacy house surface: UI deleted in M1; compatibility stays private until preserved data is migrated.
-function rowToHouseMember(r: Record<string, unknown>): StoredHouseMember {
-    return {
-        agentId: r.agent_id as string,
-        houseId: r.house_id as string,
-        pointsAtJoin: Number(r.points_at_join),
-        joinedAt: String(r.joined_at),
-    };
-}
-
-/** Legacy compatibility: the separate house membership table is gone after M2. */
-async function getHouseMembership(agentId: string): Promise<StoredHouseMember | null> {
-    const rows = await sql!`
-    SELECT gm.agent_id, gm.group_id AS house_id, 0 AS points_at_join, gm.joined_at
-    FROM group_members gm
-    JOIN groups g ON g.id = gm.group_id
-    WHERE gm.agent_id = ${agentId} AND g.type = 'house'
-    LIMIT 1
-  `;
-    const r = rows[0] as Record<string, unknown> | undefined;
-    return r ? rowToHouseMember(r) : null;
-}
-
 /**
  * Leave current house.
- * If founder leaves, promotes oldest member or dissolves house.
+ * If the founder leaves, promotes the oldest remaining member; an emptied
+ * house is dissolved.
  *
- * Uses a transaction with row locking to prevent race conditions
- * when multiple founders attempt to leave simultaneously.
+ * Runs as a single non-interactive sql.transaction() batch: the Neon HTTP
+ * driver gives every standalone sql`` call its own connection, so separate
+ * BEGIN/FOR UPDATE/COMMIT statements share no session and protect nothing.
  */
-async function leaveHouse(agentId: string): Promise<boolean> {
-    const membership = await getHouseMembership(agentId);
-    if (!membership) return false;
+async function leaveHouse(agentId: string, houseId: string): Promise<boolean> {
+    const [, deletedMemberships] = await sql!.transaction((txn) => [
+        // Promote the oldest other member iff the leaver founded the house and
+        // someone remains to take over.
+        txn`
+      UPDATE groups g
+      SET founder_id = (
+        SELECT gm.agent_id FROM group_members gm
+        WHERE gm.group_id = g.id AND gm.agent_id <> ${agentId}
+        ORDER BY gm.joined_at ASC
+        LIMIT 1
+      )
+      WHERE g.id = ${houseId} AND g.type = 'house' AND g.founder_id = ${agentId}
+        AND EXISTS (
+          SELECT 1 FROM group_members gm2
+          WHERE gm2.group_id = g.id AND gm2.agent_id <> ${agentId}
+        )
+    `,
+        txn`
+      DELETE FROM group_members
+      WHERE agent_id = ${agentId} AND group_id = ${houseId}
+      RETURNING agent_id
+    `,
+        // Dissolve the house once it has no members left.
+        txn`
+      DELETE FROM groups g
+      WHERE g.id = ${houseId} AND g.type = 'house'
+        AND NOT EXISTS (
+          SELECT 1 FROM group_members gm WHERE gm.group_id = g.id
+        )
+    `,
+    ]);
 
-    // Use transaction with row locking to prevent race conditions
-    try {
-        await sql!`BEGIN`;
-
-        // Lock the group row (house) to prevent concurrent modifications
-        const houseRows = await sql!`
-      SELECT id, name, founder_id, points, created_at
-      FROM groups
-      WHERE id = ${membership.houseId} AND type = 'house'
-      FOR UPDATE
-    `;
-
-        if (houseRows.length === 0) {
-            await sql!`ROLLBACK`;
-            return false;
-        }
-        const group = rowToGroup(houseRows[0] as Record<string, unknown>);
-        const house: StoredHouse = {
-            id: group.id,
-            name: group.name,
-            founderId: group.founderId!,
-            points: group.points ?? 0,
-            createdAt: group.createdAt,
-        };
-
-        // Check if leaving agent is founder
-        if (house.founderId === agentId) {
-            // Get other members ordered by join date (oldest first)
-            const memberRows = await sql!`
-        SELECT agent_id, group_id AS house_id, 0 AS points_at_join, joined_at
-        FROM group_members
-        WHERE group_id = ${membership.houseId}
-        ORDER BY joined_at ASC
-      `;
-            const members = memberRows.map(r => rowToHouseMember(r as Record<string, unknown>));
-            const otherMembers = members.filter(m => m.agentId !== agentId);
-
-            if (otherMembers.length === 0) {
-                // No other members - dissolve house (CASCADE will delete membership)
-                await sql!`DELETE FROM groups WHERE id = ${house.id} AND type = 'house'`;
-                await sql!`COMMIT`;
-                return true;
-            }
-
-            // Auto-elect oldest member as new founder
-            const newFounder = otherMembers[0];
-            await sql!`UPDATE groups SET founder_id = ${newFounder.agentId} WHERE id = ${house.id} AND type = 'house'`;
-        }
-
-        // Remove membership
-        await sql!`DELETE FROM group_members WHERE agent_id = ${agentId} AND group_id = ${membership.houseId}`;
-
-        await sql!`COMMIT`;
-        return true;
-    } catch (error) {
-        await sql!`ROLLBACK`;
-        throw error;
-    }
+    return (deletedMemberships as unknown[]).length > 0;
 }
 
 /**
