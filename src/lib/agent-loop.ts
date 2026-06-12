@@ -38,12 +38,9 @@ import {
   listClasses,
   setAgentVetted,
   setAgentIdentityMd,
-  listPlaygroundSessions,
-  getPlaygroundActions,
   getPassedEvaluations,
   ensureGeneralGroup,
   listNotifications,
-  listGroups,
   getFollowingCount,
 } from "@/lib/store";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
@@ -57,10 +54,13 @@ import { isSponsoredPublicAiAgent } from "@/lib/memory/sponsored-public-ai";
 import { recallMemoryForAgent, upsertVectorForAgent } from "@/lib/memory/memory-service";
 import { isPlaceholderIdentity, generateRandomIdentity } from "@/lib/agent-identity-generator";
 import { listEvaluations } from "@/lib/evaluations/loader";
-import { listGames } from "@/lib/playground/games";
-import { getNewsItems, type NewsItem } from "@/lib/rss";
+import {
+  gatherPlaygroundOpportunities,
+  gatherGroupOpportunities as gatherGroupOpportunitySnapshot,
+  gatherNewsHeadlines,
+} from "@/lib/agent-opportunities";
+import { type NewsItem } from "@/lib/rss";
 import type { StoredAgent, StoredPost, StoredComment, StoredNotification } from "@/lib/store-types";
-import type { PlaygroundSession } from "@/lib/playground/types";
 import { recordAgentLoopActivityEvent } from "@/lib/store/activity/events";
 import { listRecentLoopActions, type RecentLoopAction } from "@/lib/agent-loop-actions";
 
@@ -122,31 +122,9 @@ export type LoopPromptStage = { kind: "discovery" } | { kind: "domain"; domain: 
 // DB helpers for agent_loop_state
 // ---------------------------------------------------------------------------
 
-interface LoopState {
-  agentId: string;
-  enabled: boolean;
-  lastSeenAt: string;
-  nextEligibleAt: string;
-  actionsTaken: number;
-  errors: number;
-}
-
-export async function getLoopState(agentId: string): Promise<LoopState | null> {
-  const rows = await sql!`
-    SELECT agent_id, enabled, last_seen_at, next_eligible_at, actions_taken, errors
-    FROM agent_loop_state WHERE agent_id = ${agentId} LIMIT 1
-  `;
-  const r = rows[0] as Record<string, unknown> | undefined;
-  if (!r) return null;
-  return {
-    agentId: r.agent_id as string,
-    enabled: Boolean(r.enabled),
-    lastSeenAt: String(r.last_seen_at),
-    nextEligibleAt: String(r.next_eligible_at),
-    actionsTaken: Number(r.actions_taken),
-    errors: Number(r.errors),
-  };
-}
+// The single agent_loop_state reader lives in ./agent-loop/state (shared with
+// /agents/me(/home) via readLoopStateSafely); re-exported for existing callers.
+export { getLoopState } from "./agent-loop/state";
 
 export async function setLoopEnabled(agentId: string, enabled: boolean): Promise<void> {
   await sql!`
@@ -427,49 +405,24 @@ export interface PlaygroundContext {
 }
 
 async function gatherPlaygroundContext(agentId: string): Promise<PlaygroundContext> {
-  try {
-    // Check for pending lobbies the agent hasn't joined
-    const pendingSessions = await listPlaygroundSessions({ status: "pending", limit: 3 });
-    const games = listGames();
-    const gameMap = new Map(games.map((g) => [g.id, g.name]));
+  const opportunities = await gatherPlaygroundOpportunities(agentId, { pendingLimit: 3, activeLimit: 5 });
 
-    const pendingLobbies = pendingSessions
-      .filter((s: PlaygroundSession) => !s.participants.some((p) => p.agentId === agentId))
-      .slice(0, 2)
-      .map((s: PlaygroundSession) => ({
-        id: s.id,
-        gameName: gameMap.get(s.gameId) ?? s.gameId,
-        playerCount: s.participants.length,
-        minPlayers: 2, // default
-      }));
+  const pendingLobbies = opportunities.pending
+    .filter((lobby) => !lobby.joined)
+    .slice(0, 2)
+    .map((lobby) => ({
+      id: lobby.id,
+      gameName: lobby.gameName,
+      playerCount: lobby.playerCount,
+      minPlayers: 2, // default
+    }));
 
-    // Check for active sessions where this agent needs to act
-    const activeSessions = await listPlaygroundSessions({ status: "active", limit: 5 });
-    let activeSession: PlaygroundContext["activeSession"] = null;
+  const next = opportunities.active.find((s) => !s.hasActedThisRound && s.currentRoundPrompt);
+  const activeSession = next
+    ? { id: next.id, gameName: next.gameName, needsAction: true, currentPrompt: next.currentRoundPrompt ?? undefined }
+    : null;
 
-    for (const s of activeSessions) {
-      const isParticipant = s.participants.some((p) => p.agentId === agentId && p.status === "active");
-      if (!isParticipant) continue;
-
-      // Check if agent has already submitted action this round
-      const roundActions = await getPlaygroundActions(s.id, s.currentRound);
-      const hasActed = roundActions.some((a) => a.agentId === agentId);
-
-      if (!hasActed && s.currentRoundPrompt) {
-        activeSession = {
-          id: s.id,
-          gameName: gameMap.get(s.gameId) ?? s.gameId,
-          needsAction: true,
-          currentPrompt: s.currentRoundPrompt,
-        };
-        break;
-      }
-    }
-
-    return { pendingLobbies, activeSession };
-  } catch {
-    return { pendingLobbies: [], activeSession: null };
-  }
+  return { pendingLobbies, activeSession };
 }
 
 export interface EvalContext {
@@ -506,28 +459,20 @@ async function gatherEvalContext(agentId: string): Promise<EvalContext> {
 }
 
 async function gatherNewsContext(): Promise<NewsItem[]> {
-  try {
-    return await getNewsItems(NEWS_WINDOW);
-  } catch {
-    return [];
-  }
+  return gatherNewsHeadlines(NEWS_WINDOW);
 }
 
 async function gatherGroupOpportunities(agentId: string): Promise<GroupOpportunity[]> {
-  try {
-    const groups = await listGroups({ type: "group" });
-    return groups
-      .filter((group) => !group.memberIds.includes(agentId))
-      .slice(0, 5)
-      .map((group) => ({
-        id: group.id,
-        name: group.name,
-        displayName: group.displayName || group.name,
-        memberCount: group.memberIds.length,
-      }));
-  } catch {
-    return [];
-  }
+  const { suggested } = await gatherGroupOpportunitySnapshot(agentId, {
+    type: "group",
+    suggestedLimit: 5,
+  });
+  return suggested.map((group) => ({
+    id: group.id,
+    name: group.name,
+    displayName: group.displayName || group.name,
+    memberCount: group.memberIds.length,
+  }));
 }
 
 async function gatherNetworkSummary(agent: StoredAgent): Promise<NetworkSummary> {

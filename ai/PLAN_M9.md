@@ -208,6 +208,17 @@ Claude/code-review gates:
 
 15. Run the parallel Claude review tasks from the execution instructions (correctness, AGENTS.md style, LEARNINGS.md, milestone goals, KISS/consolidation). Address every improving suggestion or defend it in code comments, then re-review, per the loop.
 
+## PLAN AMENDMENTS (issues and contradictions found during execution)
+
+The plan was treated as authoritative on goals but corrected where it met repo reality:
+
+1. **B3 (C1): "column predicate on group_members" did not exist — added one.** House-ness lives on `groups.type`, and a partial unique index cannot reference another table. Resolution: denormalize `is_house BOOLEAN` onto `group_members` at join time (backfilled + deduped by `migrate-group-members-single-house.sql`), then `UNIQUE (agent_id) WHERE is_house`. This is the plan's "targeted column-population" allowance.
+2. **C1 found a divergence the audit missed: `leaveHouse` was dead code.** The live path (`leaveGroup`) bare-deleted house memberships in DB mode with no founder promotion/dissolution, while the memory impl ran the full lifecycle. Fixed in-chunk (triage rule a): `leaveGroup` now routes house-typed groups through the atomic `leaveHouse`.
+3. **C3 listed five kinds; the store vocabulary had seven unrendered ones.** `follow` and `group_join` were equally missing from the renderer and would have been dropped by the new explicit `agent_loop` guard. Handled in-chunk: explicit branches for both, and `ActivityKind` now derives from `StoredActivityFeedKind` so the vocabularies cannot diverge again. The "extend ActivityLinkType" instruction also required a new themeable CSS channel (`activity-school`), which the plan did not anticipate; added end-to-end (globals.css, tailwind config, ActivityTrail, agents.md token list).
+4. **C4 row interfaces scoped to the duplicated mappers, not every table.** Single-use `rowTo*` mappers already concentrate their table's cast in one declaration; retyping all of them is churn without a drift-risk payoff. The real risk was the four cross-domain duplicated mappers (`rowToAgent`, `rowToGroup`, `rowToPost`, `rowToComment` — already drifted on date normalization), now canonical in `store/rows.ts` with one typed Row interface and one cast each.
+5. **C5's "Component system is inert" was almost right.** `Component.update()` was indeed never called, but `memoryComponent.getPromptContext` *was* called by the engine — it merely re-formatted the same single per-agent memory the engine's direct `memoriesCtx` path already injects. Deleting it removes a duplicate prompt block, not a live feature.
+6. **C8 contradiction resolved: "behavior-preserving" vs. "already disagreeing on defaults".** Locked Decision 7 says C8 preserves observable behavior, but the chunk exists because loop and home accidentally disagree; unifying necessarily changes one side. Resolution rule applied: *intentional* differences (fetch limits, school scope, projection shapes) stay projection parameters; *accidental* drift resolves toward the canonical source. Concretely: the loop's group suggestions now use `isGroupMember` (`group_members`) instead of the legacy `member_ids` snapshot that `joinGroup` never maintained (so already-joined groups were being re-suggested), and the unified loop-state reader normalizes all timestamps to ISO-8601 (the loop's reader used raw `String(...)`, the bug class the UX3 test pins).
+
 ## AI VALIDATION RESULTS (how did the Executor show that it was done?)
 
 Filled during execution.

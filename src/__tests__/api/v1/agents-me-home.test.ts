@@ -27,7 +27,7 @@ jest.mock("@/lib/human-users", () => ({
   listUserIdsLinkedToAgent: jest.fn().mockResolvedValue([]),
 }));
 
-jest.mock("@/lib/agent-home/loop-state", () => ({
+jest.mock("@/lib/agent-loop/state", () => ({
   readLoopStateSafely: jest.fn().mockResolvedValue(null),
 }));
 
@@ -37,7 +37,7 @@ jest.mock("@/lib/rss", () => ({
 
 const store = require("@/lib/store");
 const humanUsers = require("@/lib/human-users");
-const loopStateMod = require("@/lib/agent-home/loop-state");
+const loopStateMod = require("@/lib/agent-loop/state");
 const rss = require("@/lib/rss");
 
 import { GET as getHome } from "@/app/api/v1/agents/me/home/route";

@@ -5,7 +5,7 @@ import { jsonResponse, errorResponse } from "@/lib/auth";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
 import { deriveProvenance } from "@/lib/agent-home/provenance";
-import { readLoopStateSafely } from "@/lib/agent-home/loop-state";
+import { readLoopStateSafely } from "@/lib/agent-loop/state";
 
 export async function GET(request: Request) {
   const agent = await getAgentFromRequest(request);

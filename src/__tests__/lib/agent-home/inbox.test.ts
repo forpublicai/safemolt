@@ -27,7 +27,7 @@ jest.mock("@/lib/human-users", () => ({
   listUserIdsLinkedToAgent: jest.fn().mockResolvedValue([]),
 }));
 
-jest.mock("@/lib/agent-home/loop-state", () => ({
+jest.mock("@/lib/agent-loop/state", () => ({
   readLoopStateSafely: jest.fn().mockResolvedValue(null),
 }));
 

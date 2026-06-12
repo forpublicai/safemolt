@@ -9,23 +9,21 @@
  *   verification codes, email, or cognito_sub.
  */
 import type { StoredAgent } from "@/lib/store-types";
-import {
-  getAnnouncement,
-  isGroupMember,
-  listFeed,
-  listGroups,
-  listPlaygroundSessions,
-} from "@/lib/store";
+import { getAnnouncement, listFeed } from "@/lib/store";
 import { buildAgentInboxSummary } from "@/lib/agent-inbox";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
-import { getNewsItems } from "@/lib/rss";
+import {
+  gatherGroupOpportunities,
+  gatherNewsHeadlines,
+  gatherPlaygroundOpportunities,
+} from "@/lib/agent-opportunities";
 import { listRecentLoopActions } from "@/lib/agent-loop-actions";
 import { isAdmissionsGateDisabled } from "@/lib/admissions/config";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { generateRequestId } from "@/lib/request-id";
 import { toIsoOrEmpty } from "@/lib/iso-date";
 import { deriveProvenance } from "./provenance";
-import { readLoopStateSafely } from "./loop-state";
+import { readLoopStateSafely } from "@/lib/agent-loop/state";
 import type {
   AgentHomePayload,
   AgentSummary,
@@ -93,39 +91,26 @@ function buildLoop(
 }
 
 async function buildGroupsSection(agentId: string): Promise<{ section: GroupsSection; generalMembership: boolean }> {
-  let allGroups: Awaited<ReturnType<typeof listGroups>> = [];
-  try {
-    allGroups = await listGroups({ schoolId: "foundation" });
-  } catch (e) {
-    console.error("[agent-home] listGroups failed:", e);
-  }
+  const opportunities = await gatherGroupOpportunities(agentId, {
+    schoolId: "foundation",
+    suggestedLimit: MAX_GROUPS_SUGGESTED,
+  });
+  const generalMembership = opportunities.joined.some((g) => g.name === "general");
 
-  const membershipPairs = await Promise.all(
-    allGroups.map(async (group) => {
-      try {
-        return [group, await isGroupMember(agentId, group.id)] as const;
-      } catch (e) {
-        console.error("[agent-home] isGroupMember failed:", e);
-        return [group, false] as const;
-      }
-    })
-  );
-  const joinedGroups = membershipPairs.filter(([, isMember]) => isMember).map(([group]) => group);
-  const generalMembership = joinedGroups.some((g) => g.name === "general");
-
-  const joined = joinedGroups.map((g) => ({
+  const toSection = (g: (typeof opportunities.joined)[number]) => ({
     id: g.id,
     name: g.name,
     display_name: g.displayName,
     emoji: g.emoji ?? null,
-  }));
+  });
 
-  const suggested = allGroups
-    .filter((g) => !joinedGroups.some((joinedGroup) => joinedGroup.id === g.id))
-    .slice(0, MAX_GROUPS_SUGGESTED)
-    .map((g) => ({ id: g.id, name: g.name, display_name: g.displayName, emoji: g.emoji ?? null }));
-
-  return { section: { joined, suggested }, generalMembership };
+  return {
+    section: {
+      joined: opportunities.joined.map(toSection),
+      suggested: opportunities.suggested.map(toSection),
+    },
+    generalMembership,
+  };
 }
 
 async function buildFeedSection(agentId: string, generalMembership: boolean): Promise<FeedSection> {
@@ -145,38 +130,32 @@ async function buildFeedSection(agentId: string, generalMembership: boolean): Pr
 }
 
 async function buildPlaygroundSection(agentId: string): Promise<PlaygroundSection> {
-  try {
-    const [pending, active] = await Promise.all([
-      listPlaygroundSessions({ status: "pending", limit: MAX_PLAYGROUND_SESSIONS }),
-      listPlaygroundSessions({ status: "active", limit: MAX_PLAYGROUND_SESSIONS }),
-    ]);
-    const sessions: PlaygroundSection["sessions"] = [];
-    let activeSessionId: string | null = null;
-    for (const s of active.slice(0, MAX_PLAYGROUND_SESSIONS)) {
-      const isParticipant = s.participants.some((p) => p.agentId === agentId);
-      if (!isParticipant) continue;
-      activeSessionId = s.id;
-      sessions.push({
-        id: s.id,
-        game_id: s.gameId,
-        status: s.status,
-        needs_action: Boolean(s.currentRoundPrompt),
-      });
-    }
-    for (const s of pending) {
-      if (sessions.length >= MAX_PLAYGROUND_SESSIONS) break;
-      sessions.push({
-        id: s.id,
-        game_id: s.gameId,
-        status: s.status,
-        needs_action: false,
-      });
-    }
-    return { sessions: sessions.slice(0, MAX_PLAYGROUND_SESSIONS), active_session_id: activeSessionId };
-  } catch (e) {
-    console.error("[agent-home] playground gather failed:", e);
-    return { sessions: [], active_session_id: null };
+  const opportunities = await gatherPlaygroundOpportunities(agentId, {
+    pendingLimit: MAX_PLAYGROUND_SESSIONS,
+    activeLimit: MAX_PLAYGROUND_SESSIONS,
+  });
+
+  const sessions: PlaygroundSection["sessions"] = [];
+  let activeSessionId: string | null = null;
+  for (const s of opportunities.active.slice(0, MAX_PLAYGROUND_SESSIONS)) {
+    activeSessionId = s.id;
+    sessions.push({
+      id: s.id,
+      game_id: s.gameId,
+      status: "active",
+      needs_action: s.awaitingPrompt,
+    });
   }
+  for (const s of opportunities.pending) {
+    if (sessions.length >= MAX_PLAYGROUND_SESSIONS) break;
+    sessions.push({
+      id: s.id,
+      game_id: s.gameId,
+      status: "pending",
+      needs_action: false,
+    });
+  }
+  return { sessions: sessions.slice(0, MAX_PLAYGROUND_SESSIONS), active_session_id: activeSessionId };
 }
 
 async function buildAnnouncements(): Promise<AnnouncementsSection> {
@@ -193,14 +172,9 @@ async function buildAnnouncements(): Promise<AnnouncementsSection> {
 }
 
 async function buildNews(): Promise<NewsSection> {
-  try {
-    const items = await getNewsItems(MAX_NEWS);
-    const headlines = items.slice(0, MAX_NEWS).map((n) => ({ title: n.title, url: n.url, source: n.source }));
-    return { headlines };
-  } catch (e) {
-    console.error("[agent-home] getNewsItems failed:", e);
-    return { headlines: [] };
-  }
+  const items = await gatherNewsHeadlines(MAX_NEWS);
+  const headlines = items.slice(0, MAX_NEWS).map((n) => ({ title: n.title, url: n.url, source: n.source }));
+  return { headlines };
 }
 
 function unavailable(reason: string): UnavailableSection {

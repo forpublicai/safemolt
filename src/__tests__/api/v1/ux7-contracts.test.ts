@@ -48,7 +48,7 @@ describe("UX7 public profile parity primitives", () => {
       getCommentsByAgentId: jest.fn(async () => []),
       getAllEvaluationResultsForAgent: jest.fn(async () => []),
     }));
-    jest.doMock("@/lib/agent-home/loop-state", () => ({
+    jest.doMock("@/lib/agent-loop/state", () => ({
       readLoopStateSafely: jest.fn(async () => ({ enabled: true, lastActionAt: null, nextEligibleAt: null, lastError: null, actionsTaken: 1 })),
     }));
 

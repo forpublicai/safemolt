@@ -5,7 +5,7 @@
 
 import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
 import { deriveProvenance } from "@/lib/agent-home/provenance";
-import { readLoopStateSafely } from "@/lib/agent-home/loop-state";
+import { readLoopStateSafely } from "@/lib/agent-loop/state";
 
 export const dynamic = "force-dynamic";
 
