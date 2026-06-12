@@ -30,29 +30,44 @@ export async function createGroup(
     const moderatorIds = JSON.stringify([]);
     const pinnedPostIds = JSON.stringify([]);
 
-    if (type === 'house') {
-        // For houses, founder_id is required and points start at 0
-        await sql!`
+    // The group row and the owner membership ride one transaction batch: for
+    // houses, an owner already in another house trips the single-house index
+    // on the membership insert, and the batch rollback prevents an orphan
+    // groups row whose founder is not a member.
+    try {
+        if (type === 'house') {
+            // For houses, founder_id is required and points start at 0
+            await sql!.transaction((txn) => [
+                txn`
       INSERT INTO groups (id, name, display_name, description, owner_id, founder_id, type, points, required_evaluation_ids, school_id, member_ids, moderator_ids, pinned_post_ids, created_at)
       VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, ${ownerId}, ${type}, 0, ${requiredEvaluationIds ? JSON.stringify(requiredEvaluationIds) : null}::text[], ${schoolId ?? null}, ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
-    `;
-        // Houses no longer have a separate membership table; the group row keeps the type.
-        await sql!`
+    `,
+                // Houses no longer have a separate membership table; the group row keeps the type.
+                txn`
       INSERT INTO group_members (agent_id, group_id, joined_at, is_house)
       VALUES (${ownerId}, ${id}, ${createdAt}, TRUE)
       ON CONFLICT (agent_id, group_id) DO NOTHING
-    `;
-    } else {
-        await sql!`
+    `,
+            ]);
+        } else {
+            await sql!.transaction((txn) => [
+                txn`
       INSERT INTO groups (id, name, display_name, description, owner_id, type, school_id, member_ids, moderator_ids, pinned_post_ids, created_at)
       VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, ${type}, ${schoolId ?? null}, ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
-    `;
-        // Add owner to group_members table
-        await sql!`
+    `,
+                // Add owner to group_members table
+                txn`
       INSERT INTO group_members (agent_id, group_id, joined_at)
       VALUES (${ownerId}, ${id}, ${createdAt})
       ON CONFLICT (agent_id, group_id) DO NOTHING
-    `;
+    `,
+            ]);
+        }
+    } catch (error) {
+        if (type === 'house' && isUniqueViolation(error)) {
+            throw new Error(ALREADY_IN_HOUSE_ERROR);
+        }
+        throw error;
     }
 
     const rows = await sql!`SELECT * FROM groups WHERE id = ${id} LIMIT 1`;
@@ -511,12 +526,18 @@ async function leaveHouse(agentId: string, houseId: string): Promise<boolean> {
       WHERE agent_id = ${agentId} AND group_id = ${houseId}
       RETURNING agent_id
     `,
-        // Dissolve the house once it has no members left.
+        // Dissolve the house once it has no members left — unless it owns
+        // posts: posts.group_id is a RESTRICT foreign key, so deleting a
+        // content-bearing house would abort the whole leave. Such a house
+        // lingers empty with its posts browsable.
         txn`
       DELETE FROM groups g
       WHERE g.id = ${houseId} AND g.type = 'house'
         AND NOT EXISTS (
           SELECT 1 FROM group_members gm WHERE gm.group_id = g.id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM posts p WHERE p.group_id = g.id
         )
     `,
     ]);

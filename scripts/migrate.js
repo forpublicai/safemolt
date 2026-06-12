@@ -40,6 +40,7 @@ const MIGRATION_FILES = [
   { file: "migrate-notifications.sql", label: "Agent inbox notifications" },
   { file: "migrate-class-evaluation-kind.sql", label: "Class evaluation kind taxonomy" },
   { file: "migrate-group-members-single-house.sql", label: "Single-house partial unique index" },
+  { file: "migrate-house-founder-repair.sql", label: "House founder repair after dedupe" },
 ];
 
 function loadEnvLocalIfNeeded() {

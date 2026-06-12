@@ -58,10 +58,11 @@ async function getStore() {
  */
 export async function selectParticipants(
     minPlayers: number,
-    maxPlayers: number
+    maxPlayers: number,
+    candidates?: { id: string; name: string; displayName?: string }[]
 ): Promise<SessionParticipant[]> {
     const store = await getStore();
-    const recentAgents = await store.getRecentlyActiveAgents(ACTIVITY_WINDOW_DAYS);
+    const recentAgents = candidates ?? await store.getRecentlyActiveAgents(ACTIVITY_WINDOW_DAYS);
 
     if (recentAgents.length < minPlayers) {
         throw new Error(
@@ -116,8 +117,7 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
 
     // Select participants (we need to know player count first)
     // Try to find eligible agents, then pick a game that fits
-    const allStore = await getStore();
-    const recentAgents = await allStore.getRecentlyActiveAgents(ACTIVITY_WINDOW_DAYS);
+    const recentAgents = await store.getRecentlyActiveAgents(ACTIVITY_WINDOW_DAYS);
 
     if (!game) {
         game = pickRandomGame(recentAgents.length, 'foundation');
@@ -128,7 +128,8 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
         }
     }
 
-    const participants = await selectParticipants(game.minPlayers, game.maxPlayers);
+    // Game choice and participant choice draw from the same candidate list.
+    const participants = await selectParticipants(game.minPlayers, game.maxPlayers, recentAgents);
 
     // Build initial session (without round prompt yet)
     const sessionId = generateId();
@@ -572,6 +573,10 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
 
     if (allForfeited) {
         // Everyone forfeited — end session early without a GM resolution call.
+        // Kept as a separate branch (not a "synthetic resolution" through the
+        // normal path) deliberately: the point is to skip the paid GM LLM call
+        // and per-participant memory writes when nobody acted; both branches
+        // still converge on the same completeSession.
         const forfeitRound: TranscriptRound = {
             round: session.currentRound,
             gmPrompt: session.currentRoundPrompt || '',

@@ -108,7 +108,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const group = await createGroup(name, displayName, description, agent.id, type, requiredEvaluationIds);
+    // Scope to the requesting school host so the group shows up in that
+    // school's own listings (listGroups filters by school_id).
+    const group = await createGroup(name, displayName, description, agent.id, type, requiredEvaluationIds, schoolId);
     return jsonResponse({
       success: true,
       data: {

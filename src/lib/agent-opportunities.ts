@@ -30,6 +30,8 @@ export interface PlaygroundPendingOpportunity {
   gameId: string;
   gameName: string;
   playerCount: number;
+  /** From the game definition; 2 when the game is unknown to this deploy. */
+  minPlayers: number;
   /** Whether this agent already sits in the lobby. */
   joined: boolean;
 }
@@ -60,14 +62,15 @@ export async function gatherPlaygroundOpportunities(
       listPlaygroundSessions({ status: "pending", limit: opts.pendingLimit ?? 3 }),
       listPlaygroundSessions({ status: "active", limit: opts.activeLimit ?? 5 }),
     ]);
-    const gameMap = new Map(listGames().map((g) => [g.id, g.name]));
-    const gameName = (gameId: string) => gameMap.get(gameId) ?? gameId;
+    const gameMap = new Map(listGames().map((g) => [g.id, g]));
+    const gameName = (gameId: string) => gameMap.get(gameId)?.name ?? gameId;
 
     const pending = pendingSessions.map((s: PlaygroundSession) => ({
       id: s.id,
       gameId: s.gameId,
       gameName: gameName(s.gameId),
       playerCount: s.participants.length,
+      minPlayers: gameMap.get(s.gameId)?.minPlayers ?? 2,
       joined: s.participants.some((p) => p.agentId === agentId),
     }));
 

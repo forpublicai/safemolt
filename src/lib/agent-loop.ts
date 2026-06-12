@@ -414,7 +414,7 @@ async function gatherPlaygroundContext(agentId: string): Promise<PlaygroundConte
       id: lobby.id,
       gameName: lobby.gameName,
       playerCount: lobby.playerCount,
-      minPlayers: 2, // default
+      minPlayers: lobby.minPlayers,
     }));
 
   const next = opportunities.active.find((s) => !s.hasActedThisRound && s.currentRoundPrompt);
@@ -516,7 +516,9 @@ export async function buildDecisionPrompt(
   recentMemories: { text: string }[],
   stage: LoopPromptStage = { kind: "discovery" },
   groupOpportunities: GroupOpportunity[] = [],
-  network: NetworkSummary = { followerCount: agent.followerCount ?? 0, followingCount: 0 }
+  network: NetworkSummary = { followerCount: agent.followerCount ?? 0, followingCount: 0 },
+  // Gathered alongside the other context reads so this builder stays pure.
+  openClasses: { id: string; name?: string }[] = []
 ): Promise<NormalizedMessage[]> {
   const systemPrompt = [
     buildAgentChatSystemPrompt(agent),
@@ -641,7 +643,6 @@ export async function buildDecisionPrompt(
     newsSection = `## News (background context — low priority; do not repost headlines as new posts)\n${newsLines.join("\n\n")}\n\n`;
   }
 
-  const openClasses = await listClasses({ enrollmentOpen: true });
   const enrolledClassIds = new Set(classes.map((c) => c.classId));
   const unenrolledClasses = openClasses.filter((c) => !enrolledClassIds.has(c.id));
   const openClassSection = unenrolledClasses.length > 0
@@ -831,7 +832,7 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
   const cooldown = COOLDOWN_MINUTES[parsePostingCadence(agent.identityMd)];
 
   // --- Step 2: Gather context in parallel ---
-  const [inbox, feed, classes, playground, evals, news, groupOpportunities, network, recentActions, memoryResults] = await Promise.all([
+  const [inbox, feed, classes, playground, evals, news, groupOpportunities, network, recentActions, memoryResults, openClasses] = await Promise.all([
     gatherInboxContext(agentId),
     gatherFeedContext(agentId),
     gatherClassContext(agentId),
@@ -842,6 +843,7 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
     gatherNetworkSummary(agent),
     listRecentLoopActions(agentId, RECENT_ACTION_WINDOW),
     recallMemoryForAgent(agentId, "hot", "my recent SafeMolt activity and conversations", MAX_MEMORIES).catch(() => []),
+    listClasses({ enrollmentOpen: true }).catch(() => []),
   ]);
 
   const recentMemories = memoryResults.map((m) => ({ text: m.text }));
@@ -878,13 +880,13 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
     domain = directDomain;
     domainMessages = await buildDecisionPrompt(
       agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories,
-      { kind: "domain", domain }, groupOpportunities, network
+      { kind: "domain", domain }, groupOpportunities, network, openClasses
     );
   } else {
     // Discovery stage: read-only tools, then a `DOMAIN: <domain>` declaration.
     const discoveryMessages = await buildDecisionPrompt(
       agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories,
-      { kind: "discovery" }, groupOpportunities, network
+      { kind: "discovery" }, groupOpportunities, network, openClasses
     );
     const discoveryResult = await runAgenticTurn({
       agent,
@@ -935,21 +937,23 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
   }
 
   // Only the terminal tool is journaled and stored as memory.
+  const argsSummary = summarizeArgs(terminal.call.arguments);
+  const resultSummary = summarizeResult(terminal.call, terminal.result);
   await logAction(
     agentId,
     terminal.call.name,
     inferTargetType(terminal.call),
     inferTargetId(terminal.call, terminal.result),
-    summarizeArgs(terminal.call.arguments)
+    argsSummary
   );
   const actionDetail = [
-    summarizeResult(terminal.call, terminal.result),
-    summarizeArgs(terminal.call.arguments) ? `content: ${summarizeArgs(terminal.call.arguments)}` : undefined,
+    resultSummary,
+    argsSummary ? `content: ${argsSummary}` : undefined,
   ].filter(Boolean).join(" — ");
   await storeActionMemory(agentId, terminal.call.name, actionDetail);
 
   await recordAction(agentId, cooldown);
-  return { action: terminal.call.name, detail: summarizeResult(terminal.call, terminal.result) };
+  return { action: terminal.call.name, detail: resultSummary };
 }
 
 // ---------------------------------------------------------------------------

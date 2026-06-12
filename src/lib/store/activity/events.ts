@@ -554,6 +554,9 @@ export async function recordFollowActivityEvent(input: {
 }): Promise<void> {
   try {
     const entityId = `${input.followerId}:${input.followeeId}`;
+    // Display-name preference must match the memory writer: labels use the
+    // display name, href/metadata keep the canonical name.
+    const followeeLabel = input.followeeDisplayName?.trim() || input.followeeName;
     if (hasDatabase()) {
       await upsertActivityEventFromSelect(
         "follow",
@@ -566,16 +569,16 @@ export async function recordFollowActivityEvent(input: {
           ${actorDisplaySql("$2::text")}::text,
           ${actorCanonicalSql("$2::text")}::text,
           $3::text,
-          (${actorDisplaySql("$2::text")} || ' followed ' || $4::text)::text,
+          (${actorDisplaySql("$2::text")} || ' followed ' || $6::text)::text,
           ('/u/' || $4::text)::text,
-          (${actorDisplaySql("$2::text")} || ' is now following ' || $4::text)::text,
+          (${actorDisplaySql("$2::text")} || ' is now following ' || $6::text)::text,
           ''::text,
-          concat_ws(' ', ${actorDisplaySql("$2::text")}, a.name, 'follow', $4::text)::text,
+          concat_ws(' ', ${actorDisplaySql("$2::text")}, a.name, 'follow', $4::text, $6::text)::text,
           jsonb_build_object('followee_id', $5::text, 'followee_name', $4::text)
         FROM (SELECT 1) s
         LEFT JOIN agents a ON a.id = $2::text
       `,
-        [input.createdAt, input.followerId, entityId, input.followeeName, input.followeeId]
+        [input.createdAt, input.followerId, entityId, input.followeeName, input.followeeId, followeeLabel]
       );
       return;
     }
@@ -610,6 +613,9 @@ export async function recordGroupJoinActivityEvent(input: {
 }): Promise<void> {
   try {
     const entityId = `${input.agentId}:${input.groupId}`;
+    // Display-name preference must match the memory writer: labels use the
+    // display name, href/metadata keep the canonical name.
+    const groupLabel = input.groupDisplayName?.trim() || input.groupName;
     if (hasDatabase()) {
       await upsertActivityEventFromSelect(
         "group_join",
@@ -622,16 +628,16 @@ export async function recordGroupJoinActivityEvent(input: {
           ${actorDisplaySql("$2::text")}::text,
           ${actorCanonicalSql("$2::text")}::text,
           $3::text,
-          (${actorDisplaySql("$2::text")} || ' joined g/' || $4::text)::text,
+          (${actorDisplaySql("$2::text")} || ' joined g/' || $6::text)::text,
           ('/g/' || $4::text)::text,
-          (${actorDisplaySql("$2::text")} || ' joined g/' || $4::text)::text,
+          (${actorDisplaySql("$2::text")} || ' joined g/' || $6::text)::text,
           ''::text,
-          concat_ws(' ', ${actorDisplaySql("$2::text")}, a.name, 'group', 'join', $4::text)::text,
+          concat_ws(' ', ${actorDisplaySql("$2::text")}, a.name, 'group', 'join', $4::text, $6::text)::text,
           jsonb_build_object('group_id', $5::text, 'group_name', $4::text)
         FROM (SELECT 1) s
         LEFT JOIN agents a ON a.id = $2::text
       `,
-        [input.createdAt, input.agentId, entityId, input.groupName, input.groupId]
+        [input.createdAt, input.agentId, entityId, input.groupName, input.groupId, groupLabel]
       );
       return;
     }

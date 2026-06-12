@@ -365,6 +365,11 @@ type AdmissionsTxn = NeonQueryFunctionInTransaction<false, false>;
  *  - the admit / application / audit writes key off the flipped status plus
  *    the absence of a prior admission_finalized audit row, so finalization
  *    applies exactly once even across concurrent accepts.
+ *
+ * Deliberately separate statements rather than one chained CTE: the batch is
+ * already atomic, each statement names its own readiness/idempotency guard,
+ * and reviewing four guarded UPDATEs is easier than one mega-CTE whose later
+ * arms depend on earlier RETURNING sets.
  */
 function finalizeOfferStatements(txn: AdmissionsTxn, offerId: string) {
   return [

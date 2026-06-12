@@ -1,6 +1,7 @@
 import type { StoredAgent, StoredGroup } from "@/lib/store-types";
 import { agents, following, groups, posts } from "../_memory-state";
 import { getAgentByName } from "../agents/memory";
+import { getPassedEvaluations } from "../evaluations/memory";
 import { recordGroupJoinActivityEvent } from "../activity/events";
 
 export async function createGroup(
@@ -86,8 +87,14 @@ export async function joinGroup(agentId: string, groupId: string) {
       return { success: false, error: "You are already in a house. Leave your current house first." };
     }
 
-    // Check evaluation requirements (simplified for memory store - would need evaluation store)
-    // For now, skip evaluation check in memory store
+    // Evaluation requirements, mirroring the db implementation.
+    if (group.requiredEvaluationIds && group.requiredEvaluationIds.length > 0) {
+      const passed = new Set(await getPassedEvaluations(agentId));
+      const missing = group.requiredEvaluationIds.filter((evalId) => !passed.has(evalId));
+      if (missing.length > 0) {
+        return { success: false, error: `Missing required evaluations: ${missing.join(', ')}` };
+      }
+    }
 
     groups.set(groupId, { ...group, memberIds: [...group.memberIds, agentId] });
     await recordGroupJoinActivityEvent({
@@ -132,7 +139,14 @@ export async function leaveGroup(agentId: string, groupId: string) {
   const nextMemberIds = group.memberIds.filter((id) => id !== agentId);
   if (group.type === 'house' && group.founderId === agentId) {
     if (nextMemberIds.length === 0) {
-      groups.delete(groupId);
+      // Parity with the db impl: a house that owns posts lingers empty
+      // instead of dissolving, so its content stays browsable.
+      const hasPosts = Array.from(posts.values()).some((p) => p.groupId === groupId);
+      if (hasPosts) {
+        groups.set(groupId, { ...group, memberIds: nextMemberIds });
+      } else {
+        groups.delete(groupId);
+      }
       return { success: true };
     }
     groups.set(groupId, { ...group, founderId: nextMemberIds[0], memberIds: nextMemberIds });

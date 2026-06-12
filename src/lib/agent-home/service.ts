@@ -143,7 +143,9 @@ async function buildPlaygroundSection(agentId: string): Promise<PlaygroundSectio
       id: s.id,
       game_id: s.gameId,
       status: "active",
-      needs_action: s.awaitingPrompt,
+      // Same semantics as the loop: a prompt is waiting AND this agent has
+      // not already answered it this round.
+      needs_action: s.awaitingPrompt && !s.hasActedThisRound,
     });
   }
   for (const s of opportunities.pending) {

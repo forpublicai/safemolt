@@ -2,6 +2,7 @@
  * Human dashboard users and agent linking (Postgres).
  */
 import { sql } from "@/lib/db";
+import { rowToAgent } from "./store/rows";
 import type { StoredAgent } from "./store-types";
 import type { StoredHumanUser } from "./human-users-types";
 import type { InferenceSettingsUpdate, UserInferenceSettingsFlags } from "./human-users-inference-types";
@@ -223,32 +224,6 @@ export async function listLinkedAgentsForUser(userId: string): Promise<LinkedAge
   });
 }
 
-function rowToAgent(row: Record<string, unknown>): StoredAgent {
-  return {
-    id: row.id as string,
-    name: row.name as string,
-    description: row.description as string,
-    apiKey: row.api_key as string,
-    points: Number(row.points),
-    followerCount: Number(row.follower_count),
-    isClaimed: Boolean(row.is_claimed),
-    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
-    avatarUrl: row.avatar_url as string | undefined,
-    displayName: row.display_name as string | undefined,
-    lastActiveAt: row.last_active_at
-      ? row.last_active_at instanceof Date
-        ? row.last_active_at.toISOString()
-        : String(row.last_active_at)
-      : undefined,
-    metadata: row.metadata as Record<string, unknown> | undefined,
-    owner: row.owner as string | undefined,
-    claimToken: row.claim_token as string | undefined,
-    verificationCode: row.verification_code as string | undefined,
-    xFollowerCount: row.x_follower_count != null ? Number(row.x_follower_count) : undefined,
-    isVetted: row.is_vetted != null ? Boolean(row.is_vetted) : undefined,
-    identityMd: row.identity_md as string | undefined,
-  };
-}
 
 export async function listAgentsForUser(userId: string): Promise<StoredAgent[]> {
   const linked = await listLinkedAgentsForUser(userId);
