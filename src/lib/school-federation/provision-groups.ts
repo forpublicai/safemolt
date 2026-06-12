@@ -1,5 +1,5 @@
-import { sql, hasDatabase } from "@/lib/db";
-import { getSchool, getGroup } from "@/lib/store";
+import { hasDatabase } from "@/lib/db";
+import { getSchool, getGroup, createGroup } from "@/lib/store";
 import { getSchoolConfig } from "@/lib/schools/loader";
 import { getSchoolProvisionOwnerAgentId } from "./auth";
 
@@ -47,27 +47,8 @@ export async function provisionSchoolGroup(
   const ownerId = getSchoolProvisionOwnerAgentId();
   const displayName = input.display_name ?? input.name;
   const description = input.description ?? `${displayName} (${school.name})`;
-  const createdAt = new Date().toISOString();
-  const memberIds = JSON.stringify([ownerId]);
-  const moderatorIds = JSON.stringify([]);
-  const pinnedPostIds = JSON.stringify([]);
 
-  await sql!`
-    INSERT INTO groups (
-      id, name, display_name, description, owner_id, type,
-      school_id, member_ids, moderator_ids, pinned_post_ids, created_at
-    )
-    VALUES (
-      ${groupId}, ${groupId}, ${displayName}, ${description}, ${ownerId}, 'group',
-      ${schoolId}, ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt}
-    )
-  `;
-
-  await sql!`
-    INSERT INTO group_members (agent_id, group_id, joined_at)
-    VALUES (${ownerId}, ${groupId}, ${createdAt})
-    ON CONFLICT (agent_id, group_id) DO NOTHING
-  `;
+  await createGroup(input.name, displayName, description, ownerId, "group", undefined, schoolId);
 
   return { name: input.name, group_id: groupId, created: true };
 }

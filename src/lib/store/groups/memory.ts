@@ -9,7 +9,8 @@ export async function createGroup(
   description: string,
   ownerId: string,
   type: 'group' | 'house' = 'group',
-  requiredEvaluationIds?: string[]) {
+  requiredEvaluationIds?: string[],
+  schoolId?: string) {
   const id = name.toLowerCase().replace(/\s+/g, "");
   if (groups.has(id)) throw new Error("Group already exists");
   const group: StoredGroup = {
@@ -22,6 +23,7 @@ export async function createGroup(
     founderId: type === 'house' ? ownerId : undefined,
     points: type === 'house' ? 0 : undefined,
     requiredEvaluationIds,
+    schoolId,
     memberIds: [ownerId],
     moderatorIds: [],
     pinnedPostIds: [],

@@ -14,10 +14,16 @@ export async function GET(
 ) {
   const { id: schoolId } = await params;
 
-  const serviceAuth = authorizeSchoolService(request, schoolId);
-  if (serviceAuth) {
+  // authorizeSchoolService returns null on success and an error Response on
+  // failure. Name that explicitly: a non-service caller may proceed only with
+  // a valid agent key; otherwise they get the service error — including the
+  // loud 503 when the service secret is misconfigured, rather than silently
+  // degrading to agent-only mode.
+  const serviceAuthError = authorizeSchoolService(request, schoolId);
+  const isService = serviceAuthError === null;
+  if (!isService) {
     const agent = await getAgentFromRequest(request);
-    if (!agent) return serviceAuth;
+    if (!agent) return serviceAuthError;
   }
 
   const groups = await listGroups({ schoolId, includeHouses: false });

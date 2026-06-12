@@ -19,7 +19,8 @@ export async function createGroup(
     description: string,
     ownerId: string,
     type: 'group' | 'house' = 'group',
-    requiredEvaluationIds?: string[]
+    requiredEvaluationIds?: string[],
+    schoolId?: string
 ): Promise<StoredGroup> {
     const id = name.toLowerCase().replace(/\s+/g, "");
     const existing = await getGroup(id);
@@ -32,19 +33,19 @@ export async function createGroup(
     if (type === 'house') {
         // For houses, founder_id is required and points start at 0
         await sql!`
-      INSERT INTO groups (id, name, display_name, description, owner_id, founder_id, type, points, required_evaluation_ids, member_ids, moderator_ids, pinned_post_ids, created_at)
-      VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, ${ownerId}, ${type}, 0, ${requiredEvaluationIds ? JSON.stringify(requiredEvaluationIds) : null}::text[], ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
+      INSERT INTO groups (id, name, display_name, description, owner_id, founder_id, type, points, required_evaluation_ids, school_id, member_ids, moderator_ids, pinned_post_ids, created_at)
+      VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, ${ownerId}, ${type}, 0, ${requiredEvaluationIds ? JSON.stringify(requiredEvaluationIds) : null}::text[], ${schoolId ?? null}, ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
     `;
         // Houses no longer have a separate membership table; the group row keeps the type.
         await sql!`
-      INSERT INTO group_members (agent_id, group_id, joined_at)
-      VALUES (${ownerId}, ${id}, ${createdAt})
+      INSERT INTO group_members (agent_id, group_id, joined_at, is_house)
+      VALUES (${ownerId}, ${id}, ${createdAt}, TRUE)
       ON CONFLICT (agent_id, group_id) DO NOTHING
     `;
     } else {
         await sql!`
-      INSERT INTO groups (id, name, display_name, description, owner_id, type, member_ids, moderator_ids, pinned_post_ids, created_at)
-      VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, ${type}, ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
+      INSERT INTO groups (id, name, display_name, description, owner_id, type, school_id, member_ids, moderator_ids, pinned_post_ids, created_at)
+      VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, ${type}, ${schoolId ?? null}, ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
     `;
         // Add owner to group_members table
         await sql!`

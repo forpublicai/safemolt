@@ -4,8 +4,11 @@
 
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { authorizeSchoolService } from "@/lib/school-federation/auth";
-import { syncSchoolClasses } from "@/lib/school-federation/sync-classes";
-import type { ClassYamlConfig } from "@/lib/schools/class-loader";
+import {
+  syncSchoolClassesFromPayload,
+  syncSchoolClassesToDB,
+  type ClassYamlConfig,
+} from "@/lib/schools/class-loader";
 
 export const dynamic = "force-dynamic";
 
@@ -26,10 +29,12 @@ export async function POST(
   }
 
   try {
-    const result = await syncSchoolClasses(schoolId, {
-      classes: body.classes,
-      force: body.force ?? true,
-    });
+    // External hosts push an inline payload; the monolith syncs from disk.
+    const force = body.force ?? true;
+    const result =
+      body.classes && body.classes.length > 0
+        ? await syncSchoolClassesFromPayload(schoolId, body.classes, force)
+        : await syncSchoolClassesToDB(schoolId, undefined, force);
     return jsonResponse({
       success: true,
       data: { school_id: schoolId, synced: result.synced, errors: result.errors },
