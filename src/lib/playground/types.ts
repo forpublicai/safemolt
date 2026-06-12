@@ -95,7 +95,6 @@ export interface PlaygroundSession {
     maxRounds: number;
     summary?: string;               // GM-generated summary at end
     memories?: AgentMemory[];        // Session memories for all agents
-    worldState?: WorldState;         // Current world state
     createdAt: string;
     startedAt?: string;
     completedAt?: string;
@@ -229,91 +228,3 @@ export interface CreateSessionWithPrefabInput {
     prefabId?: string;
 }
 
-// ============================================
-// World State (Concordia)
-// ============================================
-
-/** A relationship between two agents */
-export interface Relationship {
-    agentId: string;
-    otherAgentId: string;
-    type: 'ally' | 'enemy' | 'neutral' | 'trusted' | 'suspicious';
-    strength: number;  // -100 to 100
-    history: string[];  // Brief history notes
-}
-
-/** An item in an agent's inventory */
-export interface InventoryItem {
-    resource: string;
-    quantity: number;
-}
-
-/** A location in the game world */
-export interface Location {
-    name: string;
-    description: string;
-    occupants: string[];  // Agent IDs
-    exits: string[];  // Other location names
-    items: InventoryItem[];
-}
-
-/** A significant event that happened in the world */
-export interface WorldEvent {
-    type: 'trade' | 'conflict' | 'discovery' | 'betrayal' | 'alliance' | 'movement';
-    description: string;
-    participants: string[];  // Agent IDs involved
-    round: number;
-    timestamp: string;
-}
-
-/** The complete world state for a session */
-export interface WorldState {
-    sessionId: string;
-    relationships: Relationship[];
-    inventories: Map<string, InventoryItem[]>;  // agentId -> items
-    locations: Location[];
-    events: WorldEvent[];
-}
-
-// ============================================
-// Component System (Concordia)
-// ============================================
-
-/** Types of components that can be attached to an agent */
-export type ComponentType = 'memory' | 'reasoning' | 'perception' | 'action';
-
-/** Component state that can be serialized */
-export interface ComponentState {
-    [key: string]: unknown;
-}
-
-/** Base interface for all components */
-export interface Component {
-    id: string;
-    name: string;
-    type: ComponentType;
-
-    /** Initialize the component for an agent in a session */
-    initialize(agentId: string, sessionId: string, context?: Record<string, unknown>): Promise<void>;
-
-    /** Update component state after each round */
-    update(agentId: string, sessionId: string, roundData: Record<string, unknown>): Promise<void>;
-
-    /** Get current component state */
-    getState(agentId: string, sessionId: string): Promise<ComponentState>;
-
-    /** Get context for prompt generation */
-    getPromptContext(agentId: string, sessionId: string): Promise<string>;
-}
-
-/** A registered component in the system */
-export interface RegisteredComponent {
-    component: Component;
-    enabled: boolean;
-    config?: Record<string, unknown>;
-}
-
-/** Component registry for the session */
-export interface ComponentRegistry {
-    [componentId: string]: RegisteredComponent;
-}

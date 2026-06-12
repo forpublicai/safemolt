@@ -14,8 +14,6 @@ import type {
 import { getMemoriesForAgent, retrieveMemories } from './memory';
 import { getEmbedding } from './embeddings';
 import { getPrefab } from './prefabs';
-import { getWorldState, getRelationships, getInventory, getAgentLocation, getLocations, getRecentEvents } from './world-state';
-import { getAllComponents } from './components';
 
 // ============================================
 // GM System Prompt Construction
@@ -101,86 +99,6 @@ async function buildAllMemoriesContext(sessionId: string, participants: SessionP
     return nonEmpty.join('\n');
 }
 
-/**
- * Build world state context for GM prompt
- */
-function buildWorldStateContext(sessionId: string, participants: SessionParticipant[]): string {
-    const worldState = getWorldState(sessionId);
-    if (!worldState || (worldState.locations.length === 0 && worldState.relationships.length === 0)) {
-        return '';
-    }
-
-    const lines: string[] = ['\n\nWORLD STATE:'];
-
-    // Locations
-    if (worldState.locations.length > 0) {
-        lines.push('\nLocations:');
-        for (const loc of worldState.locations) {
-            const occupantNames = loc.occupants
-                .map(id => participants.find(p => p.agentId === id)?.agentName || id)
-                .join(', ');
-            lines.push(`- ${loc.name}: ${loc.description} (Occupants: ${occupantNames || 'none'})`);
-        }
-    }
-
-    // Key relationships
-    const strongRelationships = worldState.relationships.filter(r => Math.abs(r.strength) > 50);
-    if (strongRelationships.length > 0) {
-        lines.push('\nNotable Relationships:');
-        for (const rel of strongRelationships) {
-            const agent1 = participants.find(p => p.agentId === rel.agentId)?.agentName || rel.agentId;
-            const agent2 = participants.find(p => p.agentId === rel.otherAgentId)?.agentName || rel.otherAgentId;
-            lines.push(`- ${agent1} and ${agent2}: ${rel.type} (strength: ${rel.strength})`);
-        }
-    }
-
-    // Recent events
-    const recentEvents = getRecentEvents(sessionId, 3);
-    if (recentEvents.length > 0) {
-        lines.push('\nRecent Events:');
-        for (const event of recentEvents) {
-            const participantsStr = event.participants
-                .map(id => participants.find(p => p.agentId === id)?.agentName || id)
-                .join(', ');
-            lines.push(`- Round ${event.round}: ${event.description} (${participantsStr})`);
-        }
-    }
-
-    return lines.join('');
-}
-
-/**
- * Build component context for agent reasoning and memory
- */
-async function buildComponentContext(sessionId: string, participants: SessionParticipant[]): Promise<string> {
-    const components = getAllComponents();
-    const activeParticipants = participants.filter(p => p.status === 'active');
-    
-    if (components.length === 0 || activeParticipants.length === 0) {
-        return '';
-    }
-    
-    const contexts: string[] = [];
-    
-    for (const participant of activeParticipants) {
-        for (const component of components) {
-            try {
-                const context = await component.getPromptContext(participant.agentId, sessionId);
-                if (context) {
-                    contexts.push(`\n${participant.agentName}'s ${component.name}:${context}`);
-                }
-            } catch (err) {
-                // Component failed - skip
-                console.warn(`[engine] Component ${component.id} failed for agent ${participant.agentId}:`, err);
-            }
-        }
-    }
-    
-    if (contexts.length === 0) return '';
-    
-    return `\n\nAGENT INTERNAL STATES:${contexts.join('')}`;
-}
-
 function buildTranscriptContext(transcript: TranscriptRound[]): string {
     if (transcript.length === 0) return 'No previous rounds yet.';
 
@@ -207,9 +125,8 @@ function getCurrentScene(game: PlaygroundGame, round: number) {
     return game.scenes[game.scenes.length - 1];
 }
 
-function buildGMSystemPrompt(game: PlaygroundGame, participants: SessionParticipant[], sessionId?: string): string {
+function buildGMSystemPrompt(game: PlaygroundGame, participants: SessionParticipant[]): string {
     const prefabContext = buildPrefabContext(participants);
-    const worldStateContext = sessionId ? buildWorldStateContext(sessionId, participants) : '';
     return `You are the Game Master for "${game.name}".
 
 PREMISE:
@@ -219,7 +136,7 @@ RULES:
 ${game.rules}
 
 ACTIVE PARTICIPANTS:
-${buildParticipantList(participants)}${prefabContext}${worldStateContext}
+${buildParticipantList(participants)}${prefabContext}
 
 Your role:
 - Narrate the scene vividly and engagingly
@@ -227,7 +144,6 @@ Your role:
 - Stay in character as a neutral but dramatic narrator
 - Reference participants by name
 - Consider each participant's personality and adapt your narration accordingly
-- Consider the current world state when narrating
 - Keep responses concise but atmospheric (2-4 paragraphs max)`;
 }
 
@@ -246,7 +162,6 @@ export async function generateRoundPrompt(
     const scene = getCurrentScene(game, session.currentRound);
     const transcriptCtx = buildTranscriptContext(session.transcript);
     const memoriesCtx = await buildAllMemoriesContext(session.id, session.participants);
-    const componentCtx = await buildComponentContext(session.id, session.participants);
 
     let actionInstructions = '';
     if (scene.actionSpec.type === 'choice') {
@@ -256,11 +171,11 @@ export async function generateRoundPrompt(
     const messages: ChatMessage[] = [
         {
             role: 'system',
-            content: buildGMSystemPrompt(game, session.participants, session.id),
+            content: buildGMSystemPrompt(game, session.participants),
         },
         {
             role: 'user',
-            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}${memoriesCtx}${componentCtx}\n\nGenerate the Game Master narration for ROUND ${session.currentRound} (scene: "${scene.name}" — ${scene.description}).${actionInstructions}\n\nAddress the participants and set the scene. End with a clear call to action: "${scene.actionSpec.callToAction}"`
+            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}${memoriesCtx}\n\nGenerate the Game Master narration for ROUND ${session.currentRound} (scene: "${scene.name}" — ${scene.description}).${actionInstructions}\n\nAddress the participants and set the scene. End with a clear call to action: "${scene.actionSpec.callToAction}"`
         },
     ];
 
@@ -278,7 +193,6 @@ export async function resolveRound(
 ): Promise<{ narration: string; isGameOver: boolean }> {
     const transcriptCtx = buildTranscriptContext(session.transcript);
     const memoriesCtx = await buildAllMemoriesContext(session.id, session.participants);
-    const componentCtx = await buildComponentContext(session.id, session.participants);
 
     const actionsSummary = actions
         .map(a =>
@@ -291,11 +205,11 @@ export async function resolveRound(
     const messages: ChatMessage[] = [
         {
             role: 'system',
-            content: buildGMSystemPrompt(game, session.participants, session.id),
+            content: buildGMSystemPrompt(game, session.participants),
         },
         {
             role: 'user',
-            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}${memoriesCtx}${componentCtx}\n\nROUND ${session.currentRound} ACTIONS:\n${actionsSummary}\n\nAs the Game Master, narrate what happened this round based on the agents' actions. Describe consequences, reactions, and set up dramatic tension for the next round (if any). If agents forfeited, narrate their absence naturally.\n\nCRITICAL: If the scenario has reached a definitive conclusion (e.g. a clear winner, a deal broken, or the story naturally ends), append "[GAME OVER]" on a new line at the very end.`
+            content: `TRANSCRIPT SO FAR:\n${transcriptCtx}${memoriesCtx}\n\nROUND ${session.currentRound} ACTIONS:\n${actionsSummary}\n\nAs the Game Master, narrate what happened this round based on the agents' actions. Describe consequences, reactions, and set up dramatic tension for the next round (if any). If agents forfeited, narrate their absence naturally.\n\nCRITICAL: If the scenario has reached a definitive conclusion (e.g. a clear winner, a deal broken, or the story naturally ends), append "[GAME OVER]" on a new line at the very end.`
         },
     ];
 
@@ -319,7 +233,7 @@ export async function generateSummary(
     const messages: ChatMessage[] = [
         {
             role: 'system',
-            content: buildGMSystemPrompt(game, session.participants, session.id),
+            content: buildGMSystemPrompt(game, session.participants),
         },
         {
             role: 'user',

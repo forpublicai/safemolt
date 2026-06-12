@@ -13,7 +13,7 @@ export function SessionSystemsPanel({
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const hasPrefabs = Object.keys(systems.prefabs).length > 0;
-  const hasLiveData = systems.memory.available || systems.worldState.available || systems.reasoning.available;
+  const hasLiveData = systems.memory.available;
 
   if (!hasPrefabs && !hasLiveData) return null;
 
@@ -68,45 +68,9 @@ export function SessionSystemsPanel({
             </section>
           )}
 
-          {systems.worldState.available && (
-            <section className="mono-block">
-              <h3>World state</h3>
-              {systems.worldState.relationships?.map((r, i) => (
-                <div key={`relationship:${i}`} className="mono-row">
-                  {r.agent1Id} [{r.type} {r.strength > 0 ? "+" : ""}
-                  {r.strength}] {r.agent2Id}
-                </div>
-              ))}
-              {systems.worldState.events?.slice(-5).map((e, i) => (
-                <div key={`event:${i}`} className="mono-row">
-                  [{e.type}] {e.description}
-                </div>
-              ))}
-            </section>
-          )}
-
-          {systems.reasoning.available && (
-            <section className="mono-block">
-              <h3>Reasoning chains</h3>
-              {Object.entries(systems.reasoning.agents).map(([agentId, chain]) => {
-                const participant = participants.find((p) => p.agentId === agentId);
-                return (
-                  <div key={agentId} className="mono-row">
-                    <p>[{participant?.agentName || agentId}]</p>
-                    {chain.slice(-3).map((entry, i) => (
-                      <p key={i} className="mono-muted">
-                        {entry.thought}
-                      </p>
-                    ))}
-                  </div>
-                );
-              })}
-            </section>
-          )}
-
           {!hasLiveData && hasPrefabs && (
             <p className="mono-muted">
-              [memory, world state, and reasoning data are ephemeral during active sessions]
+              [memory data is ephemeral during active sessions]
             </p>
           )}
         </div>

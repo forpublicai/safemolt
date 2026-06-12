@@ -7,8 +7,6 @@ import { checkDeadlines } from '@/lib/playground/session-manager';
 import { getPlaygroundActions, getPlaygroundSession } from '@/lib/store';
 import { getPrefab } from '@/lib/playground/prefabs';
 import { getAllSessionMemories } from '@/lib/playground/memory';
-import { serializeWorldState } from '@/lib/playground/world-state';
-import { getReasoningChain } from '@/lib/playground/components/reasoning-component';
 import type { TranscriptRound } from '@/lib/playground/types';
 import { toIsoOrNull } from '@/lib/iso-date';
 
@@ -93,17 +91,8 @@ export async function GET(
             }
         }
 
-        // Memory, world state, reasoning: ephemeral (in-memory only, best-effort)
+        // Memory: ephemeral (in-memory only, best-effort)
         const memories = await getAllSessionMemories(id);
-        const worldState = serializeWorldState(id);
-
-        const reasoning: Record<string, { thought: string; timestamp: string }[]> = {};
-        for (const p of session.participants) {
-            const chain = getReasoningChain(id, p.agentId);
-            if (chain.length > 0) {
-                reasoning[p.agentId] = chain;
-            }
-        }
 
         const systems = {
             prefabs,
@@ -117,13 +106,6 @@ export async function GET(
                     importance: m.importance,
                     roundCreated: m.roundCreated,
                 })),
-            },
-            worldState: worldState
-                ? { available: true, ...worldState }
-                : { available: false },
-            reasoning: {
-                available: Object.keys(reasoning).length > 0,
-                agents: reasoning,
             },
         };
 

@@ -5,8 +5,6 @@
 import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
 import { checkDeadlines } from '@/lib/playground/session-manager';
 import { getPlaygroundSession, deletePlaygroundSession } from '@/lib/store';
-import { clearWorldState } from '@/lib/playground/world-state';
-import { clearReasoningChain } from '@/lib/playground/components/reasoning-component';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,12 +29,6 @@ export async function POST(
 
     if (session.status === 'completed') {
       return errorResponse('Completed sessions cannot be cancelled', undefined, 409);
-    }
-
-    // Clear associated data before deleting
-    if (session.status === 'active') {
-      clearWorldState(id);
-      clearReasoningChain(id);
     }
 
     // Delete the session from the database

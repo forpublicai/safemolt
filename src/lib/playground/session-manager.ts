@@ -10,9 +10,6 @@ import { storeMemory } from './memory';
 import { schedulePlaygroundMemoryIngest } from '@/lib/memory/platform-ingest';
 import { getEmbedding } from './embeddings';
 import { getRandomPrefab, getPrefab } from './prefabs';
-import { initializeWorldState, clearWorldState, setRelationship, addWorldEvent, getWorldState } from './world-state';
-import { getAllComponents, createDefaultRegistry } from './components';
-import { clearReasoningChain } from './components/reasoning-component';
 import {
     enforceSessionLifetimeCap,
     revalidatePlaygroundSeed,
@@ -27,7 +24,6 @@ import type {
     CreateSessionInput,
     SessionAction,
     MemoryImportance,
-    ComponentRegistry,
 } from './types';
 import {
     sanitizeActingCompanyId,
@@ -178,21 +174,6 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
     };
 
     await store.createPlaygroundSession(sessionInput);
-
-    // Initialize world state for this session
-    initializeWorldState(sessionId);
-
-    // Initialize components for all participants
-    const components = getAllComponents();
-    for (const participant of participants) {
-        for (const component of components) {
-            try {
-                await component.initialize(participant.agentId, sessionId);
-            } catch (err) {
-                console.error(`[playground] Error initializing component ${component.id} for agent ${participant.agentId}:`, err);
-            }
-        }
-    }
 
     return {
         ...tempSession,
@@ -565,9 +546,6 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
     // Store memories for each participant after the round
     await storeRoundMemories(sessionId, newRound, updatedParticipants);
 
-    // Update world state (relationships, events) based on round resolution
-    updateWorldStateFromRound(sessionId, newRound, updatedParticipants);
-
     // Check if we've reached max rounds OR game returned early termination (e.g. defection outcome)
     if (session.currentRound >= session.maxRounds || resolution.isGameOver) {
         // Session complete
@@ -588,12 +566,6 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
             roundDeadline: null,
         });
         revalidatePlaygroundSeed(session.schoolId);
-
-        // Clean up world state
-        clearWorldState(sessionId);
-
-        // Clean up reasoning chains
-        clearReasoningChain(sessionId);
 
         return (await store.getPlaygroundSession(sessionId))!;
     }
@@ -775,24 +747,6 @@ export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
 
                     console.log(`[playground] Auto-started pending session ${fresh.id} with ${participantCount} players.`);
 
-                    // Initialize world state and components (best-effort)
-                    try {
-                        initializeWorldState(fresh.id);
-                    } catch (err) {
-                        console.error(`[playground] Failed to initialize world state for ${fresh.id}:`, err);
-                    }
-
-                    const components = getAllComponents();
-                    for (const participant of fresh.participants || []) {
-                        for (const component of components) {
-                            try {
-                                await component.initialize(participant.agentId, fresh.id);
-                            } catch (err) {
-                                console.error(`[playground] Error initializing component ${component.id} for agent ${participant.agentId}:`, err);
-                            }
-                        }
-                    }
-
                     // Fire-and-forget: generate and save the first round prompt
                     const activeSession = { ...fresh, status: 'active', currentRound: 1, startedAt: now, roundDeadline } as PlaygroundSession;
                     generateRoundPrompt(activeSession, game)
@@ -959,81 +913,3 @@ async function storeRoundMemories(
 }
 
 
-/**
- * Update world state after each round based on GM resolution
- * Extracts relationship changes and key events from the narrative
- */
-function updateWorldStateFromRound(
-    sessionId: string,
-    round: TranscriptRound,
-    participants: SessionParticipant[]
-): void {
-    const resolution = round.gmResolution.toLowerCase();
-
-    // Extract key events from the GM resolution
-    const roundNum = round.round;
-
-    // Detect trade/exchange mentions and update relationships
-    const activeParticipants = participants.filter(p => p.status === 'active');
-
-    // Simple heuristic: if agents are mentioned together in resolution, strengthen relationship
-    for (let i = 0; i < activeParticipants.length; i++) {
-        for (let j = i + 1; j < activeParticipants.length; j++) {
-            const agent1 = activeParticipants[i];
-            const agent2 = activeParticipants[j];
-
-            const name1InResolution = resolution.includes(agent1.agentName.toLowerCase());
-            const name2InResolution = resolution.includes(agent2.agentName.toLowerCase());
-
-            if (name1InResolution && name2InResolution) {
-                // Check for positive or negative interactions
-                const positiveWords = ['cooperate', 'agree', 'trade', 'deal', 'alliance', 'help', 'support', 'accept', 'trust'];
-                const negativeWords = ['betray', 'reject', 'refuse', 'conflict', 'dispute', 'defect', 'deny'];
-
-                let relationshipChange = 10; // Default: interacting = positive
-
-                for (const word of positiveWords) {
-                    if (resolution.includes(word)) {
-                        relationshipChange = 15;
-                        break;
-                    }
-                }
-                for (const word of negativeWords) {
-                    if (resolution.includes(word)) {
-                        relationshipChange = -15;
-                        break;
-                    }
-                }
-
-                // Get existing relationship or create new one
-                const worldState = getWorldState(sessionId);
-                if (worldState) {
-                    const existingRel = worldState.relationships.find(
-                        r => (r.agentId === agent1.agentId && r.otherAgentId === agent2.agentId) ||
-                            (r.agentId === agent2.agentId && r.otherAgentId === agent1.agentId)
-                    );
-
-                    const newStrength = existingRel ? existingRel.strength + relationshipChange : relationshipChange;
-
-                    setRelationship(sessionId, {
-                        agentId: agent1.agentId,
-                        otherAgentId: agent2.agentId,
-                        type: newStrength > 30 ? 'trusted' : newStrength > 0 ? 'ally' : newStrength < -30 ? 'suspicious' : 'enemy',
-                        strength: Math.max(-100, Math.min(100, newStrength)), // Clamp to -100 to 100
-                        history: [`Round ${roundNum}: ${newStrength > 0 ? 'positive' : 'negative'} interaction`],
-                    });
-                }
-            }
-        }
-    }
-
-    // Add a world event for this round
-    const eventDescription = resolution.slice(0, 150) + (resolution.length > 150 ? '...' : '');
-    addWorldEvent(sessionId, {
-        type: 'discovery' as const,
-        description: eventDescription,
-        participants: activeParticipants.map(p => p.agentId),
-        round: roundNum,
-        timestamp: new Date().toISOString(),
-    });
-}

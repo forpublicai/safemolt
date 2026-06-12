@@ -35,16 +35,6 @@ export interface SessionSystems {
     count: number;
     entries: MemoryEntry[];
   };
-  worldState: {
-    available: boolean;
-    relationships?: { agent1Id: string; agent2Id: string; type: string; strength: number }[];
-    events?: { type: string; description: string; involvedAgents: string[]; timestamp: string }[];
-    locations?: { name: string; description: string; occupants: string[] }[];
-  };
-  reasoning: {
-    available: boolean;
-    agents: Record<string, { thought: string; timestamp: string }[]>;
-  };
 }
 
 export interface TranscriptRound {
