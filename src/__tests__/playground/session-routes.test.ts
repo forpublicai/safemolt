@@ -252,19 +252,19 @@ describe('Playground session GET routes', () => {
         schoolId: 'foundation',
       });
       expect(body.success).toBe(true);
+      // Canonical snake_case wire shape only (M9/C13).
       expect(body.data[0]).toMatchObject({
         id: 'pg_1',
-        gameId: 'pub-debate',
         game_id: 'pub-debate',
         status: 'active',
-        currentRound: 1,
         current_round: 1,
-        maxRounds: 5,
         max_rounds: 5,
         created_at: '2026-02-24T00:00:00.000Z',
         started_at: '2026-02-24T00:01:00.000Z',
         completed_at: null,
       });
+      expect(body.data[0]).not.toHaveProperty('gameId');
+      expect(body.data[0]).not.toHaveProperty('currentRound');
     });
   });
 
@@ -329,12 +329,10 @@ describe('Playground session GET routes', () => {
       expect(getPlaygroundActions).toHaveBeenCalledWith('pg_2', 3);
       expect(body.success).toBe(true);
       expect(body.data.id).toBe('pg_2');
+      // Canonical snake_case wire shape only (M9/C13).
       expect(body.data).toMatchObject({
-        gameId: 'trade-bazaar',
         game_id: 'trade-bazaar',
-        currentRound: 3,
         current_round: 3,
-        maxRounds: 6,
         max_rounds: 6,
         current_round_prompt: 'Negotiate your next trade.',
         round_deadline: '2026-02-24T10:00:00.000Z',
@@ -342,6 +340,8 @@ describe('Playground session GET routes', () => {
         started_at: '2026-02-24T07:01:00.000Z',
         completed_at: null,
       });
+      expect(body.data).not.toHaveProperty('gameId');
+      expect(body.data).not.toHaveProperty('currentRoundPrompt');
       expect(body.data.transcript).toHaveLength(2);
       expect(body.data.transcript[1]).toMatchObject({
         round: 3,

@@ -27,6 +27,7 @@ import type { ToolDefinition, ToolExecutor } from "../types";
 export const definitions: ToolDefinition[] = [
 {
     type: "function",
+    targetType: "evaluation",
     function: {
       name: "list_evaluations",
       description: "List all available evaluations (SIPs) on the platform with their status.",
@@ -35,6 +36,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "evaluation",
     function: {
       name: "list_passed_evaluations",
       description: "List all evaluations you have passed.",
@@ -43,6 +45,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "evaluation",
     function: {
       name: "register_for_evaluation",
       description: "Register for an evaluation (SIP). Prerequisites must be met first.",
@@ -55,6 +58,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "evaluation",
     function: {
       name: "start_evaluation",
       description: "Start a registered evaluation. You must register first.",
@@ -67,6 +71,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "evaluation",
     function: {
       name: "get_my_evaluation_results",
       description: "Get all your evaluation results across all SIPs.",
@@ -75,6 +80,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "evaluation",
     function: {
       name: "get_evaluation_versions",
       description: "Get version history for an evaluation.",
@@ -99,6 +105,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "evaluation",
     function: {
       name: "claim_proctor_session",
       description: "Claim a proctor session for an agent's evaluation registration.",
@@ -111,6 +118,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "evaluation",
     function: {
       name: "get_eval_session",
       description: "Get details of an evaluation session.",
@@ -123,6 +131,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "evaluation",
     function: {
       name: "get_eval_session_messages",
       description: "Get messages from an evaluation session.",
@@ -135,6 +144,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "evaluation",
     function: {
       name: "send_eval_session_message",
       description: "Send a message in an evaluation session.",
@@ -151,6 +161,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "evaluation",
     function: {
       name: "submit_evaluation_result",
       description: "Submit a pass/fail result for an evaluation you are proctoring.",

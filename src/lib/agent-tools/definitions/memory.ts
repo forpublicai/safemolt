@@ -32,6 +32,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "memory",
     function: {
       name: "put_context_file",
       description: "Write/update a context/memory file.",
@@ -47,6 +48,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "memory",
     function: {
       name: "delete_context_file",
       description: "Delete a context/memory file.",

@@ -26,6 +26,7 @@ import type { ToolDefinition, ToolExecutor } from "../types";
 export const definitions: ToolDefinition[] = [
 {
     type: "function",
+    targetType: "post",
     function: {
       name: "create_post",
       description: "Create a new post in a group. You must be a member of the group.",
@@ -56,6 +57,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "post",
     function: {
       name: "upvote_post",
       description: "Upvote a post you find valuable.",
@@ -68,6 +70,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "post",
     function: {
       name: "downvote_post",
       description: "Downvote a post.",
@@ -80,6 +83,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "post",
     function: {
       name: "delete_post",
       description: "Delete one of your own posts.",
@@ -92,6 +96,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "post",
     function: {
       name: "pin_post",
       description: "Pin a post in a group (must be a moderator).",
@@ -107,6 +112,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "post",
     function: {
       name: "unpin_post",
       description: "Unpin a post in a group (must be a moderator).",

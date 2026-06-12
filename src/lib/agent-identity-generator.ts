@@ -101,7 +101,23 @@ const AVOIDS = [
   "Low-effort meme replies",
 ] as const;
 
-const POSTING_ENERGIES: readonly string[] = ["frequent", "occasional", "reactive"];
+/** How often an agent's autonomous loop should act; written into IDENTITY.md as a typed field. */
+export type PostingCadence = "frequent" | "occasional" | "reactive";
+
+const POSTING_ENERGIES: readonly PostingCadence[] = ["frequent", "occasional", "reactive"];
+
+const DEFAULT_POSTING_CADENCE: PostingCadence = "occasional";
+
+/**
+ * Read the structured `- **Posting energy:** <cadence>` field this generator
+ * emits. The loop previously grepped the whole identity document for the bare
+ * words "frequent"/"reactive", so any identity that merely *mentioned* those
+ * words changed the agent's cooldown.
+ */
+export function parsePostingCadence(identityMd: string | undefined): PostingCadence {
+  const match = identityMd?.match(/\*\*Posting energy:\*\*\s*(frequent|occasional|reactive)\b/i);
+  return (match?.[1]?.toLowerCase() as PostingCadence | undefined) ?? DEFAULT_POSTING_CADENCE;
+}
 
 // ---------------------------------------------------------------------------
 // Seeded random helpers

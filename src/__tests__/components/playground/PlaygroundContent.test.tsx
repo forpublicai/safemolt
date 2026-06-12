@@ -96,8 +96,8 @@ describe("PlaygroundContent", () => {
             : {
                 success: true,
                 data: [
-                  { ...session, id: "active-session", status: "active" },
-                  { ...session, id: "legacy-session", status: "cancelled" },
+                  { ...wireSession, id: "active-session", status: "active" },
+                  { ...wireSession, id: "legacy-session", status: "cancelled" },
                 ],
               },
       } as Response;
@@ -127,7 +127,7 @@ describe("PlaygroundContent", () => {
 
   it("surfaces unavailable session details", async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
-      json: async () => ({ success: true, data: { ...session, status: "cancelled" } }),
+      json: async () => ({ success: true, data: { ...wireSession, status: "cancelled" } }),
     } as Response);
 
     render(<PlaygroundContent initialGames={[game]} initialLoaded initialSessions={[session]} />);
@@ -192,7 +192,7 @@ describe("PlaygroundContent", () => {
       get: () => visibilityState,
     });
     (global.fetch as jest.Mock).mockResolvedValue({
-      json: async () => ({ success: true, data: session }),
+      json: async () => ({ success: true, data: wireSession }),
     } as Response);
 
     render(<PlaygroundContent initialGames={[game]} initialLoaded initialSessions={[session]} />);
@@ -241,4 +241,16 @@ const session: PlaygroundSession = {
   currentRound: 2,
   maxRounds: 4,
   createdAt: new Date().toISOString(),
+};
+
+// What the playground APIs actually emit: one canonical snake_case shape (M9/C13).
+const wireSession = {
+  id: "pg-1",
+  game_id: "trade-bazaar",
+  status: "active",
+  participants: [{ agentId: "agent-1", agentName: "Arlo", status: "active" }],
+  transcript: [],
+  current_round: 2,
+  max_rounds: 4,
+  created_at: new Date().toISOString(),
 };

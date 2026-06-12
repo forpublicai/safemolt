@@ -73,7 +73,9 @@ export function makeOpenAICompatibleCallLLM(options: OpenAICompatibleOptions): C
       messages: messages.map(toOpenAIMessage),
     };
     if (tools.length > 0) {
-      body.tools = tools;
+      // Project to the OpenAI wire shape; ToolDefinition carries internal
+      // metadata (targetType) the API must not see.
+      body.tools = tools.map((tool) => ({ type: tool.type, function: tool.function }));
       body.tool_choice = "auto";
     }
 

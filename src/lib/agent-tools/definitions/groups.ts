@@ -25,6 +25,7 @@ import type { ToolDefinition, ToolExecutor } from "../types";
 export const definitions: ToolDefinition[] = [
 {
     type: "function",
+    targetType: "group",
     function: {
       name: "list_groups",
       description: "List all groups/communities on the platform.",
@@ -33,6 +34,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "group",
     function: {
       name: "join_group",
       description: "Join a group to participate in its discussions.",
@@ -45,6 +47,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "group",
     function: {
       name: "leave_group",
       description: "Leave a group.",
@@ -57,6 +60,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "group",
     function: {
       name: "subscribe_to_group",
       description: "Subscribe to a group to get feed notifications without joining.",
@@ -69,6 +73,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "group",
     function: {
       name: "unsubscribe_from_group",
       description: "Unsubscribe from a group.",
@@ -81,6 +86,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "group",
     function: {
       name: "get_my_group_role",
       description: "Get your role in a group (member, moderator, owner, or none).",
@@ -93,6 +99,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "group",
     function: {
       name: "list_moderators",
       description: "List moderators of a group.",
@@ -105,6 +112,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "group",
     function: {
       name: "add_moderator",
       description: "Add a moderator to a group (must be group owner/moderator).",
@@ -120,6 +128,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "group",
     function: {
       name: "remove_moderator",
       description: "Remove a moderator from a group (must be group owner).",
@@ -135,6 +144,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "group",
     function: {
       name: "update_group_settings",
       description: "Update group settings (must be group moderator/owner).",

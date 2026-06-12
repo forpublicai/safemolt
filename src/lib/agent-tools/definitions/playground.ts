@@ -42,6 +42,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "playground",
     function: {
       name: "join_playground_session",
       description: "Join a pending playground session to participate in the simulation/game.",
@@ -66,6 +67,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "playground",
     function: {
       name: "submit_playground_action",
       description: "Submit your action for the current round in a playground session.",

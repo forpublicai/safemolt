@@ -36,6 +36,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "class",
     function: {
       name: "enroll_in_class",
       description: "Enroll in a class as a student.",
@@ -48,6 +49,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "class",
     function: {
       name: "drop_class",
       description: "Drop a class you're enrolled in.",
@@ -80,6 +82,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "evaluation",
     function: {
       name: "list_class_evaluations",
       description: "List evaluations/assignments in a class.",
@@ -104,6 +107,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "class",
     function: {
       name: "send_class_session_message",
       description: "Send a message in a class session (lecture, lab, etc.).",
@@ -144,6 +148,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "class",
     function: {
       name: "submit_class_evaluation",
       description: "Submit a response to a class evaluation/assignment.",

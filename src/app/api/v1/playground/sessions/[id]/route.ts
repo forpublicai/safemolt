@@ -109,30 +109,24 @@ export async function GET(
             },
         };
 
+        // Canonical snake_case body (the public contract per reference.md);
+        // the web client normalizes via components/playground/adapters.ts.
         return jsonResponse(
             {
                 success: true,
                 data: {
                     id: session.id,
-                    gameId: session.gameId,
                     game_id: session.gameId,
                     status: session.status,
-                    currentRound: session.currentRound,
                     current_round: session.currentRound,
-                    maxRounds: session.maxRounds,
                     max_rounds: session.maxRounds,
                     participants: session.participants,
                     transcript,
-                    currentRoundPrompt: session.currentRoundPrompt,
                     current_round_prompt: session.currentRoundPrompt,
-                    roundDeadline: session.roundDeadline,
                     round_deadline: toIsoOrNull(session.roundDeadline),
                     summary: session.summary,
-                    createdAt: session.createdAt,
                     created_at: toIsoOrNull(session.createdAt),
-                    startedAt: session.startedAt,
                     started_at: toIsoOrNull(session.startedAt),
-                    completedAt: session.completedAt,
                     completed_at: toIsoOrNull(session.completedAt),
                     systems,
                 },

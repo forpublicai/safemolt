@@ -52,7 +52,7 @@ import {
 } from "@/lib/human-users";
 import { isSponsoredPublicAiAgent } from "@/lib/memory/sponsored-public-ai";
 import { recallMemoryForAgent, upsertVectorForAgent } from "@/lib/memory/memory-service";
-import { isPlaceholderIdentity, generateRandomIdentity } from "@/lib/agent-identity-generator";
+import { isPlaceholderIdentity, generateRandomIdentity, parsePostingCadence, type PostingCadence } from "@/lib/agent-identity-generator";
 import { listEvaluations } from "@/lib/evaluations/loader";
 import {
   gatherPlaygroundOpportunities,
@@ -71,13 +71,12 @@ import { listRecentLoopActions, type RecentLoopAction } from "@/lib/agent-loop-a
 /** Max agents to process per cron invocation. */
 const BATCH_SIZE = parseInt(process.env.AGENT_LOOP_BATCH_SIZE || "2", 10);
 
-/** Min minutes between actions for one agent. */
-const COOLDOWN_MINUTES: Record<string, number> = {
+/** Min minutes between actions for one agent, by identity posting cadence. */
+const COOLDOWN_MINUTES: Record<PostingCadence, number> = {
   frequent: 15,
   occasional: 60,
   reactive: 120,
 };
-const DEFAULT_COOLDOWN_MINUTES = 60;
 
 /** Max feed items to show the LLM per tick. */
 const FEED_WINDOW = 5;
@@ -701,24 +700,13 @@ function toolResultData(result: ToolCallResult): Record<string, unknown> {
     : {};
 }
 
+/** Loop-journal target classification comes from the tool definitions themselves. */
+const TOOL_TARGET_TYPES = new Map(
+  PLATFORM_TOOLS.filter((tool) => tool.targetType).map((tool) => [tool.function.name, tool.targetType!])
+);
+
 function inferTargetType(call: NormalizedToolCall): string | undefined {
-  if (
-    call.name === "create_post" ||
-    call.name === "create_comment" ||
-    call.name === "upvote_post" ||
-    call.name === "downvote_post" ||
-    call.name === "delete_post" ||
-    call.name === "pin_post" ||
-    call.name === "unpin_post" ||
-    call.name === "upvote_comment"
-  ) return "post";
-  if (call.name === "submit_playground_action" || call.name === "join_playground_session") return "playground";
-  if (call.name === "send_class_session_message" || call.name === "enroll_in_class" || call.name === "drop_class" || call.name === "submit_class_evaluation") return "class";
-  if (call.name.includes("evaluation") || call.name.includes("eval_") || call.name === "claim_proctor_session") return "evaluation";
-  if (call.name.includes("group") || call.name.includes("moderator")) return "group";
-  if (call.name === "follow_agent" || call.name === "unfollow_agent" || call.name === "update_my_profile") return "agent";
-  if (call.name === "put_context_file" || call.name === "delete_context_file") return "memory";
-  return undefined;
+  return TOOL_TARGET_TYPES.get(call.name);
 }
 
 function inferTargetId(call: NormalizedToolCall, result: ToolCallResult): string | undefined {
@@ -834,12 +822,8 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
     console.log(`[agent-loop] Auto-generated identity for ${agent.name}`);
   }
 
-  // Get posting energy from identity for cooldown
-  const identityLower = (agent.identityMd ?? "").toLowerCase();
-  let postingEnergy = "occasional";
-  if (identityLower.includes("frequent")) postingEnergy = "frequent";
-  else if (identityLower.includes("reactive")) postingEnergy = "reactive";
-  const cooldown = COOLDOWN_MINUTES[postingEnergy] ?? DEFAULT_COOLDOWN_MINUTES;
+  // Posting cadence is the identity's typed "Posting energy" field.
+  const cooldown = COOLDOWN_MINUTES[parsePostingCadence(agent.identityMd)];
 
   // --- Step 2: Gather context in parallel ---
   const [inbox, feed, classes, playground, evals, news, groupOpportunities, network, recentActions, memoryResults] = await Promise.all([

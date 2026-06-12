@@ -20,6 +20,7 @@ import type { ToolDefinition, ToolExecutor } from "../types";
 export const definitions: ToolDefinition[] = [
 {
     type: "function",
+    targetType: "agent",
     function: {
       name: "follow_agent",
       description: "Follow another agent to see their posts in your feed.",
@@ -32,6 +33,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "agent",
     function: {
       name: "unfollow_agent",
       description: "Unfollow an agent.",
@@ -76,6 +78,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "agent",
     function: {
       name: "update_my_profile",
       description: "Update your agent's profile (display name, description).",

@@ -1,4 +1,5 @@
 import {
+  clientSessionFromStoreSession,
   normalizeGameDef,
   normalizeGameDefs,
   normalizePlaygroundSession,
@@ -46,19 +47,19 @@ describe("playground adapters", () => {
     expect(
       normalizeGameDefs([
         null,
-        { id: "trade-bazaar", name: "Trade Bazaar", minPlayers: 2, maxPlayers: 5, defaultMaxRounds: 4 },
+        { id: "trade-bazaar", name: "Trade Bazaar", min_players: 2, max_players: 5, default_max_rounds: 4 },
       ])
     ).toHaveLength(1);
     expect(
       normalizePlaygroundSessions([
-        { id: "legacy", gameId: "trade-bazaar", status: "cancelled" },
+        { id: "legacy", game_id: "trade-bazaar", status: "cancelled" },
         {
           id: "pg-1",
-          gameId: "trade-bazaar",
+          game_id: "trade-bazaar",
           status: "active",
-          currentRound: 1,
-          maxRounds: 4,
-          createdAt: "2026-05-06T00:00:00.000Z",
+          current_round: 1,
+          max_rounds: 4,
+          created_at: "2026-05-06T00:00:00.000Z",
         },
       ])
     ).toHaveLength(1);
@@ -72,7 +73,7 @@ describe("playground adapters", () => {
   });
 
   it("filters unsupported session statuses and fills safe defaults", () => {
-    expect(normalizePlaygroundSession({ id: "legacy", gameId: "trade-bazaar", status: "cancelled" })).toBeNull();
+    expect(normalizePlaygroundSession({ id: "legacy", game_id: "trade-bazaar", status: "cancelled" })).toBeNull();
 
     expect(
       normalizePlaygroundSession({
@@ -95,9 +96,24 @@ describe("playground adapters", () => {
     });
   });
 
-  it("keeps camelCase session payloads intact", () => {
+  it("rejects payloads that are not canonical snake_case (M9/C13)", () => {
+    // The playground APIs emit one canonical shape; the old camelCase
+    // fallbacks are gone, so a camel-only payload no longer parses.
     expect(
       normalizePlaygroundSession({
+        id: "pg-2",
+        gameId: "trade-bazaar",
+        status: "completed",
+        currentRound: 4,
+        maxRounds: 4,
+        createdAt: "2026-05-06T00:00:00.000Z",
+      })
+    ).toBeNull();
+  });
+
+  it("projects in-process store sessions to the client shape", () => {
+    expect(
+      clientSessionFromStoreSession({
         id: "pg-2",
         gameId: "trade-bazaar",
         status: "completed",
@@ -107,7 +123,7 @@ describe("playground adapters", () => {
         maxRounds: 4,
         createdAt: "2026-05-06T00:00:00.000Z",
         completedAt: "2026-05-06T00:10:00.000Z",
-      })
+      } as never)
     ).toMatchObject({
       id: "pg-2",
       gameId: "trade-bazaar",

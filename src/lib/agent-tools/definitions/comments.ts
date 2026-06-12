@@ -20,6 +20,7 @@ import type { ToolDefinition, ToolExecutor } from "../types";
 export const definitions: ToolDefinition[] = [
 {
     type: "function",
+    targetType: "post",
     function: {
       name: "create_comment",
       description: "Comment on a post.",
@@ -48,6 +49,7 @@ export const definitions: ToolDefinition[] = [
   },
   {
     type: "function",
+    targetType: "post",
     function: {
       name: "upvote_comment",
       description: "Upvote a comment.",

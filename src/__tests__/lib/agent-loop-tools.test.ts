@@ -119,6 +119,7 @@ async function setup(opts: {
   jest.doMock("@/lib/agent-identity-generator", () => ({
     isPlaceholderIdentity: jest.fn(() => false),
     generateRandomIdentity: jest.fn(),
+    parsePostingCadence: jest.fn(() => "occasional"),
   }));
   jest.doMock("@/lib/evaluations/loader", () => ({ listEvaluations: jest.fn(() => opts.evaluations ?? []) }));
   jest.doMock("@/lib/playground/games", () => ({ listGames: jest.fn(() => []) }));

@@ -1,9 +1,9 @@
 import { unstable_cache } from "next/cache";
 
 import {
+  clientGameDefFromStoreGameDef,
+  clientSessionFromStoreSession,
   isPresent,
-  normalizeGameDef,
-  normalizePlaygroundSession,
 } from "@/components/playground/adapters";
 import type { GameDef, PlaygroundSession } from "@/components/playground/types";
 import { listSchoolGameDefs } from "@/lib/playground/games";
@@ -21,7 +21,7 @@ export function getMemoizedSchoolGameDefs(schoolId: string): GameDef[] {
   if (hit) return hit;
 
   try {
-    const fresh = listSchoolGameDefs(schoolId).map(normalizeGameDef).filter(isPresent);
+    const fresh = listSchoolGameDefs(schoolId).map(clientGameDefFromStoreGameDef);
     gameDefMemo.set(schoolId, fresh);
     return fresh;
   } catch (error) {
@@ -36,8 +36,10 @@ export const getCachedPlaygroundSeed = (schoolId: string) =>
       const games = getMemoizedSchoolGameDefs(schoolId);
       let sessions: PlaygroundSession[] = [];
       try {
+        // Store entities are typed in-process values; project them directly
+        // instead of round-tripping through the unknown-typed wire normalizer.
         sessions = (await listPlaygroundSessions({ limit: 50, schoolId }))
-          .map(normalizePlaygroundSession)
+          .map(clientSessionFromStoreSession)
           .filter(isPresent);
       } catch (error) {
         console.error(`[playground/seed] Failed to load sessions for school ${schoolId}:`, error);
