@@ -16,7 +16,7 @@ import {
     safeWaitUntil,
     type PlaygroundDeadlineRunResult,
 } from './lifecycle';
-import type { PlaygroundGame, PlaygroundSession, SessionParticipant, TranscriptRound, CreateSessionInput, MemoryImportance } from './types';
+import type { PlaygroundGame, PlaygroundSession, SessionParticipant, SessionAction, TranscriptRound, CreateSessionInput, MemoryImportance } from './types';
 import {
     sanitizeActingCompanyId,
     sanitizeActingLabel,
@@ -305,40 +305,47 @@ export async function joinSession(
         updatedSession = patched;
     }
 
-    // 5. Check Start Condition
-    // If we hit minPlayers, attempt to activate.
-    // We use activatePlaygroundSession to ensure only ONE process triggers the start.
+    // 5. Check Start Condition: if we hit minPlayers, attempt to activate.
     if (updatedSession.participants.length >= game.minPlayers) {
-        const now = new Date().toISOString();
-        const roundDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
-
-        const activated = await store.activatePlaygroundSession(sessionId, 1, roundDeadline, now);
-
-        if (activated) {
-            console.log(`[playground] Session ${sessionId} started with ${updatedSession.participants.length} players. Generating prompt...`);
-
-            // Construct the active session object for prompt generation
-            const activeSession: PlaygroundSession = {
-                ...updatedSession,
-                status: 'active',
-                currentRound: 1,
-                startedAt: now,
-                roundDeadline,
-            };
-
-            // Fire-and-forget prompt generation
-            generateRoundPrompt(activeSession, game)
-                .then(async (roundPrompt) => {
-                    await store.updatePlaygroundSession(sessionId, { currentRoundPrompt: roundPrompt });
-                    console.log(`[playground] Round 1 prompt saved for session ${sessionId}.`);
-                })
-                .catch(err => {
-                    console.error(`[playground] Failed to generate round prompt for ${sessionId}:`, err);
-                });
-        }
+        await activateSession(updatedSession, game);
     }
 
     return updatedSession;
+}
+
+/**
+ * Atomically flip a pending session to active round 1 and schedule round-1
+ * prompt generation. activatePlaygroundSession guarantees only one caller
+ * wins the flip (join vs. deadline scan). Prompt generation rides
+ * safeWaitUntil — a bare fire-and-forget promise could be killed when the
+ * serverless response returns, leaving a session active with no prompt.
+ */
+async function activateSession(session: PlaygroundSession, game: PlaygroundGame): Promise<boolean> {
+    const store = await getStore();
+    const now = new Date().toISOString();
+    const roundDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
+
+    const activated = await store.activatePlaygroundSession(session.id, 1, roundDeadline, now);
+    if (!activated) return false;
+
+    console.log(`[playground] Session ${session.id} started with ${session.participants.length} players. Generating prompt...`);
+
+    const activeSession: PlaygroundSession = {
+        ...session,
+        status: 'active',
+        currentRound: 1,
+        startedAt: now,
+        roundDeadline,
+    };
+
+    safeWaitUntil(
+        generateRoundPrompt(activeSession, game).then(async (roundPrompt) => {
+            await store.updatePlaygroundSession(session.id, { currentRoundPrompt: roundPrompt });
+            console.log(`[playground] Round 1 prompt saved for session ${session.id}.`);
+        }),
+        `round1-prompt:${session.id}`
+    );
+    return true;
 }
 
 
@@ -412,6 +419,123 @@ export async function submitAction(
 // Round Advancement (Core Async Logic)
 // ============================================
 
+interface RoundOutcome {
+    /** Participants with grace-period / forfeit bookkeeping applied. */
+    updatedParticipants: SessionParticipant[];
+    /** Actions list for the GM (including forfeits). */
+    roundActions: { agentId: string; agentName: string; content: string; forfeited: boolean }[];
+    allForfeited: boolean;
+}
+
+/**
+ * Pure round bookkeeping: apply the missed-round grace period (1st miss stays
+ * active with an empty action; 2nd consecutive miss forfeits) and build the
+ * GM-facing actions list.
+ */
+function computeRoundOutcome(
+    session: PlaygroundSession,
+    actions: SessionAction[]
+): RoundOutcome {
+    const submittedAgentIds = new Set(actions.map(a => a.agentId));
+
+    const updatedParticipants = session.participants.map(p => {
+        if (p.status !== 'active') return p;
+
+        if (submittedAgentIds.has(p.agentId)) {
+            return { ...p, missedRounds: 0 };
+        }
+
+        const newMissedRounds = (p.missedRounds ?? 0) + 1;
+        if (newMissedRounds >= 2) {
+            return { ...p, status: 'forfeited' as const, forfeitedAtRound: session.currentRound, missedRounds: newMissedRounds };
+        }
+        return { ...p, missedRounds: newMissedRounds };
+    });
+
+    const roundActions = updatedParticipants
+        .filter(p => p.status === 'active' || p.forfeitedAtRound === session.currentRound)
+        .map(p => {
+            const action = actions.find(a => a.agentId === p.agentId);
+            return {
+                agentId: p.agentId,
+                agentName: p.agentName,
+                content: action?.content || '',
+                forfeited: !action,
+            };
+        });
+
+    return {
+        updatedParticipants,
+        roundActions,
+        allForfeited: updatedParticipants.every(p => p.status !== 'active'),
+    };
+}
+
+/**
+ * The one terminal transition. Both completion paths (everyone forfeited and
+ * normal max-rounds/game-over) run identical cleanup: summary generated from
+ * the same transcript that is persisted, then a single terminal update that
+ * clears the round prompt and deadline. (The forfeit path previously
+ * summarized a transcript missing its final round.)
+ */
+async function completeSession(input: {
+    session: PlaygroundSession;
+    game: PlaygroundGame;
+    participants: SessionParticipant[];
+    transcript: TranscriptRound[];
+}): Promise<PlaygroundSession> {
+    const store = await getStore();
+    const sessionForSummary: PlaygroundSession = {
+        ...input.session,
+        participants: input.participants,
+        transcript: input.transcript,
+    };
+    const summary = await generateSummary(sessionForSummary, input.game);
+
+    await store.updatePlaygroundSession(input.session.id, {
+        status: 'completed',
+        participants: input.participants,
+        transcript: input.transcript,
+        summary,
+        completedAt: new Date().toISOString(),
+        currentRoundPrompt: null,
+        roundDeadline: null,
+    });
+    revalidatePlaygroundSeed(input.session.schoolId);
+
+    return (await store.getPlaygroundSession(input.session.id))!;
+}
+
+/** Generate the next round's prompt and apply the advance as a single update. */
+async function advanceToNextRound(input: {
+    session: PlaygroundSession;
+    game: PlaygroundGame;
+    participants: SessionParticipant[];
+    transcript: TranscriptRound[];
+}): Promise<PlaygroundSession> {
+    const store = await getStore();
+    const nextRound = input.session.currentRound + 1;
+    const nextSession: PlaygroundSession = {
+        ...input.session,
+        currentRound: nextRound,
+        participants: input.participants,
+        transcript: input.transcript,
+    };
+
+    const nextPrompt = await generateRoundPrompt(nextSession, input.game);
+    const nextDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
+
+    await store.updatePlaygroundSession(input.session.id, {
+        participants: input.participants,
+        transcript: input.transcript,
+        currentRound: nextRound,
+        currentRoundPrompt: nextPrompt,
+        roundDeadline: nextDeadline,
+    });
+
+    return (await store.getPlaygroundSession(input.session.id))!;
+}
+
 /**
  * Try to advance the round for a session.
  * Checks if all active agents have submitted or if the deadline has passed.
@@ -439,53 +563,16 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
         return session;
     }
 
-    // Grace period: track missed rounds instead of immediate forfeit
-    // 1st miss: agent stays active, action defaults to empty
-    // 2nd consecutive miss: agent is forfeited
-    const updatedParticipants = session.participants.map(p => {
-        if (p.status !== 'active') return p;
-
-        if (submittedAgentIds.has(p.agentId)) {
-            // Submitted — reset missed rounds counter
-            return { ...p, missedRounds: 0 };
-        }
-
-        // Missed this round
-        const newMissedRounds = (p.missedRounds ?? 0) + 1;
-        if (newMissedRounds >= 2) {
-            // 2nd consecutive miss — forfeit
-            return { ...p, status: 'forfeited' as const, forfeitedAtRound: session.currentRound, missedRounds: newMissedRounds };
-        }
-        // 1st miss — grace period, stay active but action will be empty
-        return { ...p, missedRounds: newMissedRounds };
-    });
-
-    // Build actions list for the GM (including forfeits)
-    const roundActions = updatedParticipants
-        .filter(p => p.status === 'active' || p.forfeitedAtRound === session.currentRound)
-        .map(p => {
-            const action = actions.find(a => a.agentId === p.agentId);
-            return {
-                agentId: p.agentId,
-                agentName: p.agentName,
-                content: action?.content || '',
-                forfeited: !action,
-            };
-        });
+    const { updatedParticipants, roundActions, allForfeited } = computeRoundOutcome(session, actions);
 
     const game = resolvePlaygroundGame(session.schoolId, session.gameId);
     if (!game) {
         throw new Error(`Game "${session.gameId}" not found for school "${session.schoolId ?? 'foundation'}"`);
     }
 
-    // Check if all participants are now forfeited
-    const stillActive = updatedParticipants.filter(p => p.status === 'active');
-    if (stillActive.length === 0) {
-        // Everyone forfeited — end session early
-        const sessionForSummary: PlaygroundSession = { ...session, participants: updatedParticipants };
-        const summary = await generateSummary(sessionForSummary, game);
-
-        const newRound: TranscriptRound = {
+    if (allForfeited) {
+        // Everyone forfeited — end session early without a GM resolution call.
+        const forfeitRound: TranscriptRound = {
             round: session.currentRound,
             gmPrompt: session.currentRoundPrompt || '',
             actions: roundActions,
@@ -493,25 +580,18 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
             resolvedAt: new Date().toISOString(),
         };
 
-        await store.updatePlaygroundSession(sessionId, {
-            status: 'completed',
-            participants: updatedParticipants,
-            transcript: [...session.transcript, newRound],
-            summary,
-            completedAt: new Date().toISOString(),
-            currentRoundPrompt: null,
-            roundDeadline: null,
-        });
-        revalidatePlaygroundSeed(session.schoolId);
-
-        const gmParticipantIds = updatedParticipants.map((p) => p.agentId);
-        schedulePlaygroundMemoryIngest(gmParticipantIds, newRound.gmResolution, {
+        schedulePlaygroundMemoryIngest(updatedParticipants.map((p) => p.agentId), forfeitRound.gmResolution, {
             sessionId,
             round: session.currentRound,
             kind: 'playground_gm',
         });
 
-        return (await store.getPlaygroundSession(sessionId))!;
+        return completeSession({
+            session,
+            game,
+            participants: updatedParticipants,
+            transcript: [...session.transcript, forfeitRound],
+        });
     }
 
     // Resolve the current round via GM
@@ -528,8 +608,7 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
 
     const newTranscript = [...session.transcript, newRound];
 
-    const gmParticipantIds = updatedParticipants.map((p) => p.agentId);
-    schedulePlaygroundMemoryIngest(gmParticipantIds, resolution.narration, {
+    schedulePlaygroundMemoryIngest(updatedParticipants.map((p) => p.agentId), resolution.narration, {
         sessionId,
         round: session.currentRound,
         kind: 'playground_gm',
@@ -538,51 +617,22 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
     // Store memories for each participant after the round
     await storeRoundMemories(sessionId, newRound, updatedParticipants);
 
-    // Check if we've reached max rounds OR game returned early termination (e.g. defection outcome)
+    // Max rounds reached OR game returned early termination (e.g. defection outcome)
     if (session.currentRound >= session.maxRounds || resolution.isGameOver) {
-        // Session complete
-        const sessionForSummary: PlaygroundSession = {
-            ...session,
+        return completeSession({
+            session,
+            game,
             participants: updatedParticipants,
             transcript: newTranscript,
-        };
-        const summary = await generateSummary(sessionForSummary, game);
-
-        await store.updatePlaygroundSession(sessionId, {
-            status: 'completed',
-            participants: updatedParticipants,
-            transcript: newTranscript,
-            summary,
-            completedAt: new Date().toISOString(),
-            currentRoundPrompt: null,
-            roundDeadline: null,
         });
-        revalidatePlaygroundSeed(session.schoolId);
-
-        return (await store.getPlaygroundSession(sessionId))!;
     }
 
-    // Advance to next round
-    const nextRound = session.currentRound + 1;
-    const nextSession: PlaygroundSession = {
-        ...session,
-        currentRound: nextRound,
+    return advanceToNextRound({
+        session,
+        game,
         participants: updatedParticipants,
         transcript: newTranscript,
-    };
-
-    const nextPrompt = await generateRoundPrompt(nextSession, game);
-    const nextDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
-
-    await store.updatePlaygroundSession(sessionId, {
-        participants: updatedParticipants,
-        transcript: newTranscript,
-        currentRound: nextRound,
-        currentRoundPrompt: nextPrompt,
-        roundDeadline: nextDeadline,
     });
-
-    return (await store.getPlaygroundSession(sessionId))!;
 }
 
 // ============================================
@@ -731,28 +781,7 @@ export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
 
                 const participantCount = (fresh.participants || []).length;
                 if (participantCount >= game.minPlayers) {
-                    const now = new Date().toISOString();
-                    const roundDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
-
-                    const activated = await store.activatePlaygroundSession(fresh.id, 1, roundDeadline, now);
-                    if (!activated) continue;
-
-                    console.log(`[playground] Auto-started pending session ${fresh.id} with ${participantCount} players.`);
-
-                    // Fire-and-forget: generate and save the first round prompt
-                    const activeSession = { ...fresh, status: 'active', currentRound: 1, startedAt: now, roundDeadline } as PlaygroundSession;
-                    generateRoundPrompt(activeSession, game)
-                        .then(async (roundPrompt) => {
-                            try {
-                                await store.updatePlaygroundSession(fresh.id, { currentRoundPrompt: roundPrompt });
-                                console.log(`[playground] Round 1 prompt saved for session ${fresh.id}.`);
-                            } catch (err) {
-                                console.error(`[playground] Failed to save round prompt for ${fresh.id}:`, err);
-                            }
-                        })
-                        .catch(err => {
-                            console.error(`[playground] Failed to generate round prompt for ${fresh.id}:`, err);
-                        });
+                    await activateSession(fresh, game);
                 }
             } catch (err) {
                 console.error(`[playground] Error checking pending session ${pending.id}:`, err);
