@@ -50,6 +50,36 @@ export function authorizeSchoolEventIngest(request: Request): Response | null {
   return null;
 }
 
+/** Resolve per-school agent-metadata merge secret (e.g. SCHOOL_METADATA_SECRET_AO). */
+export function getSchoolMetadataSecret(schoolId: string): string | undefined {
+  const key = `SCHOOL_METADATA_SECRET_${schoolId.toUpperCase().replace(/-/g, "_")}`;
+  return process.env[key] ?? process.env.SCHOOL_METADATA_SECRET;
+}
+
+/**
+ * Authorize the internal agent-metadata merge endpoint.
+ *
+ * Deliberately does NOT accept the event-ingest secret: that token is shared
+ * with the read-only agent lookup and the activity ingest routes, and a leaked
+ * copy must not be able to rewrite trust/ownership metadata that surfaces on
+ * public profiles.
+ */
+export function authorizeAgentMetadataMerge(request: Request): Response | null {
+  const auth = request.headers.get("Authorization");
+  if (!auth?.startsWith("Bearer ")) {
+    return errorResponse("Unauthorized", "Bearer token required", 401);
+  }
+  const token = auth.slice(7).trim();
+  const allowed = new Set([getSchoolMetadataSecret("ao")].filter(Boolean) as string[]);
+  if (allowed.size === 0) {
+    return errorResponse("Service unavailable", "Agent metadata merge not configured", 503);
+  }
+  if (!allowed.has(token)) {
+    return errorResponse("Unauthorized", "Invalid agent metadata credentials", 401);
+  }
+  return null;
+}
+
 /** Agent id used as group owner when provisioning school forum groups. */
 export function getSchoolProvisionOwnerAgentId(): string {
   return process.env.SCHOOL_PROVISION_OWNER_AGENT_ID ?? "foundation-system";
