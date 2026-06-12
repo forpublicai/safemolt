@@ -2,6 +2,7 @@
  * Postgres implementation of admissions (cycles, applications, offers, audit).
  */
 import { sql } from "@/lib/db";
+import type { NeonQueryFunctionInTransaction } from "@neondatabase/serverless";
 import type {
   AdmissionsApplicationState,
   AdmissionsCycleStatus,
@@ -353,65 +354,74 @@ export async function getOfferByIdDb(offerId: string): Promise<StoredAdmissionsO
   return r ? rowOffer(r) : null;
 }
 
-async function listLinkedUserCountInTx(agentId: string): Promise<number> {
-  const rows = await sql!`SELECT COUNT(*)::int AS c FROM user_agents WHERE agent_id = ${agentId}`;
-  return Number((rows[0] as { c: number }).c);
-}
+type AdmissionsTxn = NeonQueryFunctionInTransaction<false, false>;
 
-export async function tryFinalizeOfferDb(offerId: string): Promise<"completed" | "waiting" | "noop"> {
-  try {
-    await sql!`BEGIN`;
-
-    const rows = await sql!`SELECT * FROM admissions_offers WHERE id = ${offerId} FOR UPDATE`;
-    const r = rows[0] as Record<string, unknown> | undefined;
-    if (!r) {
-      await sql!`ROLLBACK`;
-      return "noop";
-    }
-    const offer = rowOffer(r);
-    if (offer.status !== "pending") {
-      await sql!`ROLLBACK`;
-      return "noop";
-    }
-    const exp = new Date(offer.expiresAt).getTime();
-    if (Number.isFinite(exp) && exp < Date.now()) {
-      await sql!`ROLLBACK`;
-      return "noop";
-    }
-
-    const linked = await listLinkedUserCountInTx(offer.agentId);
-    const needHuman = linked > 0;
-    const agentOk = Boolean(offer.acceptedAtAgent);
-    const humanOk = !needHuman || Boolean(offer.acceptedAtHuman);
-
-    if (!agentOk || !humanOk) {
-      await sql!`COMMIT`;
-      return "waiting";
-    }
-
-    await sql!`UPDATE admissions_offers SET status = 'fully_accepted' WHERE id = ${offerId}`;
-    await sql!`UPDATE agents SET is_admitted = TRUE WHERE id = ${offer.agentId}`;
-    if (offer.applicationId) {
-      await sql!`
-        UPDATE admissions_applications
-        SET state = 'admitted', decided_at = NOW(), updated_at = NOW()
-        WHERE id = ${offer.applicationId}
-      `;
-    }
-    await sql!`
+/**
+ * Conditional finalize statements appended to an acceptance batch (M9/C11).
+ *
+ * The Neon HTTP driver has no session affinity, so the old standalone
+ * BEGIN / FOR UPDATE / COMMIT finalize protected nothing, and the
+ * mark-accept -> finalize -> audit sequence spanned three separate
+ * auto-commit statement groups that could half-apply (admit-without-audit,
+ * accept-without-finalize). Acceptance now runs as one non-interactive
+ * sql.transaction() batch, with the old read-then-branch logic expressed as
+ * WHERE conditions:
+ *  - the status flip requires a live pending offer, the agent acceptance,
+ *    and the human acceptance whenever the agent has linked users;
+ *  - the admit / application / audit writes key off the flipped status plus
+ *    the absence of a prior admission_finalized audit row, so finalization
+ *    applies exactly once even across concurrent accepts.
+ */
+function finalizeOfferStatements(txn: AdmissionsTxn, offerId: string) {
+  return [
+    txn`
+      UPDATE admissions_offers o
+      SET status = 'fully_accepted'
+      WHERE o.id = ${offerId}
+        AND o.status = 'pending'
+        AND o.expires_at > NOW()
+        AND o.accepted_at_agent IS NOT NULL
+        AND (
+          o.accepted_at_human IS NOT NULL
+          OR NOT EXISTS (SELECT 1 FROM user_agents ua WHERE ua.agent_id = o.agent_id)
+        )
+    `,
+    txn`
+      UPDATE agents a
+      SET is_admitted = TRUE
+      FROM admissions_offers o
+      WHERE o.id = ${offerId}
+        AND o.status = 'fully_accepted'
+        AND a.id = o.agent_id
+        AND NOT EXISTS (
+          SELECT 1 FROM admissions_audit aa
+          WHERE aa.offer_id = o.id AND aa.action = 'admission_finalized'
+        )
+    `,
+    txn`
+      UPDATE admissions_applications ap
+      SET state = 'admitted', decided_at = NOW(), updated_at = NOW()
+      FROM admissions_offers o
+      WHERE o.id = ${offerId}
+        AND o.status = 'fully_accepted'
+        AND ap.id = o.application_id
+        AND NOT EXISTS (
+          SELECT 1 FROM admissions_audit aa
+          WHERE aa.offer_id = o.id AND aa.action = 'admission_finalized'
+        )
+    `,
+    txn`
       INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
-      VALUES (
-        ${offerId}, ${offer.applicationId}, ${offer.agentId}, 'system', null, 'admission_finalized',
-        '{}'::jsonb
-      )
-    `;
-
-    await sql!`COMMIT`;
-    return "completed";
-  } catch (e) {
-    await sql!`ROLLBACK`;
-    throw e;
-  }
+      SELECT o.id, o.application_id, o.agent_id, 'system', null, 'admission_finalized', '{}'::jsonb
+      FROM admissions_offers o
+      WHERE o.id = ${offerId}
+        AND o.status = 'fully_accepted'
+        AND NOT EXISTS (
+          SELECT 1 FROM admissions_audit aa
+          WHERE aa.offer_id = o.id AND aa.action = 'admission_finalized'
+        )
+    `,
+  ];
 }
 
 export async function acceptOfferAsAgentDb(offerId: string, agentId: string): Promise<"ok" | "invalid"> {
@@ -419,16 +429,22 @@ export async function acceptOfferAsAgentDb(offerId: string, agentId: string): Pr
   if (!offer || offer.agentId !== agentId || offer.status !== "pending") return "invalid";
   if (new Date(offer.expiresAt).getTime() < Date.now()) return "invalid";
 
-  await sql!`
-    UPDATE admissions_offers
-    SET accepted_at_agent = NOW()
-    WHERE id = ${offerId} AND agent_id = ${agentId} AND status = 'pending'
-  `;
-  await tryFinalizeOfferDb(offerId);
-  await sql!`
-    INSERT INTO admissions_audit (offer_id, agent_id, actor_type, actor_id, action, detail)
-    VALUES (${offerId}, ${agentId}, 'agent', ${agentId}, 'accept_agent', '{}'::jsonb)
-  `;
+  await sql!.transaction((txn) => [
+    txn`
+      UPDATE admissions_offers
+      SET accepted_at_agent = NOW()
+      WHERE id = ${offerId} AND agent_id = ${agentId} AND status = 'pending' AND expires_at > NOW()
+    `,
+    txn`
+      INSERT INTO admissions_audit (offer_id, agent_id, actor_type, actor_id, action, detail)
+      SELECT ${offerId}, ${agentId}, 'agent', ${agentId}, 'accept_agent', '{}'::jsonb
+      WHERE EXISTS (
+        SELECT 1 FROM admissions_offers
+        WHERE id = ${offerId} AND accepted_at_agent IS NOT NULL
+      )
+    `,
+    ...finalizeOfferStatements(txn, offerId),
+  ]);
   return "ok";
 }
 
@@ -442,16 +458,22 @@ export async function acceptOfferAsHumanDb(offerId: string, humanUserId: string)
   `;
   if (links.length === 0) return "invalid";
 
-  await sql!`
-    UPDATE admissions_offers
-    SET accepted_at_human = NOW(), accepted_human_user_id = ${humanUserId}
-    WHERE id = ${offerId} AND status = 'pending'
-  `;
-  await tryFinalizeOfferDb(offerId);
-  await sql!`
-    INSERT INTO admissions_audit (offer_id, agent_id, actor_type, actor_id, action, detail)
-    VALUES (${offerId}, ${offer.agentId}, 'human', ${humanUserId}, 'accept_human', '{}'::jsonb)
-  `;
+  await sql!.transaction((txn) => [
+    txn`
+      UPDATE admissions_offers
+      SET accepted_at_human = NOW(), accepted_human_user_id = ${humanUserId}
+      WHERE id = ${offerId} AND status = 'pending' AND expires_at > NOW()
+    `,
+    txn`
+      INSERT INTO admissions_audit (offer_id, agent_id, actor_type, actor_id, action, detail)
+      SELECT ${offerId}, ${offer.agentId}, 'human', ${humanUserId}, 'accept_human', '{}'::jsonb
+      WHERE EXISTS (
+        SELECT 1 FROM admissions_offers
+        WHERE id = ${offerId} AND accepted_at_human IS NOT NULL
+      )
+    `,
+    ...finalizeOfferStatements(txn, offerId),
+  ]);
   return "ok";
 }
 
