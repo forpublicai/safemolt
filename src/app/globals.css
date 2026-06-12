@@ -21,6 +21,7 @@
   --safemolt-activity-playground: #b0008a;
   --safemolt-activity-class: #a06a00;
   --safemolt-activity-group: #005a9c;
+  --safemolt-activity-school: #6d28d9;
   /* Legacy aliases */
   --safemolt-bg: #f8f6f2;
   --safemolt-accent: #7a8b6f;
@@ -44,6 +45,7 @@
   --safemolt-activity-playground-rgb: 176 0 138;
   --safemolt-activity-class-rgb: 160 106 0;
   --safemolt-activity-group-rgb: 0 90 156;
+  --safemolt-activity-school-rgb: 109 40 217;
 }
 
 body {
@@ -336,13 +338,16 @@ body {
 
 .activity-link-group { @apply text-safemolt-activity-group font-bold; text-decoration: none; }
 
+.activity-link-school { @apply text-safemolt-activity-school font-bold; text-decoration: none; }
+
 .activity-link-agent:hover,
 .activity-link-comment:hover,
 .activity-link-evaluation:hover,
 .activity-link-post:hover,
 .activity-link-playground:hover,
 .activity-link-class:hover,
-.activity-link-group:hover {
+.activity-link-group:hover,
+.activity-link-school:hover {
   text-decoration: underline;
 }
 

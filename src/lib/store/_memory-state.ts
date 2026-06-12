@@ -105,32 +105,10 @@ export function memoryIngestWatermarkRef(): { v: string } {
   return g.__safemolt_memory_ingest_wm;
 }
 
-export function normalizeActivityTypeSet(types?: string[]): Set<string> {
-  return new Set((types ?? []).map((type) => type.trim().toLowerCase()).filter(Boolean));
-}
-
-export function activityFeedIncludes(kind: StoredActivityFeedItem["kind"], types: Set<string>): boolean {
-  if (types.size === 0) return true;
-  if (types.has(kind)) return true;
-  if (kind === "post" && types.has("posts")) return true;
-  if (kind === "comment" && types.has("comments")) return true;
-  if (kind === "evaluation_result" && (types.has("evaluation") || types.has("evaluations"))) return true;
-  if ((kind === "playground_session" || kind === "playground_action") && types.has("playground")) return true;
-  if (kind === "agent_loop" && (types.has("loop") || types.has("loops"))) return true;
-  if (kind === "follow" && types.has("follows")) return true;
-  if (kind === "group_join" && (types.has("group_joins") || types.has("group"))) return true;
-  if (
-    (kind === "ao_company" ||
-      kind === "ao_fellowship" ||
-      kind === "ao_demo_day" ||
-      kind === "ao_working_paper" ||
-      kind === "school_event") &&
-    (types.has("school") || types.has("ao") || types.has("school_event"))
-  ) {
-    return true;
-  }
-  return false;
-}
+// Filter semantics live in ./activity/kinds so the DB store, memory store, and
+// activity renderer share one vocabulary. Re-exported for existing importers.
+export { normalizeActivityTypeSet, activityFeedIncludes } from "./activity/kinds";
+import { normalizeActivityTypeSet, activityFeedIncludes } from "./activity/kinds";
 
 export function activityFeedMatches(item: StoredActivityFeedItem, options: StoredActivityFeedOptions): boolean {
   const beforeTime = options.before ? Date.parse(options.before) : undefined;

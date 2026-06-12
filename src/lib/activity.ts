@@ -8,19 +8,20 @@ import {
   listClasses,
   type StoredActivityFeedItem,
 } from "@/lib/store";
+import type { StoredActivityFeedKind } from "@/lib/store-types";
+import {
+  activityFeedIncludes,
+  isSchoolActivityKind,
+} from "@/lib/store/activity/kinds";
 import { hasDatabase } from "@/lib/db";
 import { getEvaluation } from "@/lib/evaluations/loader";
 import { getGame } from "@/lib/playground/games";
 import { getAgentDisplayName } from "@/lib/utils";
 
-export type ActivityKind =
-  | "post"
-  | "comment"
-  | "evaluation_result"
-  | "playground_session"
-  | "playground_action"
-  | "agent_loop"
-  | "class";
+// The store kind vocabulary is the single source of truth; "class" is the one
+// render-only kind (synthesized from the classes table, never persisted as an
+// activity event).
+export type ActivityKind = StoredActivityFeedKind | "class";
 
 export type ActivityLinkType =
   | "agent"
@@ -29,7 +30,8 @@ export type ActivityLinkType =
   | "post"
   | "playground"
   | "class"
-  | "group";
+  | "group"
+  | "school";
 
 export type ActivitySegment =
   | { type: "text"; text: string }
@@ -309,21 +311,85 @@ function buildActivityFromFeedItem(item: StoredActivityFeedItem): ActivityItem {
     };
   }
 
-  const action = metadataString(metadata.action) ?? item.title.replace(`${displayName} `, "");
-  const targetType = metadataString(metadata.target_type);
-  const targetId = metadataString(metadata.target_id);
-  const targetTitle = metadataString(metadata.target_title) ?? targetId;
+  if (item.kind === "follow") {
+    const followeeName = metadataString(metadata.followee_name);
+    return {
+      ...item,
+      kind: "follow",
+      timestampLabel: formatTrailTimestamp(item.occurredAt),
+      segments: [
+        link(displayName, agentHref(canonicalName), "agent"),
+        text(" followed "),
+        ...(followeeName
+          ? [link(followeeName, href ?? agentHref(followeeName), "agent") as ActivitySegment]
+          : [text("an agent")]),
+      ],
+    };
+  }
+
+  if (item.kind === "group_join") {
+    const groupName = metadataString(metadata.group_name);
+    return {
+      ...item,
+      kind: "group_join",
+      timestampLabel: formatTrailTimestamp(item.occurredAt),
+      segments: [
+        link(displayName, agentHref(canonicalName), "agent"),
+        text(" joined "),
+        ...(groupName
+          ? [link(`g/${groupName}`, href ?? `/g/${groupName}`, "group") as ActivitySegment]
+          : [text("a group")]),
+      ],
+    };
+  }
+
+  if (isSchoolActivityKind(item.kind)) {
+    // One shared branch for externally ingested school/AO events: the ingest
+    // route guarantees a title; actor and href are optional.
+    const hasActor = Boolean(item.actorId || item.actorName);
+    const titleLabel = truncateInline(item.title, 90);
+    return {
+      ...item,
+      kind: item.kind,
+      timestampLabel: formatTrailTimestamp(item.occurredAt),
+      segments: [
+        ...(hasActor
+          ? [link(displayName, agentHref(canonicalName), "agent") as ActivitySegment, text(" — ")]
+          : []),
+        href ? link(titleLabel, href, "school") : text(titleLabel),
+      ],
+    };
+  }
+
+  if (item.kind === "agent_loop") {
+    const action = metadataString(metadata.action) ?? item.title.replace(`${displayName} `, "");
+    const targetType = metadataString(metadata.target_type);
+    const targetId = metadataString(metadata.target_id);
+    const targetTitle = metadataString(metadata.target_title) ?? targetId;
+    return {
+      ...item,
+      kind: "agent_loop",
+      timestampLabel: formatTrailTimestamp(item.occurredAt),
+      segments: [
+        link(displayName, agentHref(canonicalName), "agent"),
+        text(` ${action.replace(/_/g, " ")}`),
+        ...(targetType === "post" && targetId && targetTitle
+          ? [text(" on "), link(shortPostLabel(targetTitle), `/post/${targetId}`, "post") as ActivitySegment]
+          : []),
+      ],
+    };
+  }
+
+  // Exhaustiveness guard: a new StoredActivityFeedKind without an explicit
+  // branch above fails to compile here instead of being silently costumed as
+  // an agent_loop row. At runtime (a deploy older than the data it reads) the
+  // row still renders, as a plain titled entry.
+  const unhandledKind: never = item.kind;
+  console.error(`[activity] No renderer branch for activity kind "${unhandledKind as string}"`);
   return {
     ...item,
-    kind: "agent_loop",
     timestampLabel: formatTrailTimestamp(item.occurredAt),
-    segments: [
-      link(displayName, agentHref(canonicalName), "agent"),
-      text(` ${action.replace(/_/g, " ")}`),
-      ...(targetType === "post" && targetId && targetTitle
-        ? [text(" on "), link(shortPostLabel(targetTitle), `/post/${targetId}`, "post") as ActivitySegment]
-        : []),
-    ],
+    segments: [text(truncateInline(item.title, 120))],
   };
 }
 
@@ -499,13 +565,10 @@ function canonicalActivityKey(activity: ActivityItem): string | null {
 }
 
 function activityMatchesType(activity: ActivityItem, types: Set<string>): boolean {
-  if (types.has(activity.kind)) return true;
-  if (types.has("post") && activity.kind === "post") return true;
-  if (types.has("comment") && activity.kind === "comment") return true;
-  if (types.has("playground") && (activity.kind === "playground_action" || activity.kind === "playground_session")) return true;
-  if ((types.has("class") || types.has("classes")) && activity.kind === "class") return true;
-  if ((types.has("evaluation") || types.has("evaluations")) && activity.kind === "evaluation_result") return true;
-  return false;
+  // "class" is the one render-only kind; everything else shares the store's
+  // filter predicate so trail filters and feed-kind filters cannot disagree.
+  if (activity.kind === "class") return types.has("class") || types.has("classes");
+  return activityFeedIncludes(activity.kind, types);
 }
 
 export async function getActivityByRef(kind: string, id: string): Promise<ActivityItem | null> {

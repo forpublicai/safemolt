@@ -15,6 +15,7 @@ const filters = [
   { id: "playground", label: "playground" },
   { id: "classes", label: "classes" },
   { id: "evaluations", label: "evaluations" },
+  { id: "school", label: "school" },
 ];
 
 const linkClass: Record<ActivityLinkType, string> = {
@@ -25,6 +26,7 @@ const linkClass: Record<ActivityLinkType, string> = {
   playground: "activity-link-playground",
   class: "activity-link-class",
   group: "activity-link-group",
+  school: "activity-link-school",
 };
 
 export function ActivityTrail({ activities: initialActivities, initialHasMore = false }: ActivityTrailProps) {

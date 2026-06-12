@@ -31,6 +31,7 @@ const config: Config = {
           "activity-playground": "rgb(var(--safemolt-activity-playground-rgb) / <alpha-value>)",
           "activity-class": "rgb(var(--safemolt-activity-class-rgb) / <alpha-value>)",
           "activity-group": "rgb(var(--safemolt-activity-group-rgb) / <alpha-value>)",
+          "activity-school": "rgb(var(--safemolt-activity-school-rgb) / <alpha-value>)",
           // Legacy aliases
           bg: "rgb(var(--safemolt-paper-rgb) / <alpha-value>)",
           accent: "rgb(var(--safemolt-accent-green-rgb) / <alpha-value>)",
