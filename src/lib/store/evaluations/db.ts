@@ -1,40 +1,14 @@
 import { sql } from "@/lib/db";
-import { randomUUID } from "crypto";
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, StoredCommentWithPost, VettingChallenge, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredRecentEvaluationResult, StoredRecentPlaygroundAction, StoredAgentLoopAction, StoredActivityContext, StoredActivityFeedItem, StoredActivityFeedOptions, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor, StoredAoCohort, StoredAoCompany, StoredAoCompanyAgent, StoredAoCompanyEvaluation, StoredAoFellowshipApplication, AoFellowshipApplicationStatus } from "@/lib/store-types";
-import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
-import {
-    generateChallengeValues,
-    generateNonce,
-    computeExpectedHash,
-    getChallengeExpiry,
-} from "@/lib/vetting";
+import type { StoredRecentEvaluationResult } from "@/lib/store-types";
 import type { CertificationJob, CertificationJobStatus, TranscriptEntry } from '@/lib/evaluations/types';
-import type {
-    PlaygroundSession,
-    CreateSessionInput,
-    UpdateSessionInput,
-    CreateActionInput,
-    SessionAction,
-    SessionParticipant,
-    PlaygroundSessionListOptions,
-} from '@/lib/playground/types';
 import { recordEvaluationResultActivityEvent } from "../activity/events";
 import { computeEvaluationResultFields } from "./result-fields";
-
-interface MemberMetrics {
-    pointsAtJoin: number;
-    currentPoints: number;
-}
 
 interface StoredHouseMember {
     agentId: string;
     houseId: string;
     pointsAtJoin: number;
     joinedAt: string;
-}
-
-function calculateHousePoints(members: MemberMetrics[]): number {
-    return members.reduce((sum, member) => sum + member.currentPoints - member.pointsAtJoin, 0);
 }
 
 export async function listRecentEvaluationResults(limit = 25): Promise<StoredRecentEvaluationResult[]> {
@@ -766,47 +740,10 @@ export async function updateCertificationJob(
     jobId: string,
     updates: Partial<Pick<CertificationJob, 'status' | 'transcript' | 'submittedAt' | 'judgeStartedAt' | 'judgeCompletedAt' | 'judgeModel' | 'judgeResponse' | 'errorMessage'>>
 ): Promise<boolean> {
-    const setClauses: string[] = [];
-    const values: unknown[] = [];
+    if (Object.values(updates).every((value) => value === undefined)) return true;
 
-    if (updates.status !== undefined) {
-        setClauses.push('status = $' + (values.length + 1));
-        values.push(updates.status);
-    }
-    if (updates.transcript !== undefined) {
-        setClauses.push('transcript = $' + (values.length + 1));
-        values.push(JSON.stringify(updates.transcript));
-    }
-    if (updates.submittedAt !== undefined) {
-        setClauses.push('submitted_at = $' + (values.length + 1));
-        values.push(updates.submittedAt);
-    }
-    if (updates.judgeStartedAt !== undefined) {
-        setClauses.push('judge_started_at = $' + (values.length + 1));
-        values.push(updates.judgeStartedAt);
-    }
-    if (updates.judgeCompletedAt !== undefined) {
-        setClauses.push('judge_completed_at = $' + (values.length + 1));
-        values.push(updates.judgeCompletedAt);
-    }
-    if (updates.judgeModel !== undefined) {
-        setClauses.push('judge_model = $' + (values.length + 1));
-        values.push(updates.judgeModel);
-    }
-    if (updates.judgeResponse !== undefined) {
-        setClauses.push('judge_response = $' + (values.length + 1));
-        values.push(JSON.stringify(updates.judgeResponse));
-    }
-    if (updates.errorMessage !== undefined) {
-        setClauses.push('error_message = $' + (values.length + 1));
-        values.push(updates.errorMessage);
-    }
-
-    if (setClauses.length === 0) return true;
-
-    // Use tagged template literal with raw SQL for dynamic updates
-    // Build the query dynamically since we have variable set clauses
-    const result = await sql!`
+    // COALESCE keeps existing column values for fields not present in `updates`.
+    await sql!`
     UPDATE certification_jobs
     SET
       status = COALESCE(${updates.status ?? null}, status),

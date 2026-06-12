@@ -16,15 +16,7 @@ import {
     safeWaitUntil,
     type PlaygroundDeadlineRunResult,
 } from './lifecycle';
-import type {
-    PlaygroundGame,
-    PlaygroundSession,
-    SessionParticipant,
-    TranscriptRound,
-    CreateSessionInput,
-    SessionAction,
-    MemoryImportance,
-} from './types';
+import type { PlaygroundGame, PlaygroundSession, SessionParticipant, TranscriptRound, CreateSessionInput, MemoryImportance } from './types';
 import {
     sanitizeActingCompanyId,
     sanitizeActingLabel,

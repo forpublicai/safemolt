@@ -862,26 +862,6 @@ function parseDiscoveryDomain(finalContent: string | null): LoopDomain | null {
   return LOOP_DOMAIN_NAMES.includes(candidate) ? candidate : null;
 }
 
-function hasClassObligation(classes: ClassContext[]): boolean {
-  return classes.some((c) => c.activeSessions.length > 0 || c.pendingEvals.length > 0);
-}
-
-function hasDiscussionInboxObligation(inbox: InboxObligation[]): boolean {
-  return inbox.some((item) => item.href.includes("/post/") || item.href.includes("#comment"));
-}
-
-function chooseHardObligationDomain(
-  inbox: InboxObligation[],
-  classes: ClassContext[],
-  playground: PlaygroundContext
-): LoopDomain | null {
-  // Only active multi-turn playground sessions are hard obligations. Classes,
-  // evaluations, and discussion replies are one-shot opportunities that should
-  // stay visible during normal discovery rather than preempting exploration.
-  if (playground.activeSession) return "playground";
-  return null;
-}
-
 // ---------------------------------------------------------------------------
 // Single agent tick
 // ---------------------------------------------------------------------------
@@ -955,7 +935,10 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
   let domainMessages: NormalizedMessage[];
   let discoveryCallsUsed = 0;
 
-  const directDomain = chooseHardObligationDomain(inbox, classes, playground);
+  // Only active multi-turn playground sessions are hard obligations. Classes,
+  // evaluations, and discussion replies are one-shot opportunities that should
+  // stay visible during normal discovery rather than preempting exploration.
+  const directDomain: LoopDomain | null = playground.activeSession ? "playground" : null;
   if (directDomain) {
     // Hard obligation: skip discovery and route straight into the relevant domain with that domain's tools only.
     domain = directDomain;

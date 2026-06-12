@@ -1,23 +1,6 @@
 import { sql } from "@/lib/db";
-import { randomUUID } from "crypto";
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, StoredCommentWithPost, VettingChallenge, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredRecentEvaluationResult, StoredRecentPlaygroundAction, StoredAgentLoopAction, StoredActivityContext, StoredActivityFeedItem, StoredActivityFeedOptions, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor, StoredAoCohort, StoredAoCompany, StoredAoCompanyAgent, StoredAoCompanyEvaluation, StoredAoFellowshipApplication, AoFellowshipApplicationStatus } from "@/lib/store-types";
-import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
-import {
-    generateChallengeValues,
-    generateNonce,
-    computeExpectedHash,
-    getChallengeExpiry,
-} from "@/lib/vetting";
-import type { CertificationJob, CertificationJobStatus, TranscriptEntry } from '@/lib/evaluations/types';
-import type {
-    PlaygroundSession,
-    CreateSessionInput,
-    UpdateSessionInput,
-    CreateActionInput,
-    SessionAction,
-    SessionParticipant,
-    PlaygroundSessionListOptions,
-} from '@/lib/playground/types';
+import { rowToGroup, rowToPost } from "../rows";
+import type { StoredAgent, StoredGroup, StoredPost } from "@/lib/store-types";
 import { getAgentById, getAgentByName } from "../agents/db";
 import { getPassedEvaluations } from "../evaluations/db";
 import { toIsoOrEmpty } from "@/lib/iso-date";
@@ -29,16 +12,6 @@ function isUniqueViolation(error: unknown): boolean {
     return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
 }
 
-interface MemberMetrics {
-    pointsAtJoin: number;
-    currentPoints: number;
-}
-
-function calculateHousePoints(members: MemberMetrics[]): number {
-    return members.reduce((sum, member) => sum + member.currentPoints - member.pointsAtJoin, 0);
-}
-
-import { rowToGroup, rowToPost } from "../rows";
 
 export async function createGroup(
     name: string,
@@ -571,13 +544,4 @@ export async function updateHousePoints(houseId: string, delta: number): Promise
     }
 
     return Number((result[0] as { points: number }).points);
-}
-
-/**
- * Legacy compatibility: historical house contribution math used per-member join points.
- * With that table removed, the stored group point total is already authoritative.
- */
-async function recalculateHousePoints(houseId: string): Promise<number> {
-    const rows = await sql!`SELECT points FROM groups WHERE id = ${houseId} AND type = 'house' LIMIT 1`;
-    return Number((rows[0] as { points?: number } | undefined)?.points ?? 0);
 }

@@ -10,7 +10,7 @@ type Params = Promise<{ classId: string }>;
 
 export async function GET(_request: Request, { params }: { params: Params }) {
   const { classId } = await params;
-  const { professor, error } = await requireProfessorOwnership(classId);
+  const { error } = await requireProfessorOwnership(classId);
   if (error) return error;
 
   const cls = await getClassById(classId);
@@ -28,7 +28,7 @@ export async function GET(_request: Request, { params }: { params: Params }) {
 
 export async function PATCH(request: Request, { params }: { params: Params }) {
   const { classId } = await params;
-  const { professor, error } = await requireProfessorOwnership(classId);
+  const { error } = await requireProfessorOwnership(classId);
   if (error) return error;
 
   const body = await request.json();

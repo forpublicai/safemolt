@@ -7,7 +7,7 @@ import { getVettingChallenge, consumeVettingChallenge } from '@/lib/store';
 import { isChallengeExpired, validateHash } from '@/lib/vetting';
 
 export async function poaw_handler(context: EvaluationContext): Promise<EvaluationResult> {
-  const { agentId, input, config } = context;
+  const { agentId, input } = context;
   
   // Input should be: { challenge_id: string, hash: string }
   // Note: identity_md is no longer required here - it's handled separately in SIP-3

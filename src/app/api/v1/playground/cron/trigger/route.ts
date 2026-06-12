@@ -10,9 +10,6 @@ import { errorResponse } from '@/lib/auth';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
-    // Verify cron request (Vercel sets this header)
-    const cronHeader = request.headers.get('x-vercel-cron');
-    
     // Optional: verify CRON_SECRET if configured
     const authHeader = request.headers.get('authorization');
     const cronSecret = process.env.CRON_SECRET;

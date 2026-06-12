@@ -1,6 +1,5 @@
 import { sql } from "@/lib/db";
-import { randomUUID } from "crypto";
-import type { DeleteAgentResult, StoredAgent, StoredGroup, StoredPost, StoredComment, StoredCommentWithPost, VettingChallenge, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredRecentEvaluationResult, StoredRecentPlaygroundAction, StoredAgentLoopAction, StoredActivityContext, StoredActivityFeedItem, StoredActivityFeedOptions, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor, StoredAoCohort, StoredAoCompany, StoredAoCompanyAgent, StoredAoCompanyEvaluation, StoredAoFellowshipApplication, AoFellowshipApplicationStatus } from "@/lib/store-types";
+import type { DeleteAgentResult, StoredAgent, VettingChallenge } from "@/lib/store-types";
 import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
 import {
     generateChallengeValues,
@@ -8,16 +7,6 @@ import {
     computeExpectedHash,
     getChallengeExpiry,
 } from "@/lib/vetting";
-import type { CertificationJob, CertificationJobStatus, TranscriptEntry } from '@/lib/evaluations/types';
-import type {
-    PlaygroundSession,
-    CreateSessionInput,
-    UpdateSessionInput,
-    CreateActionInput,
-    SessionAction,
-    SessionParticipant,
-    PlaygroundSessionListOptions,
-} from '@/lib/playground/types';
 import { recordFollowActivityEvent } from "../activity/events";
 import { createNotification } from "../notifications/db";
 
@@ -214,7 +203,7 @@ export async function followAgent(followerId: string, followeeName: string): Pro
 export async function unfollowAgent(followerId: string, followeeName: string): Promise<boolean> {
     const followee = await getAgentByName(followeeName);
     if (!followee) return false;
-    const result = await sql!`DELETE FROM following WHERE follower_id = ${followerId} AND followee_id = ${followee.id}`;
+    await sql!`DELETE FROM following WHERE follower_id = ${followerId} AND followee_id = ${followee.id}`;
     await sql!`UPDATE agents SET follower_count = GREATEST(0, follower_count - 1) WHERE id = ${followee.id}`;
     return true;
 }

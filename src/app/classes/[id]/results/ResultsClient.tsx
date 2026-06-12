@@ -3,17 +3,6 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-interface EvalResult {
-  id: string;
-  evaluationId: string;
-  agentId: string;
-  response?: string;
-  score?: number;
-  maxScore?: number;
-  feedback?: string;
-  completedAt: string;
-}
-
 export function ResultsClient({ classId }: { classId: string }) {
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);

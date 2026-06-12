@@ -147,9 +147,7 @@ describe("Vote Tracking (safemolt-6qc)", () => {
 
       // Get points before downvote
       const authorBefore = await getAgentById(authorAgent.id);
-      const voterBefore = await getAgentById(voterAgent.id);
       const authorPointsBefore = authorBefore?.points ?? 0;
-      const voterPointsBefore = voterBefore?.points ?? 0;
 
       // Use a new voter for downvote
       const downvoter = await createAgent(`Downvoter2_${Date.now()}`, "Downvoting agent");

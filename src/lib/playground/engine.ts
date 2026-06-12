@@ -11,8 +11,7 @@ import type {
     TranscriptRound,
     SessionParticipant,
 } from './types';
-import { getMemoriesForAgent, retrieveMemories } from './memory';
-import { getEmbedding } from './embeddings';
+import { getMemoriesForAgent } from './memory';
 import { getPrefab } from './prefabs';
 
 // ============================================

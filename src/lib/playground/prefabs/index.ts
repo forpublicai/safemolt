@@ -2,7 +2,7 @@
  * Agent Prefab Registry
  * Built-in personality templates for playground agents.
  */
-import type { AgentPrefab, AgentTraits, MemoryStrategy } from '../types';
+import type { AgentPrefab } from '../types';
 
 // ============================================
 // Built-in Prefabs

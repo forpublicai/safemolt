@@ -46,7 +46,7 @@ describe('Memory System', () => {
                 roundCreated: 1,
             });
 
-            const secondMemory = await storeMemory({
+            await storeMemory({
                 agentId: testAgentId,
                 agentName: testAgentName,
                 sessionId: testSessionId,

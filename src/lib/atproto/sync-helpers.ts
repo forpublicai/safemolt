@@ -26,7 +26,6 @@ export async function resolveDidToIdentity(did: string): Promise<AtprotoIdentity
     identity = await ensureNetworkAtprotoIdentity(kp.privateKeyPem, kp.publicKeyMultibase);
   }
   if (!identity && handle.endsWith("." + getHandleDomain())) {
-    const segment = handle.slice(0, -(getHandleDomain().length + 1));
     const agents = await listAgents();
     const existingHandles = await listAtprotoHandles();
     for (const agent of agents) {

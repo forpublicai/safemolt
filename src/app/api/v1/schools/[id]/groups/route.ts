@@ -2,7 +2,7 @@
  * GET /api/v1/schools/:id/groups — list groups for a school (service or agent Bearer).
  */
 
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { getAgentFromRequest, jsonResponse } from "@/lib/auth";
 import { authorizeSchoolService } from "@/lib/school-federation/auth";
 import { listGroups } from "@/lib/store";
 

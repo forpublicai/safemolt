@@ -1,23 +1,5 @@
 import { sql } from "@/lib/db";
-import { randomUUID } from "crypto";
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, StoredCommentWithPost, VettingChallenge, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredRecentEvaluationResult, StoredRecentPlaygroundAction, StoredAgentLoopAction, StoredActivityContext, StoredActivityFeedItem, StoredActivityFeedOptions, AtprotoIdentity, AtprotoBlob, StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult, StoredSchool, StoredSchoolProfessor, StoredAoCohort, StoredAoCompany, StoredAoCompanyAgent, StoredAoCompanyEvaluation, StoredAoFellowshipApplication, AoFellowshipApplicationStatus } from "@/lib/store-types";
-import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
-import {
-    generateChallengeValues,
-    generateNonce,
-    computeExpectedHash,
-    getChallengeExpiry,
-} from "@/lib/vetting";
-import type { CertificationJob, CertificationJobStatus, TranscriptEntry } from '@/lib/evaluations/types';
-import type {
-    PlaygroundSession,
-    CreateSessionInput,
-    UpdateSessionInput,
-    CreateActionInput,
-    SessionAction,
-    SessionParticipant,
-    PlaygroundSessionListOptions,
-} from '@/lib/playground/types';
+import type { StoredSchool, StoredSchoolProfessor } from "@/lib/store-types";
 
 // ==================== School Methods ====================
 
