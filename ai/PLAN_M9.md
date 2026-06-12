@@ -222,7 +222,28 @@ The plan was treated as authoritative on goals but corrected where it met repo r
 
 ## AI VALIDATION RESULTS (how did the Executor show that it was done?)
 
-Filled during execution.
+Executed 2026-06-12 on branch `code-improve`, one commit per chunk (C1..C13; C12 was a documented no-op — see Plan Amendments #6). Every chunk passed `npm run lint`, `npx tsc --noEmit`, `npm test -- --runInBand`, and `npm run build` against the real Neon DB URL before the next chunk started. Final suite: 82 suites / 456 tests green (444 at milestone start), lint clean, `noUnusedLocals` on.
+
+Phase 0 decision (B3): house-ness is not a `group_members` column and partial indexes cannot reference other tables, so the preferred index remedy required denormalizing `is_house` onto `group_members` (`migrate-group-members-single-house.sql`: add column, backfill from `groups.type`, dedupe keeping the earliest membership, then `UNIQUE (agent_id) WHERE is_house`).
+
+Correctness gates:
+
+1. **C1** — `join-house-atomic-db.test.ts`: two simultaneous house joins → exactly one succeeds (the second gets the friendly error via 23505 translation); house leave runs founder-promotion/removal/dissolution in one `sql.transaction` batch; zero standalone BEGIN/FOR UPDATE/COMMIT statements. Bonus divergence fixed: DB-mode `leaveGroup` had been bare-deleting house memberships (the founder lifecycle lived only in dead code).
+2. **C2** — `agent-metadata-route.test.ts`: both shared event-ingest tokens are rejected (401), unconfigured secret → 503, non-`ao_*` keys → 400 with no write, `ao_*` merge works with the dedicated `SCHOOL_METADATA_SECRET[_AO]`.
+3. **C3** — `activity-school-kinds.test.ts`: each of the five school kinds renders with a `school` link type and its ingested href, passes `school`/`ao` filters, and is excluded by `post`; actor-less events render as plain titled text; `follow`/`group_join` (two more unrendered kinds the audit missed) render and filter; the `agent_loop` fallback is an explicit guard with a compile-time `never` exhaustiveness check.
+4. **C4** — `pick-store.test.ts` (`@ts-expect-error` rejections for dropped/added params, wrong param type, wrong return type) + `save-result-parity.test.ts` (score-aware points on both sides; `school_id` persisted in the DB INSERT, defaulting to `'foundation'` to match the column default; `getEvaluationResultCount(schoolId)` counts the school-scoped result in memory mode). The dispatcher surfaced exactly three divergences: B1, `setAgentAdmitted` (memory returned boolean vs db void — unified on void; no caller consumed it), and `deleteAgent` (memory's loose return type — both now share `DeleteAgentResult`).
+5. **C5** — grep proves zero references to `world-state`, `ComponentRegistry`, `getAllComponents`, `reasoning-component`, `serializeWorldState`; playground tests and `/playground` build green; −1190 lines.
+6. **C10** — `complete-session.test.ts`: forfeited and normal completions issue field-identical terminal updates and summarize the same transcript that is persisted (the forfeit branch previously summarized a transcript missing its final round). `activateSession` unifies join-vs-deadline activation; round-1 prompt generation rides `safeWaitUntil` in both callers.
+7. **C11** — `accept-atomicity.test.ts`: all acceptance writes ride one `sql.transaction` batch (mark, accept-audit, status flip, agent admit, application flip, finalize audit); a failed batch propagates with no standalone writes; expired/foreign offers rejected before any write.
+
+Structural gates:
+
+8. No file in `src/` exceeds 1000 lines (`agent-loop.ts` 978, `session-manager.ts` 936, `ao/db.ts` 906, `activity/events.ts` 778); achieved by deletion/dedup rather than splits, per Locked Decision 8 (Plan Amendments #6).
+9. All ten dual-impl `store/*/index.ts` dispatchers route through `pickStore`; no `hasDatabase() ? db.x : mem.x` ternaries remain. `classes`/`ao` keep `export … from "./db"`.
+10. `noUnusedLocals` enabled and the tree compiles (the enablement itself produced the C6 work list: 398 diagnostics, 64 import statements tightened by codemod, the rest fixed by hand).
+11. Net diff vs. milestone start: 111 files, +3708/−2884 (the +3.7k includes ~1.5k lines of new characterization tests and the two plan documents).
+
+Execution-instruction deviations: the plan's boilerplate references `CodexAgent.ts`, which belongs to a different project; the style/learnings reviews were run against this repo's `agents.md` and root `LEARNINGS.md` instead.
 
 ## USER VALIDATION SUGGESTIONS
 
