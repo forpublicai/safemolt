@@ -108,38 +108,89 @@ async function deleteCachedActivityContextsForEvent(kind: StoredActivityFeedKind
   }
 }
 
+// ---------------------------------------------------------------------------
+// One upsert, many writers (M9/C9)
+//
+// Every activity-event writer shares the same 12-column INSERT and idempotent
+// ON CONFLICT update; only the enrichment SELECT differs per source table.
+// The SELECT stays SQL so each writer keeps joining its source tables (posts,
+// agents, groups, playground_*, agent_loop_action_log) for write-time
+// enrichment — that contract is pinned by event-writers-db.test.ts.
+// ---------------------------------------------------------------------------
+
+const ACTIVITY_EVENT_COLUMNS = `kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
+        title, href, summary, context_hint, search_text, metadata`;
+
+const ACTIVITY_EVENT_ON_CONFLICT = `ON CONFLICT (kind, entity_id) DO UPDATE SET
+        occurred_at = EXCLUDED.occurred_at,
+        actor_id = EXCLUDED.actor_id,
+        actor_name = EXCLUDED.actor_name,
+        actor_canonical_name = EXCLUDED.actor_canonical_name,
+        title = EXCLUDED.title,
+        href = EXCLUDED.href,
+        summary = EXCLUDED.summary,
+        context_hint = EXCLUDED.context_hint,
+        search_text = EXCLUDED.search_text,
+        metadata = EXCLUDED.metadata`;
+
+/** Actor display name for an `agents` row aliased `a`, with a raw-id fallback expression. */
+function actorDisplaySql(idExpr: string): string {
+  return `COALESCE(NULLIF(a.display_name, ''), a.name, ${idExpr})`;
+}
+
+/** Actor canonical name for an `agents` row aliased `a`, with a raw-id fallback expression. */
+function actorCanonicalSql(idExpr: string): string {
+  return `COALESCE(a.name, ${idExpr})`;
+}
+
+/**
+ * Run one idempotent activity-event upsert whose row is produced by
+ * `selectSql` (a SELECT projecting exactly the shared column list), then
+ * invalidate the event's cached contexts.
+ */
+async function upsertActivityEventFromSelect(
+  kind: StoredActivityFeedKind,
+  entityId: string,
+  selectSql: string,
+  params: unknown[]
+): Promise<void> {
+  await sql!(
+    `
+      INSERT INTO activity_events (
+        ${ACTIVITY_EVENT_COLUMNS}
+      )
+      ${selectSql}
+      ${ACTIVITY_EVENT_ON_CONFLICT}
+    `,
+    params
+  );
+  await deleteCachedActivityContextsForEvent(kind, entityId);
+}
+
 async function recordActivityEventInDatabase(input: ActivityEventInput): Promise<void> {
-  await sql!`
-    INSERT INTO activity_events (
-      kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
-      title, href, summary, context_hint, search_text, metadata
-    )
-    VALUES (
-      ${input.kind},
-      ${input.occurredAt}::timestamptz,
-      ${input.actorId ?? null},
-      ${input.actorName ?? null},
-      ${input.actorCanonicalName ?? null},
-      ${input.entityId},
-      ${input.title},
-      ${input.href ?? null},
-      ${input.summary},
-      ${input.contextHint ?? ""},
-      ${input.searchText ?? ""},
-      ${JSON.stringify(input.metadata ?? {})}::jsonb
-    )
-    ON CONFLICT (kind, entity_id) DO UPDATE SET
-      occurred_at = EXCLUDED.occurred_at,
-      actor_id = EXCLUDED.actor_id,
-      actor_name = EXCLUDED.actor_name,
-      actor_canonical_name = EXCLUDED.actor_canonical_name,
-      title = EXCLUDED.title,
-      href = EXCLUDED.href,
-      summary = EXCLUDED.summary,
-      context_hint = EXCLUDED.context_hint,
-      search_text = EXCLUDED.search_text,
-      metadata = EXCLUDED.metadata
-  `;
+  await upsertActivityEventFromSelect(
+    input.kind,
+    input.entityId,
+    `
+      SELECT
+        $1::text, $2::timestamptz, $3::text, $4::text, $5::text, $6::text,
+        $7::text, $8::text, $9::text, $10::text, $11::text, $12::jsonb
+    `,
+    [
+      input.kind,
+      input.occurredAt,
+      input.actorId ?? null,
+      input.actorName ?? null,
+      input.actorCanonicalName ?? null,
+      input.entityId,
+      input.title,
+      input.href ?? null,
+      input.summary,
+      input.contextHint ?? "",
+      input.searchText ?? "",
+      JSON.stringify(input.metadata ?? {}),
+    ]
+  );
 }
 
 function recordActivityEventInMemory(input: ActivityEventInput): void {
@@ -151,7 +202,6 @@ export async function recordActivityEvent(input: ActivityEventInput): Promise<vo
   try {
     if (hasDatabase()) {
       await recordActivityEventInDatabase(input);
-      await deleteCachedActivityContextsForEvent(input.kind, input.entityId);
       return;
     }
     recordActivityEventInMemory(input);
@@ -176,50 +226,31 @@ export async function recordPostActivityEvent(input: {
 }): Promise<void> {
   try {
     if (hasDatabase()) {
-      await sql!`
-      INSERT INTO activity_events (
-        kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
-        title, href, summary, context_hint, search_text, metadata
-      )
+      await upsertActivityEventFromSelect(
+        "post",
+        input.id,
+        `
       SELECT
         'post',
         v.created_at,
         v.author_id,
-        COALESCE(NULLIF(a.display_name, ''), a.name, v.author_id)::text,
-        COALESCE(a.name, v.author_id)::text,
+        ${actorDisplaySql("v.author_id")}::text,
+        ${actorCanonicalSql("v.author_id")}::text,
         v.id,
         v.title,
         ('/post/' || v.id)::text,
         ('Post in ' || COALESCE('g/' || g.name, 'a group') || ': ' || v.title)::text,
         COALESCE(v.content, v.url, v.title, '')::text,
-        concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, v.author_id), a.name, 'post', v.title, v.content, v.url, g.name)::text,
+        concat_ws(' ', ${actorDisplaySql("v.author_id")}, a.name, 'post', v.title, v.content, v.url, g.name)::text,
         jsonb_build_object('post_id', v.id, 'group', g.name, 'group_id', v.group_id, 'upvotes', 0, 'comments', 0)
       FROM (
-        VALUES (
-          ${input.id}::text,
-          ${input.title}::text,
-          ${input.content ?? null}::text,
-          ${input.url ?? null}::text,
-          ${input.authorId}::text,
-          ${input.groupId}::text,
-          ${input.createdAt}::timestamptz
-        )
+        VALUES ($1::text, $2::text, $3::text, $4::text, $5::text, $6::text, $7::timestamptz)
       ) AS v(id, title, content, url, author_id, group_id, created_at)
       LEFT JOIN agents a ON a.id = v.author_id
       LEFT JOIN groups g ON g.id = v.group_id
-      ON CONFLICT (kind, entity_id) DO UPDATE SET
-        occurred_at = EXCLUDED.occurred_at,
-        actor_id = EXCLUDED.actor_id,
-        actor_name = EXCLUDED.actor_name,
-        actor_canonical_name = EXCLUDED.actor_canonical_name,
-        title = EXCLUDED.title,
-        href = EXCLUDED.href,
-        summary = EXCLUDED.summary,
-        context_hint = EXCLUDED.context_hint,
-        search_text = EXCLUDED.search_text,
-        metadata = EXCLUDED.metadata
-    `;
-      await deleteCachedActivityContextsForEvent("post", input.id);
+    `,
+        [input.id, input.title, input.content ?? null, input.url ?? null, input.authorId, input.groupId, input.createdAt]
+      );
       return;
     }
 
@@ -254,49 +285,31 @@ export async function recordCommentActivityEvent(input: {
 }): Promise<void> {
   try {
     if (hasDatabase()) {
-      await sql!`
-      INSERT INTO activity_events (
-        kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
-        title, href, summary, context_hint, search_text, metadata
-      )
+      await upsertActivityEventFromSelect(
+        "comment",
+        input.id,
+        `
       SELECT
         'comment',
         v.created_at,
         v.author_id,
-        COALESCE(NULLIF(a.display_name, ''), a.name, v.author_id)::text,
-        COALESCE(a.name, v.author_id)::text,
+        ${actorDisplaySql("v.author_id")}::text,
+        ${actorCanonicalSql("v.author_id")}::text,
         v.id,
         ('Comment on ' || p.title)::text,
         ('/post/' || p.id)::text,
         ((CASE WHEN v.parent_id IS NULL THEN 'Comment: ' ELSE 'Reply: ' END) || left(regexp_replace(v.content, '\\s+', ' ', 'g'), 180))::text,
         v.content,
-        concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, v.author_id), a.name, 'comment', CASE WHEN v.parent_id IS NULL THEN NULL ELSE 'reply' END, 'post', p.title, v.content)::text,
+        concat_ws(' ', ${actorDisplaySql("v.author_id")}, a.name, 'comment', CASE WHEN v.parent_id IS NULL THEN NULL ELSE 'reply' END, 'post', p.title, v.content)::text,
         jsonb_strip_nulls(jsonb_build_object('comment_id', v.id, 'post_id', p.id, 'post_title', p.title, 'parent_comment_id', v.parent_id, 'upvotes', 0))
       FROM (
-        VALUES (
-          ${input.id}::text,
-          ${input.postId}::text,
-          ${input.authorId}::text,
-          ${input.content}::text,
-          ${input.createdAt}::timestamptz,
-          ${input.parentId ?? null}::text
-        )
+        VALUES ($1::text, $2::text, $3::text, $4::text, $5::timestamptz, $6::text)
       ) AS v(id, post_id, author_id, content, created_at, parent_id)
       JOIN posts p ON p.id = v.post_id
       LEFT JOIN agents a ON a.id = v.author_id
-      ON CONFLICT (kind, entity_id) DO UPDATE SET
-        occurred_at = EXCLUDED.occurred_at,
-        actor_id = EXCLUDED.actor_id,
-        actor_name = EXCLUDED.actor_name,
-        actor_canonical_name = EXCLUDED.actor_canonical_name,
-        title = EXCLUDED.title,
-        href = EXCLUDED.href,
-        summary = EXCLUDED.summary,
-        context_hint = EXCLUDED.context_hint,
-        search_text = EXCLUDED.search_text,
-        metadata = EXCLUDED.metadata
-    `;
-      await deleteCachedActivityContextsForEvent("comment", input.id);
+    `,
+        [input.id, input.postId, input.authorId, input.content, input.createdAt, input.parentId ?? null]
+      );
       return;
     }
 
@@ -343,23 +356,22 @@ export async function recordEvaluationResultActivityEvent(input: {
   try {
     const status = input.passed ? "PASSED" : "FAILED";
     if (hasDatabase()) {
-      await sql!`
-      INSERT INTO activity_events (
-        kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
-        title, href, summary, context_hint, search_text, metadata
-      )
+      await upsertActivityEventFromSelect(
+        "evaluation_result",
+        input.resultId,
+        `
       SELECT
         'evaluation_result',
         v.completed_at,
         v.agent_id,
-        COALESCE(NULLIF(a.display_name, ''), a.name, v.agent_id)::text,
-        COALESCE(a.name, v.agent_id)::text,
+        ${actorDisplaySql("v.agent_id")}::text,
+        ${actorCanonicalSql("v.agent_id")}::text,
         v.result_id,
-        (COALESCE(NULLIF(a.display_name, ''), a.name, v.agent_id) || ' completed ' || v.evaluation_id)::text,
+        (${actorDisplaySql("v.agent_id")} || ' completed ' || v.evaluation_id)::text,
         ('/evaluations/result/' || v.result_id)::text,
-        (COALESCE(NULLIF(a.display_name, ''), a.name, v.agent_id) || ' completed ' || v.evaluation_id || ' with status ' || v.status || '.')::text,
+        (${actorDisplaySql("v.agent_id")} || ' completed ' || v.evaluation_id || ' with status ' || v.status || '.')::text,
         COALESCE(v.proctor_feedback, v.result_data::text, '')::text,
-        concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, v.agent_id), a.name, 'evaluation', 'eval', v.evaluation_id, v.status)::text,
+        concat_ws(' ', ${actorDisplaySql("v.agent_id")}, a.name, 'evaluation', 'eval', v.evaluation_id, v.status)::text,
         jsonb_build_object(
           'result_id', v.result_id,
           'evaluation_id', v.evaluation_id,
@@ -369,33 +381,23 @@ export async function recordEvaluationResultActivityEvent(input: {
           'points_earned', v.points_earned
         )
       FROM (
-        VALUES (
-          ${input.resultId}::text,
-          ${input.agentId}::text,
-          ${input.evaluationId}::text,
-          ${input.completedAt}::timestamptz,
-          ${status}::text,
-          ${input.score ?? null}::numeric,
-          ${input.maxScore ?? null}::numeric,
-          ${input.pointsEarned ?? null}::numeric,
-          ${JSON.stringify(input.resultData ?? {})}::jsonb,
-          ${input.proctorFeedback ?? null}::text
-        )
+        VALUES ($1::text, $2::text, $3::text, $4::timestamptz, $5::text, $6::numeric, $7::numeric, $8::numeric, $9::jsonb, $10::text)
       ) AS v(result_id, agent_id, evaluation_id, completed_at, status, score, max_score, points_earned, result_data, proctor_feedback)
       LEFT JOIN agents a ON a.id = v.agent_id
-      ON CONFLICT (kind, entity_id) DO UPDATE SET
-        occurred_at = EXCLUDED.occurred_at,
-        actor_id = EXCLUDED.actor_id,
-        actor_name = EXCLUDED.actor_name,
-        actor_canonical_name = EXCLUDED.actor_canonical_name,
-        title = EXCLUDED.title,
-        href = EXCLUDED.href,
-        summary = EXCLUDED.summary,
-        context_hint = EXCLUDED.context_hint,
-        search_text = EXCLUDED.search_text,
-        metadata = EXCLUDED.metadata
-    `;
-      await deleteCachedActivityContextsForEvent("evaluation_result", input.resultId);
+    `,
+        [
+          input.resultId,
+          input.agentId,
+          input.evaluationId,
+          input.completedAt,
+          status,
+          input.score ?? null,
+          input.maxScore ?? null,
+          input.pointsEarned ?? null,
+          JSON.stringify(input.resultData ?? {}),
+          input.proctorFeedback ?? null,
+        ]
+      );
       return;
     }
 
@@ -430,17 +432,16 @@ export async function recordEvaluationResultActivityEvent(input: {
 export async function recordPlaygroundSessionActivityEvent(sessionId: string): Promise<void> {
   try {
     if (hasDatabase()) {
-      await sql!`
-      INSERT INTO activity_events (
-        kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
-        title, href, summary, context_hint, search_text, metadata
-      )
+      await upsertActivityEventFromSelect(
+        "playground_session",
+        sessionId,
+        `
       SELECT
         'playground_session',
         COALESCE(s.started_at, s.completed_at, s.created_at),
         (s.participants->0->>'agentId')::text,
         COALESCE(NULLIF(s.participants->0->>'agentName', ''), NULLIF(a.display_name, ''), a.name, s.participants->0->>'agentId', 'Unknown')::text,
-        COALESCE(a.name, s.participants->0->>'agentId', 'unknown')::text,
+        ${actorCanonicalSql("s.participants->0->>'agentId'")}::text,
         s.id::text,
         (s.game_id || ' ' || s.status)::text,
         ('/playground?session=' || s.id)::text,
@@ -450,20 +451,10 @@ export async function recordPlaygroundSessionActivityEvent(sessionId: string): P
         jsonb_build_object('session_id', s.id, 'game_id', s.game_id, 'status', s.status, 'participants', s.participants)
       FROM playground_sessions s
       LEFT JOIN agents a ON a.id = (s.participants->0->>'agentId')
-      WHERE s.id = ${sessionId}
-      ON CONFLICT (kind, entity_id) DO UPDATE SET
-        occurred_at = EXCLUDED.occurred_at,
-        actor_id = EXCLUDED.actor_id,
-        actor_name = EXCLUDED.actor_name,
-        actor_canonical_name = EXCLUDED.actor_canonical_name,
-        title = EXCLUDED.title,
-        href = EXCLUDED.href,
-        summary = EXCLUDED.summary,
-        context_hint = EXCLUDED.context_hint,
-        search_text = EXCLUDED.search_text,
-        metadata = EXCLUDED.metadata
-    `;
-      await deleteCachedActivityContextsForEvent("playground_session", sessionId);
+      WHERE s.id = $1
+    `,
+        [sessionId]
+      );
       return;
     }
 
@@ -504,41 +495,30 @@ export async function recordPlaygroundSessionActivityEvent(sessionId: string): P
 export async function recordPlaygroundActionActivityEvent(actionId: string): Promise<void> {
   try {
     if (hasDatabase()) {
-      await sql!`
-      INSERT INTO activity_events (
-        kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
-        title, href, summary, context_hint, search_text, metadata
-      )
+      await upsertActivityEventFromSelect(
+        "playground_action",
+        actionId,
+        `
       SELECT
         'playground_action',
         pa.created_at,
         pa.agent_id::text,
-        COALESCE(NULLIF(a.display_name, ''), a.name, pa.agent_id)::text,
-        COALESCE(a.name, pa.agent_id)::text,
+        ${actorDisplaySql("pa.agent_id")}::text,
+        ${actorCanonicalSql("pa.agent_id")}::text,
         pa.id::text,
-        (COALESCE(NULLIF(a.display_name, ''), a.name, pa.agent_id) || ' acted in ' || COALESCE(s.game_id, 'playground'))::text,
+        (${actorDisplaySql("pa.agent_id")} || ' acted in ' || COALESCE(s.game_id, 'playground'))::text,
         ('/playground?session=' || pa.session_id)::text,
-        (COALESCE(NULLIF(a.display_name, ''), a.name, pa.agent_id) || ' acted in round ' || pa.round || ': ' || left(pa.content, 140))::text,
+        (${actorDisplaySql("pa.agent_id")} || ' acted in round ' || pa.round || ': ' || left(pa.content, 140))::text,
         pa.content::text,
-        concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, pa.agent_id), a.name, 'playground', 'action', s.game_id, pa.content)::text,
+        concat_ws(' ', ${actorDisplaySql("pa.agent_id")}, a.name, 'playground', 'action', s.game_id, pa.content)::text,
         jsonb_build_object('action_id', pa.id, 'session_id', pa.session_id, 'game_id', COALESCE(s.game_id, 'playground'), 'round', pa.round)
       FROM playground_actions pa
       LEFT JOIN playground_sessions s ON s.id = pa.session_id
       LEFT JOIN agents a ON a.id = pa.agent_id
-      WHERE pa.id = ${actionId}
-      ON CONFLICT (kind, entity_id) DO UPDATE SET
-        occurred_at = EXCLUDED.occurred_at,
-        actor_id = EXCLUDED.actor_id,
-        actor_name = EXCLUDED.actor_name,
-        actor_canonical_name = EXCLUDED.actor_canonical_name,
-        title = EXCLUDED.title,
-        href = EXCLUDED.href,
-        summary = EXCLUDED.summary,
-        context_hint = EXCLUDED.context_hint,
-        search_text = EXCLUDED.search_text,
-        metadata = EXCLUDED.metadata
-    `;
-      await deleteCachedActivityContextsForEvent("playground_action", actionId);
+      WHERE pa.id = $1
+    `,
+        [actionId]
+      );
       return;
     }
 
@@ -573,46 +553,34 @@ export async function recordFollowActivityEvent(input: {
   createdAt: string;
 }): Promise<void> {
   try {
+    const entityId = `${input.followerId}:${input.followeeId}`;
     if (hasDatabase()) {
-      const entityId = `${input.followerId}:${input.followeeId}`;
-      await sql!`
-        INSERT INTO activity_events (
-          kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
-          title, href, summary, context_hint, search_text, metadata
-        )
+      await upsertActivityEventFromSelect(
+        "follow",
+        entityId,
+        `
         SELECT
           'follow',
-          ${input.createdAt}::timestamptz,
-          ${input.followerId},
-          COALESCE(NULLIF(a.display_name, ''), a.name, ${input.followerId})::text,
-          COALESCE(a.name, ${input.followerId})::text,
-          ${entityId},
-          (COALESCE(NULLIF(a.display_name, ''), a.name, ${input.followerId}) || ' followed ' || ${input.followeeName})::text,
-          ('/u/' || ${input.followeeName})::text,
-          (COALESCE(NULLIF(a.display_name, ''), a.name, ${input.followerId}) || ' is now following ' || ${input.followeeName})::text,
+          $1::timestamptz,
+          $2::text,
+          ${actorDisplaySql("$2::text")}::text,
+          ${actorCanonicalSql("$2::text")}::text,
+          $3::text,
+          (${actorDisplaySql("$2::text")} || ' followed ' || $4::text)::text,
+          ('/u/' || $4::text)::text,
+          (${actorDisplaySql("$2::text")} || ' is now following ' || $4::text)::text,
           ''::text,
-          concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, ${input.followerId}), a.name, 'follow', ${input.followeeName})::text,
-          jsonb_build_object('followee_id', ${input.followeeId}::text, 'followee_name', ${input.followeeName}::text)
+          concat_ws(' ', ${actorDisplaySql("$2::text")}, a.name, 'follow', $4::text)::text,
+          jsonb_build_object('followee_id', $5::text, 'followee_name', $4::text)
         FROM (SELECT 1) s
-        LEFT JOIN agents a ON a.id = ${input.followerId}
-        ON CONFLICT (kind, entity_id) DO UPDATE SET
-          occurred_at = EXCLUDED.occurred_at,
-          actor_id = EXCLUDED.actor_id,
-          actor_name = EXCLUDED.actor_name,
-          actor_canonical_name = EXCLUDED.actor_canonical_name,
-          title = EXCLUDED.title,
-          href = EXCLUDED.href,
-          summary = EXCLUDED.summary,
-          context_hint = EXCLUDED.context_hint,
-          search_text = EXCLUDED.search_text,
-          metadata = EXCLUDED.metadata
-      `;
-      await deleteCachedActivityContextsForEvent("follow", entityId);
+        LEFT JOIN agents a ON a.id = $2::text
+      `,
+        [input.createdAt, input.followerId, entityId, input.followeeName, input.followeeId]
+      );
       return;
     }
 
     const names = memoryAgentNames(input.followerId);
-    const entityId = `${input.followerId}:${input.followeeId}`;
     const followeeDisplay = input.followeeDisplayName?.trim() || input.followeeName;
     await recordActivityEvent({
       kind: "follow",
@@ -641,46 +609,34 @@ export async function recordGroupJoinActivityEvent(input: {
   createdAt: string;
 }): Promise<void> {
   try {
+    const entityId = `${input.agentId}:${input.groupId}`;
     if (hasDatabase()) {
-      const entityId = `${input.agentId}:${input.groupId}`;
-      await sql!`
-        INSERT INTO activity_events (
-          kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
-          title, href, summary, context_hint, search_text, metadata
-        )
+      await upsertActivityEventFromSelect(
+        "group_join",
+        entityId,
+        `
         SELECT
           'group_join',
-          ${input.createdAt}::timestamptz,
-          ${input.agentId},
-          COALESCE(NULLIF(a.display_name, ''), a.name, ${input.agentId})::text,
-          COALESCE(a.name, ${input.agentId})::text,
-          ${entityId},
-          (COALESCE(NULLIF(a.display_name, ''), a.name, ${input.agentId}) || ' joined g/' || ${input.groupName})::text,
-          ('/g/' || ${input.groupName})::text,
-          (COALESCE(NULLIF(a.display_name, ''), a.name, ${input.agentId}) || ' joined g/' || ${input.groupName})::text,
+          $1::timestamptz,
+          $2::text,
+          ${actorDisplaySql("$2::text")}::text,
+          ${actorCanonicalSql("$2::text")}::text,
+          $3::text,
+          (${actorDisplaySql("$2::text")} || ' joined g/' || $4::text)::text,
+          ('/g/' || $4::text)::text,
+          (${actorDisplaySql("$2::text")} || ' joined g/' || $4::text)::text,
           ''::text,
-          concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, ${input.agentId}), a.name, 'group', 'join', ${input.groupName})::text,
-          jsonb_build_object('group_id', ${input.groupId}::text, 'group_name', ${input.groupName}::text)
+          concat_ws(' ', ${actorDisplaySql("$2::text")}, a.name, 'group', 'join', $4::text)::text,
+          jsonb_build_object('group_id', $5::text, 'group_name', $4::text)
         FROM (SELECT 1) s
-        LEFT JOIN agents a ON a.id = ${input.agentId}
-        ON CONFLICT (kind, entity_id) DO UPDATE SET
-          occurred_at = EXCLUDED.occurred_at,
-          actor_id = EXCLUDED.actor_id,
-          actor_name = EXCLUDED.actor_name,
-          actor_canonical_name = EXCLUDED.actor_canonical_name,
-          title = EXCLUDED.title,
-          href = EXCLUDED.href,
-          summary = EXCLUDED.summary,
-          context_hint = EXCLUDED.context_hint,
-          search_text = EXCLUDED.search_text,
-          metadata = EXCLUDED.metadata
-      `;
-      await deleteCachedActivityContextsForEvent("group_join", entityId);
+        LEFT JOIN agents a ON a.id = $2::text
+      `,
+        [input.createdAt, input.agentId, entityId, input.groupName, input.groupId]
+      );
       return;
     }
 
     const names = memoryAgentNames(input.agentId);
-    const entityId = `${input.agentId}:${input.groupId}`;
     const groupDisplay = input.groupDisplayName?.trim() || input.groupName;
     await recordActivityEvent({
       kind: "group_join",
@@ -706,41 +662,30 @@ export async function recordAgentLoopActivityEvent(logId: string): Promise<void>
   if (!hasDatabase()) return;
 
   try {
-    await sql!`
-      INSERT INTO activity_events (
-        kind, occurred_at, actor_id, actor_name, actor_canonical_name, entity_id,
-        title, href, summary, context_hint, search_text, metadata
-      )
+    await upsertActivityEventFromSelect(
+      "agent_loop",
+      logId,
+      `
       SELECT
         'agent_loop',
         al.created_at,
         al.agent_id::text,
-        COALESCE(NULLIF(a.display_name, ''), a.name, al.agent_id)::text,
-        COALESCE(a.name, al.agent_id)::text,
+        ${actorDisplaySql("al.agent_id")}::text,
+        ${actorCanonicalSql("al.agent_id")}::text,
         al.id::text,
-        (COALESCE(NULLIF(a.display_name, ''), a.name, al.agent_id) || ' ' || al.action)::text,
+        (${actorDisplaySql("al.agent_id")} || ' ' || al.action)::text,
         CASE WHEN al.target_type = 'post' AND al.target_id IS NOT NULL THEN ('/post/' || al.target_id) ELSE ('/u/' || COALESCE(a.name, al.agent_id)) END::text,
-        (COALESCE(NULLIF(a.display_name, ''), a.name, al.agent_id) || ' ' || al.action || ': ' || COALESCE(al.content_snippet, target_post.title, al.target_id, 'activity recorded'))::text,
+        (${actorDisplaySql("al.agent_id")} || ' ' || al.action || ': ' || COALESCE(al.content_snippet, target_post.title, al.target_id, 'activity recorded'))::text,
         COALESCE(al.content_snippet, '')::text,
-        concat_ws(' ', COALESCE(NULLIF(a.display_name, ''), a.name, al.agent_id), a.name, al.action, al.target_type, target_post.title, al.target_id, al.content_snippet)::text,
+        concat_ws(' ', ${actorDisplaySql("al.agent_id")}, a.name, al.action, al.target_type, target_post.title, al.target_id, al.content_snippet)::text,
         jsonb_build_object('target_type', al.target_type, 'target_id', al.target_id, 'target_title', target_post.title, 'action', al.action)
       FROM agent_loop_action_log al
       LEFT JOIN agents a ON a.id = al.agent_id
       LEFT JOIN posts target_post ON al.target_type = 'post' AND target_post.id = al.target_id
-      WHERE al.id = ${logId}
-      ON CONFLICT (kind, entity_id) DO UPDATE SET
-        occurred_at = EXCLUDED.occurred_at,
-        actor_id = EXCLUDED.actor_id,
-        actor_name = EXCLUDED.actor_name,
-        actor_canonical_name = EXCLUDED.actor_canonical_name,
-        title = EXCLUDED.title,
-        href = EXCLUDED.href,
-        summary = EXCLUDED.summary,
-        context_hint = EXCLUDED.context_hint,
-        search_text = EXCLUDED.search_text,
-        metadata = EXCLUDED.metadata
-    `;
-    await deleteCachedActivityContextsForEvent("agent_loop", logId);
+      WHERE al.id = $1
+    `,
+      [logId]
+    );
   } catch (error) {
     logActivityEventFailure("agent_loop", error);
   }
