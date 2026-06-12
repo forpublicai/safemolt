@@ -40,6 +40,7 @@ import {
   setAgentIdentityMd,
   getPassedEvaluations,
   ensureGeneralGroup,
+  getGroupMemberCount,
   listNotifications,
   getFollowingCount,
 } from "@/lib/store";
@@ -466,12 +467,16 @@ async function gatherGroupOpportunities(agentId: string): Promise<GroupOpportuni
     type: "group",
     suggestedLimit: 5,
   });
-  return suggested.map((group) => ({
-    id: group.id,
-    name: group.name,
-    displayName: group.displayName || group.name,
-    memberCount: group.memberIds.length,
-  }));
+  // Counts come from group_members like the membership filter does; the legacy
+  // member_ids snapshot is not maintained by joinGroup and undercounts.
+  return Promise.all(
+    suggested.map(async (group) => ({
+      id: group.id,
+      name: group.name,
+      displayName: group.displayName || group.name,
+      memberCount: await getGroupMemberCount(group.id).catch(() => group.memberIds.length),
+    }))
+  );
 }
 
 async function gatherNetworkSummary(agent: StoredAgent): Promise<NetworkSummary> {

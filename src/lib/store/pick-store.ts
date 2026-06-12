@@ -33,6 +33,11 @@ type SameArity<DbFn, MemFn> = DbFn extends (...a: infer DbArgs) => unknown
  * implementation that drops trailing parameters. Dual-impl domains must
  * register every export through this helper (DB-only domains — classes,
  * ao — keep their plain `export ... from "./db"` form).
+ *
+ * The guarantee is signature-level only: two impls with identical types can
+ * still behave differently (e.g. memory joinGroup skips evaluation-requirement
+ * checks by design). Behavioral parity is owned by shared pure helpers both
+ * sides call (computeEvaluationResultFields) and characterization tests.
  */
 export function pickStore<Db, Mem extends Db>(
   dbImpl: Db,

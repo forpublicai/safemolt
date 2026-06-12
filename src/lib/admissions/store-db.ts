@@ -84,28 +84,22 @@ function rowOffer(r: Record<string, unknown>): StoredAdmissionsOffer {
 }
 
 export async function refreshExpiredOffersDb(): Promise<void> {
-  try {
-    await sql!`BEGIN`;
-    const returned = await sql!`
+  // One statement, atomic by definition. The Neon HTTP driver gives every
+  // standalone sql`` call its own connection, so the previous
+  // BEGIN / read / loop-of-UPDATEs / COMMIT sequence shared no session and
+  // protected nothing (the same non-pattern C1/C11 removed elsewhere).
+  await sql!`
+    WITH expired AS (
       UPDATE admissions_offers
       SET status = 'expired'
       WHERE status = 'pending' AND expires_at < NOW()
       RETURNING application_id
-    `;
-    for (const row of returned as { application_id: string | null }[]) {
-      if (row.application_id) {
-        await sql!`
-          UPDATE admissions_applications
-          SET state = 'in_pool', updated_at = NOW()
-          WHERE id = ${row.application_id} AND state = 'offered'
-        `;
-      }
-    }
-    await sql!`COMMIT`;
-  } catch (e) {
-    await sql!`ROLLBACK`;
-    throw e;
-  }
+    )
+    UPDATE admissions_applications a
+    SET state = 'in_pool', updated_at = NOW()
+    FROM expired e
+    WHERE a.id = e.application_id AND a.state = 'offered'
+  `;
 }
 
 export async function getDefaultOpenCycleIdDb(): Promise<string | null> {
