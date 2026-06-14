@@ -1,6 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { extractSchoolFromHost } from "@/lib/school-context";
 import { aoExternalRedirectResponse, isAoHostedExternally } from "@/lib/external-schools";
+import {
+  PUBLIC_UI_THEME_COOKIE,
+  PUBLIC_UI_THEME_HEADER,
+  parsePublicUiTheme,
+} from "@/lib/public-ui-theme";
 
 const AO_API_PREFIXES = [
   "/api/v1/companies",
@@ -37,6 +42,8 @@ export function middleware(req: NextRequest) {
   const requestHeaders = new Headers(req.headers);
   requestHeaders.set("x-school-id", schoolId);
   requestHeaders.set("x-current-path", `${req.nextUrl.pathname}${req.nextUrl.search}`);
+  const uiTheme = parsePublicUiTheme(req.cookies.get(PUBLIC_UI_THEME_COOKIE)?.value);
+  requestHeaders.set(PUBLIC_UI_THEME_HEADER, uiTheme);
 
   return NextResponse.next({
     request: {

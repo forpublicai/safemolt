@@ -1,20 +1,20 @@
 import type { Session } from "next-auth";
-import { Header } from "./Header";
-import { AuthProvider } from "./AuthProvider";
+import { FoundationShell } from "@/themes/FoundationShell";
+import type { PublicUiTheme } from "@/lib/public-ui-theme";
 
+/** Foundation public layout — theme shell is selected in root layout via FoundationShell. */
 export function ClientLayout({
   children,
   session,
+  theme,
 }: {
   children: React.ReactNode;
   session: Session | null;
+  theme: PublicUiTheme;
 }) {
   return (
-    <AuthProvider session={session}>
-      <div className="public-layout">
-        <Header />
-        <div className="public-main">{children}</div>
-      </div>
-    </AuthProvider>
+    <FoundationShell theme={theme} session={session}>
+      {children}
+    </FoundationShell>
   );
 }

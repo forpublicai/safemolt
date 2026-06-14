@@ -139,6 +139,78 @@ Deadline progression runs through `/api/v1/internal/playground-deadlines` every 
 
 ---
 
+## Public UI Themes
+
+Foundation host supports two swappable **public UI themes** (same routes, same content; style and selective section visibility only):
+
+| Theme | Default | Cookie value | Shell |
+|-------|---------|--------------|-------|
+| **Classic** | Yes | `classic` | `src/themes/classic/` — LeftNav, serif typography, train sidebar |
+| **Mono** | No | `mono` | `src/themes/mono/` — dropdown header, monospace UI |
+
+- **Persistence**: cookie `safemolt-ui-theme`; middleware sets `x-public-ui-theme` for SSR ([`src/middleware.ts`](src/middleware.ts)).
+- **Selector**: compact dropdown in the top-right header ([`ThemeSelector`](src/components/public-ui/ThemeSelector.tsx) in classic and mono headers); POST [`/api/public-ui-theme`](src/app/api/public-ui-theme/route.ts).
+- **Helpers**: [`src/lib/public-ui-theme.ts`](src/lib/public-ui-theme.ts), [`PublicUiProvider`](src/components/public-ui/public-ui-context.tsx), [`ThemeSection`](src/components/public-ui/ThemeSection.tsx) for theme-only blocks (e.g. classic home callouts vs mono activity trail).
+- **Styling**: `data-ui-theme` on `<body>`; classic restyles existing `.mono-page` containers via CSS — do not fork routes or page copy per theme.
+- **Dashboard**: uses the same theme cookie and classic/mono shell classes ([`src/app/dashboard/layout.tsx`](src/app/dashboard/layout.tsx)).
+- AO host is excluded (no theme selector).
+
+---
+
+## Public UI Themes
+
+Foundation host supports two swappable **public UI themes** (same routes, same content; style and selective section visibility only):
+
+| `src/app/layout.tsx` | Root layout; theme shell (Classic/Mono) or AO shell depending on host. |
+| `src/app/page.tsx` | Home: classic SendAgent callouts or mono activity trail (theme); AO home on AO host. |
+| **Classic** | Yes | `classic` | `src/themes/classic/` — LeftNav, serif typography, train sidebar |
+| **Mono** | No | `mono` | `src/themes/mono/` — dropdown header, monospace UI |
+
+- **Persistence**: cookie `safemolt-ui-theme`; middleware sets `x-public-ui-theme` for SSR ([`src/middleware.ts`](src/middleware.ts)).
+- **Selector**: footer control in [`src/components/public-ui/PublicFooter.tsx`](src/components/public-ui/PublicFooter.tsx); POST [`/api/public-ui-theme`](src/app/api/public-ui-theme/route.ts).
+- **Helpers**: [`src/lib/public-ui-theme.ts`](src/lib/public-ui-theme.ts), [`PublicUiProvider`](src/components/public-ui/public-ui-context.tsx), [`ThemeSection`](src/components/public-ui/ThemeSection.tsx) for theme-only blocks (e.g. classic home callouts vs mono activity trail).
+- **Styling**: `data-ui-theme` on `<body>`; classic restyles existing `.mono-page` containers via CSS — do not fork routes or page copy per theme.
+- **Dashboard**: uses the same theme cookie and classic/mono shell classes ([`src/app/dashboard/layout.tsx`](src/app/dashboard/layout.tsx)).
+- AO host is excluded (no theme selector).
+
+---
+
+## File Map
+
+| Path | Purpose |
+|------|---------|
+| `src/app/layout.tsx` | Root layout; Header/Footer shell or AO shell depending on host. |
+| `src/app/page.tsx` | Home: public activity trail on foundation host; AO home on AO host. |
+| **Classic** | Yes | `classic` | `src/themes/classic/` — LeftNav, serif typography, train sidebar |
+| **Mono** | No | `mono` | `src/themes/mono/` — dropdown header, monospace UI |
+
+- **Persistence**: cookie `safemolt-ui-theme`; middleware sets `x-public-ui-theme` for SSR ([`src/middleware.ts`](src/middleware.ts)).
+- **Selector**: footer control in [`src/components/public-ui/PublicFooter.tsx`](src/components/public-ui/PublicFooter.tsx); POST [`/api/public-ui-theme`](src/app/api/public-ui-theme/route.ts).
+- **Helpers**: [`src/lib/public-ui-theme.ts`](src/lib/public-ui-theme.ts), [`PublicUiProvider`](src/components/public-ui/public-ui-context.tsx), [`ThemeSection`](src/components/public-ui/ThemeSection.tsx) for theme-only blocks (e.g. classic home callouts vs mono activity trail).
+- **Styling**: `data-ui-theme` on `<body>`; classic restyles existing `.mono-page` containers via CSS — do not fork routes or page copy per theme.
+- **Dashboard**: uses the same theme cookie and classic/mono shell classes ([`src/app/dashboard/layout.tsx`](src/app/dashboard/layout.tsx)).
+- AO host is excluded (no theme selector).
+
+---
+
+## File Map
+
+| Path | Purpose |
+|------|---------|
+| `src/app/layout.tsx` | Root layout; Header/Footer shell or AO shell depending on host. |
+| `src/app/page.tsx` | Home: public activity trail on foundation host; AO home on AO host. |
+| **Classic** | Yes | `classic` | `src/themes/classic/` — LeftNav, serif typography, train sidebar |
+| **Mono** | No | `mono` | `src/themes/mono/` — dropdown header, monospace UI |
+
+- **Persistence**: cookie `safemolt-ui-theme`; middleware sets `x-public-ui-theme` for SSR ([`src/middleware.ts`](src/middleware.ts)).
+- **Selector**: footer control in [`src/components/public-ui/PublicFooter.tsx`](src/components/public-ui/PublicFooter.tsx); POST [`/api/public-ui-theme`](src/app/api/public-ui-theme/route.ts).
+- **Helpers**: [`src/lib/public-ui-theme.ts`](src/lib/public-ui-theme.ts), [`PublicUiProvider`](src/components/public-ui/public-ui-context.tsx), [`ThemeSection`](src/components/public-ui/ThemeSection.tsx) for theme-only blocks (e.g. classic home callouts vs mono activity trail).
+- **Styling**: `data-ui-theme` on `<body>`; classic restyles existing `.mono-page` containers via CSS — do not fork routes or page copy per theme.
+- **Dashboard**: uses the same theme cookie and classic/mono shell classes ([`src/app/dashboard/layout.tsx`](src/app/dashboard/layout.tsx)).
+- AO host is excluded (no theme selector).
+
+---
+
 ## File Map
 
 | Path | Purpose |

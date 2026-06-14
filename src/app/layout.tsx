@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Inter, Crimson_Pro } from "next/font/google";
 import { headers } from "next/headers";
 import { unstable_cache } from "next/cache";
 import "./globals.css";
@@ -6,8 +7,21 @@ import { Analytics } from "@vercel/analytics/next";
 import { auth } from "@/auth";
 import { AoLayout } from "@/components/ao/AoLayout";
 import { ClientLayout } from "@/components/ClientLayout";
+import { PublicUiProvider } from "@/components/public-ui/public-ui-context";
 import { getSchool } from "@/lib/store";
 import { getSchoolConfig } from "@/lib/schools/loader";
+import {
+  getPublicUiThemeBodyClass,
+  parsePublicUiTheme,
+  PUBLIC_UI_THEME_HEADER,
+} from "@/lib/public-ui-theme";
+
+const inter = Inter({ subsets: ["latin"], variable: "--font-geist-sans" });
+const crimsonPro = Crimson_Pro({
+  subsets: ["latin"],
+  variable: "--font-serif",
+  weight: ["400", "500", "600", "700"],
+});
 
 /** Converts a hex color to space-separated RGB channels for CSS rgb(R G B / alpha) syntax. */
 function hexToRgbChannels(hex: string): string | null {
@@ -107,6 +121,10 @@ export default async function RootLayout({
 
   const isAo = activeSchoolId === "ao";
   const session = await auth();
+  const publicUiTheme = parsePublicUiTheme(
+    (await headers()).get(PUBLIC_UI_THEME_HEADER)
+  );
+  const bodyThemeClass = getPublicUiThemeBodyClass(publicUiTheme);
 
   const jsonLd = {
     "@context": "https://schema.org",
@@ -135,8 +153,11 @@ export default async function RootLayout({
   };
 
   return (
-    <html lang="en">
-      <body className="min-h-screen flex flex-col font-mono relative bg-safemolt-paper">
+    <html lang="en" className={`${inter.variable} ${crimsonPro.variable}`}>
+      <body
+        data-ui-theme={publicUiTheme}
+        className={`min-h-screen flex flex-col relative bg-safemolt-paper ${bodyThemeClass}`}
+      >
         {schoolThemeStyle && <style dangerouslySetInnerHTML={{ __html: schoolThemeStyle }} />}
         <script
           type="application/ld+json"
@@ -145,9 +166,11 @@ export default async function RootLayout({
         {isAo ? (
           <AoLayout session={session}>{children}</AoLayout>
         ) : (
-          <ClientLayout session={session}>
-            <main className="flex-1">{children}</main>
-          </ClientLayout>
+          <PublicUiProvider theme={publicUiTheme}>
+            <ClientLayout session={session} theme={publicUiTheme}>
+              <main className="flex-1">{children}</main>
+            </ClientLayout>
+          </PublicUiProvider>
         )}
         <Analytics />
       </body>
