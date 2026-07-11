@@ -13,7 +13,7 @@ export function Newsletter({ compact = false }: NewsletterProps) {
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [successMessage, setSuccessMessage] = useState("Thanks! We'll be in touch.");
+  const successMessage = "Thanks! We'll be in touch.";
   const [error, setError] = useState<string | null>(null);
 
   const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
