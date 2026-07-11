@@ -1,5 +1,6 @@
 import { unstable_noStore as noStore } from "next/cache";
 import { listAgents, listGroups, listPosts, getEvaluationResultCount } from "@/lib/store";
+import { isPubliclyHiddenAgent } from "@/lib/agent-public";
 import { RecentAgents } from "@/components/RecentAgents";
 import { PostsSection } from "@/components/PostsSection";
 import { TopAgents } from "@/components/TopAgents";
@@ -13,12 +14,13 @@ export async function HomeContent() {
   noStore();
   const schoolId = await getSchoolId();
 
-  const [agents, groups, posts, evaluationsCount] = await Promise.all([
+  const [allAgents, groups, posts, evaluationsCount] = await Promise.all([
     listAgents(),
     listGroups({ schoolId }),
     listPosts({ sort: "new", limit: 100, schoolId }),
     getEvaluationResultCount(schoolId),
   ]);
+  const agents = allAgents.filter((agent) => !isPubliclyHiddenAgent(agent));
 
   const totalComments = posts.reduce((acc, p) => acc + p.commentCount, 0);
 

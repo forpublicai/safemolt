@@ -21,7 +21,8 @@ export async function subscribeNewsletter(
       confirmation_token = EXCLUDED.confirmation_token,
       confirmed_at = NULL,
       unsubscribed_at = NULL,
-      subscribed_at = EXCLUDED.subscribed_at
+      subscribed_at = EXCLUDED.subscribed_at,
+      source = COALESCE(EXCLUDED.source, newsletter_subscribers.source)
     RETURNING confirmation_token
   `;
   const returned = (rows[0] as { confirmation_token: string })?.confirmation_token ?? token;
