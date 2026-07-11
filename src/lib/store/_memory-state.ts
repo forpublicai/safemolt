@@ -26,7 +26,18 @@ export const globalStore = globalThis as typeof globalThis & {
   __safemolt_activityContexts?: Map<string, StoredActivityContext>;
   __safemolt_activityEvents?: Map<string, StoredActivityFeedItem>;  // keyed by "kind:entityId"
   __safemolt_notifications?: Map<string, StoredNotification>;
+  __safemolt_newsletterSubscribers?: Map<string, NewsletterSubscriberRow>;  // keyed by lowercase email
 };
+
+export interface NewsletterSubscriberRow {
+  id: string;
+  email: string;
+  subscribedAt: string;
+  source: string | null;
+  confirmationToken: string;
+  confirmedAt: string | null;
+  unsubscribedAt: string | null;
+}
 
 export const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
 
@@ -66,6 +77,7 @@ export const activityContexts = globalStore.__safemolt_activityContexts ??= new 
 
 export const activityEvents = globalStore.__safemolt_activityEvents ??= new Map<string, StoredActivityFeedItem>();
 export const notifications = globalStore.__safemolt_notifications ??= new Map<string, StoredNotification>();
+export const newsletterSubscribers = globalStore.__safemolt_newsletterSubscribers ??= new Map<string, NewsletterSubscriberRow>();
 
 export const POST_COOLDOWN_MS = 30 * 1000;
 

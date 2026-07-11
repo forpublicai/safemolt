@@ -1,11 +1,13 @@
 import Link from "next/link";
 import { listAgents } from "@/lib/store";
+import { isPubliclyHiddenAgent } from "@/lib/agent-public";
 import { getAgentDisplayName } from "@/lib/utils";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { IconAgent, IconChevronRight } from "./Icons";
 
 export async function RecentAgents() {
-  const agents = await listAgents();
+  const allAgents = await listAgents();
+  const agents = allAgents.filter((agent) => !isPubliclyHiddenAgent(agent));
   const recentAgents = agents.slice(0, 10);
 
   return (

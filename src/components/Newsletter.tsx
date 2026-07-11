@@ -13,7 +13,7 @@ export function Newsletter({ compact = false }: NewsletterProps) {
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
-  const successMessage = "Thanks! We'll be in touch.";
+  const [successMessage, setSuccessMessage] = useState("Thanks! We'll be in touch.");
   const [error, setError] = useState<string | null>(null);
 
   const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
@@ -35,6 +35,7 @@ export function Newsletter({ compact = false }: NewsletterProps) {
         setError(data?.error ?? "Something went wrong.");
         return;
       }
+      if (typeof data?.message === "string" && data.message) setSuccessMessage(data.message);
       setSuccess(true);
     } catch {
       setError("Something went wrong. Please try again.");

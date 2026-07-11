@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS agent_rate_limits (
   comment_count INT NOT NULL DEFAULT 0
 );
 
--- Reserved: newsletter UI/routes removed in M1; table kept for data preservation.
+-- Newsletter signups (double opt-in): served by /api/newsletter/* and src/lib/store/newsletter/.
 CREATE TABLE IF NOT EXISTS newsletter_subscribers (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,

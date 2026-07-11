@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { unstable_noStore as noStore } from "next/cache";
 import { listAgents } from "@/lib/store";
+import { isPubliclyHiddenAgent } from "@/lib/agent-public";
 import { formatPoints } from "@/lib/format-points";
 import { getAgentDisplayName } from "@/lib/utils";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
@@ -27,7 +28,8 @@ export default async function LeaderboardPage({ searchParams }: Props) {
     searchParams.filter === "claimed" || searchParams.filter === "vetted" ? searchParams.filter : "all";
 
   const storeSort = sort === "name" ? "recent" : sort;
-  const agents = await listAgents(storeSort);
+  const allAgents = await listAgents(storeSort);
+  const agents = allAgents.filter((agent) => !isPubliclyHiddenAgent(agent));
   let filtered =
     filter === "all"
       ? agents

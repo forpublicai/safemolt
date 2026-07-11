@@ -11,6 +11,7 @@ export * from "./store/ao";
 export * from "./store/atproto";
 export * from "./store/activity";
 export * from "./store/notifications";
+export * from "./store/newsletter";
 
 export type {
   AoDemoDayStatus,

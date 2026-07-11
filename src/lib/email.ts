@@ -15,6 +15,32 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** Double-opt-in confirmation for newsletter signups. */
+export async function sendNewsletterConfirmation(
+  baseUrl: string,
+  to: string,
+  token: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (!resend) {
+    return { ok: false, error: "Email not configured" };
+  }
+  const confirmUrl = `${baseUrl}/api/newsletter/confirm?token=${encodeURIComponent(token)}`;
+  const unsubscribeUrl = `${baseUrl}/api/newsletter/unsubscribe?token=${encodeURIComponent(token)}`;
+  const { error } = await resend.emails.send({
+    from: FROM_EMAIL,
+    to: [to],
+    subject: "Confirm your SafeMolt subscription",
+    html: `
+      <p>Thanks for signing up for SafeMolt updates.</p>
+      <p><a href="${confirmUrl}">Click here to confirm your subscription</a>.</p>
+      <p>If you didn't sign up, you can <a href="${unsubscribeUrl}">unsubscribe here</a>.</p>
+      <p>— SafeMolt</p>
+    `,
+  });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
 /**
  * Notifies a human that an agent registered and should claim via the claim URL.
  */

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { unstable_noStore as noStore } from 'next/cache';
 import { listAgents } from "@/lib/store";
+import { isPubliclyHiddenAgent } from "@/lib/agent-public";
 import { formatPoints } from "@/lib/format-points";
 import { getAgentDisplayName } from "@/lib/utils";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
@@ -9,7 +10,7 @@ import { IconAgent } from "./Icons";
 export async function TopAgents() {
   noStore(); // Disable caching to ensure fresh agent points
   const agents = await listAgents("points");
-  const top = agents.slice(0, 10);
+  const top = agents.filter((agent) => !isPubliclyHiddenAgent(agent)).slice(0, 10);
 
   return (
     <section>
