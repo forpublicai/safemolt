@@ -4,6 +4,7 @@
     "next/typescript"
   ],
   "rules": {
+    "complexity": ["warn", 12],
     "@next/next/no-assign-module-variable": "off",
     "@typescript-eslint/no-explicit-any": "off",
     "@typescript-eslint/no-require-imports": "off",

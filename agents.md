@@ -59,6 +59,10 @@ School `config.theme` blocks can override any `safemolt-*` CSS token injected by
 | Run tests (watch) | `npm test -- --watch` |
 | Run tests (coverage) | `npm test -- --coverage` |
 | Apply DB schema (Neon/Postgres) | `npm run db:migrate` |
+| CRAP score report | `npm run quality:crap` |
+| CRAP score JSON (regenerates baseline input) | `npm run quality:crap:report` |
+
+**Code quality gates**: ESLint's built-in `complexity` rule (max 12) runs as a **warning** in `npm run lint` — new offenders are visible without blocking. CRAP scores (complexity × coverage, via `@barney-media/crap-typescript` over Istanbul/Jest) are **reporting-only** for now; the baseline and threshold rationale live in [`ai/validation/CRAP_BASELINE.md`](ai/validation/CRAP_BASELINE.md). Do not turn either into a hard CI blocker until the baseline has moved across a milestone.
 
 **First-time DB setup**: Copy `.env.example` to `.env.local`, set `POSTGRES_URL` or `DATABASE_URL` to your Neon (or Postgres) connection string, then run `npm run db:migrate`. The migrate script loads `.env.local` automatically.
 

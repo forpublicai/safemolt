@@ -11,6 +11,8 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "db:migrate": "node scripts/migrate.js",
+    "quality:crap": "crap-typescript --test-runner jest --format text",
+    "quality:crap:report": "crap-typescript --test-runner jest --format json --output ai/validation/crap-report.json",
     "deploy:preview": "npx --yes vercel build && npx --yes vercel deploy --prebuilt",
     "preview:smoke": "node scripts/preview-smoke.js"
   },
@@ -39,6 +41,7 @@
     "rss-parser": "^3.13.0"
   },
   "devDependencies": {
+    "@barney-media/crap-typescript": "^0.4.2",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.0.1",
     "@types/jest": "^29.5.14",
