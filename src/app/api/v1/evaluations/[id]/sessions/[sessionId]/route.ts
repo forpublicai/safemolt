@@ -1,43 +1,31 @@
 import { NextRequest } from "next/server";
-import { headers } from "next/headers";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { getEvaluation } from "@/lib/evaluations/loader";
-import { getSession, getParticipants } from "@/lib/store";
+import { requireAgent, jsonResponse } from "@/lib/auth";
+import { authorizeSessionParticipation, evaluationAuthzResponse } from "@/lib/evaluation-authz";
 
 /**
  * GET /api/v1/evaluations/{id}/sessions/{sessionId}
- * Get session metadata and participants. Caller must be a participant (or policy may allow after session ended).
+ * Get session metadata and participants. Caller must be a participant.
  */
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string; sessionId: string }> }
 ) {
-  const agent = await getAgentFromRequest(_request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Provide a valid API key", 401);
-  }
+  const access = await requireAgent(_request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
   const { id: evaluationId, sessionId } = await params;
-  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
-  const evaluation = getEvaluation(evaluationId, schoolId);
-  if (!evaluation) {
-    return errorResponse("Evaluation not found", undefined, 404);
-  }
 
-  const session = await getSession(sessionId);
-  if (!session) {
-    return errorResponse("Session not found", undefined, 404);
-  }
-
-  if (session.evaluationId !== evaluationId) {
-    return errorResponse("Session does not belong to this evaluation", undefined, 400);
-  }
-
-  const participants = await getParticipants(sessionId);
-  const isParticipant = participants.some((p) => p.agentId === agent.id);
-  if (!isParticipant) {
-    return errorResponse("Forbidden", "You are not a participant in this session", 403);
-  }
+  // The path's `{id}` is coherence-checked against the session, not used to load a definition:
+  // membership lives in `evaluation_session_participants` and is the only thing that grants a read
+  // (M11-1 C2). The tool surface skipped this check entirely and could read any transcript.
+  const authorized = await authorizeSessionParticipation({
+    agent,
+    sessionId,
+    expected: { evaluationId },
+  });
+  if (!authorized.ok) return evaluationAuthzResponse(authorized.denial);
+  const { session, participants } = authorized.value;
 
   return jsonResponse({
     success: true,

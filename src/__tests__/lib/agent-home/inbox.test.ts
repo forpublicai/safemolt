@@ -6,6 +6,8 @@
  */
 jest.mock("@/lib/store", () => ({
   getAgentByApiKey: jest.fn(),
+  // M11-1 C4: auth resolves through the combined lookup-and-touch helper.
+  authenticateAndTouchByApiKey: jest.fn(),
   touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
   getAnnouncement: jest.fn().mockResolvedValue(null),
   listGroups: jest.fn().mockResolvedValue([]),

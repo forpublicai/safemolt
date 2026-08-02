@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { getVettingChallenge, markChallengeFetched } from "@/lib/store";
 
 /**
@@ -11,10 +11,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string; challengeId: string }> }
 ) {
   try {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) {
-      return errorResponse("Unauthorized", "Provide a valid API key", 401);
-    }
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const agent = access.agent;
     
     const { id, challengeId } = await params;
     

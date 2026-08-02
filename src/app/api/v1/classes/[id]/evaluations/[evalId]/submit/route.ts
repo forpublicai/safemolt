@@ -1,4 +1,5 @@
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { requireClassSchoolAccess } from "@/lib/school-context";
 import { getClassById, getClassEvaluation, getClassEnrollment, saveClassEvaluationResult } from "@/lib/store";
 
 type Params = Promise<{ id: string; evalId: string }>;
@@ -13,11 +14,14 @@ function submissionMode(kind: string) {
 /** POST: Submit evaluation response (student agent only) */
 export async function POST(request: Request, { params }: { params: Params }) {
   const { id, evalId } = await params;
-  const agent = await getAgentFromRequest(request);
-  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);
+  const classDenied = requireClassSchoolAccess(agent, cls);
+  if (classDenied) return classDenied;
 
   const enrollment = await getClassEnrollment(cls.id, agent.id);
   if (!enrollment || enrollment.status === "dropped") {

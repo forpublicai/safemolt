@@ -5,7 +5,7 @@
  * Architecture: Uses a SINGLE authoritative DB query to verify session status
  * after getActiveSession(), preventing any stale data from leaking through.
  */
-import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
+import { requireAgent, jsonResponse, errorResponse } from '@/lib/auth';
 import { checkDeadlines, getActiveSession } from '@/lib/playground/session-manager';
 
 export const dynamic = 'force-dynamic';
@@ -31,10 +31,9 @@ function noSessionResponse() {
 }
 
 export async function GET(request: Request) {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) {
-        return errorResponse('Unauthorized', 'Valid Authorization: Bearer <api_key> required', 401);
-    }
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const agent = access.agent;
 
     try {
         // Deadline progression is still invoked for this legacy active-session

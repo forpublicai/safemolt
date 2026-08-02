@@ -1,76 +1,69 @@
 /**
- * Playground Memory System
- * In-memory store for agent memories in playground sessions.
- * Uses globalThis to persist data across Next.js HMR.
+ * Playground Memory System — durable since M11-1b D5.
+ *
+ * These lived in a process-local Map **even in DB mode**, so a later request served by another
+ * instance, or one arriving after a cold start, saw a session's episodic memories silently
+ * vanish — while the public session response advertised whether they were available. This module
+ * is now a thin facade over the `playground_agent_memories` store domain (memory mode keeps a
+ * map, behind `pickStore`). Semantics are unchanged: ONE record per (agent, session),
+ * overwritten each round, `importance` carrying the same `low | medium | high | critical` label.
+ *
+ * Retrieval stays here: it is pure scoring over the rows the store returns.
  */
 import { type AgentMemory, type CreateMemoryInput, type MemoryRetrievalOptions, type MemoryRetrievalResult } from './types';
-
-// Global storage for memories - keyed by sessionId, then agentId
-const globalMemories = globalThis as typeof globalThis & {
-    __playground_memories?: Map<string, Map<string, AgentMemory>>; // sessionId -> agentId -> memory
-};
-
-const memories = globalMemories.__playground_memories ??= new Map<string, Map<string, AgentMemory>>();
+import {
+    clearPlaygroundMemoriesForAgent,
+    clearPlaygroundMemoriesForSession,
+    getPlaygroundMemoryForAgent,
+    listPlaygroundMemoriesForSession,
+    storePlaygroundMemory,
+    storePlaygroundMemoryFenced,
+} from '@/lib/store';
 
 let memoryIdCounter = 1;
 
 /**
- * Generate a unique memory ID
+ * Generate a unique memory ID. A public entity id, not a credential — `Math.random` would be
+ * fine; the counter is simply deterministic within a process (M11-1 C17's split).
  */
 function generateMemoryId(): string {
     return `mem_${Date.now()}_${memoryIdCounter++}`;
 }
 
 /**
- * Store a new memory for an agent in a session
+ * Store a new memory for an agent in a session (overwrites that agent's record for the session).
  */
 export async function storeMemory(input: CreateMemoryInput): Promise<AgentMemory> {
-    const { agentId, agentName, sessionId, content, embedding, importance, roundCreated } = input;
-    
-    const memory: AgentMemory = {
-        id: generateMemoryId(),
-        agentId,
-        agentName,
-        sessionId,
-        content,
-        embedding,
-        importance,
-        roundCreated,
-        createdAt: new Date().toISOString(),
-    };
-    
-    // Get or create session's memory map
-    if (!memories.has(sessionId)) {
-        memories.set(sessionId, new Map());
-    }
-    const sessionMemories = memories.get(sessionId)!;
-    
-    // Store memory
-    sessionMemories.set(agentId, memory);
-    
-    return memory;
+    return storePlaygroundMemory({ ...input, id: generateMemoryId() });
 }
 
 /**
- * Get all memories for an agent in a session
+ * M11-1b D5 — the memory write gated on a **live resolution lease**, in one statement. Returns
+ * false when the caller's lease is no longer the live claim, which is precisely the lease-expired
+ * loser that must write nothing.
+ *
+ * Not coupled to the terminal CAS — that is a separate statement, and the gap is a recorded D5
+ * residual (see `store/playground/agent-memories-db.ts` and ai/PLAN_M11_1B.md).
+ */
+export async function storeMemoryFenced(
+    input: CreateMemoryInput,
+    fence: { sessionId: string; round: number; token: string }
+): Promise<boolean> {
+    return storePlaygroundMemoryFenced({ ...input, id: generateMemoryId() }, fence);
+}
+
+/**
+ * Get the memory record for an agent in a session
  */
 export async function getMemoriesForAgent(sessionId: string, agentId: string): Promise<AgentMemory | null> {
-    const sessionMemories = memories.get(sessionId);
-    if (!sessionMemories) {
-        return null;
-    }
-    return sessionMemories.get(agentId) ?? null;
+    return getPlaygroundMemoryForAgent(sessionId, agentId);
 }
 
 /**
  * Get all memories for a session (all agents)
  */
 export async function getAllSessionMemories(sessionId: string): Promise<AgentMemory[]> {
-    const sessionMemories = memories.get(sessionId);
-    if (!sessionMemories) {
-        return [];
-    }
-    return Array.from(sessionMemories.values());
+    return listPlaygroundMemoriesForSession(sessionId);
 }
 
 /**
@@ -129,21 +122,16 @@ function textSimilarity(query: string, content: string): number {
  */
 export async function retrieveMemories(options: MemoryRetrievalOptions): Promise<MemoryRetrievalResult[]> {
     const { sessionId, agentId, query, queryEmbedding, limit = 5, threshold = 0.0 } = options;
-    
-    const sessionMemories = memories.get(sessionId);
-    if (!sessionMemories) {
-        return [];
-    }
-    
+
     // Filter by agent if specified
     let memoryList: AgentMemory[];
     if (agentId) {
-        const mem = sessionMemories.get(agentId);
+        const mem = await getPlaygroundMemoryForAgent(sessionId, agentId);
         memoryList = mem ? [mem] : [];
     } else {
-        memoryList = Array.from(sessionMemories.values());
+        memoryList = await listPlaygroundMemoriesForSession(sessionId);
     }
-    
+
     // Calculate similarity scores
     const results: MemoryRetrievalResult[] = [];
     
@@ -171,10 +159,22 @@ export async function retrieveMemories(options: MemoryRetrievalOptions): Promise
 }
 
 /**
- * Delete all memories for a session
+ * Delete all memories for a session.
+ *
+ * The db FK cascades on session *deletion*, but since M11-1 C3 cancellation is a status
+ * TRANSITION — nothing is deleted — so the transition drives this explicitly, in both stores
+ * (M11-1b D5). This function was present but uncalled before D5.
  */
 export async function clearSessionMemories(sessionId: string): Promise<void> {
-    memories.delete(sessionId);
+    await clearPlaygroundMemoriesForSession(sessionId);
+}
+
+/**
+ * Delete all memories belonging to an agent. Db mode cascades on agent deletion; memory mode has
+ * no FK, so the shared agent-delete path calls this (M11-1b D5).
+ */
+export async function clearAgentMemories(agentId: string): Promise<void> {
+    await clearPlaygroundMemoriesForAgent(agentId);
 }
 
 /**

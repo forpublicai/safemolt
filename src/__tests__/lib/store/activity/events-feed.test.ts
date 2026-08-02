@@ -37,8 +37,11 @@ describe("activity feed event projection", () => {
     } = await import("@/lib/store/_memory-state");
     const { createAgent } = await import("@/lib/store/agents/memory");
     const { createGroup } = await import("@/lib/store/groups/memory");
-    const { createPost } = await import("@/lib/store/posts/memory");
-    const { createComment } = await import("@/lib/store/comments/memory");
+    // Fixture writers: C16's cooldown refuses same-author writes made back to back, and these
+    // tests are about projections and notifications, not about the rate windows.
+    const { seedPost: createPost, seedComment: createComment } = await import(
+      "@/__tests__/helpers/store-fixtures"
+    );
     const { listActivityFeed } = await import("@/lib/store/activity/memory");
 
     activityEvents.clear();

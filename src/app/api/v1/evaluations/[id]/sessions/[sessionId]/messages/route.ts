@@ -1,52 +1,31 @@
 import { NextRequest } from "next/server";
-import { headers } from "next/headers";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { getEvaluation } from "@/lib/evaluations/loader";
-import {
-  getSession,
-  getParticipants,
-  addSessionMessage,
-  getSessionMessages,
-} from "@/lib/store";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { authorizeSessionParticipation, evaluationAuthzResponse } from "@/lib/evaluation-authz";
+import { addSessionMessage, getSessionMessages } from "@/lib/store";
 
 /**
  * POST /api/v1/evaluations/{id}/sessions/{sessionId}/messages
- * Send a message in the session. Caller must be a participant.
+ * Send a message in the session. Caller must be a participant; the role is derived from the
+ * participant row, never taken from the request (M11-1 C2).
  */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; sessionId: string }> }
 ) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Provide a valid API key", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
   const { id: evaluationId, sessionId } = await params;
-  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
-  const evaluation = getEvaluation(evaluationId, schoolId);
-  if (!evaluation) {
-    return errorResponse("Evaluation not found", undefined, 404);
-  }
 
-  const session = await getSession(sessionId);
-  if (!session) {
-    return errorResponse("Session not found", undefined, 404);
-  }
-
-  if (session.evaluationId !== evaluationId) {
-    return errorResponse("Session does not belong to this evaluation", undefined, 400);
-  }
-
-  const participants = await getParticipants(sessionId);
-  const participant = participants.find((p) => p.agentId === agent.id);
-  if (!participant) {
-    return errorResponse("Forbidden", "You are not a participant in this session", 403);
-  }
-
-  if (session.status === "ended") {
-    return errorResponse("Session ended", "Cannot send messages to an ended session", 400);
-  }
+  const authorized = await authorizeSessionParticipation({
+    agent,
+    sessionId,
+    expected: { evaluationId },
+    requireOpen: true,
+  });
+  if (!authorized.ok) return evaluationAuthzResponse(authorized.denial);
+  const { role } = authorized.value;
 
   let body: { content?: string };
   try {
@@ -68,14 +47,14 @@ export async function POST(
   const { id: msgId, sequence, createdAt } = await addSessionMessage(
     sessionId,
     agent.id,
-    participant.role,
+    role,
     trimmed
   );
 
   return jsonResponse({
     success: true,
     id: msgId,
-    role: participant.role,
+    role,
     content: trimmed,
     created_at: createdAt,
     sequence,
@@ -90,32 +69,18 @@ export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string; sessionId: string }> }
 ) {
-  const agent = await getAgentFromRequest(_request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Provide a valid API key", 401);
-  }
+  const access = await requireAgent(_request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
   const { id: evaluationId, sessionId } = await params;
-  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
-  const evaluation = getEvaluation(evaluationId, schoolId);
-  if (!evaluation) {
-    return errorResponse("Evaluation not found", undefined, 404);
-  }
 
-  const session = await getSession(sessionId);
-  if (!session) {
-    return errorResponse("Session not found", undefined, 404);
-  }
-
-  if (session.evaluationId !== evaluationId) {
-    return errorResponse("Session does not belong to this evaluation", undefined, 400);
-  }
-
-  const participants = await getParticipants(sessionId);
-  const isParticipant = participants.some((p) => p.agentId === agent.id);
-  if (!isParticipant) {
-    return errorResponse("Forbidden", "You are not a participant in this session", 403);
-  }
+  const authorized = await authorizeSessionParticipation({
+    agent,
+    sessionId,
+    expected: { evaluationId },
+  });
+  if (!authorized.ok) return evaluationAuthzResponse(authorized.denial);
 
   const messages = await getSessionMessages(sessionId);
   return jsonResponse({

@@ -7,6 +7,7 @@
  * against the internal store (no HTTP round-trips).
  */
 
+import { groupSchoolAccessDenial } from "@/lib/school-context";
 import {
   getGroup,
   listGroups,
@@ -183,6 +184,8 @@ export const executors: Record<string, ToolExecutor> = {
     const groupName = String(args.group_name);
     const group = await getGroup(groupName);
     if (!group) return { success: false, error: `Group "${groupName}" not found` };
+    const schoolDenial = groupSchoolAccessDenial(agent, group);
+    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
     const result = await joinGroup(agent.id, group.id);
     if (typeof result === "object" && "error" in result) {
       return { success: false, error: String(result.error) };
@@ -193,6 +196,8 @@ export const executors: Record<string, ToolExecutor> = {
   leave_group: async (args, { agent }) => {
     const group = await getGroup(String(args.group_name));
     if (!group) return { success: false, error: "Group not found" };
+    const schoolDenial = groupSchoolAccessDenial(agent, group);
+    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
     const result = await leaveGroup(agent.id, group.id);
     if (typeof result === "object" && "error" in result) {
       return { success: false, error: String(result.error) };
@@ -203,6 +208,8 @@ export const executors: Record<string, ToolExecutor> = {
   subscribe_to_group: async (args, { agent }) => {
     const group = await getGroup(String(args.group_name));
     if (!group) return { success: false, error: "Group not found" };
+    const schoolDenial = groupSchoolAccessDenial(agent, group);
+    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
     await subscribeToGroup(agent.id, group.id);
     return { success: true, data: { subscribed: args.group_name } };
   },
@@ -210,6 +217,8 @@ export const executors: Record<string, ToolExecutor> = {
   unsubscribe_from_group: async (args, { agent }) => {
     const group = await getGroup(String(args.group_name));
     if (!group) return { success: false, error: "Group not found" };
+    const schoolDenial = groupSchoolAccessDenial(agent, group);
+    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
     await unsubscribeFromGroup(agent.id, group.id);
     return { success: true, data: { unsubscribed: args.group_name } };
   },
@@ -234,6 +243,8 @@ export const executors: Record<string, ToolExecutor> = {
   add_moderator: async (args, { agent }) => {
     const group = await getGroup(String(args.group_name));
     if (!group) return { success: false, error: "Group not found" };
+    const schoolDenial = groupSchoolAccessDenial(agent, group);
+    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
     // addModerator(groupId, ownerId, agentName) — ownerId is the caller, agentName is the target
     const ok = await addModerator(group.id, agent.id, String(args.agent_name));
     return ok
@@ -244,6 +255,8 @@ export const executors: Record<string, ToolExecutor> = {
   remove_moderator: async (args, { agent }) => {
     const group = await getGroup(String(args.group_name));
     if (!group) return { success: false, error: "Group not found" };
+    const schoolDenial = groupSchoolAccessDenial(agent, group);
+    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
     // removeModerator(groupId, ownerId, agentName) — ownerId is the caller, agentName is the target
     const ok = await removeModerator(group.id, agent.id, String(args.agent_name));
     return ok
@@ -254,6 +267,8 @@ export const executors: Record<string, ToolExecutor> = {
   update_group_settings: async (args, { agent }) => {
     const group = await getGroup(String(args.group_name));
     if (!group) return { success: false, error: "Group not found" };
+    const schoolDenial = groupSchoolAccessDenial(agent, group);
+    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
     const updates: Record<string, string> = {};
     if (args.display_name) updates.displayName = String(args.display_name);
     if (args.description) updates.description = String(args.description);

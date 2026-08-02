@@ -41,7 +41,37 @@ const MIGRATION_FILES = [
   { file: "migrate-class-evaluation-kind.sql", label: "Class evaluation kind taxonomy" },
   { file: "migrate-group-members-single-house.sql", label: "Single-house partial unique index" },
   { file: "migrate-house-founder-repair.sql", label: "House founder repair after dedupe" },
+  { file: "migrate-rotate-published-professor-keys.sql", label: "Rotate published professor API keys" },
+  { file: "migrate-post-soft-delete.sql", label: "Post soft delete (anti-veto)" },
+  { file: "migrate-evaluation-school-provenance.sql", label: "Evaluation school provenance and transcript ordering" },
+  { file: "migrate-evaluation-result-unique.sql", label: "Unique evaluation result per registration" },
+  { file: "migrate-certification-job-lease.sql", label: "Certification job lease and live-job uniqueness" },
+  { file: "migrate-evaluation-one-pass.sql", label: "One passed result per agent and evaluation" },
+  { file: "migrate-rate-windows.sql", label: "Durable public-endpoint rate windows" },
+  { file: "migrate-agent-name-ci-unique.sql", label: "Case-insensitive agent name uniqueness" },
+  { file: "migrate-vetting-challenges.sql", label: "Durable vetting challenges" },
+  { file: "migrate-playground-resolution-claim.sql", label: "Playground resolution claim and action uniqueness" },
+  { file: "migrate-playground-cancellation.sql", label: "Playground cancellation as attributed transition" },
+  { file: "migrate-playground-live-session-unique.sql", label: "One live playground session per school" },
+  { file: "migrate-neutralize-seeded-credentials.sql", label: "Neutralize seeded literal credentials" },
+  { file: "migrate-rotate-stale-claim-tokens.sql", label: "Rotate stale unclaimed claim tokens" },
+  { file: "migrate-playground-agent-memories.sql", label: "Durable playground episodic memories" },
 ];
+
+/** `KEY=value` from one .env line, or null for a blank, a comment, or anything malformed. */
+function parseEnvLine(rawLine) {
+  const line = rawLine.trim();
+  if (!line || line.startsWith("#")) return null;
+
+  const match = line.match(/^([^=]+)=(.*)$/);
+  if (!match) return null;
+
+  let value = match[2].trim();
+  const quoted =
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"));
+  return { key: match[1].trim(), value: quoted ? value.slice(1, -1) : value };
+}
 
 function loadEnvLocalIfNeeded() {
   if (process.env.POSTGRES_URL || process.env.DATABASE_URL) {
@@ -57,28 +87,9 @@ function loadEnvLocalIfNeeded() {
   const content = fs.readFileSync(envPath, "utf8");
 
   for (const rawLine of content.split("\n")) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
-
-    const match = line.match(/^([^=]+)=(.*)$/);
-    if (!match) {
-      continue;
-    }
-
-    const key = match[1].trim();
-    let value = match[2].trim();
-
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-
-    if (!process.env[key]) {
-      process.env[key] = value;
+    const entry = parseEnvLine(rawLine);
+    if (entry && !process.env[entry.key]) {
+      process.env[entry.key] = entry.value;
     }
   }
 }
@@ -91,17 +102,6 @@ function getConnectionString() {
 function maskedConnectionTarget(connectionString) {
   const masked = connectionString.replace(/:([^:@]+)@/, ":****@");
   return masked.split("@")[1] || "unknown-host";
-}
-
-function isIgnorableMigrationError(err) {
-  const ignorableCodes = new Set(["42P07", "42701", "42710"]);
-  const message = String(err && err.message ? err.message : "").toLowerCase();
-
-  return (
-    ignorableCodes.has(err && err.code) ||
-    message.includes("already exists") ||
-    message.includes("duplicate")
-  );
 }
 
 async function ensureMigrationTable(client) {
@@ -126,72 +126,114 @@ async function recordMigration(client, filename, label) {
   );
 }
 
-async function runFile(client, migration) {
+/**
+ * Apply one migration file.
+ *
+ * M11-1 C1 — three fail-open paths were removed here, and the reasoning matters because each one
+ * looked harmless:
+ *
+ *  1. **An object-exists error used to record the file as applied.** A migration file runs as one
+ *     implicit transaction, so a collision halfway through rolls back every earlier statement and
+ *     prevents every later one. Recording it left the file *recorded yet almost entirely absent*;
+ *     later migrations then built on a schema that was not there, and nothing ever re-applied it.
+ *     Migrations run inside the build (`node scripts/migrate.js && next build`), so exit-0-with-
+ *     unrecorded-file would serve application code against a schema its own migration rolled back.
+ *  2. **A bare `"duplicate"` substring match** swallowed data-level 23505s along with DDL
+ *     collisions. Those are real failures and now surface.
+ *  3. **A listed file that was missing or empty was silently skipped**, which deploys application
+ *     code without its schema just as surely as a rolled-back file.
+ *
+ * Nothing is recorded on any error, and any error stops the deploy. Every new migration is written
+ * fully idempotent (`IF NOT EXISTS` / conditional `DO` blocks), so re-running after a genuine
+ * partial failure is safe and is the recovery path.
+ *
+ * An in-run retry was considered and rejected as a no-op: the runner would re-execute the same
+ * file against the same database state, so an idempotent file never raised the error and a
+ * non-idempotent one raises it identically. A retry can only help if external state changes
+ * between attempts, and nothing here does. If *concurrent* runners (two deploys racing) turn out
+ * to be the real failure mode, the fix is a Postgres advisory lock around the runner — a named
+ * follow-up, not implemented on speculation.
+ */
+async function runFile(client, migration, dir) {
   const { file, label } = migration;
-  const filePath = path.join(__dirname, file);
+  const filePath = path.join(dir, file);
+
+  // The artifact is checked **before** the `_migrations` lookup, not after.
+  //
+  // An earlier version checked "already recorded" first and argued that a recorded file whose SQL
+  // has applied may safely disappear. That reasoning only holds for the database in front of you:
+  // migrations are append-only and a *fresh* database still needs the file, so a deployment whose
+  // schema is already current would go green while the repository had silently lost a migration
+  // every new environment depends on. A listed file that is missing or empty is fatal, full stop —
+  // which is what `agents.md` says.
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`[Migration] ${label}: listed file ${file} is missing`);
+  }
+
+  const sql = fs.readFileSync(filePath, "utf8").trim();
+  if (!sql) {
+    throw new Error(`[Migration] ${label}: listed file ${file} is empty`);
+  }
+
   if (await hasMigrationRun(client, file)) {
     console.log(`[Migration] SKIP: ${label} (already recorded)`);
     return;
   }
 
-  if (!fs.existsSync(filePath)) {
-    console.log(`[Migration] SKIP: ${label} (file missing)`);
-    return;
-  }
-
-  const sql = fs.readFileSync(filePath, "utf8").trim();
-  if (!sql) {
-    console.log(`[Migration] SKIP: ${label} (file empty)`);
-    return;
-  }
-
   try {
     await client.query(sql);
-    await recordMigration(client, file, label);
-    console.log(`[Migration] SUCCESS: ${label}`);
   } catch (err) {
-    if (isIgnorableMigrationError(err)) {
-      await recordMigration(client, file, label);
-      console.log(`[Migration] SKIP: ${label} (already applied or not needed)`);
-      return;
-    }
-
-    console.error(`[Migration] FAILED: ${label}`);
+    console.error(`[Migration] FAILED: ${label} (${err.code || "no code"}) — recording nothing`);
     throw err;
   }
+
+  await recordMigration(client, file, label);
+  console.log(`[Migration] SUCCESS: ${label}`);
 }
 
-async function migrate() {
-  const connectionString = getConnectionString();
+/**
+ * @param {{ files?: Array<{file: string, label: string}>, dir?: string, connectionString?: string }} options
+ * Options exist so the integration suite can drive the *real* runner over fixture files. Production
+ * always calls it with no arguments.
+ */
+async function migrate(options = {}) {
+  const files = options.files || MIGRATION_FILES;
+  const dir = options.dir || __dirname;
+  const connectionString = options.connectionString || getConnectionString();
+
   if (!connectionString) {
-    console.error("[Migration] FATAL: No POSTGRES_URL or DATABASE_URL found.");
-    process.exit(1);
+    throw new Error("[Migration] FATAL: No POSTGRES_URL or DATABASE_URL found.");
   }
 
   const client = new Client({ connectionString });
+  console.log(`[Migration] Connecting to: ${maskedConnectionTarget(connectionString)}`);
+  await client.connect();
 
   try {
-    console.log(`[Migration] Connecting to: ${maskedConnectionTarget(connectionString)}`);
-    await client.connect();
     console.log("[Migration] Database connected.");
     await ensureMigrationTable(client);
 
-    for (const migration of MIGRATION_FILES) {
-      await runFile(client, migration);
+    for (const migration of files) {
+      await runFile(client, migration, dir);
     }
 
     console.log("[Migration] All migrations completed.");
-  } catch (err) {
-    console.error("[Migration] FATAL ERROR:", err.message);
-    process.exitCode = 1;
   } finally {
+    // A close failure must never mask a migration failure: by this point every applied file is
+    // committed, so a dangling socket is a diagnostic, not a deploy blocker.
     try {
       await client.end();
     } catch (closeErr) {
       console.error("[Migration] Error while closing database connection:", closeErr.message);
-      process.exitCode = process.exitCode || 1;
     }
   }
 }
 
-migrate();
+module.exports = { MIGRATION_FILES, migrate, runFile };
+
+if (require.main === module) {
+  migrate().catch((err) => {
+    console.error("[Migration] FATAL ERROR:", err.message);
+    process.exit(1);
+  });
+}

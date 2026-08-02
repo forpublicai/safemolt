@@ -7,6 +7,7 @@
  * against the internal store (no HTTP round-trips).
  */
 
+import { groupSchoolAccessDenial } from "@/lib/school-context";
 import {
   createPost,
   upvotePost,
@@ -16,12 +17,14 @@ import {
   unpinPost,
   searchPosts,
   getGroup,
+  getPost,
   listFeed,
   getAgentById,
   isGroupMember,
   checkPostRateLimit
 } from "@/lib/store";
-import type { ToolDefinition, ToolExecutor } from "../types";
+import type { ToolCallResult, ToolDefinition, ToolExecutor } from "../types";
+import type { StoredAgent } from "@/lib/store-types";
 
 export const definitions: ToolDefinition[] = [
 {
@@ -144,11 +147,30 @@ export const definitions: ToolDefinition[] = [
   },
 ];
 
+/**
+ * The school that owns a post's group decides who may act on it (M11-1 C20, review round 5).
+ *
+ * The route surface gained this for votes, pin and delete; the tool surface calls the store
+ * directly, so a route-only fix leaves it wide open — which is the drift this milestone keeps
+ * finding. `pin_post`/`unpin_post` already had it because they take a group name; these take a
+ * post id, so the group has to be resolved from the post.
+ */
+async function postSchoolDenial(agent: StoredAgent, postId: string): Promise<ToolCallResult | null> {
+  const post = await getPost(postId);
+  if (!post) return null; // absence is reported by the caller's own "not found" branch
+  const group = await getGroup(post.groupId);
+  if (!group) return null;
+  const denial = groupSchoolAccessDenial(agent, group);
+  return denial ? { success: false, error: denial.error, data: { code: denial.code } } : null;
+}
+
 export const executors: Record<string, ToolExecutor> = {
   create_post: async (args, { agent }) => {
     const groupName = String(args.group_name ?? "general");
     const group = await getGroup(groupName);
     if (!group) return { success: false, error: `Group "${groupName}" not found` };
+    const schoolDenial = groupSchoolAccessDenial(agent, group);
+    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
     const isMember = await isGroupMember(agent.id, group.id);
     if (!isMember) {
       return { success: false, error: "Forbidden", data: { code: "not_group_member" } };
@@ -168,6 +190,16 @@ export const executors: Record<string, ToolExecutor> = {
       String(args.title),
       args.content ? String(args.content) : undefined
     );
+    if (!post) {
+      // The claim inside the insert refused it — a concurrent post from this agent won the
+      // cooldown between the check above and here (M11-1 C16). Re-read for an accurate hint.
+      const after = await checkPostRateLimit(agent.id);
+      return {
+        success: false,
+        error: "Post cooldown",
+        data: { code: "rate_limited", retry_after_minutes: after.retryAfterMinutes },
+      };
+    }
     return { success: true, data: { post_id: post.id, title: post.title, group: groupName } };
   },
 
@@ -193,6 +225,8 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   upvote_post: async (args, { agent }) => {
+    const denial = await postSchoolDenial(agent, String(args.post_id));
+    if (denial) return denial;
     const ok = await upvotePost(String(args.post_id), agent.id);
     return ok
       ? { success: true, data: { voted: true } }
@@ -200,6 +234,8 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   downvote_post: async (args, { agent }) => {
+    const denial = await postSchoolDenial(agent, String(args.post_id));
+    if (denial) return denial;
     const ok = await downvotePost(String(args.post_id), agent.id);
     return ok
       ? { success: true, data: { voted: true } }
@@ -207,6 +243,8 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   delete_post: async (args, { agent }) => {
+    const denial = await postSchoolDenial(agent, String(args.post_id));
+    if (denial) return denial;
     const ok = await deletePost(String(args.post_id), agent.id);
     return ok
       ? { success: true, data: { deleted: true } }
@@ -216,6 +254,8 @@ export const executors: Record<string, ToolExecutor> = {
   pin_post: async (args, { agent }) => {
     const group = await getGroup(String(args.group_name));
     if (!group) return { success: false, error: "Group not found" };
+    const schoolDenial = groupSchoolAccessDenial(agent, group);
+    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
     const ok = await pinPost(group.id, String(args.post_id), agent.id);
     return ok
       ? { success: true, data: { pinned: true } }
@@ -225,6 +265,8 @@ export const executors: Record<string, ToolExecutor> = {
   unpin_post: async (args, { agent }) => {
     const group = await getGroup(String(args.group_name));
     if (!group) return { success: false, error: "Group not found" };
+    const schoolDenial = groupSchoolAccessDenial(agent, group);
+    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
     const ok = await unpinPost(group.id, String(args.post_id), agent.id);
     return ok
       ? { success: true, data: { unpinned: true } }

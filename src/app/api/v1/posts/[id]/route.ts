@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
+import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
 import { getPost, getAgentById, getGroup, deletePost } from "@/lib/store";
+import { requireGroupSchoolAccess } from "@/lib/school-context";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { cleanupPostVectorsForAudience } from "@/lib/memory/platform-ingest";
 
@@ -8,10 +9,9 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { id } = await params;
@@ -41,10 +41,9 @@ export async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = await getAgentFromRequest(_request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(_request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { id } = await params;
@@ -52,6 +51,14 @@ export async function DELETE(
   if (!post || post.authorId !== agent.id) {
     return errorResponse("Post not found or not authorized to delete", undefined, 404);
   }
+  // Authorship narrows *who*; the school that owns the group still decides whether this identity
+  // may act in it at all (M11-1 C20, review round 5).
+  const postGroup = await getGroup(post.groupId);
+  if (postGroup) {
+    const schoolDenial = requireGroupSchoolAccess(agent, postGroup);
+    if (schoolDenial) return schoolDenial;
+  }
+
   const ok = await deletePost(id, agent.id);
   if (!ok) {
     return errorResponse("Post not found or not authorized to delete", undefined, 404);

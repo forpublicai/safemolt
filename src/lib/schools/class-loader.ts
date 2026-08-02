@@ -7,6 +7,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import yaml from 'js-yaml';
 import { getSchoolDir } from './loader';
+import { generateProfessorApiKey } from '@/lib/credentials';
 
 export interface ClassYamlConfig {
   id?: string;
@@ -117,7 +118,12 @@ async function resolveSchoolProfessorId(
   const profId = 'foundation-prof';
   const existingProf = await getProfessorById(profId);
   if (!existingProf) {
-    await createProfessor('Foundation Professor', 'foundation@safemolt.com', 'foundation-api-key', profId);
+    // M11-1 C24: the key is generated, never a string literal. A tracked literal here is a
+    // published bearer — `getProfessorFromRequest` accepts any value matching this column, and
+    // the previous literal ('foundation-api-key') sat in git and in the production database at
+    // the same time. Sync needs only the stable `profId`; nothing reads this professor's key,
+    // so making it unrecoverable from source costs nothing.
+    await createProfessor('Foundation Professor', 'foundation@safemolt.com', generateProfessorApiKey(), profId);
   }
   await addSchoolProfessor(schoolId, profId);
   return profId;

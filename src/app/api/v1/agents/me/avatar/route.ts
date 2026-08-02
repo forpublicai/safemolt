@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
+import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
 import { setAgentAvatar, clearAgentAvatar } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
@@ -7,10 +7,9 @@ const MAX_SIZE = 500 * 1024; // 500 KB
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 
 export async function POST(request: NextRequest) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   try {
@@ -40,10 +39,9 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: Request) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   await clearAgentAvatar(agent.id);

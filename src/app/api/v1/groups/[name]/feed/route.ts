@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
+import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
 import { listPosts, getGroup, getAgentById } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
@@ -7,10 +7,9 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name: rawName } = await params;

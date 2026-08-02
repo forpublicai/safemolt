@@ -5,9 +5,11 @@
   "scripts": {
     "dev": "next dev",
     "build": "node scripts/migrate.js && next build",
+    "build:integration": "node scripts/integration/build.js",
     "start": "next start",
     "lint": "next lint",
     "test": "jest",
+    "test:integration": "node scripts/integration/run.js",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "db:migrate": "node scripts/migrate.js",

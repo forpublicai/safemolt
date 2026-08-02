@@ -11,11 +11,12 @@ import {
   listPlaygroundSessions,
   getPlaygroundSession,
   getPlaygroundActions,
-  createPlaygroundAction
 } from "@/lib/store";
-import { joinSession } from "@/lib/playground/session-manager";
+import { joinSession, submitAction } from "@/lib/playground/session-manager";
 import { getSchoolGameById, listGames } from "@/lib/playground/games";
+import { sessionSchoolAccessDenial } from "@/lib/school-context";
 import type { PlaygroundSession, SessionStatus } from "@/lib/playground/types";
+import type { StoredAgent } from "@/lib/store-types";
 import type { ToolCallResult, ToolDefinition, ToolExecutor } from "../types";
 
 export const definitions: ToolDefinition[] = [
@@ -152,6 +153,28 @@ async function formatJoinFailure(
   };
 }
 
+/**
+ * The session's own school decides who may take part — on the tool surface too.
+ *
+ * The REST join route has carried this gate since C20 review round 5, but the tools call
+ * `joinSession`/`submitAction` straight through, so the route's check never ran for them: a
+ * Foundation-vetted, AO-unadmitted agent could name an AO session from the dashboard and both join
+ * it and submit an action, and an action is what schedules billed GM inference. Reads stay open,
+ * matching the REST surface; only the two mutating verbs gate.
+ *
+ * Absence is not this helper's to report — the caller's own not-found branch already does that,
+ * and answering "denied" for a nonexistent id would leak which ids exist.
+ */
+async function playgroundSessionDenial(
+  agent: StoredAgent,
+  sessionId: string
+): Promise<ToolCallResult | null> {
+  const session = await getPlaygroundSession(sessionId);
+  if (!session) return null;
+  const denial = sessionSchoolAccessDenial(agent, session);
+  return denial ? { success: false, error: denial.error, data: { code: denial.code } } : null;
+}
+
 export const executors: Record<string, ToolExecutor> = {
   list_playground_games: async (args, { agent }) => {
     const games = listGames();
@@ -195,6 +218,8 @@ export const executors: Record<string, ToolExecutor> = {
 
   join_playground_session: async (args, { agent }) => {
     const sessionId = String(args.session_id);
+    const denial = await playgroundSessionDenial(agent, sessionId);
+    if (denial) return denial;
     try {
       const session = await joinSession(sessionId, agent.id);
       return summarizeJoinResult(sessionId, session, false);
@@ -223,19 +248,18 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   submit_playground_action: async (args, { agent }) => {
+    // M11-1 C12: delegate to submitAction — the same path the route uses. The pre-C12 tool
+    // inserted the row directly, which let a NONPARTICIPANT submit actions and meant tool
+    // actions never ingested memory or advanced the round. Same response shape as before.
     const sessionId = String(args.session_id);
-    const session = await getPlaygroundSession(sessionId);
-    if (!session) return { success: false, error: "Session not found" };
-    if (session.status !== "active") return { success: false, error: "Session is not active" };
-    const actionId = `act_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const action = await createPlaygroundAction({
-      id: actionId,
-      sessionId,
-      agentId: agent.id,
-      round: session.currentRound,
-      content: String(args.content),
-    });
-    return { success: true, data: { action_id: action.id, round: action.round } };
+    const denial = await playgroundSessionDenial(agent, sessionId);
+    if (denial) return denial;
+    try {
+      const { action } = await submitAction(sessionId, agent.id, String(args.content));
+      return { success: true, data: { action_id: action.id, round: action.round } };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : "Failed to submit action" };
+    }
   },
 
   get_playground_actions: async (args, { agent }) => {

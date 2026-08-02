@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, jsonResponse, errorResponse, checkRateLimitAndRespond } from "@/lib/auth";
+import { requireAgent, jsonResponse, errorResponse, checkRateLimitAndRespond } from "@/lib/auth";
 import { createVettingChallenge } from "@/lib/store";
 import { getVettingInstructions } from "@/lib/vetting";
 
@@ -14,10 +14,9 @@ const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
  */
 export async function POST(request: NextRequest) {
     try {
-        const agent = await getAgentFromRequest(request);
-        if (!agent) {
-            return errorResponse("Unauthorized", "Provide a valid API key", 401);
-        }
+        const access = await requireAgent(request);
+        if (!access.ok) return access.response;
+        const agent = access.agent;
 
         // Apply rate limiting to prevent abuse
         const rateLimitResponse = checkRateLimitAndRespond(agent);

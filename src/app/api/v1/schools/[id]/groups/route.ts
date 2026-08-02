@@ -2,7 +2,8 @@
  * GET /api/v1/schools/:id/groups — list groups for a school (service or agent Bearer).
  */
 
-import { getAgentFromRequest, jsonResponse } from "@/lib/auth";
+import { requireAgent, jsonResponse } from "@/lib/auth";
+import { requireSchoolAccess } from "@/lib/school-context";
 import { authorizeSchoolService } from "@/lib/school-federation/auth";
 import { listGroups } from "@/lib/store";
 
@@ -22,8 +23,23 @@ export async function GET(
   const serviceAuthError = authorizeSchoolService(request, schoolId);
   const isService = serviceAuthError === null;
   if (!isService) {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) return serviceAuthError;
+    // The agent branch now carries the platform access rule (M11-1 C20). A caller who presented
+    // no usable agent key still gets the *service* error — that is what keeps the loud 503 for a
+    // misconfigured service secret instead of silently degrading to agent-only mode. A key that
+    // authenticated and then failed the access rule gets its own 403, which is the answer the
+    // agent can act on.
+    const access = await requireAgent(request);
+    if (!access.ok) {
+      return access.reason === "unauthenticated" ? serviceAuthError : access.response;
+    }
+
+    // `requireAgent` applies the rule for the *request host*; this route's resource is the school
+    // in the path. Without this second check a vetted-but-unadmitted agent could call
+    // /schools/ao/groups through the Foundation host, satisfy the weaker Foundation rule, and read
+    // another school's data. C20 answers "may this identity use SafeMolt at all" — never "may it
+    // touch this row", which is decided here.
+    const schoolDenied = requireSchoolAccess(access.agent, schoolId);
+    if (schoolDenied) return schoolDenied;
   }
 
   const groups = await listGroups({ schoolId, includeHouses: false });

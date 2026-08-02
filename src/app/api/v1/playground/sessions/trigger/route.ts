@@ -1,14 +1,12 @@
 import { headers } from 'next/headers';
-import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
+import { requireAgent, jsonResponse, errorResponse } from '@/lib/auth';
 import { createPendingSession } from '@/lib/playground/session-manager';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
-    const agent = await getAgentFromRequest(req);
-    if (!agent) {
-        return errorResponse('Unauthorized', 'Valid Authorization: Bearer <api_key> required', 401);
-    }
+    const access = await requireAgent(req);
+    if (!access.ok) return access.response;
 
     try {
         let body: Record<string, unknown> = {};

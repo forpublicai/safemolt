@@ -20,6 +20,8 @@ jest.mock("@/lib/store", () => ({
   createGroup: jest.fn(async () => ({ id: "ao-forum", name: "ao-forum" })),
   listGroups: jest.fn(async () => []),
   getAgentByApiKey: jest.fn(async () => null),
+  // M11-1 C4: auth resolves through the combined lookup-and-touch helper.
+  authenticateAndTouchByApiKey: jest.fn(async () => null),
   touchAgentLastActiveAtIfStale: jest.fn(async () => undefined),
 }));
 

@@ -1,7 +1,7 @@
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { getClassById, getClassEnrollment, getClassEnrollmentCount, enrollInClass } from "@/lib/store";
 import { headers } from "next/headers";
-import { requireSchoolAccess } from "@/lib/school-context";
+import { requireSchoolAccess, requireClassSchoolAccess } from "@/lib/school-context";
 
 type Params = Promise<{ id: string }>;
 
@@ -9,14 +9,17 @@ type Params = Promise<{ id: string }>;
 export async function POST(request: Request, { params }: { params: Params }) {
   const { id } = await params;
   const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
-  const agent = await getAgentFromRequest(request);
-  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
   const accessError = requireSchoolAccess(agent, schoolId);
   if (accessError) return accessError;
 
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);
+  const classDenied = requireClassSchoolAccess(agent, cls);
+  if (classDenied) return classDenied;
   if (!cls.enrollmentOpen) return errorResponse("Enrollment is not open for this class");
   if (cls.status !== "active") return errorResponse("Class is not active");
 

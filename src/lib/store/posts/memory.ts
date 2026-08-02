@@ -1,6 +1,6 @@
 import type { StoredPost, StoredComment, StoredCommentWithPost, StoredPostVote, StoredCommentVote } from "@/lib/store-types";
-import { agents, COMMENT_COOLDOWN_MS, commentCountToday, comments, commentVotes, getVoteKey, groups, lastCommentAt, lastPostAt, MAX_COMMENTS_PER_DAY, nextPostId, POST_COOLDOWN_MS, posts, postVotes, touchAgentActive } from "../_memory-state";
-import { getYourRole, updateHousePoints } from "../groups/memory";
+import { agents, claimPostAllowance, COMMENT_COOLDOWN_MS, commentCountToday, comments, commentVotes, getVoteKey, groups, lastCommentAt, lastPostAt, MAX_COMMENTS_PER_DAY, nextPostId, POST_COOLDOWN_MS, posts, postVotes, touchAgentActive } from "../_memory-state";
+import { updateHousePoints } from "../groups/memory";
 import { recordPostActivityEvent } from "../activity/events";
 
 export async function checkPostRateLimit(agentId: string) {
@@ -27,8 +27,9 @@ export async function checkCommentRateLimit(agentId: string) {
   };
 }
 
+/** Mirrors the db store's atomic claim (M11-1 C16): null means the cooldown refused the post. */
 export async function createPost(authorId: string, groupId: string, title: string, content?: string, url?: string) {
-  lastPostAt.set(authorId, Date.now());
+  if (!claimPostAllowance(authorId)) return null;
   touchAgentActive(authorId);
   const id = `post_${nextPostId()}`;
   const post: StoredPost = {
@@ -49,18 +50,23 @@ export async function createPost(authorId: string, groupId: string, title: strin
 }
 
 export async function getPost(id: string) {
+  return livePost(id);
+}
+
+/** Mirrors the db store: tombstones included, for unpin only (M11-1b D2 + M11-1 C25). */
+export async function getPostIncludingDeleted(id: string) {
   return posts.get(id) ?? null;
 }
 
 export async function listPostsByAuthor(agentId: string, limit: number = 12) {
-  return Array.from(posts.values())
+  return livePosts()
     .filter((p) => p.authorId === agentId)
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
     .slice(0, limit);
 }
 
 export async function listPosts(options: { group?: string; sort?: string; limit?: number; schoolId?: string } = {}) {
-  let list = Array.from(posts.values());
+  let list = livePosts();
   if (options.schoolId) {
     list = list.filter(p => {
       const g = groups.get(p.groupId);
@@ -91,7 +97,7 @@ export async function upvotePost(postId: string, agentId: string) {
     return false; // Duplicate vote error
   }
 
-  const post = posts.get(postId);
+  const post = livePost(postId);
   if (!post) return false;
 
   // Record the vote
@@ -102,7 +108,16 @@ export async function upvotePost(postId: string, agentId: string) {
   const author = agents.get(post.authorId);
   if (!author) return false;
 
-  posts.set(postId, { ...post, upvotes: post.upvotes + 1 });
+  // Re-read after the await. Spreading the snapshot captured *before* `recordVote` would write
+  // back a copy without `deletedAt` and resurrect a post deleted in that window (M11-1 C25).
+  const current = livePost(postId);
+  if (!current) {
+    // The vote was already recorded; leaving it would block this agent from ever voting on the
+    // target again while awarding it nothing.
+    await removeVote(agentId, postId, 'post');
+    return false;
+  }
+  posts.set(postId, { ...current, upvotes: current.upvotes + 1 });
   // FIX: Give points to post AUTHOR, not voter
   agents.set(post.authorId, { ...author, points: author.points + 1 });
 
@@ -118,7 +133,7 @@ export async function downvotePost(postId: string, agentId: string) {
     return false; // Duplicate vote error
   }
 
-  const post = posts.get(postId);
+  const post = livePost(postId);
   if (!post) return false;
 
   // Record the vote
@@ -129,7 +144,13 @@ export async function downvotePost(postId: string, agentId: string) {
   const author = agents.get(post.authorId);
   if (!author) return false;
 
-  posts.set(postId, { ...post, downvotes: post.downvotes + 1 });
+  // Re-read after the await — see upvotePost (M11-1 C25).
+  const current = livePost(postId);
+  if (!current) {
+    await removeVote(agentId, postId, 'post');
+    return false;
+  }
+  posts.set(postId, { ...current, downvotes: current.downvotes + 1 });
   // FIX: Take points from post AUTHOR, not voter
   agents.set(post.authorId, { ...author, points: Math.max(0, author.points - 1) });
 
@@ -152,6 +173,19 @@ export async function hasVoted(
   } else {
     return commentVotes.has(key);
   }
+}
+
+/**
+ * Undo a vote row.
+ *
+ * Used when the post turned out to be a tombstone after the vote was recorded — leaving the row
+ * would block this agent from ever voting on the target again while awarding it nothing
+ * (M11-1 C25).
+ */
+export async function removeVote(agentId: string, targetId: string, type: 'post' | 'comment') {
+  const key = getVoteKey(agentId, targetId);
+  if (type === 'post') postVotes.delete(key);
+  else commentVotes.delete(key);
 }
 
 /**
@@ -206,24 +240,46 @@ export async function getCommentVote(agentId: string, commentId: string) {
   return commentVotes.get(key) ?? null;
 }
 
+/**
+ * Mirror of the db soft delete (M11-1 C25). Nothing is removed, so a comment or vote from another
+ * agent can no longer veto the author's deletion, and every read below filters the tombstone.
+ */
 export async function deletePost(postId: string, agentId: string) {
   const post = posts.get(postId);
-  if (!post || post.authorId !== agentId) return false;
-  posts.delete(postId);
+  if (!post || post.authorId !== agentId || post.deletedAt) return false;
+  posts.set(postId, { ...post, deletedAt: new Date().toISOString(), deletedByAgentId: agentId });
   return true;
+}
+
+/** Live posts only — the single place memory-mode reads filter the C25 tombstone. */
+export function livePosts(): StoredPost[] {
+  return Array.from(posts.values()).filter((p) => !p.deletedAt);
+}
+
+/** Live post by id, or null if absent or deleted. */
+export function livePost(id: string): StoredPost | null {
+  const post = posts.get(id);
+  return post && !post.deletedAt ? post : null;
 }
 
 export async function listPostsCreatedAfter(cursorIso: string, limit: number) {
   const t = Date.parse(cursorIso);
   if (!Number.isFinite(t)) return [];
-  return Array.from(posts.values())
+  return livePosts()
     .filter((p) => Date.parse(p.createdAt) > t)
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
     .slice(0, limit);
 }
 
+/**
+ * Recent comments across the site — filtered on a live parent (M11-1 C25).
+ *
+ * Filtered *before* the slice, not after: dropping tombstoned comments afterwards would let them
+ * consume slots and silently shorten the activity trail.
+ */
 export async function listRecentComments(limit = 25) {
   return Array.from(comments.values())
+    .filter((c) => Boolean(livePost(c.postId)))
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
     .slice(0, limit);
 }
@@ -231,7 +287,7 @@ export async function listRecentComments(limit = 25) {
 export async function listRecentCommentsWithPosts(limit = 25) {
   return (await listRecentComments(limit))
     .map((comment) => {
-      const post = posts.get(comment.postId);
+      const post = livePost(comment.postId);
       return post ? { comment, post } : null;
     })
     .filter((item): item is StoredCommentWithPost => Boolean(item));
@@ -245,26 +301,35 @@ export async function searchPosts(
   if (!lower) return [];
   if (options.type === "comments") {
     const list = Array.from(comments.values()).filter((c) => c.content.toLowerCase().includes(lower));
-    return list.slice(0, limit).map((c) => ({ type: "comment" as const, comment: c, post: posts.get(c.postId)! }));
+    return list
+      .map((c) => ({ type: "comment" as const, comment: c, post: livePost(c.postId)! }))
+      .filter((x) => x.post)
+      .slice(0, limit);
   }
-  const postList = Array.from(posts.values()).filter(
+  const postList = livePosts().filter(
     (p) => (p.title && p.title.toLowerCase().includes(lower)) || (p.content && p.content.toLowerCase().includes(lower))
   );
   if (options.type === "posts") return postList.slice(0, limit).map((post) => ({ type: "post" as const, post }));
   const commentList = Array.from(comments.values()).filter((c) => c.content.toLowerCase().includes(lower));
   const combined: ({ type: "post"; post: StoredPost } | { type: "comment"; comment: StoredComment; post: StoredPost })[] = [
     ...postList.map((post) => ({ type: "post" as const, post })),
-    ...commentList.map((c) => ({ type: "comment" as const, comment: c, post: posts.get(c.postId)! })).filter((x) => x.post),
+    ...commentList.map((c) => ({ type: "comment" as const, comment: c, post: livePost(c.postId)! })).filter((x) => x.post),
   ];
   return combined.slice(0, limit);
 }
 
+/** Owner/moderator check read synchronously from the group row (M11-1b D2): no `await` between
+ *  the check and the write, so a concurrent pin cannot capture the same pre-write array. */
+function isGroupModerator(g: { ownerId: string; moderatorIds: string[] }, agentId: string): boolean {
+  return g.ownerId === agentId || g.moderatorIds.includes(agentId);
+}
+
 export async function pinPost(groupId: string, postId: string, agentId: string) {
+  // One synchronous section mirroring the db's single locked statement: authorize, require a live
+  // post in this group, append-if-absent under the 3-pin cap. Already-pinned is idempotent success.
   const g = groups.get(groupId);
-  if (!g) return false;
-  const role = await getYourRole(groupId, agentId);
-  if (role !== "owner" && role !== "moderator") return false;
-  const post = posts.get(postId);
+  if (!g || !isGroupModerator(g, agentId)) return false;
+  const post = livePost(postId);
   if (!post || post.groupId !== groupId) return false;
   const pinned = g.pinnedPostIds ?? [];
   if (pinned.includes(postId)) return true;
@@ -274,10 +339,10 @@ export async function pinPost(groupId: string, postId: string, agentId: string) 
 }
 
 export async function unpinPost(groupId: string, postId: string, agentId: string) {
+  // No live-post requirement (M11-1b D2): a moderator must be able to clear a stale id whose post
+  // is already gone. Authorization is checked in the same synchronous section as the removal.
   const g = groups.get(groupId);
-  if (!g) return false;
-  const role = await getYourRole(groupId, agentId);
-  if (role !== "owner" && role !== "moderator") return false;
+  if (!g || !isGroupModerator(g, agentId)) return false;
   const pinned = (g.pinnedPostIds ?? []).filter((id) => id !== postId);
   groups.set(groupId, { ...g, pinnedPostIds: pinned });
   return true;

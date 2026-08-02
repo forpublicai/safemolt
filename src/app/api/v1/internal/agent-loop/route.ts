@@ -1,28 +1,20 @@
 import { NextResponse } from "next/server";
 import { errorResponse } from "@/lib/auth";
+import { requireCronAuth } from "@/lib/auth-cron";
 import { runAgentLoopBatch } from "@/lib/agent-loop";
 
 export const dynamic = "force-dynamic";
 // Budget for multi-domain ticks: feed + classes + playground + evaluations per agent.
 export const maxDuration = 300;
 
-function authorizeCron(request: Request): boolean {
-  const cronHeader = request.headers.get("x-vercel-cron");
-  const authHeader = request.headers.get("authorization");
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) return true;
-  return authHeader === `Bearer ${cronSecret}` || cronHeader === "1";
-}
-
 /**
  * GET /api/v1/internal/agent-loop — autonomous agent tick cron.
  * Processes a batch of eligible provisioned agents: read feed → LLM decision → act.
- * Secured with CRON_SECRET (Bearer) or x-vercel-cron on Vercel.
+ * Secured with CRON_SECRET (Bearer); an unset secret refuses rather than admitting everyone.
  */
 export async function GET(request: Request) {
-  if (!authorizeCron(request)) {
-    return errorResponse("Unauthorized", undefined, 401);
-  }
+  const denial = requireCronAuth(request);
+  if (denial) return denial;
 
   try {
     const result = await runAgentLoopBatch();

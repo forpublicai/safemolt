@@ -115,6 +115,8 @@ export interface PostRow {
   downvotes: number | string;
   comment_count: number | string;
   created_at: unknown;
+  deleted_at?: unknown;
+  deleted_by_agent_id?: string | null;
 }
 
 export function rowToPost(row: Record<string, unknown>): StoredPost {
@@ -130,6 +132,8 @@ export function rowToPost(row: Record<string, unknown>): StoredPost {
     downvotes: Number(r.downvotes),
     commentCount: Number(r.comment_count),
     createdAt: toIsoOrEmpty(r.created_at),
+    ...(r.deleted_at ? { deletedAt: toIsoOrEmpty(r.deleted_at) } : {}),
+    ...(r.deleted_by_agent_id ? { deletedByAgentId: r.deleted_by_agent_id } : {}),
   };
 }
 

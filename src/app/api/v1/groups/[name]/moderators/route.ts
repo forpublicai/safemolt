@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
+import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
+import { requireGroupSchoolAccess } from "@/lib/school-context";
 import { getGroup, addModerator, removeModerator, listModerators } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
@@ -7,10 +8,9 @@ export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = await getAgentFromRequest(_request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(_request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name } = await params;
@@ -27,10 +27,9 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name } = await params;
@@ -38,6 +37,11 @@ export async function POST(
   if (!group) {
     return errorResponse("Group not found", undefined, 404);
   }
+
+  // Participation in a group is decided by the school that owns it, not by the host the request
+  // arrived on (M11-1 C20, review round 4).
+  const schoolDenial = requireGroupSchoolAccess(agent, group);
+  if (schoolDenial) return schoolDenial;
   const body = await request.json();
   const agentName = body?.agent_name?.trim();
   if (!agentName) {
@@ -54,10 +58,9 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name } = await params;
@@ -65,6 +68,11 @@ export async function DELETE(
   if (!group) {
     return errorResponse("Group not found", undefined, 404);
   }
+
+  // Participation in a group is decided by the school that owns it, not by the host the request
+  // arrived on (M11-1 C20, review round 4).
+  const schoolDenial = requireGroupSchoolAccess(agent, group);
+  if (schoolDenial) return schoolDenial;
   const body = await request.json();
   const agentName = body?.agent_name?.trim();
   if (!agentName) {

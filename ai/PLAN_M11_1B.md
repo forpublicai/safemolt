@@ -182,7 +182,150 @@ Release gates:
 
 ## AI VALIDATION RESULTS (how did the Executor show that it was done?)
 
-Filled during execution.
+### D3 — `createComment` same-post parent validation ✅ *(landed 2026-07-31)*
+
+**The store** (`comments/db.ts`): `createComment` became one `sql.transaction` batch whose first
+element takes the post lock (`FOR SHARE`) and **holds it to commit** — the pre-D3 shape freed the
+post the moment the insert auto-committed, so a concurrent delete could finish its cleanup before
+the counter and the notification landed (notifications carry no post FK), recreating dead links.
+The decisive statement answers four questions at once via CTEs: post live (C25's tombstone lock),
+**parent is a comment ON THIS POST** (`parent_ok` — the new D3 gate, a `UNION ALL` of "no parent"
+and "parent joined to the live post"), the C16 quota claim (gated on `parent_ok` so an invalid
+parent costs no allowance), and the insert. Every later element (counter, `last_active_at`, the
+recipient-derived notification) re-gates on `EXISTS (SELECT 1 FROM comments WHERE id = $id)`. A
+23503 from a parent hard-deleted between the snapshot read and the FK check is caught and returned
+as the same clean refusal, not a 500. Memory mirrors it: parent validated before the quota claim,
+one synchronous section. The comment **activity** event stays a post-commit follow-up (its writer
+is an upsert + cache-invalidation pair behind one helper; making it a batch element is D4's
+"batchable dependencies", not D3's — a dead activity row from an adjacent delete is D1's sweep's).
+
+**Both callers** (route + tool) now validate the parent **before** the rate-limit check — the pre-D3
+order gave a rate-limited caller with an invalid parent the rate-limit shape, promising a
+precedence the code did not have. Stable code `invalid_parent`; both are enumerated behavior
+corrections (Locked decision 2).
+
+**Gates.** Memory (4 green in `d3-parent-validation.test.ts`): cross-post parent rejected with no
+quota burned and nothing written; nonexistent parent rejected; same-post reply unchanged;
+**rate-limited-caller-with-invalid-parent gets `invalid_parent`, never the 429** via the tool;
+cross-post via the tool with the same code. Integration (4 green in `d3-comment-parent.test.ts`):
+cross-post parent writes nothing / costs no quota / fabricates no notification; a same-post reply
+lands with its counter, quota claim, and reply notification **in one commit**; **parent
+hard-deleted mid-insert resolves as a clean refusal, not a 23503 leak**; **delete-vs-comment race
+— a post soft-deleted mid-flight admits nothing** (no comment, no counter, no notification), the
+batch (not just the insert) protected, observed via `pg_blocking_pids` on the batch's opening post
+lock. The C16 and C25 suites' comment-race markers were re-pointed to the batch's `d3:comment-post-lock`
+marker (the block now happens at the batch's first statement). Suite-wide: unit 117/765,
+integration 20/176, `tsc` clean, lint 93 (two D3 extractions paid: `writeComment` in the route,
+`notifyCommentTarget` in the memory store).
+
+**Amended after review round 10 (2026-07-31):** the comment **activity row is now a batch
+element**, not a post-commit follow-up. The first draft deferred it to D4's "batchable
+dependencies" work; the reviewer refused that reading of D3's own gate ("comment counter,
+rate-limit state, activity row, and notification" in one transaction) and was right — a
+post-commit upsert can land after a concurrent delete released the post lock and project a dead
+`/post/...` event. `buildCommentActivityUpsert` in `store/activity/events.ts` exposes the writer
+as a **prepared query** (the D4 technique, borrowed early rather than forking the SQL) with a
+`requireCommitted` join gating it on the comment row and `p.deleted_at IS NULL` on the post join;
+only the cache invalidation stays post-commit, because invalidating for a rolled-back transaction
+would be wrong. Memory mode re-checks the post before each projection. Three added gates: the row
+is present immediately after the call, a quota-refused comment writes none, and the delete race
+leaves none.
+
+**Deploy order** (D3 before D1's sweep) is a runbook constraint, not code — recorded for step-4
+of the M11-1b execution order.
+
+### D2 — `pinPost`/`unpinPost`: locked single-statement writes ✅ *(landed 2026-07-31)*
+
+**`pinPost`** became one CTE statement, **asymmetric with unpin by design**. `locked_post` takes
+**`FOR SHARE`** on the live post — a correction to the plan's `FOR KEY SHARE`: the live delete is
+C25's *soft*-delete (`UPDATE posts SET deleted_at`), which acquires `FOR NO KEY UPDATE`, and
+`FOR KEY SHARE` does **not** conflict with that (only with `FOR UPDATE`), so it would not serialize
+against the real delete path. `FOR SHARE` does — the same lock and reason C25's `createComment`
+uses. Authorization (`owner_id = $agent OR moderator_ids ? $agent`) is the `UPDATE groups`
+predicate, so a revoked moderator cannot slip through a stale pre-check; the append is
+`pinned_post_ids || to_jsonb($post)` under append-if-absent + the 3-pin cap, so concurrent distinct
+pins don't lose updates and a duplicate/4th pin writes nothing. Zero rows are classified by a
+follow-up read (already-pinned = idempotent success).
+
+**`unpinPost`** deliberately does **not** require a live post — a moderator must be able to clear a
+stale id whose post is gone (a live-post lock would make orphaned pins unremovable except through
+D1's sweep). Authorization moved into the decisive `UPDATE groups … RETURNING`.
+
+**Memory**: both do the owner/moderator check and the array write in **one synchronous section**
+(the pre-D2 `await getYourRole` left an interleaving window); `isGroupModerator` reads the group
+row directly.
+
+**Gates.** Memory (3 green): owner/mod/stranger authorization + revoked-mod refusal;
+idempotent-and-capped-at-3; deleted post unpinnable-but-its-stale-pin-removable. Integration (8
+green in `d2-pin-locking.test.ts`): authorization in the decisive statement (revoked-mid-flight
+refused); cap + idempotence; **two concurrent distinct pins both persist**; **the pin-vs-delete
+headline** — a pin racing an in-flight soft-delete blocks (observed via `pg_blocking_pids` on the
+`d2:pin-post-lock` marker) and resolves not_found with no deleted id surviving; the unpin
+asymmetry (stale pin removable, revoked mod refused); a Neon-path pin of an already-tombstoned id
+writes nothing. Suite-wide: unit 768 green, `tsc` clean, lint 93 (no new warnings).
+
+### D5 — Durable playground episodic memories ✅ *(landed 2026-07-31)*
+
+**The table** (`migrate-playground-agent-memories.sql`) is M11-2's P7.2 design lifted verbatim,
+with `PRIMARY KEY (agent_id, session_id)` because that *is* the preserved semantic — one record
+per (agent, session), overwritten each round — and both FKs cascading. Postconditions assert every
+column's `(name, type, nullability)`, the composite PK, and both cascading FKs with their local
+columns (the round-2 lesson: `CREATE TABLE IF NOT EXISTS` is a no-op over a malformed table).
+
+- **Store domain** `store/playground/agent-memories-{db,memory}.ts` behind `pickStore`;
+  `lib/playground/memory.ts` became a thin facade (retrieval stays there — it is pure scoring over
+  the rows the store returns). `importance` round-trips the existing `low | medium | high |
+  critical` label; every field round-trips including the embedding.
+- **The lease gate** (`storePlaygroundMemoryFenced`): the memory upsert is gated on a **live
+  claim** inside one statement (`WITH winner AS (SELECT … WHERE token = $tok AND expires_at >
+  NOW()) INSERT … FROM winner`), so a lease-expired or reclaimed resolver writes nothing. Memory
+  mode does the same check and write in one synchronous section.
+- **Post-CAS reordering**: `resolveClaimedRound` now writes memories *after* inference through the
+  fenced call and **returns early if the gate refuses** — a lease-expired loser writes no memory
+  and schedules no ingestion, the defect the reordering closes. External vector ingestion cannot
+  join the transaction and remains an explicit best-effort residual, scheduled only after the
+  gate confirmed the claim.
+- **RESIDUAL, corrected 2026-08-01 — the gate is the lease, NOT the terminal CAS.** This section
+  and three code comments previously claimed "an advance and its memory either both commit or
+  neither does". That claim was **false** and is withdrawn. `storePlaygroundMemoryFenced` and
+  `applyPlaygroundResolution` are two separate auto-commit statements, so:
+  1. a lease that lapses in the gap leaves the round's memory written for a round that never
+     advanced; and
+  2. `storeRoundMemories` writes one statement per participant, so a mid-loop failure can leave
+     some participants written and others not.
+  Neither is a regression — before D5 these writes had no gate whatsoever — and case 1 is
+  self-healing in the ordinary path, because the reclaimer re-resolves the same round and
+  overwrites the same (agent, session) row. The real fix folds the CAS and every participant
+  upsert into **one** statement: `WITH advanced AS (UPDATE … WHERE <fence> RETURNING id)` feeding
+  an `INSERT … SELECT … FROM jsonb_to_recordset($payload) CROSS JOIN advanced`, so a losing CAS
+  writes zero memories. That change touches `applyPlaygroundResolution`'s signature (a C12
+  surface) and needs its own gates and review round, so it is **deferred to a follow-up change**
+  rather than folded into this one. The lesson is the standing one: a comment asserting atomicity
+  is a claim, and a claim needs the statement boundary to back it.
+- **Actor-keyed ingest chunk ids**: `schedulePlaygroundMemoryIngest` takes the created action's
+  row id (which `submitAction` used to discard; C12's gated insert returns it) and the chunk hash
+  becomes `session|round|kind|actionId|index`. GM/summary chunks have no action row and keep the
+  original derivation — asserted, not assumed.
+- **Cleanup**: cancellation is a *transition* since C3, so no cascade fires — both stores sweep
+  the session's memories explicitly in the transition. `clearAgentMemories` is new and wired into
+  the memory-mode agent delete (db cascades).
+
+**Gates.** Memory (8 green in `d5-durable-memories.test.ts`): one-record-per-(agent,session)
+overwrite; full field round-trip; retrieval still scores over stored rows; the fence refusing a
+wrong token, a stale round, and admitting the live claimant; cancellation sweep;
+agent/session-scoped sweeps touching only their own rows; **same-round actions by two agents
+produce distinct chunk ids while GM chunks are unchanged**. Integration (9 green in
+`d5-playground-memories.test.ts`): **a memory written by one module registry is readable from a
+fresh one** — the no-vanishing headline, unobservable before the table existed; overwrite-per-round;
+the fence refusing wrong token / stale round / **lapsed lease** and admitting the live claim;
+cancellation sweep with the session surviving as `cancelled`; agent and session FK cascades; the
+agent-scoped sweep; migration through the real runner plus PK/FK shape.
+
+**Suite-wide after D5:** unit **120 suites / 780 tests** green · integration **22 suites / 197
+tests** green · `tsc` clean · `npm run lint` **93** warnings.
+
+**Remaining M11-1b:** D4 (evaluation completion school identity + the C0 reports), D6 (admissions
+transitions), D1 (post deletion — blocked on OQ-1). **Step 1 (D3, D2, D5) is complete.**
 
 ## USER VALIDATION SUGGESTIONS
 

@@ -1,9 +1,10 @@
-import { errorResponse, getAgentFromRequest, jsonResponse } from "@/lib/auth";
+import { requireAgent, jsonResponse } from "@/lib/auth";
 import { countUnreadNotifications, markAllNotificationsRead } from "@/lib/store";
 
 export async function POST(request: Request) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) return errorResponse("Unauthorized", "Valid Authorization: Bearer *** required", 401);
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
   const result = await markAllNotificationsRead(agent.id);
   const unreadCount = await countUnreadNotifications(agent.id);

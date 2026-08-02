@@ -10,6 +10,8 @@ import { assertSuccessEnvelope, assertErrorEnvelope } from "@/__tests__/helpers/
 
 jest.mock("@/lib/store", () => ({
   getAgentByApiKey: jest.fn(),
+  // M11-1 C4: auth resolves through the combined lookup-and-touch helper.
+  authenticateAndTouchByApiKey: jest.fn(),
   touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
   getAnnouncement: jest.fn().mockResolvedValue(null),
   listGroups: jest.fn().mockResolvedValue([]),
@@ -64,7 +66,7 @@ describe("GET /api/v1/agents/me/home", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.ADMISSIONS_GATE_DISABLED;
-    store.getAgentByApiKey.mockResolvedValue(baseAgent);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(baseAgent);
     store.getAnnouncement.mockResolvedValue(null);
     store.listGroups.mockResolvedValue([]);
     store.isGroupMember.mockResolvedValue(false);
@@ -81,7 +83,7 @@ describe("GET /api/v1/agents/me/home", () => {
   });
 
   it("401 when no Authorization header", async () => {
-    store.getAgentByApiKey.mockResolvedValue(null);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(null);
     const req = new Request("http://localhost/api/v1/agents/me/home");
     const res = await getHome(req);
     expect(res.status).toBe(401);
@@ -188,7 +190,7 @@ describe("GET /api/v1/agents/me/home", () => {
       id: "public_ai_1",
       metadata: { provisioned_public_ai: true },
     };
-    store.getAgentByApiKey.mockResolvedValue(publicAi);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(publicAi);
     humanUsers.listUserIdsLinkedToAgent.mockResolvedValue(["user_secret_1"]);
     loopStateMod.readLoopStateSafely.mockResolvedValue({
       enabled: true,
@@ -228,7 +230,7 @@ describe("GET /api/v1/agents/me/home", () => {
       isClaimed: true,
       owner: "@example",
     };
-    store.getAgentByApiKey.mockResolvedValue(offPlatform);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(offPlatform);
     loopStateMod.readLoopStateSafely.mockResolvedValue(null);
 
     const res = await getHome(makeReq());
@@ -283,7 +285,7 @@ describe("GET /api/v1/agents/me/home", () => {
 
   it("when admissions gate is disabled, does not steer non-admitted agents back into admissions", async () => {
     process.env.ADMISSIONS_GATE_DISABLED = "true";
-    store.getAgentByApiKey.mockResolvedValue({ ...baseAgent, isAdmitted: false });
+    store.authenticateAndTouchByApiKey.mockResolvedValue({ ...baseAgent, isAdmitted: false });
 
     const res = await getHome(makeReq());
     const body = await res.json();
@@ -392,7 +394,7 @@ describe("GET /api/v1/agents/me/home", () => {
       verificationCode: "supersecret_verification_code",
       metadata: { provisioned_public_ai: true, email: "leaked@example.com", cognito_sub: "leaked_sub" },
     };
-    store.getAgentByApiKey.mockResolvedValue(claimed);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(claimed);
     humanUsers.listUserIdsLinkedToAgent.mockResolvedValue(["hu_super_secret_user_id"]);
 
     const res = await getHome(makeReq());
@@ -407,7 +409,7 @@ describe("GET /api/v1/agents/me/home", () => {
   });
 
   it("unvetted agent still receives onboarding next_actions (vetting-exempt)", async () => {
-    store.getAgentByApiKey.mockResolvedValue({ ...baseAgent, isVetted: false });
+    store.authenticateAndTouchByApiKey.mockResolvedValue({ ...baseAgent, isVetted: false });
     const res = await getHome(makeReq());
     expect(res.status).toBe(200);
     const body = await res.json();

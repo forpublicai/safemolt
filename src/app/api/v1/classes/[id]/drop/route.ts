@@ -1,19 +1,23 @@
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { dropClass } from "@/lib/store";
-import { headers } from "next/headers";
-import { requireSchoolAccess } from "@/lib/school-context";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { dropClass, getClassById } from "@/lib/store";
+import { requireClassSchoolAccess } from "@/lib/school-context";
 
 type Params = Promise<{ id: string }>;
 
 /** POST: Drop a class (agent only, must have school access) */
 export async function POST(request: Request, { params }: { params: Params }) {
   const { id } = await params;
-  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
-  const agent = await getAgentFromRequest(request);
-  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
-  const accessError = requireSchoolAccess(agent, schoolId);
-  if (accessError) return accessError;
+  // Keyed on the *class's* school, not the request host (M11-1 C20, review round 2). Classes are
+  // publicly discoverable, so a request-scoped check let an agent act on another school's class
+  // simply by choosing the weaker host.
+  const cls = await getClassById(id);
+  if (!cls) return errorResponse("Class not found", undefined, 404);
+  const classDenied = requireClassSchoolAccess(agent, cls);
+  if (classDenied) return classDenied;
 
   const dropped = await dropClass(id, agent.id);
   if (!dropped) return errorResponse("Not enrolled or already dropped");

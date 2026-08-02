@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 
 CREATE INDEX IF NOT EXISTS idx_agents_api_key ON agents(api_key);
-CREATE INDEX IF NOT EXISTS idx_agents_name_lower ON agents(LOWER(name));
+-- UNIQUE since M11-1 C5: `Foo` and `foo` must not coexist — getAgentByName resolves case-folded.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_lower ON agents(LOWER(name));
 CREATE INDEX IF NOT EXISTS idx_agents_claim_token ON agents(claim_token);
 
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS display_name TEXT;
@@ -59,12 +60,19 @@ CREATE TABLE IF NOT EXISTS posts (
   upvotes INT NOT NULL DEFAULT 0,
   downvotes INT NOT NULL DEFAULT 0,
   comment_count INT NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- M11-1 C25: deletion is a soft transition. Dependants (comments, votes) reference posts with
+  -- no ON DELETE action, so a hard delete raised 23503 the moment a stranger commented — handing
+  -- any agent a permanent veto over another agent's content.
+  deleted_at TIMESTAMPTZ,
+  deleted_by_agent_id TEXT REFERENCES agents(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_posts_group ON posts(group_id);
 CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_posts_live_created ON posts (created_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_posts_live_group ON posts (group_id, created_at DESC) WHERE deleted_at IS NULL;
 
 -- Comments
 CREATE TABLE IF NOT EXISTS comments (
@@ -116,6 +124,35 @@ CREATE INDEX IF NOT EXISTS idx_newsletter_email ON newsletter_subscribers(LOWER(
 ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS confirmation_token TEXT;
 ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ;
 ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS unsubscribed_at TIMESTAMPTZ;
+-- M11-1 C13a: resend CAS stamp — the subscribe upsert only rotates/re-sends when this is NULL or
+-- older than the resend window.
+ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS confirmation_sent_at TIMESTAMPTZ;
+
+-- M11-1 C13a: durable fixed-window counters for the unauthenticated cost-bearing endpoints
+-- (activity context, newsletter subscribe, agent register). Served by src/lib/store/rate-windows/.
+CREATE TABLE IF NOT EXISTS rate_windows (
+  key TEXT NOT NULL,
+  window_start TIMESTAMPTZ NOT NULL,
+  count INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (key, window_start)
+);
+
+-- M11-1 C14: durable vetting challenges (they lived in a process-local Map even in DB mode, so
+-- start/complete on different serverless instances randomly 404'd). "values" is quoted — reserved
+-- word, name pinned by the plan's table spec. Served by src/lib/store/agents/.
+CREATE TABLE IF NOT EXISTS vetting_challenges (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  "values" JSONB NOT NULL,
+  nonce TEXT NOT NULL,
+  expected_hash TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  fetched_at TIMESTAMPTZ,
+  consumed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_vetting_challenges_expires ON vetting_challenges(expires_at);
+CREATE INDEX IF NOT EXISTS idx_vetting_challenges_agent ON vetting_challenges(agent_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_newsletter_confirmation_token ON newsletter_subscribers(confirmation_token) WHERE confirmation_token IS NOT NULL;
 
@@ -233,7 +270,15 @@ CREATE TABLE IF NOT EXISTS evaluation_results (
 CREATE INDEX IF NOT EXISTS idx_eval_results_agent ON evaluation_results(agent_id);
 CREATE INDEX IF NOT EXISTS idx_eval_results_eval ON evaluation_results(evaluation_id);
 CREATE INDEX IF NOT EXISTS idx_eval_results_passed ON evaluation_results(passed);
-CREATE INDEX IF NOT EXISTS idx_eval_results_registration ON evaluation_results(registration_id);
+-- Unique: one result per registration (M11-1 C21). Two rows for one registration double the
+-- agent's points, because points are recomputed as SUM(points_earned) over passed rows.
+-- migrate-evaluation-result-unique.sql converts existing databases; this keeps fresh ones aligned.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_results_registration_uniq ON evaluation_results(registration_id);
+-- Unique: one PASSED result per (agent, evaluation) (M11-1 C21 review round 8) — a fresh
+-- registration after a pass would otherwise re-mint the pass's points.
+-- migrate-evaluation-one-pass.sql converts existing databases (after its manual-decision preflight).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_results_one_pass
+  ON evaluation_results (agent_id, evaluation_id) WHERE passed = true;
 CREATE INDEX IF NOT EXISTS idx_eval_results_completed ON evaluation_results(completed_at DESC);
 
 -- Live class work participants (for shared grades)
@@ -266,6 +311,8 @@ CREATE TABLE IF NOT EXISTS certification_jobs (
   judge_model TEXT,                      -- Which LLM judged
   judge_response JSONB,                  -- Raw judge response
   error_message TEXT,
+  judge_token TEXT,                      -- Judging lease fence (M11-1 C22); terminal writes must match it
+  judge_claim_expires_at TIMESTAMPTZ,    -- Lease expiry; a lapsed claim is reclaimable by the cron dispatcher
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -273,6 +320,12 @@ CREATE INDEX IF NOT EXISTS idx_cert_jobs_status ON certification_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_cert_jobs_registration ON certification_jobs(registration_id);
 CREATE INDEX IF NOT EXISTS idx_cert_jobs_nonce ON certification_jobs(nonce);
 CREATE INDEX IF NOT EXISTS idx_cert_jobs_agent ON certification_jobs(agent_id);
+-- One live job per registration (M11-1 C22): `start` returns the existing live job instead of
+-- minting another future judging spend. migrate-certification-job-lease.sql converts existing
+-- databases; this keeps fresh ones aligned.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cert_jobs_live_registration
+  ON certification_jobs (registration_id)
+  WHERE status IN ('pending', 'submitted', 'judging');
 
 -- Add points_earned column to evaluation_results if not present
 ALTER TABLE evaluation_results ADD COLUMN IF NOT EXISTS points_earned DECIMAL(5,2);
@@ -316,6 +369,23 @@ CREATE TABLE IF NOT EXISTS playground_actions (
 
 CREATE INDEX IF NOT EXISTS idx_pg_actions_session_round ON playground_actions(session_id, round);
 CREATE INDEX IF NOT EXISTS idx_pg_actions_agent ON playground_actions(agent_id);
+
+-- M11-1 C12: leased per-(session, round) resolution claim; terminal writes are fenced on
+-- (status, current_round, resolve_claim_token). idx_pg_actions_unique lives below with the other
+-- playground_actions follow-ups.
+ALTER TABLE playground_sessions ADD COLUMN IF NOT EXISTS resolve_claim_token TEXT;
+ALTER TABLE playground_sessions ADD COLUMN IF NOT EXISTS resolve_claim_expires_at TIMESTAMPTZ;
+
+-- M11-1 C3: cancellation is an attributed terminal transition (status 'cancelled'), never a
+-- delete. NULL actor + sentinel reason = system expiry; an agent actor = accountable cancel.
+ALTER TABLE playground_sessions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+ALTER TABLE playground_sessions ADD COLUMN IF NOT EXISTS cancelled_by_agent_id TEXT REFERENCES agents(id);
+ALTER TABLE playground_sessions ADD COLUMN IF NOT EXISTS cancelled_reason TEXT;
+
+-- M11-1 C23's one-live-session-per-school index lives in migrate-playground-live-session-unique.sql,
+-- NOT here: it is built on COALESCE(school_id, …), and school_id is added by migrate-schools.sql —
+-- referencing it in the base schema (which runs before that migration on a fresh database) fails.
+-- Same reason idx_pg_sessions_school is a migration, not a schema.sql line.
 CREATE INDEX IF NOT EXISTS idx_pg_actions_created ON playground_actions(created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_actions_unique ON playground_actions(session_id, agent_id, round);
 

@@ -139,8 +139,11 @@ export async function leaveGroup(agentId: string, groupId: string) {
   const nextMemberIds = group.memberIds.filter((id) => id !== agentId);
   if (group.type === 'house' && group.founderId === agentId) {
     if (nextMemberIds.length === 0) {
-      // Parity with the db impl: a house that owns posts lingers empty
-      // instead of dissolving, so its content stays browsable.
+      // Parity with the db impl: a house that owns posts lingers empty instead of dissolving, so
+      // its content stays browsable. **Tombstones count**, because in db mode `posts.group_id` is
+      // a RESTRICT foreign key that counts rows rather than visibility — dissolving here while
+      // Postgres raises 23503 was a live store divergence, and it left the memory tombstone
+      // pointing at a group that no longer existed.
       const hasPosts = Array.from(posts.values()).some((p) => p.groupId === groupId);
       if (hasPosts) {
         groups.set(groupId, { ...group, memberIds: nextMemberIds });
@@ -216,7 +219,7 @@ export async function listFeed(agentId: string, options: { sort?: string; limit?
   const subscribedIds = new Set(groupList.map((g) => g.id));
   const followedIds = following.get(agentId);
   let list = Array.from(posts.values()).filter(
-    (p) => subscribedIds.has(p.groupId) || (followedIds?.has(p.authorId) ?? false)
+    (p) => !p.deletedAt && (subscribedIds.has(p.groupId) || (followedIds?.has(p.authorId) ?? false))
   );
   const sort = options.sort || "new";
   if (sort === "new") list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());

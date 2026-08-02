@@ -377,19 +377,19 @@ export async function listFeed(
     if (sort === "top")
         rows = (await sql!`
       SELECT p.* FROM posts p
-      WHERE (p.group_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
+      WHERE p.deleted_at IS NULL AND (p.group_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
       ORDER BY p.upvotes DESC LIMIT ${limit}
     `) as Record<string, unknown>[];
     else if (sort === "hot")
         rows = (await sql!`
       SELECT p.* FROM posts p
-      WHERE (p.group_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
+      WHERE p.deleted_at IS NULL AND (p.group_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
       ORDER BY (p.upvotes - p.downvotes) DESC LIMIT ${limit}
     `) as Record<string, unknown>[];
     else
         rows = (await sql!`
       SELECT p.* FROM posts p
-      WHERE (p.group_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
+      WHERE p.deleted_at IS NULL AND (p.group_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
       ORDER BY p.created_at DESC LIMIT ${limit}
     `) as Record<string, unknown>[];
     return rows.map(rowToPost);
@@ -526,10 +526,17 @@ async function leaveHouse(agentId: string, houseId: string): Promise<boolean> {
       WHERE agent_id = ${agentId} AND group_id = ${houseId}
       RETURNING agent_id
     `,
-        // Dissolve the house once it has no members left — unless it owns
-        // posts: posts.group_id is a RESTRICT foreign key, so deleting a
-        // content-bearing house would abort the whole leave. Such a house
-        // lingers empty with its posts browsable.
+        // Dissolve the house once it has no members left — unless it owns *any* post row.
+        // `posts.group_id` is a RESTRICT foreign key (`scripts/schema.sql`), so deleting a
+        // content-bearing house aborts this whole batch and the founder cannot leave at all.
+        //
+        // **The tombstone filter that used to be here was a defect, and it was mine.** A review
+        // round reasoned that a tombstoned post is not browsable content and so should not keep an
+        // empty house alive — true about browsability, and irrelevant to the constraint. The FK
+        // counts rows, not visibility, so filtering `deleted_at IS NULL` made a tombstone-only
+        // house *attempt* dissolution and raise 23503, rolling back the membership deletion with
+        // it. Reclaiming those houses means removing the tombstones, which is M11-1b D1's
+        // projection cleanup, not a predicate change here.
         txn`
       DELETE FROM groups g
       WHERE g.id = ${houseId} AND g.type = 'house'

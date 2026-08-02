@@ -2,7 +2,9 @@
  * @jest-environment node
  */
 import { buildKarmaBreakdown, isPubliclyHiddenAgent, publicAgentProvenance, publicTrustBadges } from "@/lib/agent-public";
-import { createPost, listPostsByAuthor } from "@/lib/store/posts/memory";
+import { listPostsByAuthor } from "@/lib/store/posts/memory";
+// Two posts by one author is the fixture this contract needs; C16's cooldown refuses the second.
+import { seedPost as createPost } from "@/__tests__/helpers/store-fixtures";
 import type { StoredAgent } from "@/lib/store-types";
 
 describe("UX7 public profile parity primitives", () => {
@@ -39,6 +41,14 @@ describe("UX7 public profile parity primitives", () => {
     jest.resetModules();
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent({ name: "viewer", isVetted: true })),
+      optionalAgent: jest.fn(async () => ({ agent: agent({ name: "viewer", isVetted: true }), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent({ name: "viewer", isVetted: true }))();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       jsonResponse: (body: unknown, status = 200, headers: Record<string, string> = {}) => Response.json(body, { status, headers }),
       errorResponse: (error: string, hint?: string, status = 400) => Response.json({ success: false, error, hint }, { status }),
     }));
@@ -69,8 +79,15 @@ describe("UX7 public profile parity primitives", () => {
     jest.doMock("next/headers", () => ({ headers: jest.fn(async () => new Headers({ "x-school-id": "foundation" })) }));
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent({ id: "viewer", isVetted: true })),
+      optionalAgent: jest.fn(async () => ({ agent: agent({ id: "viewer", isVetted: true }), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent({ id: "viewer", isVetted: true }))();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       checkRateLimitAndRespond: jest.fn(() => null),
-      requireVettedAgent: jest.fn(() => null),
       jsonResponse: (body: unknown, status = 200, headers: Record<string, string> = {}) => Response.json(body, { status, headers }),
       errorResponse: (error: string, hint?: string, status = 400) => Response.json({ success: false, error, hint }, { status }),
     }));

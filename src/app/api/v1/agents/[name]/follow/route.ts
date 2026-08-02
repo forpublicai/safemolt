@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
+import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
 import { followAgent, unfollowAgent } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
@@ -7,12 +7,9 @@ export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = await getAgentFromRequest(_request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
-  const vettingResponse = requireVettedAgent(agent, _request.nextUrl.pathname);
-  if (vettingResponse) return vettingResponse;
+  const access = await requireAgent(_request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name } = await params;
@@ -28,16 +25,25 @@ export async function DELETE(
   { params }: { params: Promise<{ name: string }> }
 ) {
   try {
-    const agent = await getAgentFromRequest(_request);
-    if (!agent) {
-      return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-    }
-    const vettingResponse = requireVettedAgent(agent, _request.nextUrl.pathname);
-    if (vettingResponse) return vettingResponse;
+    const access = await requireAgent(_request);
+    if (!access.ok) return access.response;
+    const agent = access.agent;
     const rateLimitResponse = checkRateLimitAndRespond(agent);
     if (rateLimitResponse) return rateLimitResponse;
     const { name } = await params;
-    await unfollowAgent(agent.id, name);
+    const removed = await unfollowAgent(agent.id, name);
+    if (!removed) {
+      // Enumerated new rejection (M11-1 C16). Reporting success for an unfollow that removed
+      // nothing is what made the counter exploit invisible from the outside. One code covers
+      // "no such agent" and "you were not following it" deliberately: the caller can act on
+      // neither differently, and separating them would answer whether a name exists.
+      return errorResponse(
+        "Not following",
+        `You are not following ${name}, or no agent by that name exists.`,
+        404,
+        { code: "not_following" }
+      );
+    }
     return jsonResponse({ success: true, message: `Unfollowed ${name}` });
   } catch {
     return errorResponse("Failed to unfollow agent", undefined, 500);

@@ -1,5 +1,6 @@
 import { sql } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { generateProfessorApiKey } from "@/lib/credentials";
 import type { StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult } from "@/lib/store-types";
 
 // ==================== Classes System ====================
@@ -83,10 +84,9 @@ export async function createProfessorForHumanUser(
     email?: string,
 ): Promise<StoredProfessor> {
     const profId = generateClassId('prof');
-    const apiKey = `prof_${Array.from(
-        { length: 24 },
-        () => Math.random().toString(36)[2] ?? '0'
-    ).join('')}`;
+    // M11-1 C24: professor keys are a bearer class of their own — eleven class routes authenticate
+    // on them, including grade writes. C17 swept agent credentials and missed this one entirely.
+    const apiKey = generateProfessorApiKey();
     const createdAt = new Date().toISOString();
     await sql!`
         INSERT INTO professors (id, name, email, api_key, created_at, human_user_id)
@@ -106,6 +106,7 @@ function mapClassRow(r: Record<string, unknown>): StoredClass {
     return {
         id: r.id as string,
         slug: (r.slug as string | undefined) ?? String(r.id),
+        schoolId: (r.school_id as string | undefined) ?? 'foundation',
         professorId: r.professor_id as string,
         name: r.name as string,
         description: r.description as string | undefined,
@@ -215,7 +216,7 @@ export async function createClass(
             max_students = EXCLUDED.max_students
     `;
     return {
-        id: classId, slug: classSlug, professorId, name, description, syllabus, hiddenObjective, maxStudents,
+        id: classId, slug: classSlug, schoolId, professorId, name, description, syllabus, hiddenObjective, maxStudents,
         status: 'draft', enrollmentOpen: false, createdAt,
     };
 }

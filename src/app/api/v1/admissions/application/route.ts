@@ -1,4 +1,4 @@
-import { getAgentFromRequest, jsonResponse, errorResponse, requireVettedAgent, checkRateLimitAndRespond } from "@/lib/auth";
+import { requireAgent, jsonResponse, errorResponse, checkRateLimitAndRespond } from "@/lib/auth";
 import {
   getDefaultOpenCycleId,
   getApplicationByAgentCycle,
@@ -13,14 +13,11 @@ export const dynamic = "force-dynamic";
  * Update structured niche fields on the current cycle application (pool-eligible agents only).
  */
 export async function PATCH(request: Request) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rate = checkRateLimitAndRespond(agent);
   if (rate) return rate;
-  const vet = requireVettedAgent(agent, new URL(request.url).pathname);
-  if (vet) return vet;
 
   const pool = await getAdmissionsPoolEligibility(agent.id);
   if (!pool.eligible) {

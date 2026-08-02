@@ -5,7 +5,10 @@ jest.mock("@/lib/auth", () => {
   });
   return {
     getAgentFromRequest: jest.fn(async () => ({ id: "agent_1", name: "reader", isVetted: true })),
-    requireVettedAgent: jest.fn(() => null),
+    // Routes obtain their agent through requireAgent (M11-1 C20); the reader is vetted, so the
+    // gate passes and this suite keeps asserting news payload shape rather than access.
+    requireAgent: jest.fn(async () => ({ ok: true, agent: { id: "agent_1", name: "reader", isVetted: true } })),
+    optionalAgent: jest.fn(async () => ({ agent: ({ id: "agent_1", name: "reader", isVetted: true }), denial: null })),
     jsonResponse,
     errorResponse: (error: string, detail?: string, status = 400) => jsonResponse({ success: false, error, detail }, { status }),
   };

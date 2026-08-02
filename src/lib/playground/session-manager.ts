@@ -6,7 +6,7 @@
 
 import { generateRoundPrompt, resolveRound, generateSummary } from './engine';
 import { pickRandomGame, getSchoolGameById, listSchoolGameDefs } from './games';
-import { storeMemory } from './memory';
+import { storeMemoryFenced } from './memory';
 import { schedulePlaygroundMemoryIngest } from '@/lib/memory/platform-ingest';
 import { getEmbedding } from './embeddings';
 import { getRandomPrefab, getPrefab } from './prefabs';
@@ -16,7 +16,7 @@ import {
     safeWaitUntil,
     type PlaygroundDeadlineRunResult,
 } from './lifecycle';
-import type { PlaygroundGame, PlaygroundSession, SessionParticipant, SessionAction, TranscriptRound, CreateSessionInput, MemoryImportance } from './types';
+import type { PlaygroundGame, PlaygroundSession, SessionParticipant, SessionAction, SubmitActionRefusal, TranscriptRound, CreateSessionInput, MemoryImportance } from './types';
 import {
     sanitizeActingCompanyId,
     sanitizeActingLabel,
@@ -30,6 +30,38 @@ function resolvePlaygroundGame(schoolId: string | undefined, gameId: string): Pl
 
 /** Default timeout per round in milliseconds (60 minutes) */
 const ACTION_TIMEOUT_MS = 60 * 60 * 1000;
+
+/**
+ * M11-1 C12: resolution lease duration. Claimed before action enumeration and inference, renewed
+ * at a third of this interval while the GM call runs, and every terminal write is fenced on the
+ * claim token. The lease bounds the duplicate-billing residual (a claimant stalling past
+ * lease+renewal can be reclaimed while its GM call is still in flight — at-most-one COMMIT is
+ * guaranteed, exactly-once BILLING is not; release gate 7).
+ */
+const DEFAULT_RESOLVE_LEASE_MS = 2 * 60 * 1000;
+
+function resolveLeaseMs(): number {
+    const raw = (process.env.PLAYGROUND_RESOLVE_LEASE_MS || '').trim();
+    if (!/^\d+$/.test(raw)) return DEFAULT_RESOLVE_LEASE_MS;
+    const parsed = Number(raw);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_RESOLVE_LEASE_MS;
+}
+
+/** Keep a held lease alive during long inference; stopped in the caller's finally. */
+function startClaimRenewal(sessionId: string, token: string): { stop: () => void } {
+    const leaseMs = resolveLeaseMs();
+    const interval = setInterval(() => {
+        void (async () => {
+            try {
+                const store = await getStore();
+                await store.renewPlaygroundResolutionClaim(sessionId, token, leaseMs);
+            } catch (err) {
+                console.error(`[playground] lease renewal failed for ${sessionId}:`, err);
+            }
+        })();
+    }, Math.max(1000, Math.floor(leaseMs / 3)));
+    return { stop: () => clearInterval(interval) };
+}
 
 /** Timeout for pending sessions to find players (24 hours) */
 const PENDING_TIMEOUT_MS = 24 * 60 * 60 * 1000;
@@ -182,7 +214,8 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
 export async function createPendingSession(gameId?: string, schoolId = 'foundation'): Promise<PlaygroundSession> {
     const store = await getStore();
 
-    // Check: is there already an active or pending session for this school?
+    // Friendly pre-check only (M11-1 C23): the constraint is the partial unique index over live
+    // sessions per school, not this read.
     const activeSessions = await store.listPlaygroundSessions({ status: 'active', limit: 1, schoolId });
     const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 1, schoolId });
 
@@ -206,7 +239,20 @@ export async function createPendingSession(gameId?: string, schoolId = 'foundati
         schoolId,
     };
 
-    await store.createPlaygroundSession(sessionInput);
+    try {
+        await store.createPlaygroundSession(sessionInput);
+    } catch (err) {
+        // A concurrent trigger won the index. The loser receives the winner's session — the
+        // caller's contract ("there is already a live session") just became true (M11-1 C23).
+        if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === '23505') {
+            const [live] = [
+                ...(await store.listPlaygroundSessions({ status: 'pending', limit: 1, schoolId })),
+                ...(await store.listPlaygroundSessions({ status: 'active', limit: 1, schoolId })),
+            ];
+            if (live) return live;
+        }
+        throw err;
+    }
 
     return (await store.getPlaygroundSession(sessionId))!;
 }
@@ -359,53 +405,57 @@ async function activateSession(session: PlaygroundSession, game: PlaygroundGame)
  * Stores the action immediately and returns. GM resolution runs asynchronously
  * to prevent HTTP timeouts (SIGKILL) when the LLM takes 15-20s.
  */
+/** Refusal reasons → the exact error copy callers already map to status codes. */
+const SUBMIT_REFUSAL_MESSAGES: Record<SubmitActionRefusal, string> = {
+    not_found: 'Session not found',
+    not_active: 'Session is not active',
+    not_participant: 'Agent is not a participant in this session',
+    forfeited: 'Agent has been forfeited from this session',
+    duplicate: 'Agent already submitted an action for this round',
+    // Both are the action-vs-advance race, seen from either side of the CAS: the round the caller
+    // read is being (or has been) resolved. New enumerated rejections (M11-1 C12).
+    stale_round: 'Round already resolved. Wait for the next round.',
+    resolving: 'Round is being resolved. Wait for the next round.',
+};
+
+/**
+ * M11-1 C12: the checks below are *friendly* — the decisive verification lives inside the store's
+ * gated insert, which re-verifies live status, current round, active membership, no duplicate,
+ * and no in-flight resolution claim, with the session row locked. Both surfaces (route and tool)
+ * come through here, which is what makes tool actions ingest memory and advance rounds exactly
+ * like route actions.
+ */
 export async function submitAction(
     sessionId: string,
     agentId: string,
     content: string
-): Promise<PlaygroundSession> {
+): Promise<{ session: PlaygroundSession; action: SessionAction }> {
     const store = await getStore();
 
     const session = await store.getPlaygroundSession(sessionId);
-    if (!session) throw new Error('Session not found');
-    if (session.status !== 'active') throw new Error('Session is not active');
+    if (!session) throw new Error(SUBMIT_REFUSAL_MESSAGES.not_found);
+    if (session.status !== 'active') throw new Error(SUBMIT_REFUSAL_MESSAGES.not_active);
 
-    // Verify agent is a participant and not forfeited
-    const participant = session.participants.find(p => p.agentId === agentId);
-    if (!participant) throw new Error('Agent is not a participant in this session');
-    if (participant.status === 'forfeited') throw new Error('Agent has been forfeited from this session');
+    const outcome = await store.submitPlaygroundActionGated({
+        id: generateId(),
+        sessionId,
+        agentId,
+        round: session.currentRound,
+        content,
+    });
+    if (!outcome.ok) throw new Error(SUBMIT_REFUSAL_MESSAGES[outcome.reason]);
 
-    // Check if agent already submitted for this round
-    const existingActions = await store.getPlaygroundActions(sessionId, session.currentRound);
-    const alreadySubmitted = existingActions.some(a => a.agentId === agentId);
-    if (alreadySubmitted) throw new Error('Agent already submitted an action for this round');
-
-    // Store the action — idempotent via DB unique constraint (idx_pg_actions_unique)
-    try {
-        await store.createPlaygroundAction({
-            id: generateId(),
-            sessionId,
-            agentId,
-            round: session.currentRound,
-            content,
-        });
-        const participantIds = session.participants.map((p) => p.agentId);
-        schedulePlaygroundMemoryIngest(participantIds, content, {
-            sessionId,
-            round: session.currentRound,
-            kind: 'playground_action',
-            actorAgentId: agentId,
-        });
-    } catch (err: unknown) {
-        // If this is a unique constraint violation, the action was already saved (race condition / retry)
-        const errMsg = err instanceof Error ? err.message : String(err);
-        if (errMsg.includes('unique') || errMsg.includes('duplicate')) {
-            console.warn(`[playground] Duplicate action ignored for agent ${agentId} round ${session.currentRound}`);
-            return session;
-        }
-        throw err;
-    }
-
+    const participantIds = session.participants.map((p) => p.agentId);
+    schedulePlaygroundMemoryIngest(participantIds, content, {
+        sessionId,
+        round: outcome.action.round,
+        kind: 'playground_action',
+        actorAgentId: agentId,
+        // M11-1b D5: the created action's own row id, so same-round actions by different agents
+        // cannot collide on one chunk id and overwrite each other in recipients' vector stores.
+        // `submitAction` used to discard this id; the gated insert returns it.
+        actionId: outcome.action.id,
+    });
 
     // Fire-and-forget: trigger round advancement asynchronously.
     // This prevents the HTTP request from hanging while the GM LLM resolves.
@@ -413,7 +463,7 @@ export async function submitAction(
     safeWaitUntil(tryAdvanceRound(sessionId), `advance-round:${sessionId}`);
 
     // Return the session immediately (before GM resolution completes)
-    return (await store.getPlaygroundSession(sessionId))!;
+    return { session: (await store.getPlaygroundSession(sessionId))!, action: outcome.action };
 }
 
 // ============================================
@@ -484,6 +534,7 @@ async function completeSession(input: {
     game: PlaygroundGame;
     participants: SessionParticipant[];
     transcript: TranscriptRound[];
+    fence: { round: number; token: string };
 }): Promise<PlaygroundSession> {
     const store = await getStore();
     const sessionForSummary: PlaygroundSession = {
@@ -493,7 +544,7 @@ async function completeSession(input: {
     };
     const summary = await generateSummary(sessionForSummary, input.game);
 
-    await store.updatePlaygroundSession(input.session.id, {
+    const won = await store.applyPlaygroundResolution(input.session.id, input.fence, {
         status: 'completed',
         participants: input.participants,
         transcript: input.transcript,
@@ -502,17 +553,23 @@ async function completeSession(input: {
         currentRoundPrompt: null,
         roundDeadline: null,
     });
+    if (!won) {
+        // Token fence rejected the write: a reclaimer already resolved this round. Discard.
+        console.warn(`[playground] completion for ${input.session.id} round ${input.fence.round} lost its claim; result discarded`);
+        return (await store.getPlaygroundSession(input.session.id))!;
+    }
     revalidatePlaygroundSeed(input.session.schoolId);
 
     return (await store.getPlaygroundSession(input.session.id))!;
 }
 
-/** Generate the next round's prompt and apply the advance as a single update. */
+/** Generate the next round's prompt and apply the advance as one fenced update. */
 async function advanceToNextRound(input: {
     session: PlaygroundSession;
     game: PlaygroundGame;
     participants: SessionParticipant[];
     transcript: TranscriptRound[];
+    fence: { round: number; token: string };
 }): Promise<PlaygroundSession> {
     const store = await getStore();
     const nextRound = input.session.currentRound + 1;
@@ -526,13 +583,16 @@ async function advanceToNextRound(input: {
     const nextPrompt = await generateRoundPrompt(nextSession, input.game);
     const nextDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
 
-    await store.updatePlaygroundSession(input.session.id, {
+    const won = await store.applyPlaygroundResolution(input.session.id, input.fence, {
         participants: input.participants,
         transcript: input.transcript,
         currentRound: nextRound,
         currentRoundPrompt: nextPrompt,
         roundDeadline: nextDeadline,
     });
+    if (!won) {
+        console.warn(`[playground] advancement for ${input.session.id} round ${input.fence.round} lost its claim; result discarded`);
+    }
 
     return (await store.getPlaygroundSession(input.session.id))!;
 }
@@ -540,7 +600,15 @@ async function advanceToNextRound(input: {
 /**
  * Try to advance the round for a session.
  * Checks if all active agents have submitted or if the deadline has passed.
- * If so: resolves the round, starts the next one (or ends the session).
+ *
+ * M11-1 C12: resolution runs under a durable per-(session, round) lease. The claim is taken
+ * BEFORE actions are enumerated and before inference (so the transcript can never silently drop
+ * an action that landed after an unclaimed read), renewed during the GM call, and both terminal
+ * writes go through the (status, current_round, token) CAS. A concurrent caller that loses the
+ * claim returns without invoking the GM — that is what closes the duplicate-billing path from
+ * concurrent unauthenticated session GETs. What the lease does NOT guarantee is exactly-once
+ * external billing: a claimant stalled past its lease can be reclaimed while its GM call is in
+ * flight; the fence rejects its WRITE, not its SPEND (release gate 7).
  */
 export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSession> {
     const store = await getStore();
@@ -563,6 +631,37 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
         // Not ready to advance yet
         return session;
     }
+
+    const token = `resolve_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    const claimed = await store.claimPlaygroundResolution(sessionId, session.currentRound, token, resolveLeaseMs());
+    if (!claimed) {
+        // Another resolver holds a live lease (or the round already moved). Spend nothing.
+        return (await store.getPlaygroundSession(sessionId))!;
+    }
+
+    const renewal = startClaimRenewal(sessionId, token);
+    try {
+        return await resolveClaimedRound(sessionId, { round: session.currentRound, token });
+    } finally {
+        renewal.stop();
+    }
+}
+
+/** The claimed half of tryAdvanceRound: re-read under the lease, resolve, commit fenced. */
+async function resolveClaimedRound(
+    sessionId: string,
+    fence: { round: number; token: string }
+): Promise<PlaygroundSession> {
+    const store = await getStore();
+
+    // Re-read AFTER the claim: the action set enumerated here is the one the fence protects —
+    // an action that lands later is rejected by the gated insert's claim predicate, so it can no
+    // longer be silently absent from the transcript inference already read.
+    const session = await store.getPlaygroundSession(sessionId);
+    if (!session || session.status !== 'active' || session.currentRound !== fence.round) {
+        return session!;
+    }
+    const actions = await store.getPlaygroundActions(sessionId, fence.round);
 
     const { updatedParticipants, roundActions, allForfeited } = computeRoundOutcome(session, actions);
 
@@ -596,6 +695,7 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
             game,
             participants: updatedParticipants,
             transcript: [...session.transcript, forfeitRound],
+            fence,
         });
     }
 
@@ -613,14 +713,29 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
 
     const newTranscript = [...session.transcript, newRound];
 
+    // M11-1b D5: derived writes happen only for the resolver that still holds the live claim, and
+    // the lease check is INSIDE the memory statement itself. Before D5 these ran with no gate at
+    // all, so a lease-expired loser still overwrote episodic memory and scheduled vectors.
+    //
+    // Residual, stated rather than glossed: the gate is the live lease, not the terminal CAS below.
+    // A lease that lapses between this call and applyPlaygroundResolution leaves the round's memory
+    // written for a round that never advanced. The reclaimer re-resolves that round and overwrites
+    // the same (agent, session) row, so it is self-healing in the ordinary case. Recorded under D5
+    // in ai/PLAN_M11_1B.md; the fix folds the CAS and the upserts into one statement.
+    const memoriesWritten = await storeRoundMemories(sessionId, newRound, updatedParticipants, fence);
+    if (!memoriesWritten) {
+        // The claim is gone — a reclaimer owns this round. Write nothing further.
+        console.warn(`[playground] resolution for ${sessionId} round ${fence.round} lost its claim before derived writes`);
+        return (await store.getPlaygroundSession(sessionId))!;
+    }
+
+    // External vector ingestion cannot join the transaction: an explicit best-effort residual,
+    // scheduled only after the claim was confirmed live by the coupled memory write above.
     schedulePlaygroundMemoryIngest(updatedParticipants.map((p) => p.agentId), resolution.narration, {
         sessionId,
         round: session.currentRound,
         kind: 'playground_gm',
     });
-
-    // Store memories for each participant after the round
-    await storeRoundMemories(sessionId, newRound, updatedParticipants);
 
     // Max rounds reached OR game returned early termination (e.g. defection outcome)
     if (session.currentRound >= session.maxRounds || resolution.isGameOver) {
@@ -629,6 +744,7 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
             game,
             participants: updatedParticipants,
             transcript: newTranscript,
+            fence,
         });
     }
 
@@ -637,6 +753,7 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
         game,
         participants: updatedParticipants,
         transcript: newTranscript,
+        fence,
     });
 }
 
@@ -796,18 +913,17 @@ export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
         console.error('[playground] Error scanning pending sessions for activation:', err);
     }
 
-    // 2. Delete stale pending sessions
-    const pendingSessions = await store.listPlaygroundSessions({ status: 'pending', limit: 20 });
-    for (const session of pendingSessions) {
-        const ageMs = Date.now() - new Date(session.createdAt).getTime();
-        if (ageMs >= PENDING_TIMEOUT_MS) {
-            try {
-                console.log(`[playground] Session ${session.id} expired in pending state. Deleting.`);
-                await store.deletePlaygroundSession(session.id);
-            } catch (err) {
-                console.error(`[playground] Error deleting pending session ${session.id}:`, err);
-            }
+    // 2. Expire stale pending sessions — a system TRANSITION to 'cancelled' (NULL actor +
+    // sentinel reason), never a delete (M11-1 C3). The store's single conditional statement
+    // carries the `status = 'pending'` predicate, so a session that activates mid-sweep is
+    // untouched — the expiry-vs-activation race closes in the statement, not here.
+    try {
+        const expired = await store.expireStalePendingSessions(PENDING_TIMEOUT_MS);
+        for (const id of expired) {
+            console.log(`[playground] Session ${id} expired in pending state. Cancelled (system).`);
         }
+    } catch (err) {
+        console.error('[playground] Error expiring stale pending sessions:', err);
     }
 
     return { advanced, capped, advanceDurationMs, capDurationMs };
@@ -906,11 +1022,19 @@ function generateMemoryContent(
 /**
  * Store memories for all participants after a round is resolved
  */
+/**
+ * M11-1b D5 — each participant's episodic memory, written **gated on a live resolution lease**.
+ * Returns false as soon as the gate refuses, which is how a lease-expired resolver discovers it
+ * must write nothing further. Each participant is its own statement, so a mid-loop failure can
+ * leave some participants written and others not; that partial case is part of the same D5
+ * residual as the missing CAS coupling.
+ */
 async function storeRoundMemories(
     sessionId: string,
     round: TranscriptRound,
-    participants: SessionParticipant[]
-): Promise<void> {
+    participants: SessionParticipant[],
+    fence: { round: number; token: string }
+): Promise<boolean> {
     for (const participant of participants) {
         if (participant.status !== 'active') continue;
 
@@ -926,16 +1050,21 @@ async function storeRoundMemories(
             console.log(`[playground] Embedding unavailable for memory, using text matching`);
         }
 
-        await storeMemory({
-            agentId: participant.agentId,
-            agentName: participant.agentName,
-            sessionId,
-            content,
-            embedding,
-            importance,
-            roundCreated: round.round,
-        });
+        const written = await storeMemoryFenced(
+            {
+                agentId: participant.agentId,
+                agentName: participant.agentName,
+                sessionId,
+                content,
+                embedding,
+                importance,
+                roundCreated: round.round,
+            },
+            { sessionId, round: fence.round, token: fence.token }
+        );
+        if (!written) return false;
     }
+    return true;
 }
 
 

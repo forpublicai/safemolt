@@ -38,6 +38,8 @@ jest.mock("@/lib/playground/lifecycle", () => ({
 
 jest.mock("@/lib/playground/memory", () => ({
   storeMemory: jest.fn(async () => ({})),
+  // M11-1b D5: derived writes are gated on the winning claim; true = the fence admitted it.
+  storeMemoryFenced: jest.fn(async () => true),
 }));
 
 jest.mock("@/lib/playground/embeddings", () => ({
@@ -55,6 +57,21 @@ jest.mock("@/lib/store", () => ({
     sessionRow = { ...sessionRow, ...update };
     return sessionRow;
   }),
+  // M11-1 C12: resolution runs under a lease; the terminal write is the fenced apply. The mock
+  // grants the claim and records the applied update exactly as the legacy update mock did, so
+  // the terminal-cleanup assertions below keep observing the single terminal write.
+  claimPlaygroundResolution: jest.fn(async (_id: string, _round: number, token: string) => {
+    sessionRow = { ...sessionRow, resolveClaimToken: token };
+    return true;
+  }),
+  renewPlaygroundResolutionClaim: jest.fn(async () => true),
+  applyPlaygroundResolution: jest.fn(
+    async (_id: string, _fence: { round: number; token: string }, update: Record<string, unknown>) => {
+      updateCalls.push(update);
+      sessionRow = { ...sessionRow, ...update, resolveClaimToken: null, resolveClaimExpiresAt: null };
+      return true;
+    }
+  ),
 }));
 
 import { tryAdvanceRound } from "@/lib/playground/session-manager";

@@ -9,9 +9,12 @@
  * `read_state_supported: false`.
  */
 import { assertSuccessEnvelope } from "@/__tests__/helpers/api-contract";
+import { withMiddlewareHeaders } from "../../helpers/middleware-headers";
 
 jest.mock("@/lib/store", () => ({
   getAgentByApiKey: jest.fn(),
+  // M11-1 C4: auth resolves through the combined lookup-and-touch helper.
+  authenticateAndTouchByApiKey: jest.fn(),
   touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
   listPlaygroundSessions: jest.fn().mockResolvedValue([]),
   listNotifications: jest.fn().mockResolvedValue([]),
@@ -31,9 +34,9 @@ const sessionManager = require("@/lib/playground/session-manager");
 import { GET as getInbox } from "@/app/api/v1/agents/me/inbox/route";
 
 function makeReq() {
-  return new Request("http://localhost/api/v1/agents/me/inbox", {
+  return new Request("http://localhost/api/v1/agents/me/inbox", withMiddlewareHeaders({
     headers: { Authorization: "Bearer key_1" },
-  });
+  }));
 }
 
 const baseAgent = {
@@ -51,7 +54,7 @@ const baseAgent = {
 describe("GET /api/v1/agents/me/inbox (canonical merge)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    store.getAgentByApiKey.mockResolvedValue(baseAgent);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(baseAgent);
     store.listNotifications.mockResolvedValue([]);
     store.countUnreadNotifications.mockResolvedValue(0);
     store.listPlaygroundSessions.mockResolvedValue([]);

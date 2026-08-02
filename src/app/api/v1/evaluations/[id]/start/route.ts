@@ -1,51 +1,101 @@
 import { NextRequest } from "next/server";
-import { headers } from "next/headers";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { getEvaluation } from "@/lib/evaluations/loader";
-import { getEvaluationRegistration, startEvaluation, createVettingChallenge, createCertificationJob } from "@/lib/store";
-import { generateNonce, getNonceExpiresAt } from "@/lib/evaluations/nonce";
-import type { CertificationConfig } from "@/lib/evaluations/types";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { authorizeEvaluationStart, evaluationAuthzResponse } from "@/lib/evaluation-authz";
+import {
+  startEvaluation,
+  createVettingChallenge,
+  createCertificationJob,
+  getLiveCertificationJobForRegistration,
+  getCertificationJobByRegistration,
+  expireStalePendingCertificationJob,
+} from "@/lib/store";
+import { generateNonce, getNonceExpiresAt, isNonceExpired } from "@/lib/evaluations/nonce";
+import type { CertificationConfig, CertificationJob } from "@/lib/evaluations/types";
+
+/**
+ * The certification-start success body, always built from the job row itself: an idempotent
+ * `start` returns the *existing* live job's nonce (M11-1 C22), and a racing create returns the
+ * winner's, so the local nonce variable is never the authority.
+ */
+function certificationStartBody(job: CertificationJob, certConfig: CertificationConfig, evaluationId: string) {
+  const validityMinutes = certConfig.nonceValidityMinutes ?? 30;
+  return {
+    success: true,
+    evaluation_id: evaluationId,
+    job_id: job.id,
+    nonce: job.nonce,
+    nonce_expires_at: new Date(job.nonceExpiresAt).toISOString(),
+    blueprint: {
+      prompts: certConfig.prompts,
+      rubric: certConfig.rubric,
+      passing_score: certConfig.passingScore,
+    },
+    instructions: `Run each prompt against your LLM and collect responses. Submit the transcript within ${validityMinutes} minutes using POST /api/v1/evaluations/${evaluationId}/submit with the nonce and transcript.`,
+  };
+}
 
 /**
  * POST /api/v1/evaluations/{id}/start
  * Start an evaluation (creates challenge/context for the evaluation)
  */
+/**
+ * The certification flow of `start` — idempotent, not creative (M11-1 C22): looping it no longer
+ * accumulates live jobs, each a future judging spend. The existing live job comes back with its
+ * existing nonce; a decided (completed) job whose result save is still in flight comes back too,
+ * because minting a fresh job in that gap would be a second paid judging for a verdict that
+ * already exists. Only a registration with no live and no decided job gets a new attempt — and a
+ * *failed* or *expired* job falls through to one, since a judge failure is not a verdict.
+ */
+async function certificationStart(
+  registrationId: string,
+  agentId: string,
+  evaluationId: string,
+  certConfig: CertificationConfig
+): Promise<Response> {
+  const existing = await getLiveCertificationJobForRegistration(registrationId);
+  if (existing) {
+    // A pending job whose nonce lapsed would strand the registration behind the live-job index;
+    // expire it (conditionally — a concurrent submit wins) and fall through to a fresh attempt.
+    const staleNonce = existing.status === 'pending' && isNonceExpired(existing.nonceExpiresAt);
+    if (!staleNonce) {
+      return jsonResponse(certificationStartBody(existing, certConfig, evaluationId));
+    }
+    await expireStalePendingCertificationJob(existing.id);
+  } else {
+    const latest = await getCertificationJobByRegistration(registrationId);
+    if (latest?.status === 'completed') {
+      return jsonResponse(certificationStartBody(latest, certConfig, evaluationId));
+    }
+  }
+
+  // Generate signed nonce and create the job. A concurrent `start` races safely: the loser's
+  // insert trips the live-job index and the winner's job is returned instead.
+  const nonce = generateNonce(evaluationId, agentId);
+  const nonceExpiresAt = getNonceExpiresAt(certConfig.nonceValidityMinutes ?? 30);
+  const job = await createCertificationJob(registrationId, agentId, evaluationId, nonce, nonceExpiresAt);
+
+  return jsonResponse(certificationStartBody(job, certConfig, evaluationId));
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) {
-      return errorResponse("Unauthorized", "Provide a valid API key", 401);
-    }
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const agent = access.agent;
 
     const { id } = await params;
 
-    // Load evaluation definition (school-scoped)
-    const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
-    const evaluation = getEvaluation(id, schoolId);
-    if (!evaluation) {
-      return errorResponse("Evaluation not found", undefined, 404);
-    }
-
-    // Check registration
-    const registration = await getEvaluationRegistration(agent.id, id);
-    if (!registration) {
-      return errorResponse(
-        "Not registered",
-        "You must register for this evaluation first",
-        400
-      );
-    }
-
-    if (registration.status === 'completed' || registration.status === 'failed') {
-      return errorResponse(
-        "Already completed",
-        "This evaluation has already been completed",
-        400
-      );
-    }
+    // The definition comes from the **registration's** school, not the request's host (M11-1 C2,
+    // review round 6). This route used to load it from the host and then mutate a globally-fetched
+    // registration, so a vetted-but-unadmitted agent could start a non-Foundation registration
+    // through the Foundation surface. `authorizeEvaluationStart` also subsumes the "not registered"
+    // and terminal-status rejections this handler used to make by hand.
+    const authorized = await authorizeEvaluationStart({ agent, evaluationId: id });
+    if (!authorized.ok) return evaluationAuthzResponse(authorized.denial);
+    const { registration, definition: evaluation } = authorized.value;
 
     // Start evaluation
     if (registration.status === 'registered') {
@@ -69,7 +119,8 @@ export async function POST(
       });
     }
 
-    // For agent_certification type, create a certification job with signed nonce
+    // For agent_certification type, return the registration's live job or create one with a
+    // signed nonce.
     if (evaluation.type === 'agent_certification') {
       const certConfig = evaluation.config as CertificationConfig | undefined;
       if (!certConfig?.prompts || !certConfig?.rubric) {
@@ -79,34 +130,7 @@ export async function POST(
           500
         );
       }
-
-      // Generate signed nonce
-      const nonce = generateNonce(id, agent.id);
-      const validityMinutes = certConfig.nonceValidityMinutes ?? 30;
-      const nonceExpiresAt = getNonceExpiresAt(validityMinutes);
-
-      // Create certification job
-      const job = await createCertificationJob(
-        registration.id,
-        agent.id,
-        id,
-        nonce,
-        nonceExpiresAt
-      );
-
-      return jsonResponse({
-        success: true,
-        evaluation_id: id,
-        job_id: job.id,
-        nonce: nonce,
-        nonce_expires_at: nonceExpiresAt.toISOString(),
-        blueprint: {
-          prompts: certConfig.prompts,
-          rubric: certConfig.rubric,
-          passing_score: certConfig.passingScore,
-        },
-        instructions: `Run each prompt against your LLM and collect responses. Submit the transcript within ${validityMinutes} minutes using POST /api/v1/evaluations/${id}/submit with the nonce and transcript.`,
-      });
+      return await certificationStart(registration.id, agent.id, id, certConfig);
     }
 
     // For other evaluations, return success

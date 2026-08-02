@@ -30,6 +30,14 @@ describe("UX6 memory contract", () => {
     jest.doMock("@/auth", () => ({ auth: jest.fn(async () => null) }));
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent()),
+      optionalAgent: jest.fn(async () => ({ agent: agent(), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent())();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       jsonResponse: (body: unknown, status = 200) => Response.json(body, { status }),
       errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
         Response.json({ success: false, error, hint, error_detail: { code: options.code ?? "bad_request", message: error, hint }, request_id: "req-test" }, { status }),
@@ -60,6 +68,14 @@ describe("UX6 memory contract", () => {
     jest.doMock("@/auth", () => ({ auth: jest.fn(async () => null) }));
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent()),
+      optionalAgent: jest.fn(async () => ({ agent: agent(), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent())();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       jsonResponse: (body: unknown, status = 200) => Response.json(body, { status }),
       errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
         Response.json({ success: false, error, hint, error_detail: { code: options.code ?? "bad_request", message: error, hint }, request_id: "req-test" }, { status }),
@@ -86,6 +102,14 @@ describe("UX6 memory contract", () => {
     jest.doMock("@/auth", () => ({ auth: jest.fn(async () => null) }));
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent({ identityMd: "# Agent\n" })),
+      optionalAgent: jest.fn(async () => ({ agent: agent({ identityMd: "# Agent\n" }), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent({ identityMd: "# Agent\n" }))();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       jsonResponse: (body: unknown, status = 200) => Response.json(body, { status }),
       errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
         Response.json({ success: false, error, hint, error_detail: { code: options.code ?? "bad_request", message: error, hint }, request_id: "req-test" }, { status }),
@@ -143,13 +167,26 @@ describe("UX6 class evaluation contract", () => {
     jest.doMock("@/lib/auth-professor", () => ({ getProfessorFromRequest: jest.fn(async () => null) }));
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent()),
+      optionalAgent: jest.fn(async () => ({ agent: agent(), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent())();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       jsonResponse: (body: unknown, status = 200) => Response.json(body, { status }),
       errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
         Response.json({ success: false, error, hint, error_detail: { code: options.code ?? "bad_request", message: error, hint }, request_id: "req-test" }, { status }),
     }));
-    jest.doMock("@/lib/school-context", () => ({ requireSchoolAccess: jest.fn(() => null) }));
+    // M11-1 C20 round 2: class routes key their access check on the *class's* school, not
+    // the request host, so the resource-scoped helper has to be mocked too.
+    jest.doMock("@/lib/school-context", () => ({
+      requireSchoolAccess: jest.fn(() => null),
+      requireClassSchoolAccess: jest.fn(() => null),
+    }));
     jest.doMock("@/lib/store", () => ({
-      getClassById: jest.fn(async () => ({ id: "class-uuid", slug: "class-slug", professorId: "prof-1", name: "Class", status: "active", enrollmentOpen: true, createdAt: "2026-01-01T00:00:00.000Z" })),
+      getClassById: jest.fn(async () => ({ id: "class-uuid", slug: "class-slug", schoolId: "foundation", professorId: "prof-1", name: "Class", status: "active", enrollmentOpen: true, createdAt: "2026-01-01T00:00:00.000Z" })),
       createClassEvaluation: jest.fn(),
       listClassEvaluations: jest.fn(async (classId: string) => {
         expect(classId).toBe("class-uuid");
@@ -178,13 +215,26 @@ describe("UX6 class evaluation contract", () => {
     jest.doMock("@/lib/auth-professor", () => ({ getProfessorFromRequest: jest.fn(async () => null) }));
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent()),
+      optionalAgent: jest.fn(async () => ({ agent: agent(), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent())();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       jsonResponse: (body: unknown, status = 200) => Response.json(body, { status }),
       errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
         Response.json({ success: false, error, hint, error_detail: { code: options.code ?? "bad_request", message: error, hint }, request_id: "req-test" }, { status }),
     }));
-    jest.doMock("@/lib/school-context", () => ({ requireSchoolAccess: jest.fn(() => null) }));
+    // M11-1 C20 round 2: class routes key their access check on the *class's* school, not
+    // the request host, so the resource-scoped helper has to be mocked too.
+    jest.doMock("@/lib/school-context", () => ({
+      requireSchoolAccess: jest.fn(() => null),
+      requireClassSchoolAccess: jest.fn(() => null),
+    }));
     jest.doMock("@/lib/store", () => ({
-      getClassById: jest.fn(async () => ({ id: "class-uuid", slug: "class-slug", professorId: "prof-1", name: "Class", status: "active", enrollmentOpen: true, createdAt: "Tue Apr 14 2026 06:25:09 GMT+0000 (Coordinated Universal Time)" })),
+      getClassById: jest.fn(async () => ({ id: "class-uuid", slug: "class-slug", schoolId: "foundation", professorId: "prof-1", name: "Class", status: "active", enrollmentOpen: true, createdAt: "Tue Apr 14 2026 06:25:09 GMT+0000 (Coordinated Universal Time)" })),
       createClassEvaluation: jest.fn(),
       listClassEvaluations: jest.fn(async () => [{ id: "eval-1", classId: "class-uuid", title: "Eval", prompt: "Answer this", status: "active", kind: "automatic", createdAt: "Tue Apr 14 2026 06:25:09 GMT+0000 (Coordinated Universal Time)" }]),
     }));
@@ -202,10 +252,23 @@ describe("UX6 class evaluation contract", () => {
     jest.doMock("@/lib/auth-professor", () => ({ getProfessorFromRequest: jest.fn(async () => null) }));
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent()),
+      optionalAgent: jest.fn(async () => ({ agent: agent(), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent())();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       jsonResponse: (body: unknown, status = 200, headers: Record<string, string> = {}) => Response.json(body, { status, headers }),
       errorResponse: (error: string, hint?: string, status = 400) => Response.json({ success: false, error, hint }, { status }),
     }));
-    jest.doMock("@/lib/school-context", () => ({ requireSchoolAccess: jest.fn(() => null) }));
+    // M11-1 C20 round 2: class routes key their access check on the *class's* school, not
+    // the request host, so the resource-scoped helper has to be mocked too.
+    jest.doMock("@/lib/school-context", () => ({
+      requireSchoolAccess: jest.fn(() => null),
+      requireClassSchoolAccess: jest.fn(() => null),
+    }));
     jest.doMock("@/lib/store", () => ({
       listClasses: jest.fn(async () => [{ id: "class-uuid", slug: "class-slug", name: "Class", description: "Desc", status: "active", enrollmentOpen: true, maxStudents: 10, syllabus: {}, createdAt: "Tue Apr 14 2026 06:25:09 GMT+0000 (Coordinated Universal Time)" }]),
       getClassEnrollmentCount: jest.fn(async () => 3),
@@ -231,6 +294,14 @@ describe("UX6 class evaluation contract", () => {
   it("submits a class evaluation by class slug and returns synchronous result hints", async () => {
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent()),
+      optionalAgent: jest.fn(async () => ({ agent: agent(), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent())();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       jsonResponse: (body: unknown, status = 200) => Response.json(body, { status }),
       errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
         Response.json({ success: false, error, hint, error_detail: { code: options.code ?? "bad_request", message: error, hint }, request_id: "req-test" }, { status }),
@@ -247,7 +318,7 @@ describe("UX6 class evaluation contract", () => {
       completedAt: "2026-01-01T00:00:00.000Z",
     }));
     jest.doMock("@/lib/store", () => ({
-      getClassById: jest.fn(async () => ({ id: "class-uuid", slug: "class-slug", professorId: "prof-1", name: "Class", status: "active", enrollmentOpen: true, createdAt: "2026-01-01T00:00:00.000Z" })),
+      getClassById: jest.fn(async () => ({ id: "class-uuid", slug: "class-slug", schoolId: "foundation", professorId: "prof-1", name: "Class", status: "active", enrollmentOpen: true, createdAt: "2026-01-01T00:00:00.000Z" })),
       getClassEvaluation: jest.fn(async () => ({ id: "eval-1", classId: "class-uuid", title: "Eval", prompt: "Answer this", status: "active", kind: "self_serve", maxScore: 10, createdAt: "2026-01-01T00:00:00.000Z" })),
       getClassEnrollment: jest.fn(async () => ({ classId: "class-uuid", agentId: "agent-1", status: "active" })),
       saveClassEvaluationResult,
@@ -278,7 +349,7 @@ describe("UX6 class evaluation contract", () => {
     }));
     const updateClassEvaluation = jest.fn();
     jest.doMock("@/lib/store", () => ({
-      getClassById: jest.fn(async () => ({ id: "class-uuid", slug: "class-slug", professorId: "prof-1", name: "Class", status: "active", enrollmentOpen: true, createdAt: "2026-01-01T00:00:00.000Z" })),
+      getClassById: jest.fn(async () => ({ id: "class-uuid", slug: "class-slug", schoolId: "foundation", professorId: "prof-1", name: "Class", status: "active", enrollmentOpen: true, createdAt: "2026-01-01T00:00:00.000Z" })),
       getClassEvaluation: jest.fn(async () => ({ id: "eval-1", classId: "class-uuid", title: "Eval", prompt: "Answer this", status: "active", kind: "automatic", maxScore: 10, createdAt: "2026-01-01T00:00:00.000Z" })),
       updateClassEvaluation,
     }));
@@ -299,6 +370,14 @@ describe("UX6 vetting identity sync", () => {
   function mockVettingComplete(syncImpl: jest.Mock) {
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent()),
+      optionalAgent: jest.fn(async () => ({ agent: agent(), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent())();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       checkRateLimitAndRespond: jest.fn(() => null),
       jsonResponse: (body: unknown, status = 200) => Response.json(body, { status }),
       errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
@@ -309,14 +388,11 @@ describe("UX6 vetting identity sync", () => {
       validateHash: jest.fn(() => true),
     }));
     jest.doMock("@/lib/memory/memory-service", () => ({ putContextAndMaybeIndex: syncImpl }));
+    // M11-1 C14: the route's store surface is the atomic completeVetting plus reads.
     jest.doMock("@/lib/store", () => ({
       getVettingChallenge: jest.fn(async () => ({ id: "challenge-1", agentId: "agent-1", expectedHash: "ok", expiresAt: "2999-01-01T00:00:00.000Z", consumed: false })),
-      consumeVettingChallenge: jest.fn(async () => undefined),
-      setAgentVetted: jest.fn(async () => undefined),
-      getEvaluationRegistration: jest.fn(async () => null),
-      registerForEvaluation: jest.fn(async (_agentId: string, evaluationId: string) => ({ id: `reg-${evaluationId}`, status: "registered", registeredAt: "2026-01-01T00:00:00.000Z" })),
-      saveEvaluationResult: jest.fn(async () => undefined),
-      hasPassedEvaluation: jest.fn(async () => true),
+      getAgentById: jest.fn(async () => agent()),
+      completeVetting: jest.fn(async () => ({ outcome: "completed", bootstrap: [] })),
       ensureGeneralGroup: jest.fn(async () => undefined),
     }));
   }
@@ -398,6 +474,14 @@ describe("UX6 vector route envelopes", () => {
     jest.doMock("@/auth", () => ({ auth: jest.fn(async () => null) }));
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent()),
+      optionalAgent: jest.fn(async () => ({ agent: agent(), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent())();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       jsonResponse: (body: unknown, status = 200) => Response.json(body, { status }),
       errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
         Response.json({ success: false, error, hint, error_detail: { code: options.code ?? "bad_request", message: error, hint }, request_id: "req-test" }, { status }),
@@ -422,6 +506,14 @@ describe("UX6 vector route envelopes", () => {
     jest.doMock("@/auth", () => ({ auth: jest.fn(async () => ({ user: { id: "user-1" } })) }));
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => null),
+      optionalAgent: jest.fn(async () => ({ agent: null, denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => null)();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       jsonResponse: (body: unknown, status = 200) => Response.json(body, { status }),
       errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
         Response.json({ success: false, error, hint, error_detail: { code: options.code ?? "bad_request", message: error, hint }, request_id: "req-test" }, { status }),

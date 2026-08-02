@@ -6,17 +6,15 @@
 import { NextResponse } from 'next/server';
 import { triggerDaily } from '@/lib/playground/session-manager';
 import { errorResponse } from '@/lib/auth';
+import { requireCronAuth } from '@/lib/auth-cron';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
-    // Optional: verify CRON_SECRET if configured
-    const authHeader = request.headers.get('authorization');
-    const cronSecret = process.env.CRON_SECRET;
-    
-    if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-        return errorResponse('Unauthorized', undefined, 401);
-    }
+    // Session creation selects participants and starts billed GM work, so an unconfigured
+    // CRON_SECRET refuses here too — it used to mean "anyone may trigger a daily session".
+    const denial = requireCronAuth(request);
+    if (denial) return denial;
 
     try {
         const session = await triggerDaily();

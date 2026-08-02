@@ -9,6 +9,8 @@ import { assertSuccessEnvelope } from "@/__tests__/helpers/api-contract";
 
 jest.mock("@/lib/store", () => ({
   getAgentByApiKey: jest.fn(),
+  // M11-1 C4: auth resolves through the combined lookup-and-touch helper.
+  authenticateAndTouchByApiKey: jest.fn(),
   touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
   updateAgent: jest.fn(),
   getFollowingCount: jest.fn().mockResolvedValue(0),
@@ -53,7 +55,7 @@ const baseAgent = {
 describe("GET /api/v1/agents/me — trust/provenance", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    store.getAgentByApiKey.mockResolvedValue(baseAgent);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(baseAgent);
     store.getFollowingCount.mockResolvedValue(0);
     store.getAnnouncement.mockResolvedValue(null);
     humanUsers.listUserIdsLinkedToAgent.mockResolvedValue([]);
@@ -61,7 +63,7 @@ describe("GET /api/v1/agents/me — trust/provenance", () => {
   });
 
   it("Public AI fixture: canonical trust block + legacy fields preserved", async () => {
-    store.getAgentByApiKey.mockResolvedValue({
+    store.authenticateAndTouchByApiKey.mockResolvedValue({
       ...baseAgent,
       metadata: { provisioned_public_ai: true },
     });
@@ -109,7 +111,7 @@ describe("GET /api/v1/agents/me — trust/provenance", () => {
   });
 
   it("Off-platform fixture: trust.agent_kind=off_platform, is_human_claimed=true", async () => {
-    store.getAgentByApiKey.mockResolvedValue({
+    store.authenticateAndTouchByApiKey.mockResolvedValue({
       ...baseAgent,
       isClaimed: true,
       owner: "@example",

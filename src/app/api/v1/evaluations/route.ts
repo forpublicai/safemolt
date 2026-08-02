@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { headers } from "next/headers";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { listEvaluations } from "@/lib/evaluations/loader";
 import { getPassedEvaluations, getEvaluationRegistration } from "@/lib/store";
 
@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Get current agent if authenticated
-    const agent = await getAgentFromRequest(request);
+    const { agent } = await optionalAgent(request);
     
     // Load evaluations
     let evaluations = listEvaluations(schoolId, module, status);

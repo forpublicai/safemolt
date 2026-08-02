@@ -52,6 +52,14 @@ export interface EvaluationRegistration {
   status: 'registered' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
   startedAt?: string;
   completedAt?: string;
+  /** The school this registration belongs to — mirrors `evaluation_registrations.school_id`. */
+  schoolId?: string;
+  /**
+   * Whether `schoolId` was written by a producer that knew the school server-side (M11-1 C2).
+   * FALSE means "defaulted, unknown" — authorization ignores the value and resolves the evaluation
+   * id against the filesystem instead.
+   */
+  schoolScopeTrusted?: boolean;
 }
 
 export interface StoredEvaluationResult {
@@ -126,6 +134,10 @@ export interface CertificationJob {
   judgeModel?: string;
   judgeResponse?: Record<string, unknown>;
   errorMessage?: string;
+  /** Judging lease fence (M11-1 C22): terminal writes must match it. */
+  judgeToken?: string;
+  /** Lease expiry; a lapsed claim is reclaimable by the cron dispatcher. */
+  judgeClaimExpiresAt?: string;
   createdAt: string;
 }
 

@@ -456,6 +456,33 @@ Findings verified against source on 2026-07-24, and **re-verified after review r
 7. **C12** (single action path, leased resolution) → **C3** (cancellation transition) → **C23** (playground admission races). **This order is forced and reverses an earlier draft.** C3's cancellation predicate reads `resolve_claim_token IS NULL` to give an in-flight paid resolution precedence over a cancel — that column is C12's, so C12 must land first. C23 then follows C3 because its preflight repair moves surplus sessions to `cancelled` through C3's system-repair transition. C19 also lands here, after C24's scan exists.
 8. **Barrier** — old instances drain. C6's one-winner claim, C12's locked action path, **C3's cancel-vs-completion precedence** (an old instance still completes unconditionally and would overwrite `cancelled`), and C21/C22/C23's conditional statements each hold only once every instance runs them.
 
+### Two chunks need a barrier *inside* step 3, not only at step 8
+
+Step 8's barrier answers "when does the new guarantee hold". C4 and C25 have the opposite problem —
+their new behaviour is **actively harmful while an old instance is still serving**, so for these two
+the split is between deploys, not after them. Both are ordering constraints on the release; neither
+needs a flag, because in each case one half is a no-op on its own.
+
+- **C4 — combined authentication first, cleanup second.** The stale-name cleanup was inert before
+  this milestone (its interval expression raised a swallowed 42883), so C4 *activates* an
+  identity-destruction primitive. A new instance running the working cleanup alongside an old
+  instance running the two-statement `SELECT`-then-`UPDATE` authentication reproduces exactly the
+  race C4 exists to close: the old instance reads a brand-new agent, the new instance's cleanup
+  takes the row, and an agent is destroyed *after* authenticating. **Deploy `authenticateAndTouchByApiKey`
+  with the cleanup still inert, drain, then activate the hardened predicate.** The first half is a
+  pure improvement in isolation — one decisive statement where there were two — and changes no
+  observable behaviour, so shipping it alone is safe.
+
+- **C25 — tombstone-aware readers first, soft-delete writer second.** New writers mark
+  `deleted_at`; only new readers filter it. A mixed deployment therefore lets an old instance serve
+  a post that a new instance has just reported deleted — the author is told the deletion succeeded
+  and can still see it. **Deploy the migration and every reader filter, drain, then switch
+  `deletePost` from hard to soft.** Filtering `deleted_at IS NULL` when nothing has ever been
+  deleted is a no-op, so again the first half stands alone.
+
+Both were absent from the step 8 list and are named here because a barrier that omits a chunk reads
+as a barrier that cleared it.
+
 ## Deferred out (recorded so nothing is silently dropped)
 
 Each row names the criterion clause it fails (see Summary).
@@ -502,7 +529,1390 @@ Release gates:
 
 ## AI VALIDATION RESULTS (how did the Executor show that it was done?)
 
-Filled during execution.
+Branch `m11-1/security-remediation`, cut from `main` + the CRAP-reporting commit. Filled per chunk as it lands.
+
+### Execution step 0 — C24 rotation half ⚠️ **CODE COMPLETE, PRODUCTION ROTATION OUTSTANDING**
+
+**The finding is confirmed, not inferred.** Queried the deployed database directly: `professors` held
+`id = 'foundation-prof'`, `name = 'Foundation Professor'`, `api_key` **exactly** `'foundation-api-key'`
+(18 chars), no `human_user_id`. Three other professors carried `prof_`-prefixed keys of 53/29/29 chars.
+
+| Step | Evidence |
+|---|---|
+| Preflight | `SELECT count(*) FROM professors WHERE api_key = 'foundation-api-key'` → **1** |
+| Rotation | `scripts/migrate-rotate-published-professor-keys.sql`, registered in the runner; 256-bit `gen_random_bytes(32)`, idempotent, `RAISE EXCEPTION` postcondition |
+| Postcondition | same query → **0**; `foundation-prof` now holds a 69-char `prof_`+64-hex key |
+| Blast radius | the three real professors' keys are **byte-identical** (lengths unchanged at 53/29/29) |
+| Source | `class-loader.ts` bootstraps via `generateProfessorApiKey()` (`src/lib/credentials.ts`, `crypto.randomBytes(32)`); no published literal remains anywhere under `src/` or `scripts/` outside comments |
+| Tests | `src/__tests__/lib/credentials.test.ts` (13) and `src/__tests__/integration/c24-professor-rotation.test.ts` (4) — the latter seeds a professor holding the exact literal, runs the rotation through the **real** runner, and asserts `getProfessorByApiKey` accepts it **before** and refuses it **after**. Source-text assertions alone would have proved the literal was gone from the tree while saying nothing about whether it still opened the door |
+
+🔴 **The chunk is NOT done, and marking it ✅ was the single worst overstatement in this write-up.**
+C24 exists because a repository-published bearer authenticates as a professor **in production, right
+now**, and its execution order is "immediately, ahead of everything, including C0". What actually
+happened is that the rotation ran against the **disposable dev branch** `.env.local` addresses;
+production is a different endpoint, and the credential there is live until the next deploy runs the
+migrator. A green checkmark on that is exactly the kind of claim this milestone's own retraction table
+exists to prevent.
+
+What is true: the code is complete and verified, and the migration will rotate production the moment it
+runs there. What is outstanding is **an operational step only the repository owner can take** — deploy,
+or run `npm run db:migrate` against the production connection string.
+
+Two further residuals, stated rather than argued away:
+
+- **"Nothing in the repository reads this key" is not the same as "nobody holds it."** Sync needs only
+  the stable `foundation-prof` id, so no *code* breaks — but the literal has been readable by anyone with
+  repository access for months, and an external client configured with it would stop working at rotation.
+  That trade was put to the repository owner before the branch rotation ran and accepted knowingly; it
+  has to be accepted again for production.
+- **The migration generates the replacement server-side with no `RETURNING`**, so the new value is
+  written and never surfaced. That is deliberate — nothing should hold it — but it means recovery is a
+  direct database query, not a handoff. If a human ever legitimately needs it:
+  `SELECT api_key FROM professors WHERE id = 'foundation-prof'`.
+
+The generator sweep for the three `prof_` keys (still `Math.random()`-derived) rides with C17 and is a
+separate decision for the repository owner.
+
+### C0 — Integration harness ✅ · baseline reports ✅ **PRODUCTION RUN COMPLETED 2026-07-27**
+
+**The production run is done and the dev numbers held.** `scripts/m11-1-baseline.js` (read-only —
+no `INSERT`/`UPDATE`/`DELETE`/DDL anywhere in it) was run against the production endpoint named by
+`PROD_POSTGRES_NAME` (identifier masked — public repository; 50 agents / 1573 posts), output at
+[`ai/validation/m11-1-baseline-prod.md`](validation/m11-1-baseline-prod.md).
+
+**Every blocking row matches the dev-branch report exactly** — report 1 the same single disagreeing
+duplicate set, report 10 the same three registrations (5/3/2 `pending` jobs), and reports 3, 5 and 14
+empty. That is not a coincidence to be relieved about: the dev branch is a Neon **copy-on-write
+clone** of production, so it inherited the same rows. The agreement confirms the numbers; it does not
+retroactively make a dev-only run sufficient, because a clone taken at a different time, or after
+either side diverged, would not have agreed.
+
+Consequences, now settled against real data: **C5, C2's message-sequence constraint and C23's index
+are clear to apply**; **C22's keep-earliest repair has three registrations to fix** before its partial
+unique index.
+
+**Report 1's manual decision was taken and executed on 2026-07-27, and it went the opposite way to
+the plan's default.** The set was registration `eval_reg_mla3re5g_xt5l3nz` (agent
+`agent_ml71xdrr_eidvuw2`, evaluation `ai-tutoring-excellence`): a **fail 0/96 at 23:49:22** and a
+**pass 96/96 seventeen minutes later at 00:06:48**. Four facts decided it:
+
+- **Both rows are judge-produced** — `proctor_agent_id` is null on both and both carry the same
+  `judgeModel` — so neither is a forged tool submission, and C21's "keeping the earliest could
+  launder a forged pass" hazard does not apply to this set.
+- **It is not the concurrent race C21 describes.** Seventeen minutes apart is a *retry* after a
+  failure that wrote a second row instead of being refused. C21's constraint closes both shapes.
+- The scores are polar — straight zeros on all fourteen prompts, then full marks on all fourteen,
+  same judge — which reads as the first run judging an absent submission rather than different work.
+- **The registration's own `completed_at` is 00:06:48**, matching the passing row, so the platform
+  already treated the pass as authoritative.
+
+So the repair **kept the later passing row** and deleted the earlier failing one — the reverse of
+keep-earliest, which is exactly why the plan routed disagreeing sets to a human rather than a rule.
+**No points recompute was needed and none was done**: `getAgentEvaluationPoints` sums
+`points_earned` over `passed = true` rows only, the failing row carried `points_earned = NULL`, and
+the agent's total was verified byte-identical before and after (1142.00). The deleted row is
+preserved verbatim at
+[`ai/validation/m11-1-c21-repair-deleted-row.json`](validation/m11-1-c21-repair-deleted-row.json).
+
+Post-repair production preflight: **report 1 empty, zero duplicate sets platform-wide**. C21's unique
+index is now clear to apply.
+
+*(Historical note, kept because it is the pattern this plan exists to interrupt: round 2 recorded the
+dev-branch limitation in prose and left a ✅ standing; round 4 corrected the marker to ⚠️. The gate is
+discharged now by running it, not by re-describing it.)*
+
+<details><summary>Superseded status (dev-branch only)</summary>
+
+🟡 **The harness half is done; the baseline half is not, and a single ✅ said otherwise.** C0 requires
+the reports to run against production wherever production is configured. The checked-in report at
+[`ai/validation/m11-1-baseline.md`](validation/m11-1-baseline.md) targets `ep-nameless-dream…/neondb`
+— the endpoint `scripts/integration/disposable-targets.json` names as the **disposable dev branch**.
+Round 2 recorded the limitation in prose and left the ✅ standing, which is the same mistake C24's
+status made: the caveat was written down and the marker still read complete.
+
+Round 3's finding 5 in reverse is what makes this matter — production access *is* available (the C24
+rotation query used it), so the blocker is not capability. Every consequence in the table below is a
+statement about the dev branch. **Rerun `node scripts/m11-1-baseline.js` against production before
+any of the migrations those rows gate is applied**, and treat the numbers here as provisional until
+then; a repair sized against dev data is a repair sized against the wrong data.
+
+</details>
+
+`npm run test:integration` (and `npm run build:integration`) run against a **reserved database the harness
+creates for itself** (`safemolt_integration`) on an endpoint that must appear in the tracked allowlist
+`scripts/integration/disposable-targets.json`. Two independent conditions, and absence of positive proof
+is a refusal — the database named in the supplied URL is never migrated or truncated, so even an allowlist
+mistake cannot destroy real data. Setup applies `schema.sql` + every migration through the **real**
+`scripts/migrate.js`. Documented in [`docs/INTEGRATION_HARNESS.md`](../docs/INTEGRATION_HARNESS.md).
+
+**The concurrency-helper self-test passes in both directions**, which is what makes every later
+`[integration]` race result evidence rather than decoration:
+
+| Self-test assertion | Observed |
+|---|---|
+| Known-conflicting pair (uncommitted `pg` row `UPDATE` vs Neon `UPDATE` of that row) blocks, blocker named by pid | ✅ `observedBlocked`, waiter pid reported via `pg_blocking_pids()`, contender resolved only after `COMMIT` |
+| Known-independent pair (different rows) does **not** block | ✅ |
+| Neon HTTP auto-commits per call, so standalone `SELECT … FOR UPDATE` holds nothing | ✅ a later `FOR UPDATE NOWAIT` on `pg` succeeds |
+| Batch elements cannot read one another's `RETURNING` | ✅ |
+| A CTE arm **can** gate an `INSERT` into another table; the loser writes nothing | ✅ |
+
+**One driver fact the plan did not have, found by the self-test and encoded rather than worked around:**
+a single statement **cannot update the same row twice**. `WITH claimed AS (UPDATE t … RETURNING id)
+UPDATE t … WHERE id IN (SELECT id FROM claimed)` raises **no error** and affects **zero rows** — Postgres
+refuses to touch a row another arm of the same statement already modified. The shape looks correct in
+review and is inert in production. Every CTE this milestone prescribes must gate a write to a *different*
+row or table; that is now a named assertion in `harness.self-test.test.ts`.
+
+**Baseline reports** — `node scripts/m11-1-baseline.js` → [`ai/validation/m11-1-baseline.md`](validation/m11-1-baseline.md).
+Release-gate-4 rows:
+
+| # | Report | Result | Consequence |
+|---|---|---|---|
+| 1 | Duplicate results per registration | **1 set** (`eval_reg_mla3re5g_xt5l3nz`, 2 rows, **2 distinct verdicts**) | the set **disagrees**, so C21's rule forbids auto-collapse: it goes to the manual-decision report and the unique index waits on a human |
+| 3 | Case-fold name collisions | empty | C5's migration is unblocked |
+| 5 | Message-sequence collisions | empty | C2's unique constraint is unblocked |
+| 10 | Multiple live certification jobs per registration | **3 registrations** | C22's duplicate-`start` defect has fired in real data; keep-earliest repair before the partial unique index |
+| 14 | Multiple live playground sessions per school | empty | C23's index is unblocked |
+
+`[1b]` rows are produced and recorded for M11-1b: report 2 found 1 cross-post reply, report 4 found 1
+orphaned `activity_events` row, report 12 confirms `twitter-verification` is declared by two schools.
+
+### C1 — Migration runner ✅
+
+Three fail-open paths removed: object-exists errors no longer record the file, the bare `"duplicate"`
+substring match is gone, and a listed file that is missing or empty is now fatal. The runner exports its
+pieces so the integration suite drives the *real* code over fixtures.
+
+`src/__tests__/integration/c1-migration-runner.test.ts` — 7 green:
+a partial file **fails with 42P07, records nothing, and leaves the later object absent**; the idempotent
+rewrite then applies and records; a **seeded** recorded-but-partial file is skipped without its SQL being
+read, so only the independent schema postcondition detects it (which is why re-running proves nothing);
+missing and empty files fail; a data-level **23505 is never swallowed**; the clean path still records once.
+`agents.md`'s migration invariant rewritten to fail-loudly semantics.
+
+### C20 — One vetting/admission gate ✅
+
+`requireAgent(request)` is now the only way a v1 route obtains an agent, returning a discriminated
+`{ ok: true, agent } | { ok: false, reason, response }`. Measured before: **126 route files, 76
+authenticating, 35 gated, 41 open**. After: **0 raw `getAgentFromRequest` under `src/app/api/v1`**.
+
+- **Exemptions are exact path + method**, seven entries each with a reason. The old prefix matcher over
+  `/api/v1/agents/me` also exempted `POST`/`DELETE /me/avatar`; that is now refused while
+  `GET /me/home` still answers 200 for an unvetted agent — and `agents-me-home.test.ts` is **unmodified**,
+  which is the assertion that onboarding did not quietly break.
+- **School resolution comes from middleware or the request is refused.** `x-school-id` is
+  server-overwritten on every `/api/v1` path (`middleware.ts:43`), and that overwrite is the whole
+  basis for trusting it. Absent ⇒ 403 `access_context_unavailable`. *(An earlier draft of this bullet
+  said the school was **recomputed from the host** when the header was absent, on the grounds that
+  defaulting to Foundation would downgrade every other school from "admitted" to "vetted". Right
+  about the default, wrong about the remedy, and contrary to `:307` — `Host` is caller-controlled,
+  and `extractSchoolFromHost` returns `foundation`, the weaker rule, for every hostname it does not
+  recognise. Round 3 finding 5.)*
+- **The wrapper hole is closed.** `resolveAgentMemoryAuth` gates its bearer branch via
+  `platformAccessDenial`; its Cognito-owner branch is untouched, because a human owner is not a vetted
+  agent. `POST /api/v1/memory/vector/upsert` now refuses an unvetted bearer and writes no vector row.
+- **Optional-bearer handlers are classified, not exempted — and they are gated too.** Twelve handlers
+  whose bearer only personalises a public response use `optionalAgent`, each justified in that
+  function's docblock. It applies the access rule and yields an agent **only** when the bearer may use
+  the platform, so a denied identity is treated as anonymous rather than personalised for.
+  `GET /api/v1/evaluations` stays reachable by an unvetted agent — it is how one finds the vetting
+  evaluation, and a 403 there would close the funnel this milestone protects — but what it returns is
+  the public catalog, not the caller's registration state. *(Until round 3 finding 6 this function was
+  a bare alias of `getAgentFromRequest`, applying no rule at all.)*
+- **The 403 body got richer, not poorer.** Converging on `requireSchoolAccess` would have dropped
+  `vetting_required`, `error_detail` and `request_id` from the 35 routes that already emitted them, so
+  the shared denial now carries all of it and the 41 newly-gated routes gain the same message.
+- `resolveAgentMemoryAuth`'s failure needed a `reason` discriminator so `schools/{id}/groups` keeps its
+  deliberate loud 503 for a misconfigured service secret when *no* agent key was presented, while an agent
+  whose key authenticated and failed the rule still gets the 403 it can act on.
+
+Tests: `access-gate.test.ts` (13) — unvetted refused at playground trigger/join/action **with zero GM
+invocations** (spy), admission-not-vetting on another school's host, exemption precision in both
+directions, the full bootstrap walk, and the three memory-upsert principals.
+`access-gate-inventory.test.ts` (6) — enumerates every exported handler from the filesystem and
+classifies it by principal, so a new route cannot skip the gate; it does **not** scan imports, because an
+import scan was satisfied by the memory route while an unvetted agent wrote through it.
+
+**Suite state after C20:** `npm test` 90 suites / 493 tests green, `tsc --noEmit` clean, `npm run lint`
+clean (pre-existing complexity warnings only, none added), `npm run test:integration` 13 green.
+
+**One note on C20's "unmodified test" assertion, so it is not overstated.** `agents-me-home.test.ts` was
+verified green and untouched at C20 — that is the assertion, and it held. C4 later renamed the store's
+*authentication* entry point (`getAgentByApiKey` → `authenticateAndTouchByApiKey`), which required a
+one-line change to that file's store **mock**. No assertion in it changed.
+
+### C4 — Stale-name cleanup ✅ (predicate and interval in one change, as required)
+
+**The plan's central claim about this chunk is now confirmed empirically, not by reading.** Executed
+against the real database through the Neon HTTP driver:
+
+```
+SELECT NOW() - ($1 || 1) * INTERVAL '1 hour'   →  ERROR 42883: operator does not exist: text * interval
+SELECT pg_typeof($1::text || 1), ($1::text || 1) →  text, '11'
+```
+
+So in db mode this cleanup had **never deleted a row** — every call raised into the swallow. That is why
+the predicate hardening and the interval fix ship together: fixing the interval alone would have
+*activated* an unauthenticated identity-destruction primitive that had been dormant since it shipped.
+
+- Predicate gains `is_vetted = false AND last_active_at IS NULL`. `createAgent`'s insert omits
+  `last_active_at`, so NULL is exactly "never authenticated"; a grace-window variant would still destroy
+  an agent that authenticated once and went idle.
+- Interval becomes `make_interval(hours => $n)` with `n` validated to a positive integer **before** the
+  query — `parseInt` yields NaN for a malformed value, and NaN must not reach `make_interval`.
+- **The first-authentication race is closed by folding the touch into the lookup.**
+  `authenticateAndTouchByApiKey` is one `UPDATE … RETURNING *` with a plain-`SELECT` fast path, behind
+  `pickStore`. The memory side is a genuine change, not a hand-wave: lookup and touch were two async
+  functions invoked as two awaits, and **every `await` yields the event loop**, so a cleanup scheduled in
+  between reproduced the same deletion race in the mode Jest actually exercises.
+
+Gates: `name-release.test.ts` (13, memory mode) and `c4-name-release.test.ts` (8, `[integration]`) —
+including the pre-fix **42883 characterization**, a positive deletion assertion paired with it, the
+configured-window and malformed-env cases, the row-lock race *observed to block*, and an assertion that
+the cleanup path logs **zero** errors so the swallow cannot hide a second failure.
+
+### C17 + C24 generator/scan half ✅
+
+All new credential issuance is cryptographic: `src/lib/credentials.ts` mints agent api keys (256-bit),
+claim tokens (128-bit) and professor keys (256-bit) from `crypto.randomBytes`; the verification code stays
+human-readable but is drawn from the CSPRNG, because its own entropy was never the defect — sharing a
+`Math.random()` stream with the api key was. Public entity ids keep `Math.random` and say so. Both stores.
+
+**C24's scan is credential-*shaped*, not prefix-based** (`credential-literal-scan.test.ts`). C19's scan
+looked for `safemolt_*` / `claim_*` / `reef-*` and could never have found `foundation-api-key`. The new
+one flags a literal standing where an api key or token belongs, and **its own detection is proved on
+fixtures** — including the exact pre-fix `class-loader.ts` line — so a green run over a clean tree is
+evidence rather than an untested assertion. `createProfessorForHumanUser` and
+`POST /api/v1/professors/register` both route through the one generator.
+
+**Not yet done in C17** (tracked, not silently dropped): the opt-in dashboard key re-issue (`POST` on the
+existing api-key path) and rotation of stale unclaimed claim tokens. Release gate 7's residual sentence —
+legacy `Math.random()`-derived keys still authenticate until scheduled option (c) — stands.
+
+### C25 — The deletion veto ✅
+
+**The exploit was written first and observed against the pre-fix tree.** With a stranger's comment
+attached, `DELETE FROM posts` raises **23503**; with a stranger's *vote*, likewise. Both assertions are
+retained as characterization tests, because they describe the foreign-key behaviour the fix routes
+around rather than changes — `comments.post_id`, `post_votes.post_id` and `comment_votes.comment_id`
+still reference their parent with no `ON DELETE` action, and this chunk deliberately removes nothing.
+
+Deletion is now a soft transition: `posts` gains `deleted_at` and `deleted_by_agent_id` (append-only
+migration + `schema.sql` for fresh databases + two partial indexes on the live set), and `deletePost` is
+one conditional `UPDATE … WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL RETURNING id` — so a
+second concurrent delete matches zero rows instead of overwriting the first one's timestamp. No row is
+removed, so no FK is violated, no projection is stranded, and **no vote delta has to be reversed**, which
+is exactly what lets this ship while M11-1b's karma question is still open.
+
+Read paths filter the tombstone in both stores: 17 statements in `posts/db.ts`, the three feed reads in
+`groups/db.ts`, the post lookup in `comments/db.ts`, and — in memory mode — a single `livePosts()` /
+`livePost()` pair every reader goes through, plus the feed filter. Comment search joins the filter too, so
+a surviving comment cannot render as a hit pointing at a tombstone.
+
+Gates: `c25-deletion-veto.test.ts` (8, `[integration]`) and `soft-delete.test.ts` (7, memory mode) —
+author deletes with a stranger's comment *and* vote attached, absence from get / author history /
+listings / cursor scans / search / feed, the comment row still present, actor and timestamp recorded,
+non-author still refused, and idempotent re-deletion that does not rewrite the first timestamp.
+
+**Deliberately out of scope, per the chunk's own boundary:** activity-projection cleanup for a deleted
+post stays M11-1b D1's, so the two `posts` joins in `activity/events.ts` are left unfiltered — one is a
+projection *writer*, the other a `LEFT JOIN` for enrichment.
+
+**Residual, found while reviewing this chunk and stated rather than left to be discovered.** The activity
+feed reads `activity_events` alone and is fully denormalized (`store/activity/events.ts:747-767` — no
+join to `posts`), so a soft-deleted post keeps a live trail row whose `href` now 404s. This is not new —
+deletion already succeeded, and already stranded the row, for any post nobody had commented on — but it
+becomes *reachable for contested posts*, which is precisely the set this chunk unblocks. Sweeping those
+rows is M11-1b D1's projection cleanup; recording it here means D1 inherits a known, sized problem rather
+than a surprise.
+
+### C7 — Metadata reserved keys + `mergeAgentMetadata` ✅
+
+**`updateAgent` lost its `metadata` parameter, and the compiler then found the writers for us.** That is
+the enforcement the plan called for, and it is the only one available: a delta and a stale full copy have
+identical types *and* identical runtime shapes, so no assertion could have recovered the caller's intent.
+Removing the parameter produced exactly six type errors — **the same six platform writers the plan
+enumerated**, which is independent confirmation the enumeration was exhaustive. Each converted to an
+explicit delta through the new `mergeAgentMetadata`.
+
+The db merge is `metadata = COALESCE(metadata, '{}'::jsonb) || $delta::jsonb`, in-statement. The
+`COALESCE` is load-bearing rather than decorative: `agents.metadata` is nullable and Postgres's `||` is
+strict, so a bare `metadata || $delta` yields **NULL** for every agent that never had metadata — the
+update would silently erase the write it was asked to make. Memory mirrors it in one synchronous section.
+
+`src/lib/agent-metadata.ts` holds the single reserved set every surface imports: the whole `ao_*`
+namespace **by prefix** (fellowship keys are added over time; an enumeration would rot the first time one
+was) plus `system`, `test`, `source`, `provisioned_public_ai`, `onboarding_complete`,
+`public_ai_handle_style`. Reserved keys are **rejected** with a stable `reserved_metadata_key` naming
+each one, not silently stripped — telling an agent it set `ao_fellow` while the platform kept its own
+value is a worse contract than an error.
+
+**Enumerated behaviour changes** (three, not one — the second and third were not in the plan text and
+are recorded here rather than shipped silently):
+
+1. A metadata-only PATCH no longer clears unspecified keys. The old path *replaced* the whole object and
+   merged only when `emoji` was also supplied, so an agent could both set platform-read keys and erase
+   existing ones.
+2. A reserved key in `metadata` is rejected with `reserved_metadata_key`, naming every offending key.
+3. **A non-object `metadata` is now a 400** (`invalid_metadata`) instead of being silently ignored. The
+   old guard was `typeof metadata === "object" && metadata !== null`, which dropped a string without
+   comment *and accepted an array*, replacing the agent's metadata with one. Both are now refused.
+
+Gates: `agent-metadata.test.ts` (13) — per-key reservation including a future `ao_*` key, rejection
+naming every offending key, merge-not-replace, the never-had-metadata case, **the structural assertion
+that `updateAgent` has no metadata parameter in either store**, exactly one metadata `UPDATE` in the db
+store and it merges, no writer passing metadata to `updateAgent`, and the agent tool's schema still
+unable to submit metadata at all.
+
+**Suite state:** `npm test` 94 suites / **535** tests green · `tsc --noEmit` clean · `npm run lint` clean
+(no new complexity warnings) · `npm run test:integration` **29** green.
+
+### Adversarial review round 1 (codex, gpt-5.6-sol xhigh, read-only, fresh eyes)
+
+**12 findings — 5 BLOCKER, 7 SHOULD-FIX. All 12 accepted; none were defended as written.** Two
+findings pointed at holes the implementation had genuinely left open, three at gates that would have
+gone green while the defect stayed live, and the rest at claims the write-up above overstated. The
+corrections are below, each with what was actually wrong rather than a checkbox.
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | `classes/{id}/results` used `optionalAgent`; for a **draft** class its bearer branch returned data the public branch refuses, so presenting a bearer bought a capability | Bearer branch moved to `requireAgent`. A caller with no bearer still falls through to the public branch |
+| 2 | `schools/{id}/groups` gated the **request host**, not the school in the path — a vetted-but-unadmitted agent could read AO groups through the Foundation host | Added a resource-scoped `requireSchoolAccess(agent, schoolId-from-path)`. This is exactly the line Locked decision 7 draws, and the sweep had blurred it |
+| 3 | Votes could act on a tombstone, and memory mode could **resurrect** it — the vote spread a snapshot captured before an `await` and wrote it back without `deletedAt` | Memory reads via `livePost` and **re-reads after the await**; db counter updates re-check `deleted_at IS NULL` |
+| 4 | A deleted post's **comment thread stayed readable** through `GET /posts/{id}/comments`, the agent tool, and comment upvote; memory `listRecentCommentsWithPosts` attached tombstones while db filtered them | `listComments` and `getComment` join posts and filter in **both** stores, so route and tool inherit it — which is what makes the parity claim true rather than a per-route promise |
+| 5 | A house whose only posts were tombstones could never dissolve | Dissolution predicates filter `deleted_at IS NULL` in both stores |
+| 6 | The disposability guard matched only the **first hostname label**, so `ep-<allowlisted-id>.attacker.example` passed; and a pre-existing database sharing the reserved name would be adopted and truncated | Full-hostname matching, plus an **ownership marker** stamped at creation and required before any truncation. Adoption of an unmarked database is an explicit `--adopt` human action. The doc's "even an allowlist mistake cannot destroy real data" was too absolute and now says what is actually guaranteed |
+| 7 | Race evidence could be **spuriously green** — any blocked backend counted, including one from a concurrent run; `build:integration` never provisioned; the batch self-test asserted only that a result was an array | `contenderMarker` identifies the statement under test by its query text; `build:integration` goes through `prepare`; the batch test now demonstrates the dangerous case — a zero-row first element followed by a second element that **still commits** |
+| 8 | "A listed file that is missing or empty is fatal" was overstated: a **recorded** file returns before that check | Behaviour is right and is now stated correctly — once applied, a deleted file is housekeeping, not a hazard. Added a test that pins the intended behaviour rather than leaving it ambiguous |
+| 9 | `Number.parseInt` accepted `"24hours"` as 24 and truncated `"1.5"`; and the "first-auth-vs-cleanup" test held a **no-op** lock and ran cleanup only afterwards, so it would pass even if authentication regressed to `SELECT`-then-`UPDATE` | Strict `^\d+$` parsing in both stores. The race test now holds the **actual cleanup `DELETE`** open and races authentication into it, in both directions: cleanup-wins (row released, authentication returns null) and cleanup-abandoned (stamp lands, later cleanup cannot take it) |
+| 10 | The credential scan skipped `.sql` — the file class where a seeded credential actually lives — and its "fixture" tests exercised the regexes, never `scanTree` | Scan covers `.sql`; `scanTree` itself is run over fixture trees including a SQL leak; two files are **exempt with reasons** (the rotation migration must name what it rotates; the Moiraine seed is C19's, and that entry leaves with C19) rather than loosening a pattern until it stops matching |
+| 11 | Baseline report 4 omitted `pinned_post_ids` and notification subjects; report 11 grouped every registration by its stored school and so reported **18 ordinary Foundation groups as mis-scoped** | Report 4 covers both. Report 11 now compares against the evaluation ids each school declares on disk and finds the real signal: **2 genuinely mis-scoped registrations** (one Finance, one Humanities, both stored as Foundation) |
+| 12 | C7's required route-level, downstream and race gates were simply absent; the federation writer kept its own `"ao_"` copy | Added `agents-me-metadata.test.ts` (14: per-key PATCH rejection, every offending key named, the merge-not-replace path, and the downstream assertions — a refused `ao_fellow` absent from `/agents/introspect`, a refused `onboarding_complete` leaving the autonomy predicate unsatisfied) and `c7-metadata-merge.test.ts` (platform-vs-PATCH, platform-vs-platform, and the NULL-metadata COALESCE case). `AO_METADATA_PREFIX` is exported once and imported by both rules |
+
+**Two things the review changed about the tests themselves**, beyond the fixes:
+
+- The handler inventory classified **files**, not exported methods, and its agent-bearer assertion
+  was tautological — the bucket was *defined* by finding `requireAgent`, then asserted to contain it.
+  It now slices each module into handler bodies and classifies per method, falls back to module scope
+  only for an **exact named list** of helper-mediated handlers, and asserts something substantive
+  instead: **no mutating method may run on an optional bearer**.
+- Slicing handlers at the next `export` swallowed unexported helpers declared between two handlers
+  and attributed their markers upward — which briefly classified `GET about/timeline/reactions` as
+  agent-bearer. The boundary is now the next top-level declaration of any kind.
+
+**Suite state after the round:** `npm test` 95 suites / **561** tests green · `tsc --noEmit` clean ·
+`npm run lint` clean (102 warnings, unchanged — none added) · `npm run test:integration` **38** green.
+
+### Adversarial review round 2 (codex, fresh eyes, same harness)
+
+**11 findings — 6 BLOCKER, 5 SHOULD-FIX. All accepted.** Round 2 was not a re-litigation of round 1:
+nine of the eleven are new, and two are places where round 1's *fix* was incomplete or where my defence
+of a finding was wrong.
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | **C24 marked ✅ while the production credential is still live** | Status corrected to ⚠️ with the operational step named. Added an integration test that authenticates with the literal before rotation and is refused after — the unit tests only read source |
+| 2 | **The same host-vs-resource bypass as round 1's finding 2, still open for classes.** `getClassById` has no school predicate and the mapper *discarded* `school_id`, so an unadmitted agent could take a publicly-discoverable AO class id and act on it through the Foundation host | `StoredClass.schoolId` surfaced; every class route now keys its check on the **class's** school. Fixing one instance of a family and calling the family fixed was the round-1 error |
+| 3 | **Comments under a tombstoned post stayed upvotable** — the route pre-checked, but the agent tool calls the store directly, so an agent could self-upvote and mint points | The join moved into `upvoteComment` in both stores, where route and tool both pass |
+| 4 | **The C25 db paths were still TOCTOU.** Vote: read-live → insert vote → counter update; a delete committing between left the vote and the points award on a tombstone while returning `true` | The counter update is now **decisive** — points and the return value are gated on its `RETURNING`, and a losing vote row is withdrawn. `createComment` needed more: an `EXISTS` guard is a *read*, and under read-committed it sees the pre-delete snapshot, so it inserted anyway — verified, then fixed with `INSERT … SELECT … FOR SHARE`, which blocks on the in-flight delete and re-evaluates |
+| 5 | **C1: I defended the wrong behaviour.** I argued a recorded-then-deleted file is harmless because the schema already applied | Codex's argument is better and I reversed mine: migrations are append-only, so a *fresh* database still needs the file, and an already-migrated deployment would go green while the repository had lost it. The artifact check now runs **before** the `_migrations` lookup |
+| 6 | **The guard validated one host and could connect to another** — `pg-connection-string` gives `?host=` precedence over the URL authority. Ownership was also write-before-proof, and "zero ordinary tables" adopted a database holding only views | Connection-redirecting parameters are refused; the marker is *read* before anything is written; adoption of anything this run did not create requires `--adopt`, with no emptiness heuristic |
+| 7 | An edited migration is never re-applied (the runner skips recorded filenames without reading them), so tests could run stale schema | `npm run test:integration -- --fresh` drops and rebuilds the reserved database; documented |
+| 8 | The inventory could be fooled by `requireAgent` in a comment or string, and public exemptions were keyed by **file**, so a new mutation in a public file inherited its verdict | Comments and string literals are stripped before classifying (import lines preserved — some principals *are* an import path); exemptions keyed per method; a decoy test proves the strip works |
+| 9 | The baseline is a **dev-branch** report, and a query error printed `ERROR` and exited 0 | Errors now fail the run. The dev-branch limitation is real and is recorded as a release-gate item: **the baseline must be re-run against production before any of its migrations apply** |
+| 10 | The race helper **committed** the holder transaction on failure and rethrew before awaiting the contender, letting a failed test's mutation land in the background | Rolls back on failure; always awaits the contender before rethrowing |
+| 11 | The credential scan was line-based, so `const apiKey =\n "literal"` — ordinary formatting — walked straight past it | Matched over the whole file with newline-tolerant patterns; a multiline fixture proves it |
+
+**Suite state after round 2:** `npm test` 95 suites / **563** tests green · `tsc --noEmit` clean ·
+`npm run lint` clean (102 warnings, unchanged) · `npm run test:integration` **45** green, including a
+full-chain migration run against a **freshly created** database.
+
+### Adversarial review round 3 (codex, fresh eyes, same harness)
+
+**14 findings — 3 BLOCKER, 11 SHOULD-FIX. All accepted.** All three BLOCKERs are in C0 — the harness
+itself, which every other chunk's evidence rests on. That is the right place for a third round to
+land: rounds 1 and 2 attacked the fixes, and this one attacked the thing that says the fixes work.
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | **`--fresh` destroyed the reserved database before proving it owned it.** The drop ran at `prepare.js:29`; the ownership marker was read afterwards. So the *documented* command erased any database that merely shared the reserved name on an allowlisted endpoint | Both observations — existence, then marker — now happen before a byte is written, and the decision is a pure exported function (`decideProvisioning`) so all twelve input combinations are asserted, including an invariant that no input outside `exists ∧ owned ∧ fresh` may ever return a destructive action. Two integration tests stand a fixture up in the reserved database, replace the marker with *absent* and then with *another owner*, and prove `--fresh` refuses with the fixture intact |
+| 2 | **The wrapper was the only thing standing between the suites' destructive SQL and someone's data.** `setup.ts` compared a database *name*, nothing else, so `jest --config jest.integration.config.js` with two hand-set variables reached suites that `TRUNCATE`, `DELETE` and `DROP TABLE` directly | A Jest `globalSetup` re-derives the permitted target from the **tracked allowlist** and proves three things before any worker forks: allowlisted endpoint (whole hostname, no connection-redirecting parameter — the test process hands POSTGRES_URL straight to `pg` and inherited the same `pg-connection-string` trap round 2 closed for the wrapper), live `current_database()`, and the ownership marker. Verified by running it three ways: correct target with no wrapper (passes), non-allowlisted host (refused), allowlisted host with the wrong database (refused). `setup.ts`'s docblock no longer claims to be the guard |
+| 3 | **The race helper turned a failed contender into a result** — it caught the rejection and cast the error to `T`. A statement that errored instantly satisfied both "did not block" and "produced a result", and the independent self-test asserted only "not blocked" | The rejection is rethrown once the holder is released. The independent test now also asserts the resolved value **and the row the statement wrote**, and a new test proves a rejecting contender throws rather than being returned — the helper can no longer certify a statement that never ran |
+| 4, 13 | **Two mixed-version deploy windows the drain barrier omitted.** C4 activates an identity-destruction primitive that was inert before this milestone, so a new instance's cleanup can destroy an agent that an old instance's two-statement authentication just read. C25's writers tombstone while only new readers filter, so an old instance serves a post a new one reported deleted | Both are now sequenced in the rollout section, as barriers *inside* step 3 rather than at step 8. Neither needs a flag, because in each case the first half is a no-op alone: combined authenticate-and-touch changes no observable behaviour, and filtering `deleted_at IS NULL` when nothing is deleted does nothing. A barrier that omits a chunk reads as a barrier that cleared it |
+| 5 | **The access rule fell open to the `Host` header.** With `x-school-id` absent, `auth.ts:143` recomputed the school from `Host` — caller-controlled input becoming the security boundary in exactly the situation where the trusted path had failed, and `extractSchoolFromHost` answers `foundation`, the *weaker* rule, for every hostname it does not recognise. The plan says fail closed in as many words (`:307`); the round-1 write-up had reversed it | Middleware header or nothing: absent ⇒ 403 `access_context_unavailable`. Asserted in both directions, including a caller supplying `Host: safemolt.com` to reach a Humanities resource. The six route suites that were relying on the fallback now stamp the header through a shared helper that **simulates middleware** rather than relaxing the gate |
+| 6 | **`optionalAgent` was a bare alias of `getAgentFromRequest`** — a second authenticated path with no gate on it, so an unvetted bearer received its passed-evaluation set and per-evaluation registration state | It returns a discriminated `{ agent, denial }` where `agent` is populated **only** when the bearer may use the platform. The ordinary read cannot personalise for a denied identity, and a caller who ignores `denial` fails towards *anonymity*, never towards capability. The catalog stays reachable — a 403 on `GET /evaluations` would close the vetting funnel — so the test asserts 200-with-catalog and *no* caller state, plus that a vetted bearer is still personalised. Four `optionalAgent` mocks that returned a bare agent were updated: destructuring one yields `undefined`, so those suites had started passing for the wrong reason |
+| 7 | **The inventory proved lexical presence, not enforcement.** A handler that called `requireAgent`, ignored `{ ok: false }` and wrote would classify as gated; the trusted-wrapper check was `toContain("platformAccessDenial")`, satisfiable by a comment | Every agent-bearer handler must **bind** the result and **early-return on `!ok`**, both arms keyed on the same variable so guarding one call and ignoring a second fails. A decoy test exercises all three defeats (ignored verdict, guard that returns nothing, second call guarded under the first's name). The wrapper check accepts either load-bearing shape and rejects a result that goes nowhere; its behavioural proof already lives in `access-gate.test.ts` |
+| 8 | **The "end-to-end bootstrap" gate executed no bootstrap handler** — it called `requireAgent` on four URL strings, and would have stayed green with every one of those routes broken | `bootstrap-walk.test.ts` runs the real handlers against the memory store: register → own profile → vetting start → fetch challenge → **solve it** → complete → status, with a genuine API key and a genuine hash. A second case pins "one gate" — the same identity is refused `PATCH /agents/me` before vetting and allowed after. The old test keeps its real value under an honest name: it checks the exemption *list* |
+| 9 | **`^\d+$` is a shape check, not a range check.** 400 nines converts to `Infinity`, which is `> 0` — db handed it to `make_interval` and swallowed the error, memory computed a `-Infinity` cutoff and released nothing. The two stores failed the same input in opposite directions, so neither surfaced | `Number.isSafeInteger(parsed) && parsed > 0` in both stores, with the overflow case tested |
+| 10 | **The credential scan's SQL fixture passed for the wrong statement.** It held an `INSERT` and an `UPDATE` and asserted only `length > 0`; the `UPDATE` matched and concealed that the `INSERT` form — where a *seeded* credential actually lives — matched nothing | Positional column-to-value detection, paren- and quote-aware so `encode(gen_random_bytes(32), 'hex')` stays aligned with its column. Isolated fixtures per form with **exact** hit counts. **And a correction to my own first fix:** it handled only `VALUES`, while this repository's one real seeded credential (`migrate-ao-seed-moiraine.sql`) uses `INSERT … SELECT … WHERE NOT EXISTS` — I verified against that file rather than trusting the fixtures, found the detector silent, and added the `SELECT` form. It now flags both that file's `api_key` and its `claim_token`. Quoted object keys (`{ "api_key": … }`) are covered too |
+| 11 | **C25 missed four comment readers.** `getCommentsByAgentId` and its count, in both stores, plus `listRecentComments` in both — and the first two are what `/u/{name}` renders, so a deleted post's discussion stayed on display there | All four join or filter on a live parent, in both stores, filtering *before* the limit so tombstones cannot consume slots and silently shorten a trail. Gated in memory (`soft-delete.test.ts`) and against Postgres (`c25-deletion-veto.test.ts`) |
+| 12 | **The C25 migration could silently omit its foreign key** — `conname` is unique per *relation*, so an unscoped lookup treats a same-named constraint on any other table as proof. Its one postcondition checked `deleted_at`: the `ADD COLUMN IF NOT EXISTS` that cannot fail, while the guarded FK went unverified | Both guard and postcondition are keyed on the **column**, not the name — which also survives the fact that `schema.sql:67` declares this reference inline on a fresh database and the derived name is a convention, not a guarantee. Postconditions now assert the whole shape the release gate names: both columns, the FK, both partial indexes. Proved by a `--fresh` run building the database from `schema.sql` + migrations |
+| 14 | **Baseline report 4 measured nothing on one row and mis-stated its own result.** The notification-subject predicate asked for `target ? 'post_id'`, but a target is `{type, id}` — it returned 0 regardless of the data, which reads as "clean" rather than "not measured". Tombstones were invisible to it although their projections are the cleanup input, and the status counted the six aggregate buckets, printing a meaningless "6 row(s)" | Both real shapes are queried (`target.type = 'post'`, and `metadata.post_id`); orphan means absent **or deleted**, probed through `to_jsonb` so it still runs where C25's migration has not applied; a report whose rows are aggregates supplies its own summariser. Re-run: **1 orphaned projection row** — a real signal for M11-1b D1, where there had been a constant |
+
+**One thing worth generalising**, beyond the individual fixes: finding 10's first fix reproduced the
+original blind spot in a new place, and only checking it against the real file caught that. A
+detector whose fixtures it also authored proves the fixtures, not the tree.
+
+**Suite state after round 3:** `npm test` **97** suites / **593** tests green · `tsc --noEmit` clean ·
+`npm run lint` clean (**102** warnings — two were added by these fixes and both were refactored back
+out) · `npm run test:integration` **50** green.
+
+### Adversarial review round 4 (codex, fresh eyes, same harness)
+
+**9 findings — 2 BLOCKER, 6 SHOULD-FIX, 1 NIT. All accepted.** The count fell (12 → 11 → 14 → 9) and,
+more usefully, the BLOCKERs moved back **out of the harness and into product code**: round 3's three
+were all in C0, and these two are live authorization holes.
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | **The host-vs-resource bypass, third instance.** `requireAgent` keys on the *request's* school; groups carry their own `schoolId` and `getGroup` resolves by an unrestricted global name. So a Foundation-vetted, AO-**unadmitted** agent could name a publicly-discoverable AO group, call the Foundation host, and **join it, post in it and comment in it** under the weaker rule | Round 1 fixed this for `schools/{id}/groups`, round 2 for classes, and each time the *family* was left alive. So this one ships a shared `requireGroupSchoolAccess` (plus `groupSchoolAccessDenial` for the tool envelope, both resolving through one predicate `schoolAccessDenialReason`, so route and tool cannot answer differently) **and a structural gate**: `group-school-gate.test.ts` enumerates every group-resolving mutation from the filesystem and fails on an ungated one. It immediately found **two more the review had not named** — `pin_post` and `unpin_post` — which is the argument for the gate in one line. Reads stay open with reasons recorded: group content is already publicly browsable, so this boundary governs participation, not visibility |
+| 2 | **The dashboard link route bypassed C4.** It used the pure `getAgentByApiKey`, and `linkUserToAgent` writes only `user_agents` — so an agent that had never authenticated stayed pristine after a human claimed it, and an anonymous same-name registration could delete it, taking the ownership link with it through `ON DELETE CASCADE` | The route authenticates with `authenticateAndTouchByApiKey`: presenting a valid key **is** an authentication event and must protect the row. `getAgentByApiKey` then had no callers and is **deleted** — the previous execution note recorded keeping it as a deliberate choice, and that choice was wrong: a lookup that authenticates without protecting the row is a footgun left loaded for the next caller. A test asserts it is gone from the store barrel |
+| 3 | **C0 was marked ✅ while its baseline half was dev-branch only.** C0 requires the reports against production where configured; the checked-in report targets the endpoint the allowlist calls disposable, and production access demonstrably exists (C24's rotation query used it) | Status corrected to ⚠️ with the outstanding run named — the same correction C24's status needed in round 2. Round 2 had recorded the limitation in prose and left the marker green, which is exactly how a caveat stops being read |
+| 4 | **C25 missed a fifth comment reader**, `listCommentsCreatedAfter` — and this one is the reconciliation cursor, which pages *before* re-checking parents, so tombstoned comments consumed the batch and delayed live ingestion by a page per pass | Joined/filtered before the limit in both stores. The test asks for a page of exactly one, which is what makes "consumed a slot" observable rather than merely "appeared" |
+| 5 | **My round-3 migration fix traded one weakness for another.** Keying the FK on the column instead of the name accepted a *composite* FK, or one referencing the wrong table; and the index postconditions only checked that the names resolved, so a same-named index over the wrong columns or without the partial predicate passed | `conkey`/`confkey` compared as whole arrays (single column, referencing `agents(id)`, nothing else) and index **definitions** compared via `pg_get_indexdef`. Wrong-shaped objects now **raise** rather than being silently skipped or supplemented. Five integration cases build each malformed state and execute the real migration file against it — including one asserting the fixtures restore, since they mutate schema |
+| 6 | **The inventory could not see an aliased handler export.** `export { write as POST }` is invisible to a declaration scan, and if the file also exports a conventional `GET` the "every file exposes a method" assertion passes while the aliased `POST` goes unclassified | Aliased method exports are **detected and banned** rather than parsed: per-method classification slices modules at declaration boundaries, so an alias has no body to slice and would need a real AST. Nothing in the tree uses the form. A decoy test proves the ban detects all three shapes and ignores comments and strings |
+| 7 | **C4's "authentication wins" case was not a race.** `hold()` ran the cleanup and rolled it back *before returning*, and the helper does not start the contender until `hold()` returns — so authentication ran uncontended, and the test never asserted `observedBlocked`. It would have passed against the two-statement authentication C4 replaced | Raced from the other side: the **authentication `UPDATE`** is held open (verbatim from the store, not a paraphrase) and the real cleanup is the contender. It must be observed to block, and then — re-evaluating under read-committed after the commit — match zero rows. The uncontended half is now its own test rather than smuggled into the race |
+| 8 | **The credential gates were narrower than the write-up claimed.** The literal scan knew `api_key`/`secret`/`bearer`/`claim_token` — the vocabulary of the last incident — missing `const token`, `AUTH_TOKEN`, `password`, and `apiKey === "literal"`. The `Math.random` guard read **three hard-coded files, line by line** | Identifier set widened, comparison form added, and the `Math.random` guard is now whole-tree and newline-tolerant, keyed on a credential-named binding so `generateId`'s legitimate use stays legitimate. The tree is still clean under all of it — no exemption was needed to keep it green. Fixtures cover each new form, including the object-property shape (`{ api_key: … Math.random() }`) that an `=`-only pattern misses |
+| 9 | **The lint account was true of `npm run lint` and misleading about the repository.** `next lint` does not cover `scripts/`, where two complexity warnings sat — one of them pushed over the line by my own round-3 edit | The status computation is extracted out of `main`, and the duplicated `.env.local` parser in both `m11-1-baseline.js` and `migrate.js` is factored into `parseEnvLine`. `scripts/` is now clean under the same rule, so the claim needs no asterisk. `next lint`'s coverage boundary is stated rather than assumed |
+
+**What generalises from this round:** finding 1 is the same defect for the third time, and the thing
+that finally stopped it was not a better fix — it was **enumerating the call sites from the
+filesystem**. That gate found two instances the reviewer had not named, in the first run. When a
+finding is an instance of a family, the deliverable is the enumeration, not the instance.
+
+**Suite state after round 4:** `npm test` **98** suites / **608** tests green · `tsc --noEmit` clean ·
+`npm run lint` **102** warnings (unchanged; the one this round added was refactored out) and
+`scripts/` clean under the same complexity rule · `npm run test:integration` **56** green.
+
+### C13 — Internal cron routes fail closed ✅ *code* / ⏳ *operational* *(landed after review round 4)*
+
+`requireCronAuth(request)` (`src/lib/auth-cron.ts`) replaces four hand-rolled copies of
+`if (!cronSecret) return true`. An unset secret now **refuses**; local development opts in through
+`ALLOW_INSECURE_CRON=true`, which is additionally inert when `NODE_ENV === "production"`, so setting
+it in a deployment cannot reopen the hole. The comparison is `timingSafeEqual` behind a length
+guard.
+
+**`x-vercel-cron` is no longer accepted, and that is the substantive half.** It is a caller-shaped
+header, so on any direct or non-Vercel deployment it was a one-header bypass of the secret entirely.
+Vercel's managed crons send `Authorization: Bearer $CRON_SECRET`, so the bearer check covers the
+deployed configuration on its own. Two assertions in `playground-deadlines-cron.test.ts` were
+**reversed** rather than deleted — "runs without auth when CRON_SECRET is unset" and "accepts Vercel
+cron requests" were the fail-open behaviour written down as a promise, and they now assert the
+refusal with the batch never invoked.
+
+Scope held to the four `vercel.json` targets. `internal/agent-metadata` and `internal/agents/[id]`
+keep their federation secrets, and that is **asserted behaviourally**, not by comment: both are
+called with a valid `CRON_SECRET` bearer and answer 401.
+
+Gates: `cron-auth.test.ts` (15) — the seven helper cases including the production-inert dev flag and
+a secret *prefix* (which must be a refusal, not a `timingSafeEqual` throw); the discipline check
+enumerates cron targets **from `vercel.json`** and requires each route to *bind* the denial and
+early-return on it, so a new cron entry arrives already needing the gate; and a check that no target
+still carries `authorizeCron` or reads `x-vercel-cron`. The four internal routes left
+`FILE_SCOPED_PRINCIPAL` in the handler inventory — they classify inline now, which is a small
+tightening of that fallback set.
+
+**The rollout order in the chunk still binds and is not satisfied by this code.** `CRON_SECRET` must
+be provisioned and a real managed cron observed authenticating with it *before* this deploys, or
+every scheduled job stops silently. That is release gate 6, and it is an operational step.
+
+### C16 — Unfollow decrement + post/comment cap bypass ✅ *(landed after review round 4)*
+
+Three advisory limits became enforced ones, and one counter stopped moving on request.
+
+**Unfollow.** The decrement now rides the delete in one CTE (`DELETE FROM following … RETURNING` →
+`UPDATE agents … WHERE id IN (SELECT …)` — two different tables, which is what makes the shape
+legal). The store returning `true` unconditionally was only half the defect: **both public adapters
+discarded the result**, so the route and the tool answered success either way and the exploit was
+invisible from outside. Both now return the enumerated `not_following` refusal — 404 on the route,
+`{ code: "not_following" }` from the tool. One code deliberately covers "no such agent" and "not
+following it": the caller can act on neither differently, and splitting them would answer whether a
+name exists.
+
+**Post and comment limits.** The cooldowns and the daily cap were read unlocked by the caller and
+written *after* the insert in separate auto-committed statements, so concurrent requests all read the
+same stale counter and all wrote. Each insert is now gated on an `agent_rate_limits` transition **in
+the same statement**: the loser's `ON CONFLICT DO UPDATE … WHERE` re-evaluates against the winner's
+committed row, updates nothing, returns nothing, and its `INSERT … SELECT FROM claim` inserts
+nothing. The comment statement chains `live` (C25's `FOR SHARE` tombstone lock) → `claim` → insert,
+in that order, so **a comment on a deleted post costs no quota**.
+
+Consequences recorded rather than glossed:
+
+1. `createPost` returns `StoredPost | null` now. As with C7's `updateAgent`, removing the guarantee
+   made the compiler enumerate the callers — two routes, two tool executors, six test files.
+2. **Null carries no reason code, on purpose.** Only `checkPostRateLimit`/`checkCommentRateLimit`
+   can compute `retry_after_*` and `daily_remaining`, so the caller must consult them on the refusal
+   path regardless; a discriminator in the return type would be a second source of truth for a fact
+   the caller re-reads anyway. For comments the re-read is also what separates the two causes —
+   quota refused, or post deleted mid-flight (404).
+3. The three window constants lived in two files held in step by hand. They are now one module
+   (`store/rate-limit-windows.ts`), because a drift between the store that *checks* and the store
+   that *enforces* is a live hole rather than a cosmetic inconsistency.
+4. Suites that only need a post to *exist* now go through `__tests__/helpers/store-fixtures.ts`,
+   which clears the window and fails loudly if the write is still refused — otherwise a fixture
+   refusal surfaces as a null dereference several lines later in a suite testing something else.
+
+Gates: `rate-claims.test.ts` (10, memory) and `c16-rate-claims.test.ts` (11, `[integration]`).
+The two comment concurrency shapes are separate on purpose — from an empty bucket the **cooldown**
+is what binds, so a gate asserting "exactly `MAX_COMMENTS_PER_DAY` inserts" there could only pass
+with the cooldown off; the cap gate preseeds at `cap - 1` with an expired cooldown so the cap is the
+only thing left that can refuse. Posts get the cooldown shapes only, since `agent_rate_limits` holds
+no post counter to assert on. **`observedBlocked` is asserted, not inferred**: a held `pg`
+transaction updates the agent's rate row, the store's claim is observed *waiting* on that backend by
+pid, and it is refused once the holder commits — the mechanism, not just the outcome. C25's
+mid-flight-delete guarantee is re-proved inside the rewritten statement, with the addition that the
+loser pays no quota.
+
+**Suite state after C13 + C16:** `npm test` **101** suites / **638** tests green ·
+`npm run test:integration` **7** suites / **67** tests green · `tsc --noEmit` clean ·
+`npm run lint` **102** warnings (unchanged — the one this work added, memory `createComment` at 15,
+was refactored out by extracting `claimPostAllowance`/`claimCommentAllowance` into `_memory-state`).
+
+**CRAP, compared against the recorded baseline rather than asserted:** db `createComment`
+**506 → 380** (cc 22 → 19; the read-modify-write moved into SQL), memory `createComment`
+**19.3 → 18.6** (coverage 76% → 82%), memory `createPost` 1 → 2, db `createPost` **12 → 20**. The
+last is a rise and is stated as one: cc went 3 → 4 for the refusal branch that is the entire point
+of the chunk, and the score is dominated by 0% coverage. **That 0% is an artefact worth naming** —
+CRAP is computed from the unit-coverage run, which by construction never executes db-mode code, so
+every function whose real gates are `[integration]` reads as uncovered. For the db store CRAP is
+currently a complexity proxy, not a coverage signal, and reading it as one would push work *away*
+from the integration harness this milestone built.
+
+### C6 — Claim atomicity ✅ *(landed after review round 4)*
+
+**`setAgentClaimed` is conditional now**, and returns whether the caller won. Its unconditional form
+is what let a second claimant overwrite the first one's owner: both live claim channels — Cognito
+`agents/claim` and X verification `agents/verify` — read `is_claimed` in one statement and wrote in
+another, so two racing claims both passed the read. Gating the write on `is_claimed = false` makes
+the row the arbiter; the loser blocks on the winner's lock, re-evaluates after it commits, and
+matches zero rows. Both routes now surface that loss as the existing "already claimed" 400 rather
+than reporting a success they did not achieve.
+
+**The Cognito claim became one statement**, `claimAgentForHumanUser`: a data-modifying CTE whose
+`user_agents` insert is `SELECT`-gated on the claim's `RETURNING`. The old route wrote the claim and
+the ownership link as two auto-committed statements, so a failure of the second left the agent
+**claimed but unowned — and permanently unclaimable**, because every retry then hit the
+"already claimed" check the first write had just made true. A `sql.transaction` batch cannot express
+this (batch elements cannot read one another's `RETURNING`, so the insert would fire for the loser
+too). The function writes `user_agents`, which belongs to the human-users module; the crossing is
+what atomicity costs, and it is stated in the docblock rather than left to be discovered.
+
+Two cleanups the rewrite absorbed, both inside the function it replaced: `COALESCE` collapses what
+were three near-identical `UPDATE` statements (an omitted parameter keeps the column instead of
+nulling it), and the `x_follower_count` write loses a `try/catch` that silently retried without the
+column "in case the migration has not run" — a swallow that would have hidden the failure of a
+*claim*, on a column `scripts/schema.sql` has declared since the table existed.
+
+Scope held to the chunk's own line: **the invariant is "one successful claim", not "one owner link
+globally"**. The dashboard's `link-agent` route still links by API key without passing through this
+gate, and `provision-public-ai-agent` legitimately links with role `public_ai`. That cardinality
+question is OQ-3 and stays open.
+
+Gates: `claim-atomicity.test.ts` (5, memory) and `c6-claim-atomicity.test.ts` (5, `[integration]`).
+**The rollback gate uses a real failure, not a stub**: `user_agents.user_id` references
+`human_users(id)`, so claiming for a nonexistent user raises 23503 on the second arm — exactly the
+shape that used to arrive *after* `is_claimed = true` had committed. The agent is asserted still
+unclaimed, unlinked, and **successfully claimable afterwards**, which is the lockout being gone
+rather than merely the write being absent. `observedBlocked` is asserted for the contention case,
+and the Cognito-vs-X race asserts that the losing channel contributed **no field** to the winner's
+row — an `x_follower_count` on a claim that did not come through X would mean both had written.
+
+**Rollout barrier still binds** (Locked decision 6): the one-winner guarantee holds only once every
+instance runs the conditional form, since an old instance can pre-read unclaimed and still overwrite.
+That is step 8, not something this code can assert.
+
+**Suite state after C13 + C16 + C6:** `npm test` **102** suites / **643** tests green ·
+`npm run test:integration` **8** suites / **72** tests green · `tsc --noEmit` clean ·
+`npm run lint` **102** warnings (the baseline).
+
+**The "fails against pre-fix code" claim was executed, not asserted.** This milestone's history is
+full of gates that would have passed with the fix reverted, so each new guard was actually removed
+and the suite re-run: reverting `claimPostAllowance` to its unconditional stamp fails **3** gates;
+removing the comment cooldown and daily-cap conditions fails **3**; dropping `is_claimed = false`
+from the two memory claim paths fails **4 of C6's 5**. All restored and green afterwards. The one
+C6 gate that survives its revert is the unknown-token case, which is correct — that path never
+depended on the claim condition.
+
+**One enumeration check, recorded because a negative result is also a result.** C16's unfollow
+defect is a *family* — "decrement a counter without checking that the delete removed anything" — and
+the milestone's own history says the deliverable for a family is the enumeration, not the instance.
+Sweeping `GREATEST(0, … - 1)` and `SET …_count = … - 1` across the store found exactly two other
+sites: `downvotePost`'s author-points decrement, which is the vote family this plan **defers by
+name**, and `withdrawAoWorkingPaper` (`store/ao/db.ts:636`), which has the same read-then-decrement
+shape and **no callers anywhere outside the store** — so it fails criterion 1 (not reachable in
+deployed code) and is recorded here rather than fixed, which would have been dead-code churn.
+
+### C2 — Evaluation authorization ✅ *(the largest chunk in the milestone, landed 2026-07-27)*
+
+**One module, `src/lib/evaluation-authz.ts`, called by both surfaces.** Route-versus-tool drift is
+the disease, so the rules live once and every verb — registration, start, self-serve submission,
+proctor claim, proctor submission, session read, transcript read, message send, pending-proctor
+listing — resolves its school through the same provenance helper.
+
+**Two corrections to an earlier version of this paragraph, both found by review round 6 and both
+substantive.** It said "the seven verbs … resolve through the same `loadActionableRegistration`",
+which was false twice over. `start_evaluation` was not among them at all — the route derived its
+definition from the *host* and the tool checked nothing, so a vetted-but-unadmitted agent could
+start a legacy non-Foundation registration through either. And the three *session* verbs deliberately
+do not go through `loadActionableRegistration` (a transcript stays readable after the registration
+turns terminal) — but they were consequently going through **no school check either**, so a
+participant whose admission was revoked kept reading and writing a non-Foundation session through the
+Foundation surface. Both now resolve the registration's school; the session verbs resolve the scope
+without demanding it still be actionable, which is the distinction the first pass collapsed.
+
+**All four escalations closed.** (1) `submit_evaluation_result` no longer writes caller values: it is
+restricted to **proctored** registrations submitted by the **claimed** proctor, the candidate and
+evaluation come from the registration row, and the verdict goes through the evaluation's own
+executor exactly as the REST route does. `score`/`max_score` left its schema; `evaluation_id` and
+`agent_id` stayed as **optional coherence checks** whose mismatch is `invalid_registration_reference`
+(Locked decision 3's "accepted for coherence-checking only", implemented literally). (2) The
+proctor-submit route now checks the claim — the thing it never checked — by reading
+`evaluation_session_participants`, which is the authoritative membership the claim route creates.
+(3) The tool's unchecked claim, session read, transcript read and role-carrying message send all go
+through the module; `role` is **gone from the tool schema**, not merely ignored, and is derived from
+the roster. (4) `claimProctorSession` is one gated statement instead of a read plus three
+independent writes.
+
+**Authorization moved ahead of `getExecutor`.** Both submit routes used to invoke the handler before
+deciding whether the caller was allowed to — the proctor route before it had even looked up a
+session. The gate is a spy assertion, not a code reading: a rejected principal must leave
+`getExecutor` uncalled.
+
+**School provenance, and why no join.** `registerForEvaluation` never wrote `school_id`, so every
+registration read as Foundation. Writing it is one column; *trusting* it is the hard part, because
+the column's DEFAULT is `'foundation'` and after deploy a legitimate new Foundation row is
+byte-identical to a legacy one. `school_scope_trusted BOOLEAN NOT NULL DEFAULT FALSE` makes them
+distinguishable, and authorization branches on the flag rather than the value: trusted ⇒ use the
+stored school; untrusted ⇒ **ignore it entirely** and resolve the `evaluation_id` against the
+filesystem, where one school ⇒ that school and more than one ⇒ `ambiguous_registration_school`. The
+definition is loaded by `(school, evaluation_id)` from `schools/*/evaluations/`, never from
+`evaluation_definitions` — that table has a bare global primary key and sync upserts by it, so it
+holds whichever school synced last for `twitter-verification`. `listSchoolIdsWithEvaluations`
+excludes `_templates`, whose placeholder `_template.md` is `status: draft` and would otherwise load
+as a real definition owned by a school of that name.
+
+**Sequence allocation is a batch, and the batch shape is the fix.** `MAX(sequence) + 1` with no lock
+gives two concurrent senders the same number in the transcript that decides an agent's result. The
+lock and the insert are two elements of one `sql.transaction`, deliberately: READ COMMITTED takes a
+fresh snapshot per *statement*, so the second element sees what the previous lock holder committed.
+Folding the lock into the insert as a CTE would not work — one statement, one snapshot, same
+collision. A unique `(session_id, sequence)` index lands with a deterministic resequencing repair
+(C0 report 5 was empty platform-wide, so the repair is expected to touch nothing; a report is a
+measurement of one moment and the constraint is forever).
+
+**Deliberate limits, stated rather than discovered later.** Tool registration stays **Foundation-only**
+— a `ToolExecutor` receives only `{ agent }`, so the alternatives were accepting a caller-selected
+school or building new substrate; cross-school flows go through the routes, and the tool now
+*validates* the id against Foundation instead of stamping any string as Foundation. The
+certification branch of `POST /evaluations/{id}/submit` keeps resolving its definition from the host,
+because its authorization is nonce- and job-owned; that is C22's surface. `evaluation_results.school_id`
+is untouched — new mis-scoped *results* are report 11's, owned by M11-1b D4.
+
+Gates: `c2-evaluation-authz.test.ts` (22, both surfaces, memory) and
+`integration/c2-evaluation-authz.test.ts` (10, `[integration]`). Docs delta: `public/reference.md`
+names the new 403 `not_claimed_proctor` on proctor submit.
+
+**"Fails against pre-fix code" was executed, and it caught a bad gate.** Four reverts:
+dropping the claimant check fails 1 gate; trusting the stored school unconditionally fails 4;
+honouring the tool's `role` argument fails 1; removing the claim's row lock fails the contention
+gate. The fifth revert — the message-sequence lock — **passed**, and that was the finding. The
+first version of that gate held `SELECT … FOR UPDATE` on the session and raced an insert, which
+blocks *whatever the store does*, because `evaluation_messages.session_id` is a foreign key and every
+insert takes `FOR KEY SHARE` on the parent row. The gate was observing contention the production
+statement did not cause. Rewritten, the holder is an **in-flight uncommitted sender** — two inserts'
+`FOR KEY SHARE` locks are compatible, so an unlocked implementation does not block, numbers against a
+stale snapshot, and is refused by the unique index. It now fails on revert, twice over. Recorded at
+length because this milestone has found the same class of test three times and reading the code was
+not what caught it.
+
+**Suite state after C2 and review round 6:** `npm test` **104** suites / **679** tests green ·
+`npm run test:integration` **9** suites / **85** tests green · `tsc --noEmit` clean ·
+`npm run lint` **98** warnings — **four fewer than the 102 baseline**, because moving the checks out
+of `proctor/submit`, `proctor/claim`, `submit` and `start` dropped each below the complexity
+threshold. The first chunk in this milestone to *reduce* the count rather than fight to hold it.
+
+**One flaky suite, recorded rather than explained away.** `bootstrap-walk.test.ts` timed out once at
+its 5-second budget across a dozen full runs and passed on every other. It drives the real
+vetting-complete handler, which writes a memory context; nothing in C2 is on that path and the run
+before these edits showed the same "Jest did not exit" warning. Not chased further, but named here
+so a future timeout is recognised as recurrence rather than regression.
+
+**CRAP (C0 item 5), and a caveat about the tool that is worth writing down once.** Every route
+handler C2 touched fell, several sharply: `proctor/submit` **462 → 132**, `proctor/claim`
+**342 → 110**, `evaluations/{id}/submit` **506 → 380**, the messages `POST` **182 → 72**, and both
+session `GET`s **56 → 12**. No function C2 edited gained more than one point of cyclomatic
+complexity (`registerForEvaluation` 5 → 6 and `getEvaluationRegistrationById` 4 → 5, both for the two
+provenance columns). One row looks like a regression and is not: `saveEvaluationResult` reads
+**10.5 → 110**, entirely from its *coverage* going 82% → 0% while its complexity stayed at 10 — and
+`git diff` does not touch that function at all. The coverage moved to `claimProctorSession` in the
+same file as line numbers shifted. `@barney-media/crap-typescript` warns on its own about ambiguous
+function matching in this exact file, and the 82% it previously credited was never real: nothing in
+the no-DB suite can execute a db-mode store function. **Row-level CRAP in `store/evaluations/db.ts`
+is not trustworthy**; the direction of the route-handler numbers is.
+
+**Known residual, not a half-fix:** a message can still land in a session that ended between the
+participation check and the insert. It is a check-then-act of the shape this chunk criticises, but it
+grants nothing — the sender is already a participant and the result is already written — so gating
+the insert would mean `addSessionMessage` returning null and both callers classifying it, for a
+transcript-tidiness win. Recorded for M11-1b rather than done here.
+
+### Adversarial review round 5 (codex, fresh eyes, same harness) + two parallel Claude passes
+
+**10 findings — 4 BLOCKER, 6 SHOULD-FIX.** Run after C13/C16/C6 landed, with those three chunks
+added to the review's scope. Two further reviews ran in parallel against the same three chunks: a
+conventions pass against `agents.md` and a simplification pass. **Six of codex's ten are applied,
+four are recorded as open with reasons** — the count is stated that way rather than rounded up,
+because "all accepted" was true of rounds 1–4 and is not true here.
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | 🔴 **The host-vs-resource bypass reaches billed inference.** Playground join and action gate only the *request's* host; `joinSession` resolves the session's own `schoolId` and never checks it. Session ids are public, so an AO-**unadmitted** agent could join an AO session through the Foundation host — and the action route ran `checkDeadlines()`, which advances rounds and can trigger paid GM work, **before** any resource check | Both routes gate on the session's school, and the action route does it **before** `checkDeadlines` — Locked decision 3 says authorization precedes expensive work, and this was the clearest violation of it in the tree. `playground-school-gate.test.ts` asserts the 403 **and** that `joinSession`/`checkDeadlines` were never called, plus an admitted agent still succeeding so the gate is not merely closed |
+| 2 | 🔴 **Same family, fifth instance — and round 4's structural gate could not see it.** Post upvote/downvote, comment upvote, pin/unpin and `DELETE /posts/{id}` apply no resource-school check; the four tool executors likewise. The enumeration triggered on the literal `getGroup(`, and these handlers resolve a *post* or a *comment* | Six route handlers and four tool executors gated. **The gate's trigger is the fix**: it is now the resource *set* (`getGroup`/`getPost`/`getComment`), classification is **per method** rather than per file (a blanket "public content" exemption on `posts/[id]/route.ts` was covering its `DELETE`), and a decoy test proves the widened trigger detects the exact shape the old one missed. Round 4's lesson was "enumerate instead of fixing instances"; round 5's is sharper — **an enumeration is only as wide as its trigger** |
+| 3 | 🔴 **Round 1's own fix was wrong.** Round 1 made house dissolution ignore tombstoned posts, reasoning that a tombstone is not browsable content. True, and irrelevant: `posts.group_id` is a RESTRICT foreign key that counts **rows**, not visibility — so a tombstone-only house attempted dissolution, raised 23503, and rolled the founder's departure back with it. Memory diverged the other way, deleting the group and stranding the tombstone. The "regression test" never called `leaveGroup` | Predicate reverted to counting all posts in both stores, with the reasoning recorded at the site so it is not "fixed" again. The test now runs the real path and asserts the house **survives** and the founder still leaves. Reclaiming such houses means removing the tombstones, which is M11-1b D1's projection cleanup |
+| 4 | 🔴 **Race evidence is not isolated across concurrent harness runs.** One shared reserved database; `--runInBand` serializes only within a process; markers like `"UPDATE agents"` could match another run's backend | **Partially applied.** Markers sharpened to fragments that appear in exactly one production statement each (verified by counting occurrences in the store), and the 16 affected gates re-run green — so blocking is still *observed*, now provably by the statement under test. **The shared-database and per-suite-truncation halves are open** (see below) |
+| 5 | **C6's memory store accepted what db mode refuses.** `user_agents.user_id` references `human_users(id)`, so an unknown claimant raises 23503 and rolls the claim back; memory has no such constraint and committed a claim db mode rejects. Reachable: failed Cognito provisioning yields an `err_<sub>` id | Memory validates the human user **before** the mutation, which is also this milestone's memory discipline (throwing work first, then a mutation that cannot throw). The memory tests seed real human users instead of inventing ids — the invented ids were exercising a case db mode rejects — and a rollback-and-retry case was added |
+| 6 | **C16's tool contradicted C16's own write-up.** The route collapses "no such agent" and "not following" into one code so unfollow cannot test whether a name exists; the tool answered them apart | The tool's existence pre-check is gone and both surfaces return `not_following`. Name-enumeration cases added on both |
+| 7 | Handler/cron inventories prove *eventual lexical* guards, not guard-before-work ordering | **Open.** The correct fix is a TypeScript AST pass over every handler; a regex that approximates control-flow ordering would be a third thing to get wrong. Recorded rather than half-done |
+| 8 | Baseline report 4 undercounts orphaned activity projections (comment events whose parent post is tombstoned, and contexts attached to them) | **Open.** It sizes M11-1b D1's sweep, and the baseline must be re-run against production before that repair anyway |
+| 9 | C25's migration postcondition checks column *names*, not types/nullability/defaults, so a preexisting `deleted_at DEFAULT now()` would pass while making every new post invisible | **Open**, and the sharpest of the four — it is a "the migration says it verified the shape" claim that verifies less than it says |
+| 10 | The credential scan is defeated by ordinary syntax (`const apiKey = /* c */ "literal"`, `'literal'::text`, dollar-quoting) | **Open.** Same reasoning as 7: the honest fix parses rather than pattern-matches |
+
+**From the two parallel passes, applied:** a real crash path in C16's own code — both new CTEs ended
+`RETURNING id` and then re-read the row, and the post re-read filters `deleted_at IS NULL` (C25), so
+a delete landing in between yielded `undefined` and threw inside the mapper; both now return from
+the inserting statement, which also removes two round trips. Plus: `postingRefusal` inlined (a gate
+hidden in a helper is one the structural enumeration cannot see — the same lesson as finding 2), the
+comment cooldown pre-check dropped now that the claim is authoritative, duplicate `@/lib/auth`
+imports merged, a `post_not_found` code made consistent across both branches of one executor, a
+reversed null check collapsed, and **a comment that asserted the wrong constant in both directions**
+— the "reduced from the documented 30 min" note rode along with the constants consolidation and
+landed above `COMMENT_COOLDOWN_MS`, which no doc has ever described as 30 minutes.
+
+**Open from those passes, recorded not silently dropped:** `touchAgentLastActiveAtIfStale` is dead
+after C4 folded it into `authenticateAndTouchByApiKey` (~90 lines plus a suite, and nine test files
+still mock the already-deleted `getAgentByApiKey`); `livePosts`/`livePost` are the only non-`async`
+exports across thirteen memory stores; `AGENT_NAME_RELEASE_HOURS` is still hand-duplicated across
+both stores, which is exactly what C16 just consolidated the cooldowns to prevent; and two barrel
+lists lost their alphabetical ordering.
+
+**Suite state after round 5:** `npm test` **103** suites / **650** tests green ·
+`npm run test:integration` green (the 16 C6/C16 gates re-run after the marker change) ·
+`tsc --noEmit` clean · `npm run lint` **102** warnings (two were added by these fixes — the
+playground join handler and the posts handler — and both were refactored back out).
+
+### Adversarial review round 6 (codex) + conventions and simplification passes, all three fresh-eyes
+
+**26 findings across three parallel passes** — 13 from the implementation review (6 BLOCKER), 8 from
+a conventions pass against `agents.md` and the Locked decisions (6 BLOCKER), 5 from a simplification
+pass (0 BLOCKER). **Sixteen applied, ten recorded open with reasons.** Round 6 was the first with C2
+in scope, and every one of its C2 findings was real.
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | 🔴 **`start_evaluation` was outside resource authorization on both surfaces.** The route derived its definition from the *host* and then mutated a globally-fetched registration; the tool checked nothing at all | `authorizeEvaluationStart` on both. The gate asserts a vetted-but-unadmitted agent is refused through tool *and* route and that neither moved the registration out of `registered` |
+| 2 | 🔴 **Session, transcript and message-send authorization proved participation and never school access.** Membership is durable; admission is not — an agent whose admission was revoked kept reading a non-Foundation session through the Foundation surface | `authorizeSessionParticipation` resolves the session's registration, derives its provenance school, and applies the access rule **before** the roster check. Deliberately *not* through `loadActionableRegistration`: a transcript must stay readable after the registration turns terminal, which is the distinction that got collapsed. A session with no registration is refused (`session_school_unresolvable`) rather than defaulted |
+| 3 | 🔴 **Retry semantics diverged three ways.** db returned the newest registration, memory the first-inserted — and memory creates a fresh one after a terminal attempt, so authorization then read the stale terminal row. The tool separately called *any* historical registration "already registered" while the route allowed a retry | Memory returns the newest (reversed before a stable sort, so a same-millisecond tie breaks towards the later insert); the tool's already-registered branch narrows to active statuses. Gate covers both stores and both surfaces |
+| 4 | 🔴 **Pending-proctor listing authorized the caller against one school and then queried by evaluation id alone**, so an id two schools define would disclose the other school's candidates | Both stores carry provenance per row; `pendingProctorRegistrationsForSchool` filters through the same trusted/legacy resolution. A row whose school is unknowable is **dropped** — a listing is a disclosure, so the fail-closed answer is to say nothing about it |
+| 5 | 🔴 **The migration's index guard and postcondition accepted a wrong-shaped index.** Both regex-matched `pg_get_indexdef`, which a same-named *partial* unique index also satisfies — `IF NOT EXISTS` would then skip creation and the file would record success with transcripts unconstrained | Both read `pg_index` directly: `indisunique`, `indisvalid`, `indpred IS NULL`, and exact ordered keys. A new integration gate creates precisely that decoy partial index and asserts the migration **raises** rather than skipping, then that dropping it lets the migration succeed. Two incidental bugs surfaced while proving it: `array_agg(attname)` is `name[]` not `text[]`, and a `found` record variable shadows PL/pgSQL's built-in `FOUND` |
+| 6 | 🔴 **`evaluationAuthzToolError` dropped the stable code its own docstring promised**, so `invalid_registration_reference` and its siblings were reachable only through the route | The code prefixes the message. The result *shape* is unchanged, which is what Locked decision 2 protects |
+| 7 | 🔴 **`send_eval_session_message` added `role` to an existing tool success payload** — a success-shape change, which Locked decision 2 forbids outright | Removed. The role is enforced, not reported; a gate asserts the payload keys are exactly `message_id` and `sequence` |
+| 8 | 🔴 **The C2 migration comment literally contained both substrings the preflight rule forbids** | Reworded to describe the rule without spelling its terms |
+| 9 | 🔴 **Named gates were missing**: claim failure-injection, and the school gate with the definition-sync order reversed | Both added. The failure injection is a real constraint — `evaluation_session_participants.agent_id` references `agents(id)`, so claiming for a nonexistent proctor raises 23503 on the participant arm, exactly the shape that used to arrive *after* the session committed. Asserted: no session, no roster, and still claimable afterwards |
+| 10 | **The claim-null classification comment promised something callers did not do** — a null has three causes and both callers reported the most likely one | Both surfaces re-run authorization on null and return its stable denial, falling back to `already_claimed` only when a session genuinely won |
+| 11 | **Dead code from C2's own atomicity work**: `createSession`, `addParticipant` and `SessionKind` lost their last caller when `claimProctorSession` became one statement | Deleted from both stores, the barrel and the barrel inventory test — 62 lines |
+| 12 | **C2 declared two more registration shapes instead of extending the existing one** | `EvaluationRegistration` (which had zero references) gains the two provenance fields and becomes the memory map's type. `EvaluationRegistrationRow` stays deliberately loose in the authz module, because both store reads must satisfy it and one returns `status: string` |
+| 13 | The migration's resequence repair used PL/pgSQL, an early return and a notice to drive one update | One `WITH … UPDATE` statement, 14 lines shorter, same scoped deterministic idempotent repair |
+| 14 | The unit suite defined the same claimed-session fixture twice | Hoisted to one module-level helper |
+| 15 | 🔴 C20's `x-school-id` is server-*overwritten* but middleware computes it from the caller-controlled `Host`, and unknown hosts default to Foundation — the weaker rule | **Open, and accepted as correct.** The fix is a configured deployment-host allowlist, which is C20's and a deployment-config change, not C2's. It is the same position the plan already takes for C13a ("on a direct deployment every element is attacker-written; trust must be configured") and is now recorded against C20 too rather than only in a retraction table |
+| 16 | `GET about/timeline/reactions` is classified `agent-bearer` by the inventory because its sibling `POST` helper contains `requireAgent`, though the GET uses `optionalAgent` | **Open.** A concrete instance of round 5's finding 7 (eventual-lexical matching), and the honest fix is the same AST pass. Recorded with its file so the AST work has a test case waiting |
+| 17–20 | Baseline report 4 undercount; C25's name-only migration postcondition; the credential scan's syntax bypasses; C25's route/tool parity untested | **Open, unchanged from round 5.** Round 6 restated all four; none is C2's and none has become cheaper |
+| 21 | 🔴 Harness isolation: one shared reserved database, so two concurrent runs can invalidate each other's race evidence | **Open, unchanged from round 5.** The suggested advisory lock around the whole prepare-plus-Jest lifecycle is a real fix and is recorded as the shape to use |
+| 22–24 | 🔴 "Step 3 is complete", C13's ✅ and C24's ✅ each read as more finished than they are | **Applied as wording** — see the three qualifications below. The underlying facts were already stated in the plan; the headings were not carrying them |
+
+**What generalises from this round.** Round 5's lesson was "an enumeration is only as wide as its
+trigger". Round 6's is narrower and sharper: **a shared authorization module is only as complete as
+its verb list**, and the verb list is not self-evident from the chunk text. C2's plan text names
+"submission, proctor claim, session read, transcript read, message send" and pending-proctor
+listing — six verbs — and `start` is simply absent from it. Writing the module against the plan's
+list reproduced the plan's omission. The counterpart of a filesystem-enumerated call site is a
+filesystem-enumerated *route inventory* for the resource being protected, which C2 does not have and
+which is the shape any future authorization chunk should start from.
+
+### Three status corrections, applied to the headings rather than only the bodies
+
+- **"Step 3 is complete" means implementation-complete, not deploy-complete.** C4's cleanup
+  activation with its combined authentication, and C25's tombstone readers with their writer, each
+  need the drain barrier Locked decision 6 describes and step 8 schedules. A single rolling deploy of
+  this branch recreates C4's first-authentication race and lets old instances serve deleted posts.
+  The barrier is not something this code can assert, and the milestone is not shippable in one push.
+- **C13 is code-complete and operationally incomplete.** Failing closed on an unset `CRON_SECRET` is
+  the fix; deploying it before the production secret exists stops all four scheduled jobs. Provision
+  the secret and observe one managed cron authenticate *before* this deploys.
+- **C24's rotation is applied on the integration branch and not yet in production.** The published
+  professor bearer authenticates against the production database until `next build` runs the migrator
+  there. That is the original privilege escalation, still live, and the single most time-sensitive
+  item in this milestone. *(Round 6 filed this as an overstated ✅; its heading already said
+  "CODE COMPLETE, PRODUCTION ROTATION OUTSTANDING", so the finding is half right — the status was
+  honest, its prominence was not. Repeated here because a warning buried at step 0 of a
+  1,300-line document is not where an operator will find it.)*
+
+### C21 — Duplicate evaluation completion mints points ✅ *(landed 2026-07-28)*
+
+**The decisive change is one statement.** `saveEvaluationResult` (db) is now a data-modifying CTE
+whose first arm transitions the registration `WHERE status IN ('registered','in_progress')` and
+whose insert is `SELECT`-gated on that arm's `RETURNING` — the loser of a concurrent completion
+matches zero rows and writes nothing. A 23505 (the one shape the gate cannot stop: a result already
+present under a still-actionable registration, baseline report 7's shape) takes the transition down
+with the insert — asserted by an integration gate that seeds exactly that shape and checks the
+registration is still `in_progress` afterwards. The unique index
+`idx_eval_results_registration_uniq` landed through the hardened runner with the same
+catalog-shape guard and decoy test C2's message index got.
+
+**The migration repairs before it constrains, and refuses what it cannot repair.** Identical
+duplicate sets collapse keep-earliest **with points recomputed and activity projections swept**;
+a set that disagrees on `(passed, score, points_earned, evaluation_version, school_id,
+proctor_agent_id)` raises with the registrations named, records nothing, and waits for a human —
+the wording avoids the two forbidden substrings, asserted in the gate. Production's one disagreeing
+set was already resolved by hand on 2026-07-27 (see C0), so the production preflight is empty and
+the index is clear to apply there.
+
+**The callers stopped assuming the save succeeded.** `saveEvaluationResult` returns a discriminated
+`SaveEvaluationResultOutcome` (`created` / `already_complete` with the standing result /
+`not_actionable`), and every caller — self-serve route, proctor route, proctor tool, judge,
+vetting-complete bootstrap — branches on it. The race loser and the sequential re-submitter get the
+standing result in the unchanged success shape (only the caller's own verdict for self-serve, only
+the *recorded proctor's* for the proctor route — anyone else keeps the denial, so the replay
+discloses nothing authorization would refuse). The tool returns a stable idempotency error rather
+than a replay. **Enumerated behavior changes:** a re-submit of a completed registration returns 200
+with the standing result where it previously 400'd (`invalid_registration_status`); a registration
+that went terminal *without* a result (cancelled) now gets stable `registration_not_actionable`
+(409); and — from review round 7 — registering for an evaluation the agent has **already passed**
+is refused with stable `evaluation_already_passed` (409) on both surfaces, because a fresh
+registration after a pass was a sequential re-mint of the same points. Retries after a *failed*
+attempt are unchanged. Points recomputation became a single `UPDATE … SET points = (SELECT SUM(...))` so the read
+and write share one snapshot, in both stores (memory's decisive sections are synchronous — no
+`await` between check and mutate).
+
+**Gates:** 9 `[integration]` gates green on the Neon driver (concurrent completions pay once —
+asserted on `agents.points`, not `count(*)`; the cross-surface proctored shape; a held
+registration-row lock observed blocking via `pg_blocking_pids`; the 23505 rollback; sequential
+re-submit; failed-result-once; the three migration fixtures including the wrong-shape decoy) plus
+13 memory-mode/route tests. CRAP movement against the baseline (post-round-7 numbers): db `saveEvaluationResult` 110 → 30,
+its extracted single-statement helper at 39.6; memory `saveEvaluationResult` 16.7 → 55.9 as
+measured — the real part is cc 6 → 9 from the added gating, the rest is the tool's
+coverage-attribution artifact the baseline doc names as its dominant driver (the heaviest paths
+are exercised by the integration suite, which Istanbul does not instrument); db
+`updateAgentPointsFromEvaluations` fell to cc 1 once the dead house tail went.
+
+### C22 — Certification jobs: duplicate billed work ✅ *(landed 2026-07-28)*
+
+**One live job per registration, enforced by the row.** The partial unique index
+`idx_cert_jobs_live_registration` (`WHERE status IN ('pending','submitted','judging')` — `pending`
+included, since that is the state `start` creates) landed with keep-earliest repair for the three
+production registrations report 10 found (5/3/2 pending jobs), a catalog guard whose predicate
+check is exact `pg_get_expr` equality (not a regex — a same-named index predicated on one status is
+the decoy the gate proves is refused), and postconditions for both new columns.
+
+**`start` is idempotent, not creative.** An existing live job is returned — same response shape,
+the *job's own* nonce — and only when none exists does it insert, with 23505 mapping to
+re-read-and-return-the-winner (in `createCertificationJob` itself, both stores). One addition the
+plan text did not anticipate but the repair makes necessary: a **pending job whose nonce lapsed**
+would strand its registration forever behind the new index (submit refuses expired nonces, and
+nothing else retires the job), so `start` expires exactly that shape — conditional on
+`status = 'pending' AND nonce_expires_at < NOW()`, so a concurrent submission wins — and issues a
+fresh attempt. The keep-earliest survivors in production are precisely this shape, and this is what
+un-strands them.
+
+**Transcript intake and judging are CAS, and every terminal write is fenced.**
+`submitCertificationTranscript` transitions `pending → submitted` conditionally (two concurrent
+submissions can no longer both pass the check and overwrite each other). The judge claims
+`submitted → judging` with a CSPRNG token and `judge_claim_expires_at = NOW() +
+make_interval(secs => $ms / 1000.0)` (Locked decision 1's interval form), renews during inference,
+and **only a non-empty claim invokes the paid model**. Completion *and* failure are token-fenced,
+so a stalled-then-reclaimed claimant can neither overwrite the winner's verdict, nor launder its
+own into a result row (the fenced job update gates the C21 save), nor mark the reclaimed job
+failed.
+
+**The reclaim has somewhere to dispatch to.** `/api/v1/internal/certification-judging` (new
+vercel.json cron, every 15 min, `requireCronAuth`-bound — the C13 discipline test enumerates cron
+targets from `vercel.json` and stays green) returns lapsed claims to `submitted` with the token
+cleared (`FOR UPDATE SKIP LOCKED`, so overlapping cron firings split rather than double-reclaim)
+and also dispatches `submitted` jobs older than five minutes with no claim ever taken — the
+inline-`waitUntil`-died shape that would otherwise strand a registration just as permanently.
+Each dispatch re-contends on the CAS, so overlapping firings still bill at most once per job.
+**Operational note for release gate 6:** the new cron entry needs the same `CRON_SECRET`
+observation as C13's four before the fail-closed deploy.
+
+**Honesty carried over from the plan:** the CAS guarantees at most one *recorded* judging and
+closes the ordinary double-dispatch path; a claimant stalling past the lease while its inference is
+still in flight can still bill twice, bounded by the lease (`CERT_JUDGE_LEASE_MS`, validated with a
+C4-style fallback, default 120s). Release gate 7's residual stands unchanged.
+
+**Gates:** 8 `[integration]` gates green (concurrent creates admit one and hand the loser the
+winner's job; a terminal job blocks nothing — retries stay legal; concurrent claimants admit one;
+the stalled claimant's completion *and* failure bounce off the cleared fence while the reclaimer
+completes; the sweep reclaims only lapsed claims and lists only unclaimed stale submissions; the
+migration keep-earliest/idempotency/decoy fixtures) plus 10 memory-mode/route tests, including a
+double-dispatch test that counts **model invocations** (fetch mock called once) and the cron
+route's 401/200 with a real reclaimed-then-judged job. `judgeCertificationJob`'s CRAP fell 182 →
+90 (cc 13 → 9). One deletion pair worth naming (round 7): `updateCertificationJob` and
+`getPendingCertificationJobs` are **gone** — every status transition on `certification_jobs` is
+now a conditional statement, and no blanket by-id writer survives to bypass the judge-token fence.
+
+### Adversarial review round 7 (step 4 scope, fresh eyes) — three parallel lenses, every finding adversarially verified
+
+**16 findings raised, 14 confirmed, 2 refuted — all 14 applied.** Run as an in-session
+multi-agent pass: three independent reviewers (correctness/security, conventions against
+`agents.md` + the Locked decisions, simplification), each of whose findings was then handed to a
+separate adversarial verifier instructed to *refute* it against the working tree and the plan —
+a finding the plan explicitly defers is not a defect. The two refutations were exactly that
+class: a vetting-complete double-mint that is C14's named, not-yet-executed scope, and a
+crash-between-fenced-completion-and-result-save shape that is baseline report 9 / M11-1b D4's
+named repair (the verdict is persisted on the job precisely so that state is reconstructible).
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | 🔴 **Re-registering a passed evaluation mints its points again, unbounded.** C21 enforced one result per *registration*, but nothing enforced one payout per *(agent, evaluation)*: the register route falls through to a fresh insert when the newest registration is terminal — including `completed` — and points sum over all passed rows. A sequential register → start → submit loop after a pass minted full points each iteration, no concurrency required: the exact payoff class C21 exists to close, surviving inside its own chunk | `authorizeEvaluationRegistration` (the shared module, so both surfaces at once) refuses a prior pass with stable `evaluation_already_passed` (409). Retries after a **failed** attempt stay open — failure is terminal and mints nothing — matching the vetting bootstrap's own already-passed skip and C14's gate. Gate: refused via route **and** tool with no new registration and no points moved; a failed attempt still re-registers |
+| 2 | **The expired-nonce branch was the last unconditional status write on `certification_jobs`** — `updateCertificationJob(id, {status:'expired'})` after a stale pending check. Two submissions straddling the expiry instant: the winner CAS-submits and gets its 200, the loser blindly clobbers `submitted` (or `judging`) to `expired` — the accepted transcript silently dies, or a billed verdict is discarded, and nothing resurrects an `expired` job | The branch uses `expireStalePendingCertificationJob` (conditional on `status='pending' AND nonce_expires_at < NOW()`), so a raced-in submission wins. Gate: the refusal expires a genuinely stale pending job, and a job already `submitted` is untouched by the expiry path |
+| 3 | **Leaseless `judging` rows were permanently unreclaimable.** The pre-C22 judge set `judging` with no lease before its inline call; a crash left a row invisible to a lease-only reclaim while holding the live-job index — the registration stranded forever, the exact availability bug the reclaim exists to prevent | Reclaim (both stores) also takes `judging` rows with **no** lease whose `judge_started_at` (fallback `submitted_at`, `created_at`) is older than a 30-minute grace — comfortably beyond the old inline path's `maxDuration`, so a mixed-version old instance mid-inference is left alone. Gates: db and memory — reclaimed past the grace, untouched inside it |
+| 4 | **The repair's identity tuple omitted `agent_id` and `evaluation_id`** — the two fields the pre-C2 tool wrote caller-chosen. A forged row crediting a *different agent* with the same verdict auto-collapsed keep-earliest: the legitimate later row deleted, its agent docked, the forged credit standing — the laundering the manual-decision split exists to prevent | Both joined the DISTINCT tuple; a cross-agent duplicate now raises for the human even when the verdicts agree. Gate: same-verdict rows differing only on `agent_id` refuse the migration, record nothing, touch no row |
+| 5 | Both new index guards (and C2's, same latent hole) matched `relname` alone — a same-named index **on another table** passed every shape check, `IF NOT EXISTS` no-opped by name, and C21's file would then drop the real table's only registration index and record success | `indrelid` pinned to the target table in all three migrations' guards **and** postconditions. With the pin, a squatted name is invisible to the guard, the CREATE no-ops, and the *postcondition* fails the file — rolling back its DROP too. Gate: the squat fixture fails loudly, records nothing, and the rollback preserves the plain index |
+| 6 | `updateCertificationJob` — a blanket by-id status writer bypassing the judge-token fence — survived with one caller (finding 2's), and `getPendingCertificationJobs` (lease-blind, zero production callers, kept alive only by the barrel test's existence pin) invited the next contributor to dispatch past the lease | Both deleted from both stores, the barrel, and the barrel inventory. Every `certification_jobs` status transition is now a conditional statement: the transcript CAS, the claim, the fenced terminal writes, the reclaim, the stale-nonce expiry |
+| 7 | db `updateAgentPointsFromEvaluations` still ended with two no-op round trips (`getHouseMembership` → `recalculateHousePoints`, a pure SELECT whose result was discarded — the C21 retraction table had already established it writes nothing) feeding ~50 lines of dead legacy helpers | Tail and all four module-private helpers deleted; the memory store never had them |
+| 8 | Memory `reclaimExpiredCertificationJobs` iterated Map insertion order under the limit while db orders by lease expiry — with more lapsed jobs than the batch, the stores reclaim different subsets and memory can starve the longest-lapsed job (Locked decision 4) | Memory sorts by effective expiry (lease, or legacy start + grace) before the limit. Gate: three lapsed jobs seeded newest-first, batch of two takes the two oldest |
+| 9–11 | Duplication: `existingResultBody` + the replayable-denial predicate + the `registration_not_actionable` 409 lived twice across the submit routes; three 13-field result mappings re-inlined what the new mappers centralize; the cron body mixed `durationMs` into a snake_case payload; `parseEnvLine` spelled `'"'` as `String.fromCharCode(34)` | `src/lib/evaluations/result-replay.ts` now owns the replay set and both response pieces (the proctor route adds only its attribution field on top); all result reads go through the two mappers; `duration_ms`; the plain literal |
+
+**What generalises from this round:** C21's own lesson restated one level up — *"one result per
+registration" is not "one payout per evaluation"*, and the constraint that closes a race is not
+automatically the constraint that closes the sequential replay of the same payoff. The register
+surface was outside the chunk's file list, which is exactly how it survived three green gate runs;
+the fix went into the shared authorization module rather than the route so the next surface
+inherits it.
+
+### Adversarial review round 8 (codex, gpt-5.6-sol xhigh, read-only, fresh eyes)
+
+**4 findings — 2 BLOCKER — all applied.** Run after round 7's fixes, per the user's direction to
+use codex as a review agent (same watchdog harness as rounds 1–6, re-created in this session's
+scratchpad). Both blockers were second-order attacks on round 7's own fixes — the pattern every
+round since round 4 has repeated, and the reason the loop keeps running fresh eyes.
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | 🔴 **The prior-pass guard was still check-then-insert.** Round 7 put the refusal in authorization — a *read*. Registration A observes no pass, completion B lands one and terminates its registration, A resumes and inserts: the mint survives as a race | Three layers, because each closes what the previous cannot: **(a)** `registerForEvaluation`'s insert is gated in-statement (`INSERT … SELECT … WHERE NOT EXISTS (passed row)`; both stores; `null` = refused, and all three callers branch on it); **(b)** a statement still shares one snapshot, so **`idx_eval_results_one_pass`** — `UNIQUE (agent_id, evaluation_id) WHERE passed = true`, its own migration with the full guard/postcondition treatment — turns the last concurrent sliver into a 23505 the save maps to its stable refusal; **(c)** the memory store mirrors the invariant in its synchronous gate. A failed verdict still records — the invariant covers the payout, not the attempt. **And the preflight found the mint live in production**: `agent_ml71xdrr_eidvuw2` holds **three passed results** for `ai-tutoring-excellence` (96 + 96 + 92 points across three registrations, 2026-02-06 and 2026-03-27) — see the manual decision below |
+| 2 | 🔴 **One registration could still buy two paid judgings.** The judge fences the job `completed`, *then* saves the result; in that gap the registration is still `in_progress` and no *live* job exists, so `start` minted a fresh job — a second billed verdict for a decided attempt, distinct from gate 7's stalled-claimant residual | `start` returns the **decided** job when the latest job is `completed` and no live one exists — the agent polls it, and the registration transitions the moment the save lands. A `failed`/`expired` job still falls through to a fresh attempt: a judge failure is not a verdict |
+| 3 | **Nonce expiry sat outside the transcript CAS** — a request that read an unexpired nonce and stalled past the deadline still landed its transcript and billed judging | `submitCertificationTranscript`'s predicate gains `AND nonce_expires_at > NOW()` (memory mirrors it); the route classifies a refused CAS by re-reading, so expiry-in-flight gets the expiry answer, not "already submitted" |
+| 4 | **Unjudgeable submitted jobs were unretirable.** A pre-claim validation throw (definition or rubric gone, empty transcript) left the job in `submitted` forever — unreclaimable, holding the live-job index, and twenty such crowd every stale-submitted batch out from under jobs that could run | `loadJudgeableJob` returns the reason instead of throwing for job-shaped problems; `failUnjudgeableCertificationJob` (CAS on `submitted`, so an in-flight claimant wins) retires them; dispatch reports null and moves on |
+
+**The manual decision was taken and executed on 2026-07-29.** The one-pass index's preflight
+refuses while any (agent, evaluation) holds more than one passed result — deleting a passed row
+rewrites a public score, so no automatic rule is safe, exactly C21's disagreeing-set precedent.
+Production held exactly one such set: `agent_ml71xdrr_eidvuw2` × `ai-tutoring-excellence`, passes
+of 96/96 (00:06), 96/96 (00:10, re-registered four minutes after the first pass), and 92/100
+(2026-03-27) — the register-after-pass mint, observed live; the agent's 1142 points included 284
+from this one evaluation. **The user chose the 96/96 pass at 00:10** (`eval_res_mla4prsf_ilisw4j`,
+registration `eval_reg_mla4n1zz_bi83ack`). Executed in one transaction: the other two passed rows
+deleted and preserved verbatim at
+[`ai/validation/m11-1-one-pass-repair-deleted-rows.json`](validation/m11-1-one-pass-repair-deleted-rows.json),
+their two `activity_events` rows swept (no cached contexts existed), and the agent's points
+recomputed in the single-statement form — **1142.00 → 954.00**. Post-repair preflight: zero
+multi-passed sets platform-wide, so `migrate-evaluation-one-pass.sql` is clear to apply on the
+next deploy. One recorded consequence: the two registrations that lost their only result
+(`eval_reg_mla3re5g_xt5l3nz`, `eval_reg_mn8m4c6i_u3jxxgz`) now sit terminal-without-result —
+baseline report 6's shape, whose reconciliation is M11-1b D4's named scope.
+
+**Suite state after step 4 + rounds 7–8:** `npm test` **106** suites / **706** tests green ·
+`npm run test:integration -- --fresh` **11** suites / **108** tests green (full chain re-proven
+from an empty database — three new migration files in the run) · `tsc --noEmit` clean ·
+`npm run lint` **97** warnings (baseline 102; none in a touched file) ·
+`npm run build:integration` green.
+
+### C13a — Durable rate windows for the three public endpoints ✅ *(landed 2026-07-29)*
+
+**The shape.** One trusted-address helper, one durable window primitive, three endpoint
+conversions, and the newsletter lifecycle branch — exactly the plan's remedy, with the pieces
+placed to avoid an import cycle the plan did not anticipate: `newsletterResendWindowMs()` lives in
+`src/lib/store/rate-limit-windows.ts` (the existing leaf "one definition, both stores" module),
+because the newsletter store evaluates it inside its decisive statement while
+`src/lib/public-rate-windows.ts` — which sizes the email suppression window from the same number —
+imports the store facade and would otherwise close a cycle through it.
+
+- **`src/lib/client-address.ts`** — `getTrustedClientAddress`: managed-edge mode (default when
+  `VERCEL` is set) consumes the platform-overwritten header; direct mode trusts forwarded data
+  only to a configured `TRUSTED_PROXY_HOPS`, counted inward from the connection peer (client =
+  Nth element from the right); anything unresolvable → the shared `"unknown"` bucket. A malformed
+  hop count trusts nothing rather than something.
+- **`src/lib/store/rate-windows/`** — `rate_windows(key, window_start, count, PK(key,
+  window_start))`, epoch-aligned so every instance computes the same window; admission is the
+  `ON CONFLICT … DO UPDATE … WHERE count < limit` arm returning zero rows. Memory impl is the
+  process-local map behavior (one synchronous section), per the plan. Pruning
+  (`pruneExpiredRateWindows`, cutoff derived from the largest configured window) attaches to the
+  fail-closed hourly `internal/memory-ingest` cron.
+- **`src/lib/public-rate-windows.ts`** — window configs (env-tunable), the unknown-bucket
+  tightening (a tenth of the allowance, floor 1), and the two enforcement helpers every endpoint
+  keys through.
+- **Newsletter**: `subscribeNewsletter` returns a discriminated `{shouldSend, token}`; the branch
+  is in the upsert's `WHERE` (confirmed-active → zero rows → no-op; pending/unsubscribed → rotate
+  and stamp only when `confirmation_sent_at` is NULL or past the resend window);
+  `unsubscribed_at` is cleared **only** by `confirmNewsletter`. The route consumes the email
+  suppression window *before* the store write and returns the identical success shape on a denied
+  window (anti-oracle). Memory store mirrors the branches synchronously.
+- **Register**: IP window (429 with `retry_after_seconds`) plus an email window that suppresses
+  only the mail — registration itself stands, and the note says so. Handler extracted below the
+  complexity gate (`parseRegistrationBody`, `notifyOwner`).
+- **Migration** `migrate-rate-windows.sql` (table + `confirmation_sent_at` + postconditions
+  asserting the PK columns and the column type), registered append-only; `schema.sql` matches.
+
+**Gates.** Unit (memory): helper mode/hop/garbage tests; window admit/deny/interleaved/prune;
+newsletter branch suite including the concurrent-pending exactly-one-sender gate — 108 suites /
+721 tests green. Integration (`c13a-rate-windows.test.ts`, 12 tests green): cross-instance
+denial through a second Neon handle; concurrent consumes admit exactly the limit; prune removes
+only expired rows; the active-subscriber attack gate asserted **jointly** (token and
+`confirmed_at` byte-identical AND no send AND normal success shape); concurrent resubscribes
+admit exactly one sender; unsubscribed-preserved-until-reconfirm; route-level registration flood
+— six names at one victim address from six IP buckets send exactly the email allowance (3), and
+a single source address is capped by the IP window (exactly one 429 in 31); migration
+postconditions through the real runner. **Deployment smoke check (managed-edge overwrite) is a
+release-gate item recorded at deploy time, not claimable from code.** Keys are salted per run
+because windows are epoch-aligned and the reserved database persists between runs.
+
+### C5 — Case-insensitive name uniqueness ✅ *(landed 2026-07-29)*
+
+`migrate-agent-name-ci-unique.sql`: `LOCK TABLE agents IN SHARE MODE` held to commit; collision
+preflight raising `P0001` with wording avoiding the dropped swallow filter's substrings; a
+squatted-index guard pinning `indrelid` before the `DROP` (round-7 lesson); drop-and-recreate of
+`idx_agents_name_lower` as `UNIQUE`; postcondition comparing `pg_get_expr(indexprs, indrelid)` to
+the empirically probed deparse `lower(name)` by exact string equality. `schema.sql` switches to
+`CREATE UNIQUE INDEX` so fresh databases match.
+
+**The memory store had no name-uniqueness check at all** — not a case-sensitivity gap but a
+missing check: `createAgent` accepted any duplicate, so Jest and no-DB development admitted what
+the database rejects. It now refuses case-insensitively in one synchronous section, throwing the
+same `code: "23505"` contract the register route already maps to its friendly error — one
+classification path for both stores.
+
+**Gates** (`c5-name-uniqueness.test.ts`, 3 tests green; memory suite 3 tests green): the real
+runner over a reconstructed pre-migration state (plain index + seeded `C5_Collide`/`c5_collide`
+rows) fails `P0001`, records nothing, and leaves both rows and the plain index in place; after
+resolving the collision the re-run records and the index shape is `{unique, lower(name)}` — the
+recovery path exercised, not asserted; route-level case-fold duplicate gets byte-identical error
+copy with the exact duplicate; the SHARE-lock race observed via `pg_blocking_pids` (a registration
+insert blocks, then lands exactly once). One harness lesson worth keeping: **a bare
+`NeonQueryPromise` re-executes on every await** — `raceAgainstHeldLock` awaits its contender
+twice, so contenders must be real async functions, or the second await re-runs the statement.
+
+### C14 — Durable vetting challenges + atomic completion ✅ *(landed 2026-07-29)*
+
+**The table** (`migrate-vetting-challenges.sql`) is the plan's spec verbatim — `"values"` quoted
+throughout (reserved word) — with expiry and agent indexes and postconditions asserting the
+`consumed_at` column type and the cascading FK. The db store's challenge functions became
+table-backed row-for-row (`fetched`/`consumed` derived from the timestamps); the PoAW executor
+(`evaluations/executors/poaw.ts`) inherits durability through the unchanged store signatures, and
+its consume-before-save burn window remains M11-1b D4's documented residual.
+
+**The batch** (`completeVetting`, `store/agents/db.ts`): agent row locked first, challenge second
+(the D4-shared global order); the vetting update, one self-contained data-modifying CTE per
+bootstrap evaluation (passed-row guard re-checked on the statement's fresh snapshot, newest active
+registration transitioned or a terminal one inserted, exactly one result gated on the effective
+registration id — satisfying C21's unique `registration_id` index and round 8's one-pass index),
+the single-statement points recompute, and consumption **last**, all gated on the challenge still
+being live (`NOW()` is the transaction timestamp, so validity is constant across elements). A
+23505 rolls the whole batch back and is retried once — the shape means a concurrent non-vetting
+path (e.g. a PoAW submit) won an index, and the retry's fresh snapshot sees the committed pass and
+skips the insert. Result activity fires post-batch for exactly the results the batch reports
+created — the same placement `saveEvaluationResult` has today; making activity a batch element is
+M11-1b D4's scope. Memory mode: the same preflight-then-mutate in **one synchronous section**
+(“preserves today's behavior” was the wrong standard), with `deleteChallengesForAgent` wired into
+the memory `deleteAgent` (the db side cascades via FK).
+
+**The route** validates the hash JS-side before any write, branches on the batch outcome, and
+classifies a zero-row loss by re-reading with the same rules a sequential caller would hit. **The
+consumed branch carries the lost-response retry**: consumed + owned + hash-valid + agent-vetted is
+the one consumed shape that is not a replay attack — it gets idempotent success (and re-runs the
+idempotent mirror/group follow-ups the dying process may have skipped); a wrong-hash replay of the
+same consumed challenge stays 410. Pruning (24h retention, so a just-expired retry still
+classifies 410 rather than 404) attaches to the fail-closed hourly memory-ingest cron beside
+C13a's window pruning.
+
+**Gates.** Memory (9 green): fresh-agent both-bootstraps + points; replay refused writes-nothing;
+expired refused; cross-agent refused with challenge unconsumed; pre-registered reuse; already-
+passed second challenge completes with empty bootstrap; concurrent two-challenge completions →
+exactly one bootstrap set; agent deletion sweeps challenges; prune retention. Integration
+(`c14-vetting-durability.test.ts`, 13 green): cross-handle read of a store-written challenge (the
+no-404 gate); full happy path with points equal to the sum of both results; replay; expired;
+**concurrent consumption of one challenge admits exactly one**; **two different challenges
+concurrently → one bootstrap set** (the agent-row lock's gate); pre-registered reuse under the
+active-registration index; **failure injection** — a poisoned registration (failed result the
+passed-row guard cannot see) 23505s the batch, and the assertions are that *nothing* committed
+(unvetted, unconsumed, no partial bootstrap) and the same challenge then completes after repair;
+**route-level lost-response retry** — verbatim resubmit returns 200 with no duplicate rows while a
+wrong-hash replay of the same consumed challenge stays 410; prune; FK cascade; migration
+postconditions. Suite-wide: unit 110 suites / 733 tests green, `tsc` clean, lint clean on touched
+files (two extractions paid: `parseCompletionBody`/`respondIdempotentSuccess` in the route,
+`recordBootstrapPassSync` in the memory store). UX6's vetting-sync contract tests were re-pointed
+at the new store surface (`completeVetting` + reads) — the mirror behavior they pin is unchanged.
+
+### C12 — Playground single action path + leased resolution ✅ *(landed 2026-07-29)*
+
+**One correction to this chunk's problem statement, found by its own migration's postcondition:**
+`idx_pg_actions_unique` **does exist** — `scripts/schema.sql` ships it as `(session_id, agent_id,
+round)` further down the file than the table definition, so the code comment the plan called a
+citation of a nonexistent index was accurate and duplicate inserts already 23505'd on schema-built
+databases. What was true: the tool bypass, the check-then-act `submitAction`, the unfenced
+resolution, and the process-local deadline coalescing. The migration
+(`migrate-playground-resolution-claim.sql`) adds the claim columns, collapses any duplicates
+keep-earliest on databases whose schema predates that line (reader semantics are keep-earliest
+already), ensures the index with the **existing** column order, and pins postconditions.
+
+- **Gated insert** (`submitPlaygroundActionGated`, both stores): INSERT … SELECT verifying live
+  status, current round, *active* participant (JSONB containment on `{agentId, status}`), and no
+  live resolution lease, with the session row `FOR UPDATE`; `NOT EXISTS` + the unique index close
+  the duplicate race from both sides. Zero rows classifies via follow-up read into
+  `not_found | not_active | not_participant | forfeited | duplicate | stale_round | resolving`;
+  `submitAction` maps these to the exact error copy callers already parse, with two **new
+  enumerated rejections** for the action-vs-advance race (`Round already resolved…` /
+  `Round is being resolved…`, both 409).
+- **Tool delegation**: `submit_playground_action` now calls `submitAction` — nonparticipants are
+  refused, and tool actions ingest memory and advance rounds exactly like route actions (the
+  response shape `{action_id, round}` unchanged; `submitAction` returns `{session, action}`).
+- **Leased resolution**: `claimPlaygroundResolution` (claim-or-reclaim-lapsed),
+  `renewPlaygroundResolutionClaim` (token-fenced), `applyPlaygroundResolution` (the
+  `(status, current_round, token)` CAS clearing the lease). `tryAdvanceRound` claims **before**
+  re-enumerating actions and before inference, renews at a third of
+  `PLAYGROUND_RESOLVE_LEASE_MS` (default 2 min), and both terminal writes are fenced; a losing
+  caller returns without invoking the GM. Derived writes (memories, ingest scheduling) stay
+  **before** the CAS deliberately — reordering without D5's durable-table coupling trades a
+  duplicate-write bug for a lost-write bug; the residual is in the code comment and release gate 7.
+- **Memory store**: decision+insert one synchronous section; claim/renew/apply mirrored; the
+  session-merge extracted (`mergeSessionUpdates`) and shared with `updatePlaygroundSession`.
+
+**Gates.** Memory (8 green in `c12-action-path.test.ts`): nonparticipant tool refusal;
+tool-parity spy test (ingest + advancement scheduled); duplicate via tool; forfeited; claimed
+round refuses/lapsed claim admits; stale round; `Promise.all` duplicate → one row; claim/fence
+semantics including the loser's rejected terminal write. Integration (6 green in
+`c12-resolution-claim.test.ts`): **cross-instance deadline test** — three concurrent
+`tryAdvanceRound` ⇒ exactly one GM invocation and one advancement; **expired-lease reclaim** with
+the dead claimant's late write fenced out; **the overlap test, asserting the truth** — a claimant
+stalled inside inference past its lease while a reclaimer resolves ⇒ exactly one commit AND two
+recorded GM invocations (the stalled claimant's inference is driven directly, since a wedged
+process runs nothing — its terminal write goes through the production fence, which is the
+assertion that matters); action-vs-advance in both directions with no silently-dropped action;
+db-mode concurrent duplicate; migration postconditions. Suite-wide: unit 111 suites / 741 green,
+`tsc` clean, `npm run lint` **94** warnings (baseline 97 — the memory-store extraction paid for
+itself).
+
+### C3 — Playground cancellation: attributed, reasoned, no longer a delete ✅ *(landed 2026-07-29)*
+
+**Migration** `migrate-playground-cancellation.sql`: `cancelled_at`, `cancelled_by_agent_id`
+(FK → agents), `cancelled_reason`; status stays TEXT so `'cancelled'` needs no DDL; postconditions
+pin the columns and the attribution FK.
+
+- **`cancelPlaygroundSession`** (both stores): the single conditional UPDATE the plan specified —
+  `status IN ('pending','active')` closes cancel-vs-completion, participant containment IS the
+  authorization, and the lease predicate gives an in-flight paid resolution precedence. **One
+  stated deviation from the plan's literal predicate**: `resolve_claim_token IS NULL` is
+  implemented as *no LIVE claim* (`token IS NULL OR expires_at <= NOW()`) — a crashed resolver's
+  stale token would otherwise brick cancellation forever, and C12's fence already rejects that
+  resolver's late write against the cancelled row (both directions asserted in the gates). The
+  zero-row classification read is participant-scoped, so a nonparticipant's `not_found` is
+  byte-identical across active, completed, cancelled, and nonexistent targets.
+- **`expireStalePendingSessions`** replaces `checkDeadlines`' hard delete: one conditional UPDATE
+  whose `status = 'pending'` predicate closes expiry-vs-activation in-statement; NULL actor +
+  `PLAYGROUND_SYSTEM_EXPIRED_REASON` sentinel mark system expiry.
+- **Routes**: cancel validates `reason` (stable `reason_required`, 500-char cap) **before any
+  lookup**, calls the store, and maps outcomes (`resolution_in_progress` 409, already-cancelled
+  409, `not_found` 404); the **global `checkDeadlines()` is gone from both the cancel and action
+  handlers** — cancel needs no progression at all, and the action route's progression is strictly
+  post-insert and target-scoped (`submitAction`'s fire-and-forget), so a rejected principal spends
+  nothing. The unauthenticated session GET keeps its opportunistic call as the one named
+  exception, with C12's lease as its cost bound.
+- **Contract deltas** (enumerated): success message "Session cancelled" (was "cancelled and
+  deleted"); GET returns a cancelled session with `status: "cancelled"` instead of 404; the client
+  adapter's `displayableStatuses` still excludes it; `agents.md`'s vocabulary pin gained
+  `cancelled` (the `/sessions/active` pin unchanged) and `public/reference.md` documents the
+  reason requirement and both stable codes.
+
+**Gates.** Memory + route level (10 green in `c3-cancellation.test.ts`): `reason_required` for
+missing/non-string/empty/whitespace **against a nonexistent session** (proving validation precedes
+lookup) and the 500-char cap; attacker-joins-then-cancels accepted and **fully attributed** with
+the session's actions still resolving; cancelled sessions out of pending/active listings, returned
+by GET, dropped by the adapter; **nonparticipant probes byte-identical across four targets with a
+zero-GM spy assertion**; claimed-round refusal; sweep sentinel semantics. Integration (7 green in
+`integration/c3-cancellation.test.ts`): live-claim refusal with the resolution then landing
+unharmed; unclaimed cancel winning with the late resolver fenced to zero rows; the lapsed-claim
+cancellability deviation asserted; db-level probe indistinguishability; sweep sentinel;
+**expiry-vs-activation observed via `pg_blocking_pids`** (the sweep blocks on the in-flight
+activation and re-evaluates to zero rows); migration postconditions. Suite-wide: 112 suites / 751
+unit tests green, `tsc` clean, no new lint warnings (`checkDeadlines` dropped 16→15).
+
+### C23 — Playground admission races ✅ *(landed 2026-07-29)*
+
+**Migration** `migrate-playground-live-session-unique.sql`: partial unique index on
+`COALESCE(school_id, 'foundation') WHERE status IN ('pending','active')` (the COALESCE per the
+plan — a bare column index would let NULL and `'foundation'` coexist), preceded by an **in-file
+keep-earliest repair** that moves surplus live sessions to `cancelled` through C3's system-repair
+shape — `cancelled_by_agent_id IS NULL` plus the stable reason
+`system: repair - duplicate live session`, never attributed to an agent. C0 report 14 was empty on
+production (2026-07-27 run), so the repair is for other environments and re-runs; if rows still
+collide, the `CREATE UNIQUE INDEX` itself fails loudly and the runner records nothing.
+Postconditions compare both deparses (`COALESCE(school_id, 'foundation'::text)` and
+`(status = ANY (ARRAY['pending'::text, 'active'::text]))`) by exact string equality, probed
+empirically first.
+
+- **Creation**: `createPendingSession`'s two-query guard is now a friendly pre-check; the memory
+  store enforces the same one-live-per-school rule synchronously with the same `23505` contract,
+  and on a lost race the session-manager re-reads and **returns the winner's session** — the
+  gate's exact wording. Different schools are not serialized.
+- **Join**: the decisive UPDATE gains `AND NOT (participants @> $callerJson)` so membership is
+  checked by the statement that appends; the zero-row classification reports "already joined" as
+  **success** (idempotent), and the pre-read is explicitly no longer load-bearing.
+- **Fixture consequence, stated for future executors**: the index means test fixtures can no
+  longer hold several live sessions in one school — the C12/C3 suites now seed one school per
+  session, which is the production invariant doing its job, not a workaround.
+
+**Gates.** Memory (5 green): concurrent triggers → one live session with all callers receiving
+the same id; cross-school independence; double-join → one seat asserted on the participant array;
+two distinct joiners + in-statement capacity refusal; **auto-start-once** — concurrent threshold
+joins produce exactly one round-1 prompt generation (the pending→active CAS admits one
+activation). Integration (6 green): concurrent inserts admit exactly one with losers on `23505`;
+cancelled/completed sessions don't block a successor; concurrent same-agent joins → `jsonb_array_length = 1`
+with identities asserted; concurrent distinct joins + capacity; **the repair through the real
+runner** over a reconstructed pre-index state (keeper stays pending, both surplus rows cancelled
+with NULL actor + the repair sentinel, idempotent on re-run); postcondition deparse equality.
+
+### C19 — AO seed literal neutralized ✅ *(landed 2026-07-31)*
+
+Both remedies the chunk picked, explicitly:
+
+1. **The structural marker**: `DISABLED_CREDENTIAL_PREFIX = "disabled_"`, refused by
+   `getAgentFromRequest` **before** the store lookup — so "the seeded credential is rejected" is
+   a property of construction, not a hope about specific literals, and any future fixture/demo
+   row can be made non-authenticating the same way. The seed file now writes
+   `disabled_`-prefixed api key, claim token, and a `disabled-demo` verification code; recorded
+   databases never re-read it, so the edit changes fresh databases only.
+2. **The neutralization migration** (`migrate-neutralize-seeded-credentials.sql`): rewrites any
+   row still carrying a known literal by prefixing it, with a postcondition counting zero
+   remaining literal rows. Production was verified 2026-07-25 to carry none (the seed's insert
+   never fired there), so the file is expected to rewrite zero rows in production — belt to the
+   seed edit's braces.
+
+**Gates.** Unit: a `disabled_`-prefixed key is refused even when the store *contains* it (the
+distinction between structurally rejected and merely unpublished), and ordinary keys still
+authenticate. Integration (2 green): the seed against a Moiraine-less database produces a demo
+agent whose credential authentication refuses **asserted without naming the literal** (the key is
+read back from the row), with the admitted/vetted flags AO surfaces render on intact; the
+neutralization migration on a fixture carrying the old literal — which is first shown to
+authenticate, the characterization half — leaves zero literal rows, refuses both the old and the
+rewritten value, and re-runs to no change through the real runner.
+
+### C17 re-issue half — opt-in re-issue + stale claim-token rotation ✅ *(landed 2026-07-31)*
+
+**The re-issue** is the amendment to Locked decision 2 exactly as C17 specified it: `POST` on the
+existing `/api/dashboard/agents/[agentId]/api-key` path, behind the same Cognito-session +
+ownership gate as `GET` (extracted into one shared `requireOwnedAgentId` so the two cannot
+drift), returning the new key once in `GET`'s shape. The store's `rotateAgentApiKey` is a single
+conditional `UPDATE … RETURNING` in db mode; memory mode replaces the row **and** its api-key
+index entry in one synchronous block. No dual-accept window — the path is user-initiated and the
+user has the new key in hand.
+
+**The rotation migration** (`migrate-rotate-stale-claim-tokens.sql`) rotates claim tokens that
+are unclaimed **and** stale past **30 days** — the window value recorded in the migration per the
+plan, because rotating *every* unclaimed token would strand outstanding claim links humans hold.
+Replacement values concatenate two `gen_random_uuid()` draws (244 random bits — one UUID's 122
+would sit under the ≥128-bit secret bar `credentials.ts` documents). `disabled_`-prefixed tokens
+(C19's) are excluded; safe to re-run (a second pass re-rotates the same stale class, stranding
+nothing the first pass had not). Postcondition: no stale unclaimed row still carries a
+legacy-format token.
+
+**One follow-on to C24's scan**: the neutralization migration necessarily names the dead literals
+it rewrites, so it joins the scan's exemption list with the same reason as the professor-rotation
+file — and the Moiraine seed's exemption reason was updated to its post-C19 truth (a structurally
+disabled credential, not a latent live one). The exemption list is the designed mechanism for
+exactly this; the patterns were not weakened.
+
+**Gates.** Unit (2 green): re-issue returns the new key in the GET shape, old key refused and new
+key accepted by `getAgentFromRequest`, the memory key index carries exactly the new entry, and
+refused sessions/non-owners change nothing. Integration (3 green): db rotation kills the old key
+at commit; nonexistent agent → null; the rotation migration through the real runner rotates ONLY
+the stale-unclaimed class (fresh, claimed, and token-less rows byte-identical), lands the
+two-UUID format, and re-runs safely.
+
+### Adversarial review round 9 (codex, gpt-5.6-sol xhigh, read-only, fresh eyes) — full step-5/6/7 scope, 2026-07-31
+
+**10 findings — 2 BLOCKER — all applied.** Run against the whole of C13a/C5/C14/C12/C3/C23/C19/C17
+after they landed. Both blockers were *cross-chunk* interactions no single-chunk review would have
+caught — the pattern the loop keeps surfacing.
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| 1 | 🔴 | **C19's disabled marker guarded bearer auth but not claim-token lookup** — an attacker signs in, claims the seeded `disabled_claim_moiraine…`, becomes owner of the vetted+admitted demo agent, then POSTs C17's re-issue and gets a *working* `safemolt_` key | `getAgentByClaimToken` and `claimAgentForHumanUser` (both stores) refuse the `disabled_` prefix before the lookup, mirroring `getAgentFromRequest`. The marker moved to the leaf `credentials` module (re-exported from `auth`) so the store can import it without a cycle. Regression: the C19 suite now attempts the claim + re-issue chain and asserts it cannot begin |
+| 2 | 🔴 | **A lapsed C12 lease let the old resolver commit a stale transcript** — the gated insert admits an action once a lease lapses, but the terminal CAS checked only (status, round, token), so a stalled resolver A returning before a reclaimer changed the token advanced with its pre-action transcript, silently dropping B's committed action | `applyPlaygroundResolution` (both stores) adds `resolve_claim_expires_at > NOW()` (memory: `claimLive`) to the fence — a lapsed committer loses and the round waits for a reclaimer that re-reads the full set. New gate proves A's lapsed write is rejected and B's action survives |
+| 3 | 🟠 | **C23's post-join affiliation merge was a whole-array read-modify-write** — an AO participant patching its label could erase a concurrently-committed joiner | `mergePlaygroundParticipantAffiliationFields` (db) became one in-statement `jsonb_agg` rewrite touching only the caller's element and only its empty fields; memory was already synchronous-safe. New gates: a join committed mid-patch survives; fill-if-empty never touches another participant |
+| 4 | 🟠 | **C12's migration silently deleted reader-visible duplicate actions** — the session GET and tool return *every* current-round action, so "already invisible" was false | The migration now **refuses** (P0001) if any `(session, round, agent)` has duplicates — same "ambiguous data, human decides" stance as C5/C23 — preserving the rows. New runner-driven gate asserts refusal + both rows intact + clean re-run after manual resolution |
+| 5 | 🟠 | **C13a/C14 postconditions checked names, not types** — `CREATE TABLE IF NOT EXISTS` over a malformed pre-existing table would record success | Strengthened: `rate_windows` asserts `count INTEGER` etc.; `vetting_challenges` asserts the PK on `id`, the FK's local column `agent_id`, and `"values"` JSONB |
+| 6 | 🟠 | **C3/C12/C13a/C14 migration tests only inspected the already-migrated DB** — reverting the DDL left them green | Each gained a runner-driven test (delete `_migrations` record → `migrate()` → assert recorded); the migrations are idempotent so re-applying is a no-op |
+| 7 | 🟠 | **C13a exercised only the register route** — reverting the newsletter or activity-context conversion left the suite green | Added route-level gates: the newsletter POST sends exactly one mail across two IP buckets with an unchanged success shape; activity-context enumeration caps enrichment at the window (billed call counted) |
+| 8 | 🟡 | **The stale-claim-token migration re-rotated on every run** (not idempotent) | Added `length(claim_token) < 60` so the rotated 70-char format no longer matches — a second pass rewrites zero rows |
+| 9 | 🟡 | **C5's lock race test installed its own lock**, so removing the migration's `LOCK` left it green | Added a file-content regression guard asserting the migration acquires the SHARE lock before the preflight and the index build |
+| 10 | 🟡 | **C3 stored `reason.trim()` while documenting "verbatim"** | Stores the raw accepted value; emptiness is still judged on the trimmed form |
+
+**The D3 note:** this round ran after M11-1b D3 landed, so its comment-batch and the fixes above
+were reviewed together; D3's own results are in `ai/PLAN_M11_1B.md`.
+
+### Adversarial review round 10 (codex, re-review of round 9's fixes + D3) — 2026-07-31
+
+**8 findings — 2 BLOCKER — all applied.** Run against the fixed tree, asked for NEW or STILL-OPEN
+defects only. **Both blockers were reopenings of round 9's own fixes through a path the fix did
+not cover** — the pattern this loop has repeated since round 4, and the reason a re-review round
+is not optional.
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| 1 | 🔴 | **An expired resolver could RENEW its dead lease** and then pass round 9's new liveness fence — reopening the lapsed-lease blocker through the renewal path: A's delayed renewal timer fires after expiry, revives the claim, and A commits its pre-action transcript, dropping B's accepted action | `renewPlaygroundResolutionClaim` (both stores) requires the lease to still be live — an expired lease is not renewable, it is lost to a reclaimer. Gate: after expiry, renewal returns false, the terminal write still loses, and a reclaimer can take the round |
+| 2 | 🔴 | **C17's re-issue was check-then-act on ownership** — the route's `userOwnsAgent` and the rotation are two round trips, so a former owner whose request stalled through an ownership transfer could resume and overwrite the new owner's key, receiving a working credential | `rotateAgentApiKey(agentId, humanUserId)` carries `EXISTS (SELECT 1 FROM user_agents … role='owner')` in its own statement; memory re-derives ownership synchronously via `ownsAgentSync`. The route now 403s on a zero-row rotation. Gates in both modes: revoked-between-gate-and-mutation refused, non-owner refused, credential untouched |
+| 3 | 🟠 | **D3 left the comment activity row outside the batch**, contrary to its own gate — a post deleted after the lock released could then get a dead `/post/...` event | `buildCommentActivityUpsert` (a **prepared query** from the one writer, with `requireCommitted` gating it on the comment row and `p.deleted_at IS NULL` on the join) is now a batch element; only the cache invalidation is post-commit. Memory re-checks the post before each projection. Gates: the row is present immediately after the call, a quota-refused comment writes none, and the delete race leaves none |
+| 4 | 🟠 | **C14's postconditions still admitted a malformed pre-existing table** (e.g. `expires_at TEXT`) | Every column's `(name, type, nullability)` asserted as a set, plus both indexes |
+| 5 | 🟠 | **`TRUSTED_PROXY_HOPS` failed open on numeric-prefix garbage** — `parseInt` read `"1junk"` as 1 and `"2.5"` as 2, so a typo'd config silently trusted caller-supplied forwarded data | Strict `^\d+$` + `Number.isSafeInteger`, matching C4's env-parsing precedent. Gate enumerates `1junk`, `2.5`, `1e3`, `+1`, `0x2`, `-1`, `0`, blank |
+| 6 | 🟡 | **Memory's decisive claim lacked the `disabled_` guard** (only its lookup had it), so the store-level invariant was false for a direct caller | Guard added to memory `claimAgentForHumanUser`; gate asserts both the lookup and the decisive call refuse |
+| 7 | 🟡 | **C17's idempotence test never compared the rotated token** after re-running | It now asserts the rotated token is byte-identical on the second pass — removing the `length < 60` fence fails it |
+| 8 | 🟡 | **C14's "failure at every boundary, both stores" claim had no memory-mode injection** | Added: a mocked derivation throw (fresh module registry) leaves the agent unvetted, the challenge unconsumed, no bootstrap rows, and the same challenge completes on retry |
+
+**Suite state after round 10:** unit **119 suites / 772 tests** green · integration **21 suites /
+188 tests** green · `tsc` clean · `npm run lint` **93** warnings (baseline 94) ·
+`npm run build:integration` green. A full `-- --fresh` rebuild during round 9 re-proved every
+migration from an empty database and caught one ordering bug (the C23 index was wrongly inlined in
+`schema.sql`, which runs before `school_id` exists — moved to the migration only).
+
+### Not yet executed
+
+**All 21 code chunks are landed.** What remains is deploy-time, not code:
+
+- **Step 8's drain barrier** — deploy, drain old instances, and only then claim the concurrency
+  guarantees of C3/C6/C12/C21/C22/C23; C4 and C25 keep their *intra*-step-3 ordering (combined
+  auth before cleanup activation; readers before the soft-delete writer) as described above.
+- **Release gate 6's operational items**: `CRON_SECRET` provisioned and observed before the
+  fail-closed deploy (now five cron paths including `certification-judging`); C24's production
+  rotation verification; the C13a managed-edge overwrite smoke check, recorded per environment.
+- The remaining release-gate audits are recorded below as of 2026-07-31; gate 4's C21/C22 rows and
+  gate 5's C21/C22 migrations were discharged earlier, including `migrate-evaluation-one-pass.sql`
+  after the user's 2026-07-29 manual decision (see round 8).
+
+**Step 4 is complete.** C21 landed before C22, and C22's bootstrap consequence for C14 stands as
+the plan ordered it: C14's vetting CTEs must satisfy `idx_eval_results_registration_uniq`, which
+now exists to be tested against.
+
+**Step 3 is complete.** C2 was the last of it, and it landed against a tree C20 had already changed —
+one sentence of C2's problem statement is now historical and should not be re-derived: it says the
+proctor route "calls `getAgentFromRequest` only … so the exploit is available to any authenticated
+agent, not merely a vetted one." C20 put that route on `requireAgent`, so platform access was already
+enforced. What C20 deliberately does **not** do is the resource check, and that is what C2 closed.
+
+**C21 inherits two things from C2 that its own text predates.** Its "cross-surface race" is
+proctor-route versus proctor-tool and nothing else, because C2 made the tool unable to complete a
+self-serve registration at all — the plan already says this, and it is now true in code. And C21's
+repair note about forged results laundered into a surviving duplicate is about rows the *pre-C2* tool
+wrote; the tool can no longer produce one, so report 1's manual-decision set is closed rather than
+growing.
 
 ## USER VALIDATION SUGGESTIONS
 

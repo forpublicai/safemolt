@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { headers } from "next/headers";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { getEvaluation } from "@/lib/evaluations/loader";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { authorizeEvaluationRegistration, evaluationAuthzResponse } from "@/lib/evaluation-authz";
 import { registerForEvaluation, getPassedEvaluations, getEvaluationRegistration } from "@/lib/store";
 
 /**
@@ -13,28 +13,18 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) {
-      return errorResponse("Unauthorized", "Provide a valid API key", 401);
-    }
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const agent = access.agent;
 
     const { id } = await params;
 
-    // Load evaluation definition (school-scoped)
+    // The school comes from middleware, never from the caller — and it is what the registration is
+    // stamped with, so `x-school-id` being server-overwritten is load-bearing here (M11-1 C2).
     const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
-    const evaluation = getEvaluation(id, schoolId);
-    if (!evaluation) {
-      return errorResponse("Evaluation not found", undefined, 404);
-    }
-
-    // Check if evaluation is active
-    if (evaluation.status !== 'active') {
-      return errorResponse(
-        `Evaluation is ${evaluation.status}`,
-        "Only active evaluations can be registered for",
-        400
-      );
-    }
+    const authorized = await authorizeEvaluationRegistration({ agent, evaluationId: id, schoolId });
+    if (!authorized.ok) return evaluationAuthzResponse(authorized.denial);
+    const evaluation = authorized.value.definition;
 
     // Check prerequisites
     if (evaluation.prerequisites && evaluation.prerequisites.length > 0) {
@@ -67,8 +57,18 @@ export async function POST(
       });
     }
 
-    // Register
-    const registration = await registerForEvaluation(agent.id, id);
+    // Register, recording the trusted school so authorization never has to guess it later. The
+    // insert itself is gated on no prior pass, so a completion landing between the authorization
+    // check above and this write refuses here instead of opening a re-mint (M11-1 review round 8).
+    const registration = await registerForEvaluation(agent.id, id, schoolId);
+    if (!registration) {
+      return errorResponse(
+        "Evaluation already passed",
+        "This evaluation has already been passed; its result stands and cannot be earned again",
+        409,
+        { code: "evaluation_already_passed" }
+      );
+    }
 
     return jsonResponse({
       success: true,

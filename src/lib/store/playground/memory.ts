@@ -1,4 +1,6 @@
-import type { PlaygroundSession, CreateSessionInput, UpdateSessionInput, CreateActionInput, SessionAction, SessionParticipant, PlaygroundSessionListOptions } from '@/lib/playground/types';
+import type { CancelPlaygroundOutcome, PlaygroundSession, CreateSessionInput, UpdateSessionInput, CreateActionInput, SessionAction, SessionParticipant, PlaygroundSessionListOptions, SubmitActionOutcome } from '@/lib/playground/types';
+import { PLAYGROUND_SYSTEM_EXPIRED_REASON } from '@/lib/playground/types';
+import { clearPlaygroundMemoriesForSession } from './agent-memories-memory';
 import { playgroundActions, playgroundSessions } from "../_memory-state";
 import {
   recordPlaygroundActionActivityEvent,
@@ -28,20 +30,44 @@ export async function listRecentPlaygroundActions(limit = 25) {
     });
 }
 
+/** Mirrors the db store: cancelled sessions are omitted from public agent history (C3). */
 export async function getPlaygroundSessionsByAgentId(agentId: string, limit: number = 5) {
   return Array.from(playgroundSessions.values())
-    .filter((session) => session.participants.some((participant) => participant.agentId === agentId))
+    .filter(
+      (session) =>
+        session.status !== 'cancelled' &&
+        session.participants.some((participant) => participant.agentId === agentId)
+    )
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .slice(0, limit);
 }
 
+/** Same public contract as the list above: a cancelled session is not counted. */
 export async function getPlaygroundSessionCountByAgentId(agentId: string) {
-  return Array.from(playgroundSessions.values()).filter((session) =>
-    session.participants.some((participant) => participant.agentId === agentId)
+  return Array.from(playgroundSessions.values()).filter(
+    (session) =>
+      session.status !== 'cancelled' &&
+      session.participants.some((participant) => participant.agentId === agentId)
   ).length;
 }
 
 export async function createPlaygroundSession(input: CreateSessionInput) {
+  // M11-1 C23: one live session per school, mirrored from the db's partial unique index. The
+  // check and the insert are one synchronous section; the same 23505 contract lets the caller
+  // classify both stores' refusals identically.
+  if (input.status === 'pending' || input.status === 'active') {
+    const school = input.schoolId ?? 'foundation';
+    for (const existing of playgroundSessions.values()) {
+      if (
+        (existing.status === 'pending' || existing.status === 'active') &&
+        (existing.schoolId ?? 'foundation') === school
+      ) {
+        const err = new Error(`a live playground session exists for school '${school}'`) as Error & { code: string };
+        err.code = '23505';
+        throw err;
+      }
+    }
+  }
   const now = new Date().toISOString();
   const session: PlaygroundSession = {
     id: input.id,
@@ -80,10 +106,8 @@ export async function listPlaygroundSessions(options?: PlaygroundSessionListOpti
   return list.slice(offset, offset + limit);
 }
 
-export async function updatePlaygroundSession(id: string, updates: UpdateSessionInput) {
-  const session = playgroundSessions.get(id);
-  if (!session) return false;
-
+/** Field-by-field session merge shared by the plain update and the fenced apply (M11-1 C12). */
+function mergeSessionUpdates(session: PlaygroundSession, updates: UpdateSessionInput): PlaygroundSession {
   const updated = { ...session };
   if (updates.status !== undefined) updated.status = updates.status;
   if (updates.participants !== undefined) updated.participants = updates.participants;
@@ -94,23 +118,88 @@ export async function updatePlaygroundSession(id: string, updates: UpdateSession
   if (updates.summary !== undefined) updated.summary = updates.summary;
   if (updates.startedAt !== undefined) updated.startedAt = updates.startedAt;
   if (updates.completedAt !== undefined) updated.completedAt = updates.completedAt;
+  return updated;
+}
 
-  playgroundSessions.set(id, updated);
-  if (
+function activityWorthy(updates: UpdateSessionInput): boolean {
+  return (
     updates.status !== undefined ||
     updates.participants !== undefined ||
     updates.currentRoundPrompt !== undefined ||
     updates.summary !== undefined ||
     updates.startedAt !== undefined ||
     updates.completedAt !== undefined
-  ) {
-    await recordPlaygroundSessionActivityEvent(updated.id);
+  );
+}
+
+export async function updatePlaygroundSession(id: string, updates: UpdateSessionInput) {
+  const session = playgroundSessions.get(id);
+  if (!session) return false;
+
+  playgroundSessions.set(id, mergeSessionUpdates(session, updates));
+  if (activityWorthy(updates)) {
+    await recordPlaygroundSessionActivityEvent(id);
   }
   return true;
 }
 
 export async function deletePlaygroundSession(id: string) {
   return playgroundSessions.delete(id);
+}
+
+/**
+ * M11-1 C3, memory mode — same decision rules as the db statement, in one synchronous section
+ * (the old memory path removed the session outright, which under this design is simply wrong).
+ */
+export async function cancelPlaygroundSession(
+  sessionId: string,
+  callerAgentId: string,
+  reason: string
+): Promise<CancelPlaygroundOutcome> {
+  const session = playgroundSessions.get(sessionId);
+  const isParticipant = session?.participants.some((p) => p.agentId === callerAgentId) ?? false;
+  // Nonexistent and nonparticipant are deliberately the same answer (anti-probe).
+  if (!session || !isParticipant) return { outcome: 'not_found' };
+  if (session.status !== 'pending' && session.status !== 'active') {
+    return { outcome: 'not_cancellable', status: session.status };
+  }
+  if (claimLive(session)) return { outcome: 'resolution_in_progress' };
+
+  const previousStatus = session.status;
+  playgroundSessions.set(sessionId, {
+    ...session,
+    status: 'cancelled',
+    cancelledAt: new Date().toISOString(),
+    cancelledByAgentId: callerAgentId,
+    cancelledReason: reason,
+  });
+  // Cancellation is a TRANSITION, so no FK cascade fires (M11-1 C3): episodic memories are swept
+  // explicitly by the transition itself, in both stores (M11-1b D5).
+  await clearPlaygroundMemoriesForSession(sessionId);
+  await recordPlaygroundSessionActivityEvent(sessionId);
+  return { outcome: 'cancelled', previousStatus };
+}
+
+/** Mirrors the db sweep: pending past the timeout → system-cancelled; anything else untouched. */
+export async function expireStalePendingSessions(pendingTimeoutMs: number): Promise<string[]> {
+  const cutoff = Date.now() - pendingTimeoutMs;
+  const expired: string[] = [];
+  for (const [id, session] of playgroundSessions) {
+    if (session.status !== 'pending') continue;
+    if (Date.parse(session.createdAt) > cutoff) continue;
+    playgroundSessions.set(id, {
+      ...session,
+      status: 'cancelled',
+      cancelledAt: new Date().toISOString(),
+      cancelledByAgentId: null,
+      cancelledReason: PLAYGROUND_SYSTEM_EXPIRED_REASON,
+    });
+    expired.push(id);
+  }
+  for (const id of expired) {
+    await recordPlaygroundSessionActivityEvent(id);
+  }
+  return expired;
 }
 
 /**
@@ -218,6 +307,105 @@ export async function createPlaygroundAction(input: CreateActionInput) {
   playgroundActions.set(input.id, action);
   await recordPlaygroundActionActivityEvent(input.id);
   return action;
+}
+
+function claimLive(session: PlaygroundSession): boolean {
+  return Boolean(
+    session.resolveClaimToken &&
+      session.resolveClaimExpiresAt &&
+      Date.parse(session.resolveClaimExpiresAt) > Date.now()
+  );
+}
+
+/** M11-1 C12: refusal classification shared by the sync gate below — one rule, stated once. */
+function classifyActionRefusal(
+  session: PlaygroundSession | undefined,
+  input: CreateActionInput
+): SubmitActionOutcome {
+  if (!session) return { ok: false, reason: 'not_found' };
+  if (session.status !== 'active') return { ok: false, reason: 'not_active' };
+  const participant = session.participants.find((p) => p.agentId === input.agentId);
+  if (!participant) return { ok: false, reason: 'not_participant' };
+  if (participant.status === 'forfeited') return { ok: false, reason: 'forfeited' };
+  if (session.currentRound !== input.round) return { ok: false, reason: 'stale_round' };
+  const duplicate = Array.from(playgroundActions.values()).some(
+    (a) => a.sessionId === input.sessionId && a.round === input.round && a.agentId === input.agentId
+  );
+  if (duplicate) return { ok: false, reason: 'duplicate' };
+  if (claimLive(session)) return { ok: false, reason: 'resolving' };
+  return { ok: true, action: { ...input, createdAt: new Date().toISOString() } };
+}
+
+/**
+ * M11-1 C12, memory mode — decision and insert in ONE synchronous section (`playground/memory.ts`
+ * used to write different ids blindly, so two concurrent calls could both capture an empty
+ * snapshot). No `await` between the classification and the map write; the activity event follows.
+ */
+export async function submitPlaygroundActionGated(input: CreateActionInput): Promise<SubmitActionOutcome> {
+  const outcome = classifyActionRefusal(playgroundSessions.get(input.sessionId), input);
+  if (outcome.ok) {
+    playgroundActions.set(input.id, outcome.action);
+  }
+  if (outcome.ok) {
+    await recordPlaygroundActionActivityEvent(input.id);
+  }
+  return outcome;
+}
+
+export async function claimPlaygroundResolution(
+  sessionId: string,
+  round: number,
+  token: string,
+  leaseMs: number
+) {
+  const session = playgroundSessions.get(sessionId);
+  if (!session || session.status !== 'active' || session.currentRound !== round) return false;
+  if (claimLive(session)) return false;
+  playgroundSessions.set(sessionId, {
+    ...session,
+    resolveClaimToken: token,
+    resolveClaimExpiresAt: new Date(Date.now() + leaseMs).toISOString(),
+  });
+  return true;
+}
+
+/** An expired lease cannot be renewed (M11-1b review round 2, B1) — see the db-side comment. */
+export async function renewPlaygroundResolutionClaim(sessionId: string, token: string, leaseMs: number) {
+  const session = playgroundSessions.get(sessionId);
+  if (!session || session.resolveClaimToken !== token || !claimLive(session)) return false;
+  playgroundSessions.set(sessionId, {
+    ...session,
+    resolveClaimExpiresAt: new Date(Date.now() + leaseMs).toISOString(),
+  });
+  return true;
+}
+
+export async function applyPlaygroundResolution(
+  sessionId: string,
+  fence: { round: number; token: string },
+  updates: UpdateSessionInput
+) {
+  const session = playgroundSessions.get(sessionId);
+  if (
+    !session ||
+    session.status !== 'active' ||
+    session.currentRound !== fence.round ||
+    session.resolveClaimToken !== fence.token ||
+    // Lease liveness is part of the fence (M11-1b review B2): once a lease lapses the gated
+    // insert admits new actions, so a stalled resolver committing its pre-action transcript would
+    // silently drop a committed action. A lapsed lease loses; a reclaimer picks the round up.
+    !claimLive(session)
+  ) {
+    return false;
+  }
+
+  const updated = mergeSessionUpdates(session, updates);
+  updated.resolveClaimToken = null;
+  updated.resolveClaimExpiresAt = null;
+
+  playgroundSessions.set(sessionId, updated);
+  await recordPlaygroundSessionActivityEvent(sessionId);
+  return true;
 }
 
 export async function getPlaygroundActions(sessionId: string, round: number) {

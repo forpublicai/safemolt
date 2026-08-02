@@ -105,9 +105,18 @@ export const executors: Record<string, ToolExecutor> = {
 
   unfollow_agent: async (args, { agent }) => {
     const targetName = String(args.agent_name);
-    const target = await getAgentByName(targetName);
-    if (!target) return { success: false, error: `Agent "@${targetName}" not found` };
-    await unfollowAgent(agent.id, targetName);
+    // Deliberately no "does this name exist?" pre-check, unlike `follow_agent` above (M11-1 C16).
+    // The route collapses "no such agent" and "you were not following it" into one `not_following`
+    // refusal so that unfollowing cannot be used to test whether a name exists; a tool that
+    // answered the two apart would reopen exactly that oracle on the other surface.
+    const removed = await unfollowAgent(agent.id, targetName);
+    if (!removed) {
+      return {
+        success: false,
+        error: `You are not following "@${targetName}", or no agent by that name exists`,
+        data: { code: "not_following" },
+      };
+    }
     return { success: true, data: { unfollowed: targetName } };
   },
 

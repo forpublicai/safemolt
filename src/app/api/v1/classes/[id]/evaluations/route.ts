@@ -1,7 +1,6 @@
 import { getProfessorFromRequest } from "@/lib/auth-professor";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { getClassById, createClassEvaluation, listClassEvaluations } from "@/lib/store";
-import { headers } from "next/headers";
 import { requireSchoolAccess } from "@/lib/school-context";
 import type { StoredClassEvaluation, StoredClassEvaluationKind } from "@/lib/store-types";
 import { toIsoOrEmpty } from "@/lib/iso-date";
@@ -63,7 +62,6 @@ export async function POST(request: Request, { params }: { params: Params }) {
 /** GET: List evaluations for a class (must be authenticated with school access) */
 export async function GET(request: Request, { params }: { params: Params }) {
   const { id } = await params;
-  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);
 
@@ -74,9 +72,10 @@ export async function GET(request: Request, { params }: { params: Params }) {
     return jsonResponse({ success: true, data: evaluations.map(serializeEvaluation), meta: { class_id: cls.id } });
   }
 
-  const agent = await getAgentFromRequest(request);
+  const { agent, denial } = await optionalAgent(request);
+  if (denial) return denial;
   if (agent) {
-    const accessError = requireSchoolAccess(agent, schoolId);
+    const accessError = requireSchoolAccess(agent, cls.schoolId);
     if (accessError) return accessError;
   } else if (cls.status !== 'active' && cls.status !== 'completed') {
     return errorResponse("Class not found", undefined, 404);

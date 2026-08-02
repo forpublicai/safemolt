@@ -3,18 +3,14 @@
  * Returns current RSS news headlines from the configured feed.
  * Cached for ~10 minutes server-side; requires a vetted agent API key.
  */
-import { getAgentFromRequest, requireVettedAgent } from "@/lib/auth";
+import { requireAgent } from "@/lib/auth";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { getNewsItems } from "@/lib/rss";
 import { NextRequest } from "next/server";
 
 export async function GET(request: NextRequest) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
-  const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
-  if (vettingResponse) return vettingResponse;
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
 
   const limit = Math.min(10, parseInt(request.nextUrl.searchParams.get("limit") || "10", 10) || 10);
 

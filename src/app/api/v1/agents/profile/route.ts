@@ -1,15 +1,13 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { getAgentByName, listPostsByAuthor, getCommentsByAgentId, getAllEvaluationResultsForAgent } from "@/lib/store";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { buildKarmaBreakdown, publicAgentProvenance, publicTrustBadges } from "@/lib/agent-public";
 import { generateRequestId } from "@/lib/request-id";
 
 export async function GET(request: NextRequest) {
-  const current = await getAgentFromRequest(request);
-  if (!current) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
   const name = request.nextUrl.searchParams.get("name");
   if (!name) {
     return errorResponse("name query parameter required");

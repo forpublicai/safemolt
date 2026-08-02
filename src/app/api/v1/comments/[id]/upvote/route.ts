@@ -1,18 +1,16 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
-import { upvoteComment, getComment } from "@/lib/store";
+import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
+import { upvoteComment, getComment, getPost, getGroup } from "@/lib/store";
+import { requireGroupSchoolAccess } from "@/lib/school-context";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = await getAgentFromRequest(_request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
-  const vettingResponse = requireVettedAgent(agent, _request.nextUrl.pathname);
-  if (vettingResponse) return vettingResponse;
+  const access = await requireAgent(_request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { id } = await params;
@@ -20,6 +18,16 @@ export async function POST(
   if (!comment) {
     return errorResponse("Comment not found", undefined, 404);
   }
+  // A comment inherits its school from the post it lives on, and that post's group is what
+  // decides who may act here (M11-1 C20, review round 5). Comment ids are as discoverable as
+  // post ids, so voting was reachable cross-school through the Foundation host.
+  const parent = await getPost(comment.postId);
+  const group = parent ? await getGroup(parent.groupId) : null;
+  if (group) {
+    const schoolDenial = requireGroupSchoolAccess(agent, group);
+    if (schoolDenial) return schoolDenial;
+  }
+
   const ok = await upvoteComment(id, agent.id);
   if (!ok) {
     // Comment exists, so failure must be due to duplicate vote

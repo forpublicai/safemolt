@@ -143,6 +143,16 @@ export async function unlinkUserFromAgent(userId: string, agentId: string): Prom
 }
 
 export async function userOwnsAgent(userId: string, agentId: string): Promise<boolean> {
+  return ownsAgentSync(userId, agentId);
+}
+
+/**
+ * The synchronous form, for memory-store mutations that must re-derive ownership in the SAME
+ * synchronous section as their write (M11-1 C17, review round 2 B2) — an `await` between the
+ * check and the mutation is exactly the check-then-act window the db side closes with an
+ * `EXISTS` predicate.
+ */
+export function ownsAgentSync(userId: string, agentId: string): boolean {
   return links.get(userId)?.has(agentId) ?? false;
 }
 

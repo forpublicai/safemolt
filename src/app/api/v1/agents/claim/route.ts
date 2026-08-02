@@ -1,6 +1,5 @@
 import { auth } from "@/auth";
-import { getAgentByClaimToken, setAgentClaimed } from "@/lib/store";
-import { linkUserToAgent } from "@/lib/human-users";
+import { claimAgentForHumanUser, getAgentByClaimToken } from "@/lib/store";
 import { SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM } from "@/lib/agent-onboarding-copy";
 import { errorResponse, jsonResponse } from "@/lib/auth";
 import { safeClaimOwnerName } from "@/lib/user-privacy";
@@ -42,8 +41,14 @@ export async function POST(request: Request) {
       return errorResponse("This agent has already been claimed", undefined, 400);
     }
 
-    await setAgentClaimed(agent.id, owner);
-    await linkUserToAgent(humanUserId, agent.id, "owner");
+    // The lookup above is for the 404 and the friendly message; **this** is the decision. Claiming
+    // the agent and recording the human's ownership are one statement (M11-1 C6), so a second
+    // claimant racing this one loses outright rather than overwriting the owner, and a failure
+    // leaves the agent unclaimed and retryable instead of claimed-but-unowned.
+    const claimed = await claimAgentForHumanUser(claimId, humanUserId, owner);
+    if (!claimed) {
+      return errorResponse("This agent has already been claimed", undefined, 400);
+    }
 
     return jsonResponse({
       success: true,

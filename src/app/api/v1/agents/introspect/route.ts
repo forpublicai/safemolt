@@ -3,17 +3,16 @@
  * Same Bearer as /agents/me; intended for federation (AO validates via core).
  */
 
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { requireAgent, jsonResponse } from "@/lib/auth";
 import { deriveProvenance } from "@/lib/agent-home/provenance";
 import { readLoopStateSafely } from "@/lib/agent-loop/state";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
   const loopState = await readLoopStateSafely(agent.id);
   const loopEnabled: boolean | null = loopState ? loopState.enabled : null;

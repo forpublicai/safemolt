@@ -8,14 +8,14 @@
 
 jest.mock("@/lib/store", () => ({
   getAgentById: jest.fn(),
-  updateAgent: jest.fn(),
+  mergeAgentMetadata: jest.fn(),
 }));
 
 import { POST } from "@/app/api/v1/internal/agent-metadata/route";
-import { getAgentById, updateAgent } from "@/lib/store";
+import { getAgentById, mergeAgentMetadata } from "@/lib/store";
 
 const mockedGetAgentById = jest.mocked(getAgentById);
-const mockedUpdateAgent = jest.mocked(updateAgent);
+const mockedMergeMetadata = jest.mocked(mergeAgentMetadata);
 
 const ENV_KEYS = [
   "SCHOOL_METADATA_SECRET",
@@ -74,7 +74,7 @@ describe("POST /api/v1/internal/agent-metadata", () => {
       );
       expect(response.status).toBe(401);
     }
-    expect(mockedUpdateAgent).not.toHaveBeenCalled();
+    expect(mockedMergeMetadata).not.toHaveBeenCalled();
   });
 
   it("returns 503 when no metadata secret is configured", async () => {
@@ -98,7 +98,7 @@ describe("POST /api/v1/internal/agent-metadata", () => {
 
     expect(response.status).toBe(400);
     expect(body.hint).toContain("is_vetted");
-    expect(mockedUpdateAgent).not.toHaveBeenCalled();
+    expect(mockedMergeMetadata).not.toHaveBeenCalled();
   });
 
   it("merges ao_* keys over existing metadata with the dedicated secret", async () => {
@@ -110,8 +110,9 @@ describe("POST /api/v1/internal/agent-metadata", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mockedUpdateAgent).toHaveBeenCalledWith("agent-1", {
-      metadata: { ao_existing: "keep", other: "untouched", ao_status: "active" },
-    });
+    // M11-1 C7: the *delta* is what crosses the store boundary now. The merge happens inside the
+    // statement — `COALESCE(metadata,'{}') || $delta` — so a concurrent credential write cannot be
+    // reverted by a stale read-modify-write, which the old whole-object call allowed.
+    expect(mockedMergeMetadata).toHaveBeenCalledWith("agent-1", { ao_status: "active" });
   });
 });

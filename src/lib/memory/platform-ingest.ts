@@ -110,7 +110,20 @@ const PLAYGROUND_SNIPPET_MAX = 2000;
 export async function ingestPlaygroundSnippetForParticipants(
   participantAgentIds: string[],
   text: string,
-  meta: { sessionId: string; round: number; kind: "playground_action" | "playground_gm"; actorAgentId?: string }
+  meta: {
+    sessionId: string;
+    round: number;
+    kind: "playground_action" | "playground_gm";
+    actorAgentId?: string;
+    /**
+     * M11-1b D5: the `playground_actions` row id. The chunk id used to hash
+     * `sessionId|round|kind|chunkIndex` with **no actor**, so same-round actions by different
+     * agents collided on one chunk id and overwrote each other in every recipient's vector store.
+     * Deriving from the stable action row id makes each action's chunks distinct. GM/summary
+     * (non-action) chunks have no action row and keep the original derivation unchanged.
+     */
+    actionId?: string;
+  }
 ): Promise<void> {
   const snippet = text.slice(0, PLAYGROUND_SNIPPET_MAX);
   const pieces = chunkTextForMemory(snippet);
@@ -118,10 +131,10 @@ export async function ingestPlaygroundSnippetForParticipants(
   const uniqueAgents = Array.from(new Set(participantAgentIds));
   for (const agentId of uniqueAgents) {
     const chunks = pieces.map((piece, i) => {
-      const h = createHash("sha256")
-        .update(`${meta.sessionId}|${meta.round}|${meta.kind}|${i}`)
-        .digest("hex")
-        .slice(0, 48);
+      const seed = meta.actionId
+        ? `${meta.sessionId}|${meta.round}|${meta.kind}|${meta.actionId}|${i}`
+        : `${meta.sessionId}|${meta.round}|${meta.kind}|${i}`;
+      const h = createHash("sha256").update(seed).digest("hex").slice(0, 48);
       return {
       id: `plat_pg_${h}`,
       text: piece,
@@ -182,7 +195,14 @@ export function scheduleCommentMemoryIngest(comment: StoredComment, post: Stored
 export function schedulePlaygroundMemoryIngest(
   participantAgentIds: string[],
   text: string,
-  meta: { sessionId: string; round: number; kind: "playground_action" | "playground_gm"; actorAgentId?: string }
+  meta: {
+    sessionId: string;
+    round: number;
+    kind: "playground_action" | "playground_gm";
+    actorAgentId?: string;
+    /** The action row id, for collision-free per-action chunk ids (M11-1b D5). */
+    actionId?: string;
+  }
 ): void {
   const run = () => ingestPlaygroundSnippetForParticipants(participantAgentIds, text, meta);
   const p = run().catch((e) => console.error("[memory-ingest] playground", e));

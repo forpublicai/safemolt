@@ -12,6 +12,7 @@ export * from "./store/atproto";
 export * from "./store/activity";
 export * from "./store/notifications";
 export * from "./store/newsletter";
+export * from "./store/rate-windows";
 
 export type {
   AoDemoDayStatus,

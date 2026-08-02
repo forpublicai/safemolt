@@ -1,50 +1,17 @@
 import { NextRequest } from "next/server";
 import { subscribeNewsletter } from "@/lib/store";
 import { isEmailConfigured, sendNewsletterConfirmation } from "@/lib/email";
-
-const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-const RATE_LIMIT_MAX = 5;
-const ipCounts = new Map<string, { count: number; resetAt: number }>();
-
-function getClientIp(request: NextRequest): string {
-  return (
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip") ||
-    "unknown"
-  );
-}
+import {
+  consumeAddressWindow,
+  consumeEmailWindow,
+  newsletterEmailWindow,
+  newsletterIpWindow,
+} from "@/lib/public-rate-windows";
 
 // Forwarded headers are untrusted (see agents.md); never assemble URLs from them.
 function getBaseUrl(request: NextRequest): string {
   if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "");
   return request.nextUrl.origin;
-}
-
-function checkRateLimit(ip: string): { allowed: boolean; retryAfterSeconds?: number } {
-  const now = Date.now();
-  const entry = ipCounts.get(ip);
-  if (!entry) return { allowed: true };
-  if (now >= entry.resetAt) {
-    ipCounts.delete(ip);
-    return { allowed: true };
-  }
-  if (entry.count >= RATE_LIMIT_MAX) {
-    return {
-      allowed: false,
-      retryAfterSeconds: Math.ceil((entry.resetAt - now) / 1000),
-    };
-  }
-  return { allowed: true };
-}
-
-function recordRequest(ip: string): void {
-  const now = Date.now();
-  const entry = ipCounts.get(ip);
-  if (!entry) {
-    ipCounts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-    return;
-  }
-  entry.count += 1;
 }
 
 function isValidEmail(value: string): boolean {
@@ -57,20 +24,40 @@ function isValidEmail(value: string): boolean {
   return true;
 }
 
-export async function POST(request: NextRequest) {
-  const ip = getClientIp(request);
-  const limit = checkRateLimit(ip);
-  if (!limit.allowed) {
-    return Response.json(
-      {
-        success: false,
-        error: "Too many requests",
-        retry_after_seconds: limit.retryAfterSeconds,
-      },
-      { status: 429 }
-    );
-  }
+/**
+ * The email suppression window is consumed BEFORE the store write, so "at most one confirmation
+ * per address per window" holds across concurrent requests from different IP buckets. A denied
+ * window short-circuits without touching the row — the lifecycle CAS would refuse the same write
+ * anyway, and the caller sees the identical success shape either way.
+ */
+async function subscribeAndMaybeSend(
+  request: NextRequest,
+  normalizedEmail: string,
+  source: string | undefined
+): Promise<void> {
+  const emailWindow = await consumeEmailWindow(normalizedEmail, newsletterEmailWindow());
+  if (!emailWindow.allowed) return;
 
+  const outcome = await subscribeNewsletter(normalizedEmail, source ?? "homepage");
+  if (outcome.shouldSend && isEmailConfigured()) {
+    const sent = await sendNewsletterConfirmation(getBaseUrl(request), normalizedEmail, outcome.token);
+    if (!sent.ok) console.error("Newsletter confirmation email failed:", sent.error);
+  }
+}
+
+/**
+ * M11-1 C13a. Two durable windows and a state-branched store write:
+ *
+ * 1. IP window (trusted-address keyed, shared across instances) — the request limiter.
+ * 2. Email window (one per resend window) — the mail-suppression limiter, consumed BEFORE the
+ *    store write so "at most one confirmation per address per window" holds even across
+ *    concurrent requests from different IP buckets. A denied email window short-circuits to the
+ *    normal success shape: distinguishing it would be a subscriber-enumeration oracle, and the
+ *    store write it skips is one the lifecycle CAS would refuse anyway.
+ * 3. `subscribeNewsletter` decides confirmed-active (no-op) vs pending/unsubscribed
+ *    (rotate + send) inside its upsert and returns whether to send.
+ */
+export async function POST(request: NextRequest) {
   let body: { email?: string; source?: string };
   try {
     body = await request.json();
@@ -89,26 +76,27 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const source = typeof body?.source === "string" ? body.source.slice(0, 100) : undefined;
-  recordRequest(ip);
+  const ipWindow = await consumeAddressWindow(request, newsletterIpWindow());
+  if (!ipWindow.allowed) {
+    return Response.json(
+      {
+        success: false,
+        error: "Too many requests",
+        retry_after_seconds: ipWindow.retryAfterSeconds,
+      },
+      { status: 429 }
+    );
+  }
 
+  const source = typeof body?.source === "string" ? body.source.slice(0, 100) : undefined;
   const normalized = rawEmail.trim().toLowerCase();
 
   try {
-    const { token } = await subscribeNewsletter(normalized, source ?? "homepage");
-
-    if (isEmailConfigured()) {
-      const sent = await sendNewsletterConfirmation(getBaseUrl(request), normalized, token);
-      if (!sent.ok) console.error("Newsletter confirmation email failed:", sent.error);
-    }
-
+    await subscribeAndMaybeSend(request, normalized, source);
     const message = isEmailConfigured()
       ? "You're on the list. Check your email to confirm."
       : "You're on the list.";
-    return Response.json({
-      success: true,
-      message,
-    });
+    return Response.json({ success: true, message });
   } catch (err) {
     console.error("Newsletter subscribe error:", err);
     return Response.json(

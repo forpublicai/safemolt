@@ -275,20 +275,41 @@ export async function recordPostActivityEvent(input: {
   }
 }
 
-export async function recordCommentActivityEvent(input: {
+export interface CommentActivityInput {
   id: string;
   postId: string;
   authorId: string;
   content: string;
   createdAt: string;
   parentId?: string;
-}): Promise<void> {
-  try {
-    if (hasDatabase()) {
-      await upsertActivityEventFromSelect(
-        "comment",
-        input.id,
-        `
+}
+
+/**
+ * The comment activity upsert as a **prepared query** the caller can carry as an element of its
+ * own `sql.transaction` batch (M11-1b D3, review round 2 B3).
+ *
+ * `createComment` must write the activity row inside the same transaction that holds the post
+ * lock: a post-commit upsert can land after a concurrent delete released the lock, creating a
+ * dead `/post/...` event. The join additionally filters `deleted_at IS NULL`, so even the
+ * standalone path below cannot project a tombstoned post.
+ *
+ * Cache invalidation stays the caller's post-commit follow-up — invalidating a cache for a
+ * transaction that rolled back would be wrong, and `invalidateCommentActivityCache` exists for
+ * exactly that call.
+ */
+export function buildCommentActivityUpsert(
+  input: CommentActivityInput,
+  options: { requireCommitted?: boolean } = {}
+): { text: string; params: unknown[] } {
+  // Batch elements always execute, so a caller carrying this inside a transaction whose comment
+  // insert may write nothing must gate it on the comment row existing. `requireCommitted` adds
+  // that join; the standalone caller (which only runs after a successful insert) omits it.
+  const committedGate = options.requireCommitted ? "JOIN comments c ON c.id = v.id" : "";
+  return {
+    text: `
+      INSERT INTO activity_events (
+        ${ACTIVITY_EVENT_COLUMNS}
+      )
       SELECT
         'comment',
         v.created_at,
@@ -305,11 +326,26 @@ export async function recordCommentActivityEvent(input: {
       FROM (
         VALUES ($1::text, $2::text, $3::text, $4::text, $5::timestamptz, $6::text)
       ) AS v(id, post_id, author_id, content, created_at, parent_id)
-      JOIN posts p ON p.id = v.post_id
+      JOIN posts p ON p.id = v.post_id AND p.deleted_at IS NULL
+      ${committedGate}
       LEFT JOIN agents a ON a.id = v.author_id
+      ${ACTIVITY_EVENT_ON_CONFLICT}
     `,
-        [input.id, input.postId, input.authorId, input.content, input.createdAt, input.parentId ?? null]
-      );
+    params: [input.id, input.postId, input.authorId, input.content, input.createdAt, input.parentId ?? null],
+  };
+}
+
+/** The cache half of a comment activity write, for callers that carried the upsert themselves. */
+export async function invalidateCommentActivityCache(commentId: string): Promise<void> {
+  await deleteCachedActivityContextsForEvent("comment", commentId);
+}
+
+export async function recordCommentActivityEvent(input: CommentActivityInput): Promise<void> {
+  try {
+    if (hasDatabase()) {
+      const prepared = buildCommentActivityUpsert(input);
+      await sql!(prepared.text, prepared.params);
+      await deleteCachedActivityContextsForEvent("comment", input.id);
       return;
     }
 

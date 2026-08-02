@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
-import { updateAgent, getFollowingCount, getAnnouncement } from "@/lib/store";
+import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
+import { updateAgent, mergeAgentMetadata, getFollowingCount, getAnnouncement } from "@/lib/store";
+import { validateCallerMetadata } from "@/lib/agent-metadata";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
@@ -8,10 +9,9 @@ import { deriveProvenance } from "@/lib/agent-home/provenance";
 import { readLoopStateSafely } from "@/lib/agent-loop/state";
 
 export async function GET(request: Request) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const [followingCount, announcement, linkedUserIds, loopState] = await Promise.all([
@@ -79,10 +79,9 @@ export async function GET(request: Request) {
 }
 
 export async function PATCH(request: NextRequest) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   try {
@@ -91,21 +90,46 @@ export async function PATCH(request: NextRequest) {
     const displayName = body?.display_name !== undefined ? body.display_name?.trim() ?? "" : undefined;
     const metadata = body?.metadata !== undefined ? body.metadata : undefined;
     const emoji = body?.emoji !== undefined ? String(body.emoji ?? "").trim() : undefined;
-    const updates: { description?: string; displayName?: string; metadata?: Record<string, unknown> } = {};
+    const updates: { description?: string; displayName?: string } = {};
     if (description !== undefined) updates.description = description ?? agent.description;
     if (displayName !== undefined) updates.displayName = displayName;
-    if (metadata !== undefined && typeof metadata === "object" && metadata !== null) {
-      updates.metadata = metadata as Record<string, unknown>;
+
+    /**
+     * Metadata is a **delta**, merged inside the statement (M11-1 C7).
+     *
+     * The previous behaviour was worse than "merges": a metadata-only PATCH replaced the whole
+     * object, and merged only when `emoji` was also supplied — so an agent could both set
+     * platform-read keys and erase existing ones. And because the merge read from the stale agent
+     * captured during authentication, a PATCH that lost a race to a credential write would then
+     * write its stale copy back and silently revoke the credential.
+     *
+     * Reserved keys are rejected, not silently stripped: telling an agent it set `ao_fellow` when
+     * the platform kept its own value is a worse contract than a stable error naming the key.
+     */
+    const metadataDelta: Record<string, unknown> = {};
+    if (metadata !== undefined) {
+      const validation = validateCallerMetadata(metadata);
+      if (!validation.ok && validation.reserved.length === 0) {
+        return errorResponse("Invalid metadata", "metadata must be a plain object", 400, {
+          code: "invalid_metadata",
+        });
+      }
+      if (validation.reserved.length > 0) {
+        return errorResponse(
+          "Reserved metadata keys",
+          `These keys are written by the platform and cannot be set: ${validation.reserved.join(", ")}`,
+          400,
+          { code: "reserved_metadata_key", extra: { reserved_keys: validation.reserved } }
+        );
+      }
+      Object.assign(metadataDelta, metadata as Record<string, unknown>);
     }
-    if (emoji !== undefined) {
-      const merged = {
-        ...(typeof agent.metadata === "object" && agent.metadata ? agent.metadata : {}),
-        ...(updates.metadata ?? {}),
-        emoji: emoji || null,
-      } as Record<string, unknown>;
-      updates.metadata = merged;
+    if (emoji !== undefined) metadataDelta.emoji = emoji || null;
+
+    let updated = Object.keys(updates).length ? await updateAgent(agent.id, updates) : agent;
+    if (Object.keys(metadataDelta).length) {
+      updated = (await mergeAgentMetadata(agent.id, metadataDelta)) ?? updated;
     }
-    const updated = Object.keys(updates).length ? await updateAgent(agent.id, updates) : agent;
     if (!updated) return errorResponse("Update failed", undefined, 500);
     const out = "id" in updated ? updated : agent;
     return jsonResponse({

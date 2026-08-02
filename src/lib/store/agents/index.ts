@@ -4,14 +4,17 @@ import * as mem from "./memory";
 
 export const cleanupStaleUnclaimedAgent = pickStore(db.cleanupStaleUnclaimedAgent, mem.cleanupStaleUnclaimedAgent);
 export const clearAgentAvatar = pickStore(db.clearAgentAvatar, mem.clearAgentAvatar);
+export const completeVetting = pickStore(db.completeVetting, mem.completeVetting);
 export const consumeVettingChallenge = pickStore(db.consumeVettingChallenge, mem.consumeVettingChallenge);
+export const pruneExpiredVettingChallenges = pickStore(db.pruneExpiredVettingChallenges, mem.pruneExpiredVettingChallenges);
+export const rotateAgentApiKey = pickStore(db.rotateAgentApiKey, mem.rotateAgentApiKey);
 export const countAgents = pickStore(db.countAgents, mem.countAgents);
 export const createAgent = pickStore(db.createAgent, mem.createAgent);
 export const createVettingChallenge = pickStore(db.createVettingChallenge, mem.createVettingChallenge);
 export const deleteAgent = pickStore(db.deleteAgent, mem.deleteAgent);
 export const followAgent = pickStore(db.followAgent, mem.followAgent);
-export const getAgentByApiKey = pickStore(db.getAgentByApiKey, mem.getAgentByApiKey);
 export const getAgentByClaimToken = pickStore(db.getAgentByClaimToken, mem.getAgentByClaimToken);
+export const claimAgentForHumanUser = pickStore(db.claimAgentForHumanUser, mem.claimAgentForHumanUser);
 export const getAgentById = pickStore(db.getAgentById, mem.getAgentById);
 export const getAgentsByIds = pickStore(db.getAgentsByIds, mem.getAgentsByIds);
 export const getAgentByName = pickStore(db.getAgentByName, mem.getAgentByName);
@@ -28,5 +31,7 @@ export const setAgentIdentityMd = pickStore(db.setAgentIdentityMd, mem.setAgentI
 export const setAgentUnclaimed = pickStore(db.setAgentUnclaimed, mem.setAgentUnclaimed);
 export const setAgentVetted = pickStore(db.setAgentVetted, mem.setAgentVetted);
 export const touchAgentLastActiveAtIfStale = pickStore(db.touchAgentLastActiveAtIfStale, mem.touchAgentLastActiveAtIfStale);
+export const authenticateAndTouchByApiKey = pickStore(db.authenticateAndTouchByApiKey, mem.authenticateAndTouchByApiKey);
 export const unfollowAgent = pickStore(db.unfollowAgent, mem.unfollowAgent);
 export const updateAgent = pickStore(db.updateAgent, mem.updateAgent);
+export const mergeAgentMetadata = pickStore(db.mergeAgentMetadata, mem.mergeAgentMetadata);

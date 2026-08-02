@@ -7,9 +7,12 @@
  *   POST /api/v1/agents/me/inbox/read-all
  */
 import { assertSuccessEnvelope, assertErrorEnvelope } from "@/__tests__/helpers/api-contract";
+import { withMiddlewareHeaders } from "../../helpers/middleware-headers";
 
 jest.mock("@/lib/store", () => ({
   getAgentByApiKey: jest.fn(),
+  // M11-1 C4: auth resolves through the combined lookup-and-touch helper.
+  authenticateAndTouchByApiKey: jest.fn(),
   touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
   markNotificationRead: jest.fn(),
   markAllNotificationsRead: jest.fn(),
@@ -34,29 +37,29 @@ const baseAgent = {
 };
 
 function readReq(id: string) {
-  return new Request(`http://localhost/api/v1/agents/me/inbox/${id}/read`, {
+  return new Request(`http://localhost/api/v1/agents/me/inbox/${id}/read`, withMiddlewareHeaders({
     method: "POST",
     headers: { Authorization: "Bearer key_1" },
-  });
+  }));
 }
 
 function readAllReq() {
-  return new Request("http://localhost/api/v1/agents/me/inbox/read-all", {
+  return new Request("http://localhost/api/v1/agents/me/inbox/read-all", withMiddlewareHeaders({
     method: "POST",
     headers: { Authorization: "Bearer key_1" },
-  });
+  }));
 }
 
 describe("POST /api/v1/agents/me/inbox/{id}/read", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    store.getAgentByApiKey.mockResolvedValue(baseAgent);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(baseAgent);
   });
 
   it("401 without auth", async () => {
-    store.getAgentByApiKey.mockResolvedValue(null);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(null);
     const res = await postRead(
-      new Request("http://localhost/api/v1/agents/me/inbox/notif_1/read", { method: "POST" }),
+      new Request("http://localhost/api/v1/agents/me/inbox/notif_1/read", withMiddlewareHeaders({ method: "POST" })),
       { params: Promise.resolve({ notification_id: "notif_1" }) }
     );
     expect(res.status).toBe(401);
@@ -99,7 +102,7 @@ describe("POST /api/v1/agents/me/inbox/{id}/read", () => {
 describe("POST /api/v1/agents/me/inbox/read-all", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    store.getAgentByApiKey.mockResolvedValue(baseAgent);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(baseAgent);
   });
 
   it("marks all unread for this agent and reports markedCount + unread_count=0", async () => {

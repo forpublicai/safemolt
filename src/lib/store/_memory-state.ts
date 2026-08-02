@@ -1,6 +1,6 @@
 import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredActivityContext, StoredActivityFeedItem, StoredActivityFeedOptions, StoredNotification, AtprotoIdentity, AtprotoBlob, StoredSchool, StoredSchoolProfessor } from "@/lib/store-types";
-import type { CertificationJobStatus, TranscriptEntry } from '@/lib/evaluations/types';
-import type { PlaygroundSession, SessionAction } from '@/lib/playground/types';
+import type { CertificationJob, EvaluationRegistration } from '@/lib/evaluations/types';
+import type { AgentMemory, PlaygroundSession, SessionAction } from '@/lib/playground/types';
 
 /** Shared in-memory state and private helpers for domain memory stores. */
 
@@ -27,6 +27,8 @@ export const globalStore = globalThis as typeof globalThis & {
   __safemolt_activityEvents?: Map<string, StoredActivityFeedItem>;  // keyed by "kind:entityId"
   __safemolt_notifications?: Map<string, StoredNotification>;
   __safemolt_newsletterSubscribers?: Map<string, NewsletterSubscriberRow>;  // keyed by lowercase email
+  __safemolt_rateWindows?: Map<string, RateWindowEntry>;  // keyed by "key" (window alignment inside the entry)
+  __safemolt_playgroundAgentMemories?: Map<string, AgentMemory>;  // keyed by "agentId:sessionId" (M11-1b D5)
 };
 
 export interface NewsletterSubscriberRow {
@@ -37,6 +39,12 @@ export interface NewsletterSubscriberRow {
   confirmationToken: string;
   confirmedAt: string | null;
   unsubscribedAt: string | null;
+  confirmationSentAt: string | null;
+}
+
+export interface RateWindowEntry {
+  windowStart: number;
+  count: number;
 }
 
 export const agents = globalStore.__safemolt_agents ??= new Map<string, StoredAgent>();
@@ -78,25 +86,62 @@ export const activityContexts = globalStore.__safemolt_activityContexts ??= new 
 export const activityEvents = globalStore.__safemolt_activityEvents ??= new Map<string, StoredActivityFeedItem>();
 export const notifications = globalStore.__safemolt_notifications ??= new Map<string, StoredNotification>();
 export const newsletterSubscribers = globalStore.__safemolt_newsletterSubscribers ??= new Map<string, NewsletterSubscriberRow>();
+export const rateWindows = globalStore.__safemolt_rateWindows ??= new Map<string, RateWindowEntry>();
+export const playgroundAgentMemories = globalStore.__safemolt_playgroundAgentMemories ??= new Map<string, AgentMemory>();
 
-export const POST_COOLDOWN_MS = 30 * 1000;
+// Imported and re-exported from the one definition both stores share, so a window cannot be raised
+// in db mode and left alone in memory mode (M11-1 C16). Imported rather than only re-exported
+// because the claim helpers below evaluate them.
+import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY, POST_COOLDOWN_MS } from "./rate-limit-windows";
 
-// 30 seconds (reduced from 30 min for testing)
-export const COMMENT_COOLDOWN_MS = 20 * 1000;
+export { POST_COOLDOWN_MS, COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY };
 
-export const MAX_COMMENTS_PER_DAY = 50;
-
+/**
+ * Public entity id. Not a credential (M11-1 C17) — predictability costs nothing here, and these
+ * values appear in public payloads anyway. Credentials come from `@/lib/credentials`.
+ */
 export function generateId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
-}
-
-export function generateApiKey(): string {
-  return `safemolt_${Math.random().toString(36).slice(2, 15)}${Math.random().toString(36).slice(2, 15)}`;
 }
 
 export function touchAgentActive(agentId: string): void {
   const a = agents.get(agentId);
   if (a) agents.set(agentId, { ...a, lastActiveAt: new Date().toISOString() });
+}
+
+// ==================== Rate-limit claims (M11-1 C16) ====================
+//
+// The memory-mode counterparts of the db store's gating statements. Both are **synchronous**, and
+// that is the whole guarantee: every `await` yields the event loop, so a limit read in one call and
+// stamped in another reproduces exactly the race the db store had — in the mode Jest exercises.
+// Read and write here happen in one uninterruptible section, so concurrent callers cannot both pass.
+//
+// Each returns whether the caller may proceed, and charges the allowance only when it says yes: a
+// refusal that re-stamped the window would extend the caller's own cooldown on every retry.
+
+/** Claim one post allowance, or return false if the cooldown refuses it. */
+export function claimPostAllowance(agentId: string): boolean {
+  const now = Date.now();
+  const last = lastPostAt.get(agentId);
+  if (last !== undefined && now - last < POST_COOLDOWN_MS) return false;
+  lastPostAt.set(agentId, now);
+  return true;
+}
+
+/** Claim one comment allowance against both the cooldown and the daily cap, or return false. */
+export function claimCommentAllowance(agentId: string): boolean {
+  const now = Date.now();
+  const today = new Date().toISOString().slice(0, 10);
+  const last = lastCommentAt.get(agentId);
+  const previous = commentCountToday.get(agentId);
+  const usedToday = previous?.date === today ? previous.count : 0;
+
+  if (last !== undefined && now - last < COMMENT_COOLDOWN_MS) return false;
+  if (usedToday >= MAX_COMMENTS_PER_DAY) return false;
+
+  lastCommentAt.set(agentId, now);
+  commentCountToday.set(agentId, { date: today, count: usedToday + 1 });
+  return true;
 }
 
 // ==================== Vote Tracking Functions ====================
@@ -170,15 +215,7 @@ export function generateChallengeId(): string {
 
 // ==================== Evaluation Functions ====================
 
-export const evaluationRegistrations = new Map<string, {
-  id: string;
-  agentId: string;
-  evaluationId: string;
-  registeredAt: string;
-  status: 'registered' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
-  startedAt?: string;
-  completedAt?: string;
-}>();
+export const evaluationRegistrations = new Map<string, EvaluationRegistration>();
 
 export const evaluationResults = new Map<string, {
   id: string;
@@ -229,23 +266,9 @@ export function generateEvaluationId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
-export const certificationJobs = new Map<string, {
-  id: string;
-  registrationId: string;
-  agentId: string;
-  evaluationId: string;
-  nonce: string;
-  nonceExpiresAt: string;
-  transcript?: TranscriptEntry[];
-  status: CertificationJobStatus;
-  submittedAt?: string;
-  judgeStartedAt?: string;
-  judgeCompletedAt?: string;
-  judgeModel?: string;
-  judgeResponse?: Record<string, unknown>;
-  errorMessage?: string;
-  createdAt: string;
-}>();
+// The shared CertificationJob type, not a duplicated inline shape — M11-1 C22 added the judging
+// lease fields and the memory store must carry them with db-identical semantics.
+export const certificationJobs = new Map<string, CertificationJob>();
 
 // Extend globalThis for HMR persistence
 export const pgGlobalStore = globalThis as typeof globalThis & {

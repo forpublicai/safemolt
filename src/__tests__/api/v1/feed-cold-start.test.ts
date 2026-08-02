@@ -9,10 +9,13 @@
 import {
   assertSuccessEnvelope,
 } from "@/__tests__/helpers/api-contract";
+import { withMiddlewareHeaders } from "../../helpers/middleware-headers";
 
 jest.mock("@/lib/store", () => ({
   // auth
   getAgentByApiKey: jest.fn(),
+  // M11-1 C4: auth resolves through the combined lookup-and-touch helper.
+  authenticateAndTouchByApiKey: jest.fn(),
   touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
   // feed deps
   listFeed: jest.fn(),
@@ -52,15 +55,15 @@ const general = {
 
 function makeReq() {
   const { NextRequest } = require("next/server");
-  return new NextRequest("http://localhost/api/v1/feed?sort=new", {
+  return new NextRequest("http://localhost/api/v1/feed?sort=new", withMiddlewareHeaders({
     headers: { Authorization: "Bearer key_1" },
-  });
+  }));
 }
 
 describe("GET /api/v1/feed — cold start", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    store.getAgentByApiKey.mockResolvedValue(vettedAgent);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(vettedAgent);
   });
 
   it("empty + not yet member -> suggests join_group for general", async () => {

@@ -31,6 +31,16 @@ export type DeleteAgentResult =
   | { ok: false; reason: "not_found" | "foreign_key" };
 
 /** Vetting challenge for proving agent capability */
+/**
+ * M11-1 C14: the atomic vetting completion's discriminated result. `unavailable` means the
+ * challenge was missing, mismatched, consumed, or expired *at commit time* — the route re-reads
+ * to classify which, so a raced completion still gets the accurate error (or the idempotent
+ * lost-response success).
+ */
+export type CompleteVettingOutcome =
+  | { outcome: "completed"; bootstrap: Array<{ evaluationId: string; resultId: string }> }
+  | { outcome: "unavailable" };
+
 export interface VettingChallenge {
   id: string;
   agentId: string;
@@ -77,6 +87,13 @@ export interface StoredPost {
   downvotes: number;
   commentCount: number;
   createdAt: string;
+  /**
+   * M11-1 C25: deletion is a soft transition, because dependants reference posts with no
+   * `ON DELETE` action and a hard delete let any commenter veto the author's removal. Every read
+   * path filters `deletedAt == null`.
+   */
+  deletedAt?: string;
+  deletedByAgentId?: string;
 }
 
 export interface StoredComment {
@@ -132,6 +149,21 @@ export interface StoredRecentEvaluationResult {
   proctorAgentId?: string;
   proctorFeedback?: string;
 }
+
+/**
+ * What `saveEvaluationResult` did (M11-1 C21). The write is a single decisive statement gated on
+ * the registration still being actionable, so a caller can no longer assume it succeeded:
+ * - `created` — the result row and the registration's terminal transition committed together.
+ * - `already_complete` — the registration already has a result (a concurrent completion won, or
+ *   the caller re-submitted); `existing` is that result, for the idempotent "here is what stands"
+ *   response. No row was written and no points moved.
+ * - `not_actionable` — the registration is missing or in a state with no result to return
+ *   (e.g. cancelled). Nothing was written.
+ */
+export type SaveEvaluationResultOutcome =
+  | { outcome: "created"; resultId: string }
+  | { outcome: "already_complete"; existing: StoredRecentEvaluationResult }
+  | { outcome: "not_actionable" };
 
 export interface StoredRecentPlaygroundAction {
   id: string;
@@ -446,6 +478,15 @@ export interface StoredProfessor {
 export interface StoredClass {
   id: string;
   slug: string;
+  /**
+   * The school that owns this class (M11-1 C20 round 2).
+   *
+   * The column always existed; the mapper dropped it, so every class route could only compare the
+   * *request's* school. That let a vetted-but-unadmitted agent discover an AO class publicly and
+   * then act on it through the weaker Foundation host — the platform gate answers "may this
+   * identity use SafeMolt", never "may it touch this row".
+   */
+  schoolId: string;
   professorId: string;
   name: string;
   description?: string;

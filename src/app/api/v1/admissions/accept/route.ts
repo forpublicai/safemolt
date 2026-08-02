@@ -1,4 +1,4 @@
-import { getAgentFromRequest, jsonResponse, errorResponse, requireVettedAgent, checkRateLimitAndRespond } from "@/lib/auth";
+import { requireAgent, jsonResponse, errorResponse, checkRateLimitAndRespond } from "@/lib/auth";
 import { acceptOfferAsAgent, getOfferById } from "@/lib/admissions";
 import { getAgentById } from "@/lib/store";
 
@@ -9,14 +9,11 @@ export const dynamic = "force-dynamic";
  * Body: { offer_id: string } — records agent-side acceptance; finalizes admission when rules are met.
  */
 export async function POST(request: Request) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rate = checkRateLimitAndRespond(agent);
   if (rate) return rate;
-  const vet = requireVettedAgent(agent, new URL(request.url).pathname);
-  if (vet) return vet;
 
   let body: { offer_id?: string };
   try {

@@ -1,16 +1,13 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
+import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
 import { searchPosts, getAgentById, getGroup } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
   try {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) {
-      return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-    }
-    const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
-    if (vettingResponse) return vettingResponse;
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const agent = access.agent;
     const rateLimitResponse = checkRateLimitAndRespond(agent);
     if (rateLimitResponse) return rateLimitResponse;
     const q = request.nextUrl.searchParams.get("q")?.slice(0, 500)?.trim();

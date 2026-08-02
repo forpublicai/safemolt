@@ -1,18 +1,15 @@
-import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
+import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
 import { createPost, listPosts, getGroup, getAgentById, checkPostRateLimit, isGroupMember } from "@/lib/store";
-import { jsonResponse, errorResponse } from "@/lib/auth";
+import { requireGroupSchoolAccess } from "@/lib/school-context";
 import { headers } from "next/headers";
 import { NextRequest } from "next/server";
 import { schedulePostMemoryIngest } from "@/lib/memory/platform-ingest";
 
 export async function GET(request: NextRequest) {
   try {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) {
-      return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-    }
-    const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
-    if (vettingResponse) return vettingResponse;
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const agent = access.agent;
     const rateLimitResponse = checkRateLimitAndRespond(agent);
     if (rateLimitResponse) return rateLimitResponse;
     const group = request.nextUrl.searchParams.get("group") ?? undefined;
@@ -45,52 +42,65 @@ export async function GET(request: NextRequest) {
   }
 }
 
+/**
+ * The 429 for a post the cooldown refused.
+ *
+ * Built from a fresh read, because only this checker computes `retry_after_minutes` — which is why
+ * the store's null needs no reason code of its own: the cooldown is the only thing that can refuse
+ * there (M11-1 C16).
+ */
+async function postCooldownRefusal(agentId: string): Promise<Response> {
+  const rate = await checkPostRateLimit(agentId);
+  return errorResponse("Post cooldown", "Please wait before creating another post.", 429, {
+    code: "rate_limited",
+    extra: { retry_after_minutes: rate.retryAfterMinutes },
+  });
+}
+
+/** The submitted fields, trimmed, or null when the two required ones are missing. */
+function parsePostBody(raw: unknown): { groupName: string; title: string; content?: string; url?: string } | null {
+  const body = raw as { group?: string; title?: string; content?: string; url?: string } | null;
+  const groupName = body?.group?.trim();
+  const title = body?.title?.trim();
+  if (!groupName || !title) return null;
+  return { groupName, title, content: body?.content?.trim() || undefined, url: body?.url?.trim() || undefined };
+}
+
 export async function POST(request: NextRequest) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
-  const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
-  if (vettingResponse) return vettingResponse;
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   try {
-    const body = await request.json();
-    const groupName = body?.group?.trim();
-    const title = body?.title?.trim();
-    const content = body?.content?.trim();
-    const url = body?.url?.trim();
-    if (!groupName || !title) {
+    const fields = parsePostBody(await request.json());
+    if (!fields) {
       return errorResponse("group and title are required");
     }
-    const g = await getGroup(groupName);
+    const g = await getGroup(fields.groupName);
     if (!g) {
       return errorResponse("Group not found", "Create it first or use an existing group", 404);
     }
-    
-    const isMember = await isGroupMember(agent.id, g.id);
-    
-    if (!isMember) {
+
+    // The school that owns the group decides who may post in it, before anything else spends the
+    // caller's budget (M11-1 C20, review round 4). Inline rather than behind a helper: the sibling
+    // comments route does it inline too, and a gate hidden in a helper is one the structural
+    // enumeration in `group-school-gate.test.ts` cannot see.
+    const schoolDenial = requireGroupSchoolAccess(agent, g);
+    if (schoolDenial) return schoolDenial;
+
+    if (!(await isGroupMember(agent.id, g.id))) {
       return errorResponse(
-        "Forbidden", 
-        `You must be a member of ${g.type === 'house' ? 'this house' : 'this group'} to post in it. Join first.`, 
+        "Forbidden",
+        `You must be a member of ${g.type === "house" ? "this house" : "this group"} to post in it. Join first.`,
         403
       );
     }
-    
-    const rate = await checkPostRateLimit(agent.id);
-    if (!rate.allowed) {
-      return errorResponse(
-        "Post cooldown",
-        "Please wait before creating another post.",
-        429,
-        {
-          code: "rate_limited",
-          extra: { retry_after_minutes: rate.retryAfterMinutes },
-        }
-      );
-    }
-    const post = await createPost(agent.id, g.id, title, content || undefined, url || undefined);
+
+    // No cooldown pre-check: the claim inside the insert is authoritative (M11-1 C16), so asking
+    // first only costs an extra query on every success and answers nothing the null does not.
+    const post = await createPost(agent.id, g.id, fields.title, fields.content, fields.url);
+    if (!post) return postCooldownRefusal(agent.id);
     schedulePostMemoryIngest(post);
     return jsonResponse({
       success: true,

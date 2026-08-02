@@ -1,104 +1,93 @@
 import { NextRequest } from "next/server";
-import { headers } from "next/headers";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { getEvaluation } from "@/lib/evaluations/loader";
-import {
-  getEvaluationRegistrationById,
-  hasEvaluationResultForRegistration,
-  saveEvaluationResult,
-  getSessionByRegistrationId,
-  endSession,
-} from "@/lib/store";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { authorizeProctorSubmission, evaluationAuthzResponse } from "@/lib/evaluation-authz";
+import { saveEvaluationResult, endSession, getEvaluationResultForRegistration } from "@/lib/store";
+import { isReplayableDenial, existingResultBody, registrationNotActionableResponse } from "@/lib/evaluations/result-replay";
 import { getExecutor } from "@/lib/evaluations/executor-registry";
+import type { StoredRecentEvaluationResult } from "@/lib/store-types";
+
+/** The shared success shape plus the proctor attribution this surface always carries. */
+function proctorResultBody(existing: StoredRecentEvaluationResult) {
+  return { ...existingResultBody(existing), proctor_agent_id: existing.proctorAgentId };
+}
+
+/**
+ * C21 idempotency: the proctor who already submitted this registration gets the standing result
+ * back rather than a rejection. Strictly the *recorded* proctor — any other caller keeps the
+ * denial, so this discloses nothing authorization would refuse.
+ */
+async function idempotentReplay(proctorId: string, registrationId: string, denialCode: string): Promise<Response | null> {
+  if (!isReplayableDenial(denialCode)) return null;
+  const existing = await getEvaluationResultForRegistration(registrationId);
+  if (!existing || existing.proctorAgentId !== proctorId) return null;
+  return jsonResponse({ success: true, result: proctorResultBody(existing) });
+}
 
 /**
  * POST /api/v1/evaluations/{id}/proctor/submit
  * Proctor submits pass/fail and optional feedback for a candidate's registration.
  * Auth: proctor API key. Proctor must not be the candidate.
  */
+interface ProctorSubmitBody {
+  registration_id?: string;
+  passed?: boolean;
+  proctor_feedback?: string;
+}
+
+/** A parsed body naming its registration, or the 400 that explains what was missing. */
+async function parseSubmitBody(
+  request: NextRequest
+): Promise<{ body: ProctorSubmitBody; registrationId: string } | Response> {
+  let body: ProctorSubmitBody;
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse("Invalid body", "JSON body required", 400);
+  }
+
+  const registrationId = body.registration_id;
+  if (!registrationId || typeof registrationId !== "string") {
+    return errorResponse("Missing registration_id", "Body must include registration_id (string)", 400);
+  }
+  return { body, registrationId };
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const proctor = await getAgentFromRequest(request);
-    if (!proctor) {
-      return errorResponse("Unauthorized", "Provide a valid API key", 401);
-    }
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const proctor = access.agent;
 
     const { id: evaluationId } = await params;
-    const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
-    const evaluation = getEvaluation(evaluationId, schoolId);
-    if (!evaluation) {
-      return errorResponse("Evaluation not found", undefined, 404);
-    }
 
-    if (evaluation.type !== "proctored") {
-      return errorResponse(
-        "Not proctored",
-        "This evaluation does not use proctoring",
-        400
-      );
-    }
+    const parsed = await parseSubmitBody(request);
+    if (parsed instanceof Response) return parsed;
+    const { body, registrationId } = parsed;
 
-    let body: { registration_id?: string; passed?: boolean; proctor_feedback?: string };
-    try {
-      body = await request.json();
-    } catch {
-      return errorResponse("Invalid body", "JSON body required", 400);
+    // **The check this route never made**: that the caller is the proctor who *claimed* this
+    // registration. Everything it did check — registration, evaluation, status, "not the candidate"
+    // — is satisfied by any authenticated agent, so any authenticated agent could submit another
+    // candidate's proctored result. Authorization also now runs before `getExecutor` and before the
+    // handler, which the pre-C2 order did not: a rejected caller still triggered executor work.
+    const authorized = await authorizeProctorSubmission({
+      agent: proctor,
+      registrationId,
+      expected: { evaluationId },
+    });
+    if (!authorized.ok) {
+      const replay = await idempotentReplay(proctor.id, registrationId, authorized.denial.code);
+      if (replay) return replay;
+      return evaluationAuthzResponse(authorized.denial);
     }
-
-    const registrationId = body.registration_id;
-    if (!registrationId || typeof registrationId !== "string") {
-      return errorResponse(
-        "Missing registration_id",
-        "Body must include registration_id (string)",
-        400
-      );
-    }
-
-    const registration = await getEvaluationRegistrationById(registrationId);
-    if (!registration) {
-      return errorResponse("Registration not found", undefined, 404);
-    }
-
-    if (registration.evaluationId !== evaluationId) {
-      return errorResponse(
-        "Wrong evaluation",
-        "Registration does not belong to this evaluation",
-        400
-      );
-    }
-
-    if (registration.status !== "in_progress" && registration.status !== "registered") {
-      return errorResponse(
-        "Invalid status",
-        `Registration status is ${registration.status}; must be in_progress or registered`,
-        400
-      );
-    }
-
-    if (proctor.id === registration.agentId) {
-      return errorResponse(
-        "Forbidden",
-        "Proctor cannot submit a result for their own registration",
-        403
-      );
-    }
-
-    const alreadyHasResult = await hasEvaluationResultForRegistration(registrationId);
-    if (alreadyHasResult) {
-      return errorResponse(
-        "Already completed",
-        "A result has already been submitted for this registration",
-        400
-      );
-    }
+    const { registration, definition: evaluation, sessionId } = authorized.value;
 
     const handler = getExecutor(evaluation.executable.handler);
     const result = await handler({
       agentId: registration.agentId,
-      evaluationId,
+      evaluationId: registration.evaluationId,
       registrationId,
       input: body,
       config: evaluation.config,
@@ -108,10 +97,12 @@ export async function POST(
       return errorResponse("Validation failed", result.error, 400);
     }
 
-    const resultId = await saveEvaluationResult(
+    // One gated statement (M11-1 C21): the loser of a concurrent completion writes nothing and
+    // gets the winner's result back.
+    const saved = await saveEvaluationResult(
       registrationId,
       registration.agentId,
-      evaluationId,
+      registration.evaluationId,
       result.passed,
       result.score,
       result.maxScore,
@@ -120,15 +111,19 @@ export async function POST(
       typeof body.proctor_feedback === "string" ? body.proctor_feedback : undefined
     );
 
-    const session = await getSessionByRegistrationId(registrationId);
-    if (session && session.kind === "proctored") {
-      await endSession(session.id);
+    if (saved.outcome === "already_complete") {
+      return jsonResponse({ success: true, result: proctorResultBody(saved.existing) });
     }
+    if (saved.outcome === "not_actionable") {
+      return registrationNotActionableResponse();
+    }
+
+    await endSession(sessionId);
 
     return jsonResponse({
       success: true,
       result: {
-        id: resultId,
+        id: saved.resultId,
         passed: result.passed,
         score: result.score,
         max_score: result.maxScore,

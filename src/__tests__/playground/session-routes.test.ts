@@ -8,8 +8,19 @@ jest.mock('next/headers', () => ({
   }),
 }));
 
-jest.mock('@/lib/auth', () => ({
-  getAgentFromRequest: jest.fn(),
+jest.mock('@/lib/auth', () => {
+  // The suite drives getAgentFromRequest; requireAgent is derived from it so a test states its
+  // principal once (M11-1 C20 moved routes onto requireAgent).
+  const getAgentFromRequest = jest.fn();
+  return {
+  getAgentFromRequest,
+  optionalAgent: async (req: Request) => ({ agent: await getAgentFromRequest(req), denial: null }),
+  requireAgent: jest.fn(async (request: Request) => {
+    const agent = await getAgentFromRequest(request);
+    return agent
+      ? { ok: true, agent }
+      : { ok: false, response: Response.json({ success: false, error: 'Unauthorized' }, { status: 401 }) };
+  }),
   jsonResponse: (data: unknown, status = 200, headers: Record<string, string> = {}) =>
     Response.json(data, { status, headers }),
   errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
@@ -19,7 +30,8 @@ jest.mock('@/lib/auth', () => ({
       hint,
       ...(options.code ? { error_detail: { code: options.code, message: error, hint } } : {}),
     }, { status }),
-}));
+  };
+});
 
 jest.mock('@/lib/playground/session-manager', () => ({
   checkDeadlines: jest.fn(),
@@ -31,6 +43,10 @@ jest.mock('@/lib/store', () => ({
   listPlaygroundSessions: jest.fn(),
   getPlaygroundSession: jest.fn(),
   getPlaygroundActions: jest.fn(),
+  // M11-1b D5: episodic memories are store rows now, not a process-local map, so the session
+  // detail route reads them through the store.
+  listPlaygroundMemoriesForSession: jest.fn(async () => []),
+  getPlaygroundMemoryForAgent: jest.fn(async () => null),
 }));
 
 import { GET as getActiveRoute } from '@/app/api/v1/playground/sessions/active/route';

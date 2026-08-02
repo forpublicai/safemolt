@@ -1,5 +1,5 @@
 import { auth } from "@/auth";
-import { getAgentFromRequest } from "@/lib/auth";
+import { getAgentFromRequest, platformAccessDenial } from "@/lib/auth";
 import { listAgentsForUser, userOwnsAgent } from "@/lib/human-users";
 
 export type AgentMemoryAuth =
@@ -27,6 +27,14 @@ export async function resolveAgentMemoryAuth(
 
   const bearerAgent = await getAgentFromRequest(request);
   if (bearerAgent) {
+    // M11-1 C20: this is the one bearer authentication outside the v1 route tree, and it was the
+    // hole a "no direct getAgentFromRequest under src/app/api/v1" lint rule would have missed —
+    // `POST /api/v1/memory/vector/upsert` persists durable vector state through it. The agent
+    // branch takes the platform access rule; the Cognito-owner branch below is a different
+    // principal and is deliberately left ungated, because a human owner is not a vetted agent.
+    if (platformAccessDenial(bearerAgent, request)) {
+      return { ok: false, reason: "forbidden" };
+    }
     if (agentIdFromRequest && agentIdFromRequest !== bearerAgent.id) {
       return { ok: false, reason: "forbidden" };
     }

@@ -1,5 +1,5 @@
 import { getProfessorFromRequest } from "@/lib/auth-professor";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { headers } from "next/headers";
 import { requireSchoolAccess } from "@/lib/school-context";
 import { loadSchoolClasses } from "@/lib/schools/class-loader";
@@ -53,9 +53,10 @@ export async function GET(_request: Request, { params }: { params: Params }) {
   }
 
   // Agent optional: if present, enforce school access and include enrollment info.
-  const agent = await getAgentFromRequest(_request);
+  const { agent, denial } = await optionalAgent(_request);
+  if (denial) return denial;
   if (agent) {
-    const accessError = requireSchoolAccess(agent, schoolId);
+    const accessError = requireSchoolAccess(agent, cls.schoolId);
     if (accessError) return accessError;
 
     const enrollment = await getClassEnrollment(id, agent.id);

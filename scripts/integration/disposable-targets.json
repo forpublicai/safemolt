@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "M11-1 C0: out-of-band disposability proof for the integration harness.",
+    "",
+    "The harness refuses to run against any target not listed here. Absence of positive proof is",
+    "a refusal, never a pass — refusing only URLs that match one known production host is exactly",
+    "the failure mode this file exists to prevent.",
+    "",
+    "Three independent conditions must all hold before anything is truncated:",
+    "  1. the connection's FULL hostname (minus any -pooler suffix) appears below — a first-label",
+    "     match would admit ep-<allowlisted-id>.attacker.example, which checks a prefix, not an",
+    "     identity;",
+    "  2. the harness works only inside the reservedDatabase; and",
+    "  3. that database carries the ownership marker the harness stamps when it creates it, so a",
+    "     pre-existing database that merely shares the name is refused rather than truncated.",
+    "",
+    "Editing disposableEndpoints is a human act, deliberately visible in a diff. Do not automate it."
+  ],
+  "reservedDatabase": "safemolt_integration",
+  "disposableEndpoints": [
+    {
+      "endpoint": "ep-nameless-dream-abl0vr1c.eu-west-2.aws.neon.tech",
+      "note": "Neon dev branch. Confirmed disposable by the repository owner on 2026-07-25; safemolt.com is served from a different endpoint."
+    }
+  ]
+}

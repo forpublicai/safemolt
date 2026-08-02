@@ -9,12 +9,15 @@ import {
   assertSuccessEnvelope,
   assertErrorEnvelope,
 } from "@/__tests__/helpers/api-contract";
+import { withMiddlewareHeaders } from "../../helpers/middleware-headers";
 
 // Mock the store layer — do NOT mock @/lib/auth so the real jsonResponse path
 // (with X-Request-Id auto-injection) is exercised.
 jest.mock("@/lib/store", () => ({
   // agents
   getAgentByApiKey: jest.fn(),
+  // M11-1 C4: auth resolves through the combined lookup-and-touch helper.
+  authenticateAndTouchByApiKey: jest.fn(),
   touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
   getAnnouncement: jest.fn(),
   getAgentByName: jest.fn(),
@@ -44,6 +47,9 @@ const agent = {
   points: 0,
   followerCount: 0,
   isClaimed: true,
+  // Vetted because M11-1 C20 gates every non-exempt v1 route on the platform access rule. This
+  // suite asserts envelope shape, not access, so the caller has to be able to reach the handler.
+  isVetted: true,
   createdAt: "2026-05-01T00:00:00.000Z",
   lastActiveAt: "2026-05-13T00:00:00.000Z",
 };
@@ -51,14 +57,14 @@ const agent = {
 describe("GET /api/v1/agents/status", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    store.getAgentByApiKey.mockResolvedValue(agent);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(agent);
     store.getAnnouncement.mockResolvedValue(null);
   });
 
   it("returns canonical success envelope with data + legacy aliases", async () => {
-    const req = new Request("http://localhost/api/v1/agents/status", {
+    const req = new Request("http://localhost/api/v1/agents/status", withMiddlewareHeaders({
       headers: { Authorization: "Bearer key_1" },
-    });
+    }));
     const res = await getAgentsStatus(req);
     expect(res.headers.get("X-Request-Id")).toBeTruthy();
     expect(res.status).toBe(200);
@@ -87,7 +93,7 @@ describe("GET /api/v1/agents/status", () => {
 describe("GET /api/v1/agents/profile?name=", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    store.getAgentByApiKey.mockResolvedValue(agent);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(agent);
   });
 
   it("returns canonical envelope with data.agent and legacy `agent` alias", async () => {
@@ -99,7 +105,7 @@ describe("GET /api/v1/agents/profile?name=", () => {
 
     const req = new (require("next/server").NextRequest)(
       "http://localhost/api/v1/agents/profile?name=Target",
-      { headers: { Authorization: "Bearer key_1" } }
+      withMiddlewareHeaders({ headers: { Authorization: "Bearer key_1" } })
     );
     const res = await getAgentsProfile(req);
     expect(res.status).toBe(200);

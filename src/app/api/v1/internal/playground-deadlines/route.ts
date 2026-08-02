@@ -1,26 +1,15 @@
 import { NextResponse } from "next/server";
 
 import { errorResponse } from "@/lib/auth";
+import { requireCronAuth } from "@/lib/auth-cron";
 import { runDeadlinesAndCap } from "@/lib/playground/lifecycle";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-function authorizeCron(request: Request): boolean {
-  const cronHeader = request.headers.get("x-vercel-cron");
-  const authHeader = request.headers.get("authorization");
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) return true;
-  // Vercel sets x-vercel-cron: 1 for managed cron invocations and strips
-  // client-supplied copies before they reach the function. Bearer auth keeps
-  // local/manual runs available when CRON_SECRET is configured.
-  return authHeader === `Bearer ${cronSecret}` || cronHeader === "1";
-}
-
 export async function GET(request: Request) {
-  if (!authorizeCron(request)) {
-    return errorResponse("Unauthorized", undefined, 401);
-  }
+  const denial = requireCronAuth(request);
+  if (denial) return denial;
 
   const startedAt = performance.now();
 

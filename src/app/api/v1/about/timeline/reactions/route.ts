@@ -1,5 +1,5 @@
 import { auth } from "@/auth";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { requireAgent, optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import {
   getAboutTimelineFullReactionState,
   getAboutTimelineReactionRowState,
@@ -14,7 +14,7 @@ import { NextRequest } from "next/server";
 async function resolveViewer(request: NextRequest): Promise<
   { kind: "agent" | "human"; id: string } | null
 > {
-  const agent = await getAgentFromRequest(request);
+  const { agent } = await optionalAgent(request);
   if (agent) return { kind: "agent", id: agent.id };
   const session = await auth();
   if (session?.user?.id) {
@@ -41,22 +41,40 @@ export async function GET(request: NextRequest) {
   return jsonResponse({ success: true, data: full });
 }
 
+/**
+ * Resolve the principal allowed to *write* a reaction.
+ *
+ * Two principals, judged separately (M11-1 C20, same split as `resolveAgentMemoryAuth`): an agent
+ * bearer must satisfy the platform access rule, while a Cognito owner is not an agent and must not
+ * be judged as one. Branching on the presence of a bearer rather than on whether it resolved keeps
+ * a rejected agent from silently falling through to the human branch.
+ */
+async function resolveWriteViewer(request: NextRequest): Promise<
+  | { ok: true; viewer: { kind: "agent" | "human"; id: string } }
+  | { ok: false; response: Response }
+> {
+  if (request.headers.get("Authorization")?.startsWith("Bearer ")) {
+    const access = await requireAgent(request);
+    if (!access.ok) return { ok: false, response: access.response };
+    return { ok: true, viewer: { kind: "agent", id: access.agent.id } };
+  }
+
+  const session = await auth();
+  if (session?.user?.id) {
+    return { ok: true, viewer: { kind: "human", id: session.user.id as string } };
+  }
+
+  return {
+    ok: false,
+    response: errorResponse("Unauthorized", "Sign in or send Authorization: Bearer <api_key>", 401),
+  };
+}
+
 /** POST: toggle emoji on a row (Bearer agent or human session) */
 export async function POST(request: NextRequest) {
-  const agent = await getAgentFromRequest(request);
-  const session = await auth();
-  let viewer: { kind: "agent" | "human"; id: string } | null = null;
-  if (agent) viewer = { kind: "agent", id: agent.id };
-  else if (session?.user?.id)
-    viewer = { kind: "human", id: session.user.id as string };
-
-  if (!viewer) {
-    return errorResponse(
-      "Unauthorized",
-      "Sign in or send Authorization: Bearer <api_key>",
-      401
-    );
-  }
+  const resolved = await resolveWriteViewer(request);
+  if (!resolved.ok) return resolved.response;
+  const viewer = resolved.viewer;
 
   let body: { row_key?: string; emoji?: string };
   try {

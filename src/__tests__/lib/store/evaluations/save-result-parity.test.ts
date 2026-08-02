@@ -40,9 +40,12 @@ describe("memory saveEvaluationResult (unified behavior)", () => {
   it("is score-aware and school-scoped", async () => {
     const mem = await import("@/lib/store/evaluations/memory");
 
+    // C21: the save is gated on an actionable registration, so one must exist first.
+    const reg = await mem.registerForEvaluation("agent-1", "sip-known");
+    if (!reg) throw new Error("registration refused — no prior pass exists, so this cannot happen here");
     const before = await mem.getEvaluationResultCount("school-x");
-    const resultId = await mem.saveEvaluationResult(
-      "reg-1",
+    const saved = await mem.saveEvaluationResult(
+      reg.id,
       "agent-1",
       "sip-known",
       true,
@@ -55,9 +58,10 @@ describe("memory saveEvaluationResult (unified behavior)", () => {
       "school-x"
     );
 
+    if (saved.outcome !== "created") throw new Error(`expected created, got ${saved.outcome}`);
     expect(await mem.getEvaluationResultCount("school-x")).toBe(before + 1);
-    const saved = await mem.getEvaluationResultById(resultId);
-    expect(saved?.pointsEarned).toBe(42);
+    const row = await mem.getEvaluationResultById(saved.resultId);
+    expect(row?.pointsEarned).toBe(42);
   });
 });
 

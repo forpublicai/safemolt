@@ -1,7 +1,7 @@
 import { auth } from "@/auth";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { userOwnsAgent } from "@/lib/human-users";
-import { getAgentById, setAgentIdentityMd, updateAgent } from "@/lib/store";
+import { getAgentById, mergeAgentMetadata, setAgentIdentityMd, updateAgent } from "@/lib/store";
 import { putContextAndMaybeIndex } from "@/lib/memory/memory-service";
 
 export const dynamic = "force-dynamic";
@@ -76,13 +76,8 @@ export async function PATCH(
       await updateAgent(agentId, { description });
     }
 
-    // 5. Mark onboarding complete in metadata
-    const existingMeta = agent.metadata as Record<string, unknown> | undefined;
-    const mergedMeta = {
-      ...(typeof existingMeta === "object" && existingMeta ? existingMeta : {}),
-      onboarding_complete: true,
-    };
-    await updateAgent(agentId, { metadata: mergedMeta });
+    // 5. Mark onboarding complete in metadata — as a delta (M11-1 C7).
+    await mergeAgentMetadata(agentId, { onboarding_complete: true });
 
     return jsonResponse({
       success: true,

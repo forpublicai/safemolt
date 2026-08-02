@@ -5,6 +5,7 @@
  * Uses NanoGPT API with central model configuration via env vars.
  */
 
+import { randomBytes } from 'crypto';
 import type {
     CertificationConfig,
     TranscriptEntry,
@@ -14,7 +15,11 @@ import type {
 } from './types';
 import {
     getCertificationJobById,
-    updateCertificationJob,
+    claimCertificationJobForJudging,
+    renewCertificationJudgeLease,
+    completeCertificationJudging,
+    failCertificationJudging,
+    failUnjudgeableCertificationJob,
     saveEvaluationResult,
     getEvaluationRegistrationById
 } from '@/lib/store';
@@ -23,6 +28,17 @@ import { getEvaluation } from './loader';
 const PUBLICAI_API_KEY = process.env.PUBLICAI_API_KEY;
 const DEFAULT_MODEL = process.env.JUDGE_MODEL_ID || 'huihui-ai/Qwen2.5-32B-Instruct-abliterated';
 const PUBLICAI_API_URL = 'https://nano-gpt.com/api/v1/chat/completions';
+
+const DEFAULT_JUDGE_LEASE_MS = 120_000;
+
+/**
+ * Judging lease duration. Validated rather than trusted (the C4 lesson): a malformed env value
+ * falls back to the documented default instead of reaching SQL as NaN.
+ */
+function judgeLeaseMs(): number {
+    const parsed = Number.parseInt(process.env.CERT_JUDGE_LEASE_MS ?? '', 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_JUDGE_LEASE_MS;
+}
 
 interface ChatMessage {
     role: 'system' | 'user' | 'assistant';
@@ -180,62 +196,106 @@ function parseJudgeResponse(rawResponse: string): JudgeResponse {
 }
 
 /**
- * Judge a certification job
- * This is the main entry point for async judging
+ * Cheap pre-claim validation: the job with a transcript and its rubric-bearing config, or the
+ * reason it can never be judged. A missing job is the caller's bug and throws; the other shapes
+ * are *job* problems (empty transcript, definition or rubric gone) that must retire the job —
+ * a pre-claim throw used to leave it in `submitted` forever, unreclaimable, holding the live-job
+ * index and crowding the stale-submitted batch out from under jobs that could run.
  */
-export async function judgeCertificationJob(jobId: string): Promise<JudgeResponse> {
-    // Get job
+async function loadJudgeableJob(jobId: string) {
     const job = await getCertificationJobById(jobId);
     if (!job) {
         throw new Error(`Certification job ${jobId} not found`);
     }
 
-    if (job.status !== 'submitted') {
-        throw new Error(`Job ${jobId} is not in 'submitted' status (current: ${job.status})`);
-    }
-
     if (!job.transcript || job.transcript.length === 0) {
-        throw new Error(`Job ${jobId} has no transcript`);
+        return { ok: false as const, job, reason: `Job ${jobId} has no transcript` };
     }
 
-    // Get evaluation config
     const evaluation = getEvaluation(job.evaluationId);
     if (!evaluation) {
-        throw new Error(`Evaluation ${job.evaluationId} not found`);
+        return { ok: false as const, job, reason: `Evaluation ${job.evaluationId} not found` };
     }
 
     const certConfig = evaluation.config as CertificationConfig | undefined;
     if (!certConfig?.rubric) {
-        throw new Error(`Evaluation ${job.evaluationId} missing rubric config`);
+        return { ok: false as const, job, reason: `Evaluation ${job.evaluationId} missing rubric config` };
     }
 
-    // Mark as judging
-    await updateCertificationJob(jobId, {
-        status: 'judging',
-        judgeStartedAt: new Date().toISOString(),
-    });
+    // The transcript is returned separately because the guard's narrowing does not survive the
+    // function boundary on `job.transcript`.
+    return { ok: true as const, job, certConfig, transcript: job.transcript };
+}
+
+/**
+ * Judge a certification job.
+ *
+ * The paid model call is gated on a CAS lease (M11-1 C22): `submitted → judging` succeeds for
+ * exactly one dispatcher, the lease is renewed while inference runs (GM calls routinely outlive a
+ * fixed lease), and every terminal write — completion *and* failure — is fenced on the claim
+ * token, so a stalled claimant that was reclaimed can neither overwrite the winner's verdict nor
+ * mark the reclaimed job failed.
+ *
+ * @returns the verdict, or `null` when this dispatcher did not win the claim (another judging is
+ *   in flight or already recorded — nothing was billed) or lost its lease before the fenced
+ *   completion (its verdict is discarded).
+ */
+export async function judgeCertificationJob(jobId: string): Promise<JudgeResponse | null> {
+    // Cheap validation first; the claim below is what admits the expensive call. An unjudgeable
+    // job is retired (CAS on `submitted` — a claimant that got there first is left alone) rather
+    // than thrown back into the queue it can never leave.
+    const loaded = await loadJudgeableJob(jobId);
+    if (!loaded.ok) {
+        const retired = await failUnjudgeableCertificationJob(jobId, loaded.reason);
+        if (retired) console.warn(`[judge] job ${jobId} retired as unjudgeable: ${loaded.reason}`);
+        return null;
+    }
+    const { job, certConfig, transcript } = loaded;
+
+    // The CAS lease: only a non-empty return may invoke the model. An internal fence, not a
+    // bearer credential — CSPRNG anyway, because C17's rule is that no token comes from
+    // Math.random.
+    const leaseMs = judgeLeaseMs();
+    const judgeToken = randomBytes(16).toString('hex');
+    const claimed = await claimCertificationJobForJudging(jobId, judgeToken, leaseMs);
+    if (!claimed) {
+        return null;
+    }
+
+    // Renew while inference runs. A renewal that discovers the lease lost stops renewing; the
+    // token fence on the terminal writes is what actually protects the winner.
+    const renewal = setInterval(() => {
+        void renewCertificationJudgeLease(jobId, judgeToken, leaseMs).then((held) => {
+            if (!held) clearInterval(renewal);
+        }).catch(() => { /* transient renewal failure; the fence still decides */ });
+    }, Math.max(1000, Math.floor(leaseMs / 3)));
 
     try {
         // Build prompt and call LLM
-        const prompt = buildJudgePrompt(job.transcript, certConfig.rubric, certConfig.passingScore);
+        const prompt = buildJudgePrompt(transcript, certConfig.rubric, certConfig.passingScore);
         const modelToUse = process.env.JUDGE_MODEL_ID || certConfig.judgeModelId || DEFAULT_MODEL;
         const { response: rawResponse, model: usedModel } = await callPublicAI(prompt, modelToUse);
 
         // Parse response
         const judgeResponse = parseJudgeResponse(rawResponse);
 
-        // Update job with results
-        await updateCertificationJob(jobId, {
-            status: 'completed',
+        // Token-fenced completion: false means the lease lapsed and a reclaimer owns the job now —
+        // this verdict is discarded, and the winner's recording (job update AND result save) is
+        // theirs alone.
+        const recorded = await completeCertificationJudging(jobId, judgeToken, {
             judgeCompletedAt: new Date().toISOString(),
             judgeModel: usedModel,
             judgeResponse: judgeResponse as unknown as Record<string, unknown>,
         });
+        if (!recorded) {
+            console.warn(`[judge] job ${jobId}: lease lost during inference; verdict discarded`);
+            return null;
+        }
 
         // Get registration to save final result
         const registration = await getEvaluationRegistrationById(job.registrationId);
         if (registration) {
-            await saveEvaluationResult(
+            const saved = await saveEvaluationResult(
                 job.registrationId,
                 job.agentId,
                 job.evaluationId,
@@ -250,17 +310,22 @@ export async function judgeCertificationJob(jobId: string): Promise<JudgeRespons
                 undefined,
                 judgeResponse.summary
             );
+            if (saved.outcome !== 'created') {
+                // The registration already carries a result (C21) — the standing verdict wins and
+                // this judging pass records nothing further.
+                console.warn(`[judge] job ${jobId}: registration ${job.registrationId} result not recorded (${saved.outcome})`);
+            }
         }
 
         return judgeResponse;
     } catch (error) {
-        // Mark as failed
+        // Fenced failure: a claimant that already lost its lease may not mark the reclaimed job
+        // failed — the reclaimer owns its fate now.
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        await updateCertificationJob(jobId, {
-            status: 'failed',
-            errorMessage,
-        });
+        await failCertificationJudging(jobId, judgeToken, errorMessage);
         throw error;
+    } finally {
+        clearInterval(renewal);
     }
 }
 
