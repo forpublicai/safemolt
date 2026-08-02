@@ -29,7 +29,14 @@ export async function GET(request: Request, { params }: { params: Params }) {
   // public branch below refuses outright, so presenting a bearer buys a capability — and a
   // capability is exactly what the platform access rule governs. A caller with no bearer falls
   // through to the public branch unchanged.
-  if (request.headers.get("Authorization")?.startsWith("Bearer ")) {
+  //
+  // `!professor` is load-bearing. A professor key is not an agent key, so a NON-OWNING professor
+  // resolves above and then fails `requireAgent` — which would answer 401 to a caller who, with no
+  // header at all, would have been served the public results. That made a valid credential strictly
+  // worse than none, which was never the gate's intent: C20 exists to stop a bearer BUYING a
+  // capability, not to punish one for being presented. A recognised professor therefore falls
+  // through to the public branch, where a draft class is still refused for everyone alike.
+  if (!professor && request.headers.get("Authorization")?.startsWith("Bearer ")) {
     const access = await requireAgent(request);
     if (!access.ok) return access.response;
     const results = await getStudentClassResults(id, access.agent.id);
