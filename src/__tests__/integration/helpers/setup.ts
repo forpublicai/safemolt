@@ -32,4 +32,25 @@ if (databaseName !== reserved) {
     );
 }
 
+/**
+ * The harness lock has to be held by *this* process, and this is the only file that runs in it.
+ *
+ * `globalSetup` acquires the lock in the coordinator and Jest carries the depth into each test
+ * environment by copying `process`. A **worker** is a separate OS process and receives no copy, so
+ * it would run the suites' destructive SQL while the lock lived somewhere else entirely — the
+ * orphaned-child ownership problem the design exists to avoid. The config pins `maxWorkers: 1` and
+ * `globalSetup` refuses any other setting, but both of those are decided before a worker exists,
+ * and a `--globalSetup=...` override replaces the file that makes them. This assertion is inside
+ * the process that issues the SQL, so it holds whatever the command line said.
+ */
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { harnessLockIsHeld } = require("../../../../scripts/integration/lock");
+if (!harnessLockIsHeld()) {
+    throw new Error(
+        "[integration] this process does not hold the harness lock — it is a Jest worker, or global setup was replaced.\n" +
+            "The suites delete by fixture prefix, so running unlocked corrupts any concurrent run.\n" +
+            "Use `npm run test:integration`, which runs the suite in a single locked process."
+    );
+}
+
 export {};

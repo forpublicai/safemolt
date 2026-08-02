@@ -95,6 +95,53 @@ to that database, then applies `scripts/schema.sql` and every registered migrati
 chunks assert migration behaviour, so applying schema by any other route would test something the
 deploy never runs.
 
+## Only one run at a time
+
+Provisioning and the suite each take a Postgres advisory lock
+([`scripts/integration/lock.js`](../scripts/integration/lock.js)). A second run waits, and says what
+it is waiting for:
+
+```
+[integration] waiting for the integration lock — held by safemolt-integration pid=65319 safemolt
+```
+
+This is not tidiness. Two runs share one database *and* the same fixture prefixes (`c16_`, `c21_`,
+`c25_`), and the suites delete by prefix in `beforeEach`, so each deletes the other's rows mid-test.
+The damage never looks like contention — it looks like application defects:
+
+- `*_fkey` violations raised in `beforeAll`, because a parent row vanished between two setup
+  statements;
+- a race gate observing no contention, because its post was deleted and the call stopped at its
+  liveness pre-check;
+- a migration gate where an expected refusal does not happen, because the other run already
+  repaired the fixture.
+
+Each one costs an investigation before anyone suspects a second run.
+
+Two details are load-bearing, and both were measured rather than assumed:
+
+- **The lock connects to the direct endpoint, never the `-pooler` host.** Neon's pooler is
+  PgBouncer in transaction mode, where two clients both acquire the same key — with
+  `pg_backend_pid()` stable in both, so a single-connection self-check cannot tell the working case
+  from the broken one. `acquireHarnessLock` proves exclusion with a second connection every time it
+  acquires, so pointing the lock back at a pooled host fails loudly instead of serializing nothing.
+- **The lock lives in the maintenance database.** Advisory locks are database-local, and `--fresh`
+  terminates every session on the reserved database and drops it. A lock held there would be
+  destroyed by the run it exists to block.
+
+**The lock is owned by the process doing the destructive work, and nothing is inherited.**
+`run.js` holds it across `prepare()`, releases it, and Jest's `globalSetup` takes its own before the
+first suite; `globalTeardown` releases that one. The obvious alternative — the wrapper holds one
+lock for the whole run and tells Jest it may proceed — cannot survive SIGKILL: the wrapper's session
+dies with it, its lock is released, and the orphaned Jest keeps issuing destructive SQL believing
+itself covered. A claim passed to a child only ever describes a process that may already be gone.
+
+Between the wrapper's release and Jest's acquire another run may win the lock. It is then simply
+waited for, before this run's first statement — which is the only place waiting costs nothing.
+
+`INTEGRATION_LOCK_TIMEOUT_MS` overrides the 45-minute wait. A run that cannot prove it still held
+the lock when it finished fails instead of reporting its results.
+
 ## The guard runs however Jest was started
 
 `npm run test:integration` is the convenient path, not the only thing protecting you. Jest's

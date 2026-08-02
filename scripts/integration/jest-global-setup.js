@@ -22,8 +22,9 @@
  * Absence of positive proof is a refusal. A run that cannot prove all three does not start.
  */
 const { Client } = require("pg");
-const { resolveIntegrationTarget, normalisedHost, assertNoRedirectingParams, describeTarget } = require("./guard");
+const { normalisedHost, assertNoRedirectingParams, describeTarget } = require("./guard");
 const { OWNER_MARKER_TABLE, OWNER_MARKER_VALUE } = require("./prepare");
+const { acquireHarnessLock, guardedTarget, DIRECT_RUN_LOCK } = require("./lock");
 
 function fail(message) {
   throw new Error(
@@ -32,10 +33,25 @@ function fail(message) {
   );
 }
 
-module.exports = async function globalSetup() {
+module.exports = async function globalSetup(globalConfig) {
+  // Workers are OS child processes. This function takes the harness lock in the coordinator, and a
+  // worker would neither inherit it nor take its own — so the coordinator would hold the key while
+  // separate processes ran the destructive SQL, which is exactly the orphaned-child ownership
+  // problem this design exists to avoid. `maxWorkers: 1` in the config makes that the default;
+  // this refuses a command line that overrides it, because the config alone is only a default.
+  if (globalConfig && globalConfig.maxWorkers !== 1) {
+    fail(
+      `Jest is configured for ${globalConfig.maxWorkers} workers. The integration suite must run in a\n` +
+        `single process: the harness lock is held here, and worker processes would neither see it nor\n` +
+        `own one. Use \`npm run test:integration\`, or pass --runInBand.`
+    );
+  }
+
   // Derived from the tracked allowlist, never from what the caller set. If INTEGRATION_DATABASE_URL
   // is missing or names a host no human marked disposable, this throws and the suite never starts.
-  const target = resolveIntegrationTarget();
+  // Resolved once and reused for the lock below, so the target that is proven here is the target
+  // that gets locked — two resolutions could straddle a `.env.local` or allowlist edit.
+  const target = guardedTarget();
 
   const supplied = process.env.POSTGRES_URL;
   if (!supplied) fail("POSTGRES_URL is unset inside the test process");
@@ -88,4 +104,20 @@ module.exports = async function globalSetup() {
   process.env.INTEGRATION_RESERVED_DATABASE = target.reservedDatabase;
 
   console.log(`[integration] target proven: ${describeTarget(target.targetUrl)} (endpoint ${target.endpointId})`);
+
+  // `jest --config jest.integration.config.js` is a supported way in — this file exists precisely
+  // because nothing forces anyone through the wrapper. Proving the target was never enough on its
+  // own: the suites then delete by fixture prefix, so a direct run beside a wrapped run corrupts
+  // both. It takes the same lock, and `globalTeardown` releases it.
+  //
+  // Owned here rather than inherited from the wrapper, and taken unconditionally. A wrapper that
+  // held one lock across the whole run could not survive SIGKILL: its session dies, its lock is
+  // released, and this process would keep issuing destructive SQL on the strength of a claim about
+  // a parent that is already gone. Ownership is not a claim. `run.js` releases before spawning Jest
+  // for exactly that reason, so there is no parent to queue behind — and if another run took the
+  // lock in the gap, this one waits for it here, before the first suite, which is the only place
+  // waiting costs nothing.
+  //
+  // `globalTeardown` releases it, and fails the run if it was lost along the way.
+  globalThis[DIRECT_RUN_LOCK] = await acquireHarnessLock({ target });
 };

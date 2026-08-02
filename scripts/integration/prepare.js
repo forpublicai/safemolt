@@ -9,7 +9,8 @@
 const { Client } = require("pg");
 const { spawnSync } = require("child_process");
 const path = require("path");
-const { resolveIntegrationTarget, childEnv, describeTarget } = require("./guard");
+const { childEnv, describeTarget } = require("./guard");
+const { guardedTarget, harnessLockIsHeld, isGuardedTarget, withHarnessLock } = require("./lock");
 
 /** Provenance stamp, asserted before anything destructive runs. */
 const OWNER_MARKER_TABLE = "_harness_owner";
@@ -183,9 +184,37 @@ function runRealMigrator(target) {
   }
 }
 
+/**
+ * @param {object} [options]
+ * @param {object} [options.target]  the target `withHarnessLock` resolved and locked. Only a target
+ *                                   carrying that module's brand is trusted: passing the *same*
+ *                                   object that was locked closes the lock-one-provision-another
+ *                                   race, but accepting any caller-shaped object would have let a
+ *                                   caller lock a harmless endpoint and provision an arbitrary one,
+ *                                   which is exactly the guard `resolveIntegrationTarget` exists to
+ *                                   be. Anything unbranded is re-resolved through the guard.
+ */
 async function prepare(options = {}) {
   const adopt = options.adopt === true;
-  const target = resolveIntegrationTarget();
+  const target = isGuardedTarget(options.target) ? options.target : guardedTarget();
+
+  // Everything below drops, creates, migrates or claims. None of it may run beside another run:
+  // `--fresh` terminates every session on the reserved database and then drops it, which would kill
+  // a concurrent suite mid-test. Entry points wrap themselves in `withHarnessLock`; this refuses
+  // for any caller that forgot, rather than trusting the convention to hold.
+  //
+  // In-process state, not an inherited environment variable. Every caller of `prepare()` runs in
+  // the same process as the `withHarnessLock` that wrapped it, so there is no boundary to carry a
+  // claim across — and a claim that crossed one would outlive the lock it described.
+  if (!harnessLockIsHeld()) {
+    throw new Error(
+      `[integration] refusing to provision without the harness lock.\n` +
+        `Provisioning drops, creates and migrates the reserved database, so it must never run beside\n` +
+        `another run. Use \`npm run test:integration\`, or wrap the call in \`withHarnessLock\` from\n` +
+        `scripts/integration/lock.js.`
+    );
+  }
+
   console.log(`[integration] target: ${describeTarget(target.targetUrl)} (endpoint ${target.endpointId})`);
   const createdByUs = await ensureReservedDatabase(target, options.fresh === true);
   await assertConnectedToReservedDatabase(target, createdByUs, adopt);
@@ -203,11 +232,18 @@ module.exports = {
 };
 
 if (require.main === module) {
+  // Under the lock like every other entry point. `prepare.js --fresh` run by hand during a suite
+  // was the worst of the bypasses: it terminates the running suite's connections and drops the
+  // database, and the suite's own wrapper lock could not stop it.
+  //
   // `--adopt` is a deliberate human act, never a default and never something a test run can pass.
-  prepare({
-    adopt: process.argv.includes("--adopt"),
-    fresh: process.argv.includes("--fresh"),
-  }).catch((err) => {
+  withHarnessLock((target) =>
+    prepare({
+      adopt: process.argv.includes("--adopt"),
+      fresh: process.argv.includes("--fresh"),
+      target,
+    })
+  ).catch((err) => {
     console.error(err.message);
     process.exit(1);
   });
