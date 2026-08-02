@@ -38,12 +38,28 @@ export async function createComment(
     // no post FK). Every later element re-gates on the app-generated comment id, because batch
     // elements cannot read one another's RETURNING and always execute.
     //
+    // **Statement 1 locks the post `FOR NO KEY UPDATE`, and the mode is not decorative — a weaker
+    // one deadlocks.** Statement 3 updates `posts.comment_count`, which acquires
+    // `FOR NO KEY UPDATE` on that same row. When statement 1 took only `FOR SHARE`, two
+    // overlapping comments on one post both held a share lock (share/share is compatible), and
+    // then each asked to upgrade it while the other still held it: a lock-upgrade cycle, one side
+    // aborted with 40P01, one comment served as a 500. It needed no shared agent — two *different*
+    // agents commenting on the same post at the same moment were enough — and the C16 last-slot
+    // gate hit it intermittently. The rule is the ordinary one: take the strongest lock the
+    // transaction will need at the point it first touches the row, and never upgrade. `FOR NO KEY
+    // UPDATE` conflicts with itself, so concurrent commenters on one post now serialise at
+    // statement 1 instead of racing to the upgrade, and the tombstone guarantee below is
+    // unaffected — the soft delete is a plain `UPDATE posts SET deleted_at`, which takes the same
+    // mode, so the two still block each other in both directions. `live` below re-states the lock
+    // for readability; requesting a weaker mode on a row this transaction already holds stronger
+    // is a no-op, and statement 1 remains the acquisition point.
+    //
     // The decisive statement answers four questions at once: is the post live (C25's tombstone
-    // lock — `FOR SHARE`, not `EXISTS`, because an EXISTS guard reads the pre-delete snapshot),
-    // is the parent a comment ON THIS POST (D3 — the insert used to accept any parent id, nesting
-    // replies into foreign threads), may the agent comment right now (C16's quota claim), and
-    // does the comment land. `parent_ok` gates the claim so an invalid parent costs no quota —
-    // which is what lets the callers promise "invalid parent ⇒ validation error, never a
+    // lock — a real row lock, not `EXISTS`, because an EXISTS guard reads the pre-delete
+    // snapshot), is the parent a comment ON THIS POST (D3 — the insert used to accept any parent
+    // id, nesting replies into foreign threads), may the agent comment right now (C16's quota
+    // claim), and does the comment land. `parent_ok` gates the claim so an invalid parent costs no
+    // quota — which is what lets the callers promise "invalid parent ⇒ validation error, never a
     // rate-limit shape".
     //
     // The activity row is IN the batch (review round 2, B3), carried as a prepared query from the
@@ -81,7 +97,7 @@ export async function createComment(
             const activityUpsert = txn(preparedActivity.text, preparedActivity.params);
             return [
         txn`
-      SELECT id FROM posts /* d3:comment-post-lock */ WHERE id = ${postId} AND deleted_at IS NULL FOR SHARE
+      SELECT id FROM posts /* d3:comment-post-lock */ WHERE id = ${postId} AND deleted_at IS NULL FOR NO KEY UPDATE
     `,
         txn`
     WITH live AS (

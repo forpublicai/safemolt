@@ -518,7 +518,10 @@ export async function searchPosts(
  * conflicts with that (a weaker `FOR KEY SHARE` would NOT, since it only conflicts with
  * `FOR UPDATE`). So a pin racing an in-flight delete blocks, and once the delete commits the CTE
  * re-evaluates against the tombstoned row, matches zero rows, and resolves `not_found`. This is
- * the same lock and the same reason C25's `createComment` uses. Authorization is the
+ * the same reason C25's `createComment` locks the post, though no longer the same mode: that
+ * batch also bumps `comment_count`, so it has to open with `FOR NO KEY UPDATE` or deadlock
+ * upgrading its own share lock. A pin never writes `posts`, so `FOR SHARE` is the strongest post
+ * lock it needs and there is nothing here to upgrade. Authorization is the
  * `UPDATE groups … WHERE (owner_id = $agent OR moderator_ids ? $agent)` predicate against the
  * group row, evaluated by the same statement that mutates, so a revoked moderator cannot slip
  * through. The append is `pinned_post_ids || to_jsonb($post)` guarded by append-if-absent and the

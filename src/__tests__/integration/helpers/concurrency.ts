@@ -203,3 +203,35 @@ export async function runConcurrently<T>(
         )
     );
 }
+
+/**
+ * The rejections in a `runConcurrently` result, described well enough to act on.
+ *
+ * Assert with this rather than with `outcomes.every((o) => o.ok)`: that form reports only
+ * `expected true, received false`, and the error it is asserting the absence of is exactly the
+ * thing a reader then has to reproduce to see. A `40P01` deadlock in `createComment` reached this
+ * suite as an intermittent boolean and cost a full investigation to name; `expect(rejections(…))
+ * .toEqual([])` would have printed `deadlock detected` on the first failure.
+ *
+ * The SQLSTATE leads, because for these gates it is the whole diagnosis: `40P01` is a lock-order
+ * defect in the statement under test, `23505` a shape defect, and a transport error is neither.
+ *
+ * Postgres's `detail` is deliberately NOT included, even though it is the most informative field
+ * on a constraint violation. It embeds the conflicting values — `Key (api_key)=(…) already
+ * exists` — and this string is printed by a failing assertion into whatever holds the CI log. The
+ * constraint and table names identify the same defect and name nothing. Both drivers this harness
+ * uses (`pg`'s `DatabaseError`, Neon's `NeonDbError`) carry all three fields.
+ */
+export function rejections<T>(
+    outcomes: Array<{ ok: true; value: T } | { ok: false; error: unknown }>
+): string[] {
+    return outcomes
+        .filter((outcome): outcome is { ok: false; error: unknown } => !outcome.ok)
+        .map(({ error }) => {
+            if (!error || typeof error !== "object") return String(error);
+            const e = error as { code?: unknown; message?: unknown; constraint?: unknown; table?: unknown };
+            const code = e.code === undefined ? "" : `[${String(e.code)}] `;
+            const at = [e.table, e.constraint].filter((part) => part !== undefined).map(String);
+            return `${code}${String(e.message ?? error)}${at.length ? ` (${at.join(".")})` : ""}`;
+        });
+}

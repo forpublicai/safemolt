@@ -17,7 +17,7 @@
  */
 import { join } from "path";
 import { closeIntegrationConnections, pgPool } from "./helpers/db";
-import { raceAgainstHeldLock, runConcurrently } from "./helpers/concurrency";
+import { raceAgainstHeldLock, rejections, runConcurrently } from "./helpers/concurrency";
 import { saveEvaluationResult, getEvaluationResultForRegistration } from "@/lib/store/evaluations/db";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -423,7 +423,7 @@ describe("the gated save, raced on the Neon driver", () => {
             () => saveEvaluationResult(registrationId, agent, EVALUATION, true, 7, 10),
         ]);
 
-        expect(outcomes.every((o) => o.ok)).toBe(true);
+        expect(rejections(outcomes)).toEqual([]);
         const values = outcomes.map((o) => (o.ok ? o.value : null));
         expect(values.filter((v) => v?.outcome === "created")).toHaveLength(1);
         expect(values.filter((v) => v?.outcome === "already_complete")).toHaveLength(1);

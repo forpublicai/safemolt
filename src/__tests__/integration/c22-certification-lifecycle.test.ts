@@ -15,7 +15,7 @@
  */
 import { join } from "path";
 import { closeIntegrationConnections, pgPool } from "./helpers/db";
-import { runConcurrently } from "./helpers/concurrency";
+import { rejections, runConcurrently } from "./helpers/concurrency";
 import {
     createCertificationJob,
     getLiveCertificationJobForRegistration,
@@ -223,7 +223,7 @@ describe("the live-job index under concurrency", () => {
             () => createCertificationJob(registrationId, agent, EVALUATION, `${PREFIX}nonce_b_${(seq += 1)}`, new Date(Date.now() + 60_000)),
         ]);
 
-        expect(outcomes.every((o) => o.ok)).toBe(true);
+        expect(rejections(outcomes)).toEqual([]);
         const ids = outcomes.map((o) => (o.ok ? o.value.id : null));
         expect(new Set(ids).size).toBe(1);
         expect(await liveJobIds(registrationId)).toHaveLength(1);
@@ -259,7 +259,7 @@ describe("the judging lease on the Neon driver", () => {
             () => claimCertificationJobForJudging(jobId, "token-b", 60_000),
         ]);
 
-        expect(outcomes.every((o) => o.ok)).toBe(true);
+        expect(rejections(outcomes)).toEqual([]);
         const winners = outcomes.filter((o) => o.ok && o.value !== null);
         expect(winners).toHaveLength(1);
         expect(await jobStatus(jobId)).toBe("judging");

@@ -22,7 +22,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { closeIntegrationConnections, pgPool } from "./helpers/db";
-import { raceAgainstHeldLock, runConcurrently } from "./helpers/concurrency";
+import { raceAgainstHeldLock, rejections, runConcurrently } from "./helpers/concurrency";
 import { addSessionMessage, claimProctorSession } from "@/lib/store/evaluations/db";
 import { authorizeProctorClaim } from "@/lib/evaluation-authz";
 import type { StoredAgent } from "@/lib/store-types";
@@ -146,7 +146,7 @@ describe("claiming a proctor session", () => {
             () => claimProctorSession(registrationId, second),
         ]);
 
-        expect(outcomes.every((o) => o.ok)).toBe(true);
+        expect(rejections(outcomes)).toEqual([]);
         const winners = outcomes.filter((o) => o.ok && o.value !== null);
         expect(winners).toHaveLength(1);
         expect(await sessionCount(registrationId)).toBe(1);
@@ -242,7 +242,7 @@ describe("transcript numbering", () => {
             () => addSessionMessage(sessionId, proctor, "proctor", "from the proctor"),
         ]);
 
-        expect(outcomes.every((o) => o.ok)).toBe(true);
+        expect(rejections(outcomes)).toEqual([]);
         const sequences = outcomes
             .map((o) => (o.ok ? (o.value as { sequence: number }).sequence : -1))
             .sort((a, b) => a - b);

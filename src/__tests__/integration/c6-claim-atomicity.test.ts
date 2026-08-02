@@ -12,7 +12,7 @@
  *     itself arbitrates, not because the application checked first.
  */
 import { closeIntegrationConnections, pgPool } from "./helpers/db";
-import { raceAgainstHeldLock, runConcurrently } from "./helpers/concurrency";
+import { raceAgainstHeldLock, rejections, runConcurrently } from "./helpers/concurrency";
 import { claimAgentForHumanUser, setAgentClaimed } from "@/lib/store/agents/db";
 
 const ALICE = "c6_user_alice";
@@ -104,7 +104,7 @@ describe("concurrent claims", () => {
             () => claimAgentForHumanUser(token, BOB, "Bob"),
         ]);
 
-        expect(outcomes.every((o) => o.ok)).toBe(true);
+        expect(rejections(outcomes)).toEqual([]);
         const winners = outcomes.filter((o) => o.ok && o.value !== null);
         expect(winners).toHaveLength(1);
 
@@ -148,7 +148,7 @@ describe("concurrent claims", () => {
             () => setAgentClaimed(id, "@twitter_owner", 42),
         ]);
 
-        expect(outcomes.every((o) => o.ok)).toBe(true);
+        expect(rejections(outcomes)).toEqual([]);
         const cognitoWon = outcomes[0].ok && outcomes[0].value !== null;
         const twitterWon = outcomes[1].ok && outcomes[1].value === true;
         expect([cognitoWon, twitterWon].filter(Boolean)).toHaveLength(1);

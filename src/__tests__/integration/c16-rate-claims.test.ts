@@ -10,7 +10,7 @@
  * `src/__tests__/lib/store/rate-claims.test.ts`.
  */
 import { closeIntegrationConnections, pgPool } from "./helpers/db";
-import { raceAgainstHeldLock, runConcurrently } from "./helpers/concurrency";
+import { raceAgainstHeldLock, rejections, runConcurrently } from "./helpers/concurrency";
 import { createPost } from "@/lib/store/posts/db";
 import { createComment } from "@/lib/store/comments/db";
 import { followAgent, unfollowAgent } from "@/lib/store/agents/db";
@@ -111,7 +111,7 @@ describe("post cooldown", () => {
 
         // No rejections: the loser's claim matches zero rows, so its insert selects from an empty
         // CTE. It is refused, not errored — a 23505 would mean the shape was wrong.
-        expect(outcomes.every((o) => o.ok)).toBe(true);
+        expect(rejections(outcomes)).toEqual([]);
         const created = outcomes.filter((o) => o.ok && o.value !== null);
         expect(created).toHaveLength(1);
         expect(await countPostsBy(AUTHOR)).toBe(1);
@@ -173,15 +173,19 @@ describe("comment cooldown and daily cap", () => {
             [1, 2, 3, 4, 5].map((n) => () => createComment(postId, STRANGER, `race ${n}`))
         );
 
-        expect(outcomes.every((o) => o.ok)).toBe(true);
+        expect(rejections(outcomes)).toEqual([]);
         expect(outcomes.filter((o) => o.ok && o.value !== null)).toHaveLength(1);
         expect((await rateRow(STRANGER))!.comment_count).toBe(1);
     });
 
     it("lands exactly on the daily cap when two requests race for the last slot", async () => {
-        // The cap gate needs its own shape: preseed at cap - 1 with an expired cooldown so the cap
-        // is the only thing left that can refuse. Before C16 both requests read `cap - 1`, both
-        // wrote `cap`, and the agent got one comment past its limit.
+        // The cap gate needs its own shape: preseed at cap - 1 with an expired cooldown. Before
+        // C16 both requests read `cap - 1`, both wrote `cap`, and the agent got one comment past
+        // its limit.
+        //
+        // What this proves is that the pair lands on the cap, not that the *cap predicate* is what
+        // refused: the winner stamps `last_comment_at` on its way past, so the loser fails the
+        // cooldown as well and would be refused either way. The next test isolates the cap.
         const postId = await seedPostRow();
         await pgPool().query(
             `INSERT INTO agent_rate_limits (agent_id, last_comment_at, comment_count_date, comment_count)
@@ -194,9 +198,72 @@ describe("comment cooldown and daily cap", () => {
             () => createComment(postId, STRANGER, "last slot B"),
         ]);
 
-        expect(outcomes.every((o) => o.ok)).toBe(true);
+        expect(rejections(outcomes)).toEqual([]);
         expect(outcomes.filter((o) => o.ok && o.value !== null)).toHaveLength(1);
         expect((await rateRow(STRANGER))!.comment_count).toBe(MAX_COMMENTS_PER_DAY);
+    });
+
+    it("refuses at the cap once the cooldown is spent, and charges nothing for the refusal", async () => {
+        // The one case where nothing but the cap can refuse: the count is already at the limit and
+        // the cooldown is spent. Replace the claim's cap predicate with `true` and the race above
+        // still goes green — this is the gate that goes red.
+        const postId = await seedPostRow();
+        // Kept, and asserted against by identity below. Re-deriving the expected value from
+        // `Date.now()` at assertion time would drift with the clock and could pass vacuously.
+        const seededAt = Date.now() - COMMENT_COOLDOWN_MS - 1;
+        await pgPool().query(
+            `INSERT INTO agent_rate_limits (agent_id, last_comment_at, comment_count_date, comment_count)
+             VALUES ($1, $2, $3, $4)`,
+            [STRANGER, seededAt, today(), MAX_COMMENTS_PER_DAY]
+        );
+
+        expect(await createComment(postId, STRANGER, "over the cap")).toBeNull();
+        const row = (await rateRow(STRANGER))!;
+        expect(row.comment_count).toBe(MAX_COMMENTS_PER_DAY);
+        // Untouched, not merely "still expired". A refusal that re-stamped the window would push
+        // the next allowed comment further out on every retry — the same defect the post cooldown
+        // is checked for above, and one an inequality would not catch.
+        expect(Number(row.last_comment_at)).toBe(seededAt);
+        const { rows } = await pgPool().query("SELECT 1 FROM comments WHERE post_id = $1", [postId]);
+        expect(rows).toHaveLength(0);
+    });
+
+    it("takes the post lock at the strength the batch will need, so two comments cannot deadlock", async () => {
+        // Why the last-slot race used to fail intermittently, and the property that stops it: the
+        // batch's opening statement locked the post `FOR SHARE`, and a later statement in the same
+        // transaction bumps `posts.comment_count`, which needs `FOR NO KEY UPDATE` on that same
+        // row. Two overlapping comments each held a share lock and each then asked to upgrade it
+        // while the other still held theirs — a lock-upgrade cycle, 40P01, one comment served as a
+        // 500. Two *different* agents were enough; the shared quota row only made the cycle close
+        // sooner.
+        //
+        // Outcome assertions cannot catch that: it needs one request to reach the upgrade inside
+        // the other's window, which happens on some runs and not others. So this asserts the
+        // property that removes it — the strongest post lock is taken where the batch first
+        // touches the row, and never upgraded.
+        //
+        // The holder deliberately takes the *old* opener's lock — `FOR SHARE` — because that is
+        // what discriminates. A `FOR SHARE` opener is granted against it immediately and the batch
+        // stalls later, at the counter bump, which does not carry this marker; a `FOR NO KEY
+        // UPDATE` opener blocks on it here. So `observedBlocked` is false unless the batch's first
+        // touch of the post row is the strong lock. Not a timing assertion: it is the catalog
+        // reporting which statement waited.
+        const postId = await seedPostRow();
+
+        const observation = await raceAgainstHeldLock({
+            hold: async (holder) => {
+                await holder.query("SELECT id FROM posts WHERE id = $1 AND deleted_at IS NULL FOR SHARE", [postId]);
+            },
+            contend: () => createComment(postId, STRANGER, "waits at the door"),
+            contenderMarker: "d3:comment-post-lock",
+        });
+
+        expect(observation.observedBlocked).toBe(true);
+        // The holder only read the post. The strong lock delays this comment; it must not refuse
+        // it — a gate that passed by turning every concurrent comment into a null would be worse
+        // than the deadlock it replaced.
+        expect(observation.result).not.toBeNull();
+        expect((await rateRow(STRANGER))!.comment_count).toBe(1);
     });
 
     it("starts a fresh allowance on a new day", async () => {
@@ -285,7 +352,7 @@ describe("unfollow decrement", () => {
             () => unfollowAgent(AUTHOR, "c16 target"),
         ]);
 
-        expect(outcomes.every((o) => o.ok)).toBe(true);
+        expect(rejections(outcomes)).toEqual([]);
         expect(outcomes.filter((o) => o.ok && o.value === true)).toHaveLength(1);
         expect(await followerCount(TARGET)).toBe(0);
     });
