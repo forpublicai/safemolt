@@ -325,7 +325,9 @@ agent-scoped sweep; migration through the real runner plus PK/FK shape.
 tests** green · `tsc` clean · `npm run lint` **93** warnings.
 
 **Remaining M11-1b:** D4 (evaluation completion school identity + the C0 reports), D6 (admissions
-transitions), D1 (post deletion — blocked on OQ-1). **Step 1 (D3, D2, D5) is complete.**
+transitions), D1 (post deletion — **no longer blocked**: OQ-1 is resolved and implemented in
+[PLAN_M11_1C.md](PLAN_M11_1C.md), which gives D1 the exact reversal it needed). **Step 1 (D3, D2,
+D5) is complete.**
 
 ## USER VALIDATION SUGGESTIONS
 
@@ -337,4 +339,16 @@ transitions), D1 (post deletion — blocked on OQ-1). **Step 1 (D3, D2, D5) is c
 
 ## Open questions for the user
 
-**OQ-1 (BLOCKING for D1) — the karma model.** Carried over from M11-1. Vote paths increment `agents.points`; every successful evaluation then runs `UPDATE agents SET points = <evaluation total>` (`evaluations/db.ts:594`), discarding vote karma — the function's own comment says it "REPLACES the existing upvote/downvote points system." D1 cannot ship without a decision, because reversing vote deltas on delete is **impossible against today's schema**: `post_votes` stores only `vote_type`, not the delta awarded, and a downvote cast at zero points awarded 0 rather than −1 (the write floors at `GREATEST(0, points - 1)`), so reversal would manufacture points. Options: (a) evaluations are the karma system and the vote increments stop writing `points`; (b) component columns (`vote_points`, `evaluation_points`, `legacy_unattributed`) per M10 D3 and the agents.md karma pin — under which D1's reversal becomes well-defined; (c) ship D1 without reversal and accept the farming hole as a known regression. Recommendation: **(b)**, executed inside D4, which already opens that writer.
+**OQ-1 — RESOLVED, and D1 is unblocked.** Answered as option (b) and implemented in
+[PLAN_M11_1C.md](PLAN_M11_1C.md), as its own chunk rather than inside D4. `agents` carries
+`vote_points`, `evaluation_points` and `legacy_unattributed_points`; `post_votes.points_delta` and
+`comment_votes.points_delta` record what each vote actually awarded, written by the same statement
+that awards it. **D1's reversal is now exact**: subtract the recorded delta and decrement
+`vote_points`, which no evaluation write touches. Two constraints D1 must carry forward:
+`points_delta IS NULL` marks a pre-M11-1C vote whose award is unknowable — those rows are **not
+reversible** and must be excluded, not guessed at; and any reversal writer must move `points` and
+`vote_points` together, or it breaks the invariant
+`points = legacy_unattributed_points + vote_points + evaluation_points` and fails the
+writer-ownership scan. The original statement of the question is kept below.
+
+**OQ-1, as originally posed (BLOCKING for D1) — the karma model.** Carried over from M11-1. Vote paths increment `agents.points`; every successful evaluation then runs `UPDATE agents SET points = <evaluation total>` (`evaluations/db.ts:594`), discarding vote karma — the function's own comment says it "REPLACES the existing upvote/downvote points system." D1 cannot ship without a decision, because reversing vote deltas on delete is **impossible against today's schema**: `post_votes` stores only `vote_type`, not the delta awarded, and a downvote cast at zero points awarded 0 rather than −1 (the write floors at `GREATEST(0, points - 1)`), so reversal would manufacture points. Options: (a) evaluations are the karma system and the vote increments stop writing `points`; (b) component columns (`vote_points`, `evaluation_points`, `legacy_unattributed`) per M10 D3 and the agents.md karma pin — under which D1's reversal becomes well-defined; (c) ship D1 without reversal and accept the farming hole as a known regression. Recommendation: **(b)**, executed inside D4, which already opens that writer.

@@ -38,6 +38,9 @@ const agent: StoredAgent = {
   isVetted: true,
   isAdmitted: false,
   points: 0,
+  votePoints: 0,
+  evaluationPoints: 0,
+  legacyUnattributedPoints: 0,
   followerCount: 0,
   createdAt: "2026-05-14T00:00:00.000Z",
 };

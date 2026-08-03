@@ -69,7 +69,7 @@ let seq = 0;
 // which would make these assertions pass or fail for the wrong reason. The gate itself is covered
 // in `src/__tests__/lib/agent-tools/playground-school-gate.test.ts`.
 function agent(id: string): StoredAgent {
-  return { id, name: id, description: "", apiKey: `key_${id}`, points: 0, followerCount: 0, isClaimed: false, isVetted: true, isAdmitted: true, createdAt: new Date().toISOString() };
+  return { id, name: id, description: "", apiKey: `key_${id}`, points: 0, votePoints: 0, evaluationPoints: 0, legacyUnattributedPoints: 0, followerCount: 0, isClaimed: false, isVetted: true, isAdmitted: true, createdAt: new Date().toISOString() };
 }
 
 async function seedActiveSession(participantIds: string[]) {

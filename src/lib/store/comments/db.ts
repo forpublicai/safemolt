@@ -1,7 +1,7 @@
 import { sql } from "@/lib/db";
 import type { StoredComment } from "@/lib/store-types";
 import { updateHousePoints } from "../groups/db";
-import { hasVoted, recordVote, removeVote } from "../posts/db";
+import { hasVoted, isUniqueViolation } from "../posts/db";
 import { buildCommentActivityUpsert, invalidateCommentActivityCache } from "../activity/events";
 import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY } from "../rate-limit-windows";
 
@@ -237,41 +237,84 @@ export async function getCommentCountByAgentId(agentId: string): Promise<number>
 }
 
 export async function upvoteComment(commentId: string, agentId: string): Promise<boolean> {
-    // Check if already voted
+    // Check if already voted. The friendly pre-check only; a lost race surfaces as 23505 inside the
+    // statement below and maps to the same refusal.
     const alreadyVoted = await hasVoted(agentId, commentId, 'comment');
     if (alreadyVoted) {
         return false; // Duplicate vote error
     }
 
-    // Joined to the parent post: a comment under a deleted post is not votable, and the agent tool
-    // calls this directly rather than through the route that used to pre-check (M11-1 C25).
-    const rows = await sql!`
-    SELECT c.* FROM comments c JOIN posts p ON p.id = c.post_id
-    WHERE c.id = ${commentId} AND p.deleted_at IS NULL LIMIT 1
-  `;
-    if (!rows[0]) return false;
-    const r = rows[0] as Record<string, unknown>;
-    const authorId = r.author_id as string;
-
-    // Record the vote
-    const voteRecorded = await recordVote(agentId, commentId, 1, 'comment');
-    if (!voteRecorded) {
-        return false; // Failed to record vote
+    // One statement — the identical shape `castPostVote` uses, against `comments` and
+    // `comment_votes`. See the reasoning there (M11-1C): the decisive counter is the FIRST arm so
+    // an award can never survive on a comment whose parent post was tombstoned mid-flight, and the
+    // lock in `locked` pins the row so the delta recorded on the vote row and the delta applied to
+    // the agent come from the same version. `FOR NO KEY UPDATE` rather than `FOR UPDATE` for the
+    // same reason as there: the vote insert's FK check takes `FOR KEY SHARE` on the voter's agents
+    // row, and `FOR UPDATE` would conflict with it and deadlock two reciprocal votes.
+    //
+    // Comment votes are upvote-only, so `GREATEST(0, …)` never binds here; it is kept so both vote
+    // surfaces read the same and a future downvote needs no new reasoning.
+    //
+    // **The parent check is a `FOR SHARE` LOCK, not a bare `EXISTS`** — the rule `createComment`
+    // already states in this file: a real row lock, not `EXISTS`, because an EXISTS guard reads
+    // the pre-delete snapshot. C25 left this path on the `EXISTS` form, and
+    // that is a genuine hole: an `EXISTS` subquery is evaluated against the statement snapshot and
+    // is NOT re-checked when a concurrent delete commits, so a vote landing in that window
+    // increments the counter, writes the vote row and awards karma on a comment whose post is a
+    // tombstone. `FOR SHARE` conflicts with the `FOR NO KEY UPDATE` the delete holds, so the vote
+    // waits, then re-reads and finds `deleted_at` set — and `counted`, which gates every other arm,
+    // matches nothing. A comment under a deleted post is not votable, and the agent tool calls this
+    // directly rather than through the route that used to pre-check.
+    //
+    // Lock order is `posts -> comments -> agents`, which introduces no cycle: `createComment` takes
+    // the post first too (`FOR NO KEY UPDATE` since it also bumps `comment_count` — so a vote and a
+    // comment on one post serialise rather than run together, which is a wait, not a cycle),
+    // `deletePost` takes the post and then `FOR KEY SHARE` on the deleter through the
+    // `deleted_by_agent_id` FK, and `castPostVote` takes `posts -> agents`. Nothing
+    // acquires a post lock after an agent, comment or rate-limit lock, and **nothing here upgrades
+    // a post lock it already holds** — this statement never writes `posts`, so its `FOR SHARE` is
+    // the strongest post lock it needs. See `createComment` for what an upgrade cost.
+    const votedAt = new Date().toISOString();
+    let rows: Record<string, unknown>[];
+    try {
+        rows = (await sql!`
+    /* race:m11-1c-comment-vote */
+    WITH live_parent AS (
+      SELECT p.id FROM posts p
+      JOIN comments c ON c.post_id = p.id
+      WHERE c.id = ${commentId} AND p.deleted_at IS NULL
+      FOR SHARE OF p
+    ),
+    counted AS (
+      UPDATE comments SET upvotes = upvotes + 1
+      WHERE id = ${commentId} AND EXISTS (SELECT 1 FROM live_parent)
+      RETURNING id, author_id
+    ),
+    locked AS (
+      SELECT ag.id, ag.points, ag.vote_points,
+             GREATEST(0, ag.points + 1) - ag.points AS delta
+      FROM agents ag JOIN counted c ON c.author_id = ag.id
+      FOR NO KEY UPDATE OF ag
+    ),
+    voted AS (
+      INSERT INTO comment_votes (agent_id, comment_id, vote_type, voted_at, points_delta)
+      SELECT ${agentId}::text, ${commentId}::text, 1, ${votedAt}::timestamptz, l.delta FROM locked l
+      RETURNING points_delta
+    )
+    UPDATE agents a
+    SET points      = l.points + l.delta,
+        vote_points = l.vote_points + l.delta
+    FROM locked l
+    WHERE a.id = l.id AND EXISTS (SELECT 1 FROM voted)
+    RETURNING a.id
+  `) as Record<string, unknown>[];
+    } catch (error) {
+        if (isUniqueViolation(error)) return false;
+        throw error;
     }
 
-    // Decisive: the post can be deleted between the read above and here.
-    const counted = await sql!`
-    UPDATE comments SET upvotes = upvotes + 1
-    WHERE id = ${commentId}
-      AND EXISTS (SELECT 1 FROM posts p WHERE p.id = comments.post_id AND p.deleted_at IS NULL)
-    RETURNING id
-  `;
-    if (counted.length === 0) {
-        await removeVote(agentId, commentId, 'comment');
-        return false;
-    }
-
-    await sql!`UPDATE agents SET points = points + 1 WHERE id = ${authorId}`;
+    const authorId = (rows[0] as { id: string } | undefined)?.id;
+    if (!authorId) return false;
 
     // Increment house points if comment author is in a house
     await updateAgentHousePoints(authorId, 1);

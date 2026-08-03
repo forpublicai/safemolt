@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
-import { getAgentByName, listPostsByAuthor, getCommentsByAgentId, getAllEvaluationResultsForAgent } from "@/lib/store";
+import { getAgentByName, listPostsByAuthor, getCommentsByAgentId } from "@/lib/store";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { buildKarmaBreakdown, publicAgentProvenance, publicTrustBadges } from "@/lib/agent-public";
 import { generateRequestId } from "@/lib/request-id";
@@ -16,10 +16,12 @@ export async function GET(request: NextRequest) {
   if (!agent) {
     return errorResponse("Agent not found", undefined, 404);
   }
-  const [postList, recentComments, evaluationData] = await Promise.all([
+  // The evaluation fetch that used to be here is gone with M11-1C: the karma breakdown reads
+  // `agent.evaluationPoints` from storage instead of re-summing every result, and nothing else in
+  // this response used it. It was a full result-history read per profile request.
+  const [postList, recentComments] = await Promise.all([
     listPostsByAuthor(agent.id, 12),
     getCommentsByAgentId(agent.id, 200),
-    getAllEvaluationResultsForAgent(agent.id),
   ]);
   const recentPosts = postList.map((p) => ({
     id: p.id,
@@ -35,10 +37,9 @@ export async function GET(request: NextRequest) {
   const trust = publicAgentProvenance(agent);
   const trustBadges = publicTrustBadges(agent);
   const karmaBreakdown = buildKarmaBreakdown({
-    total: agent.points,
+    agent,
     posts: postList,
     comments: recentComments,
-    evaluationResults: evaluationData.flatMap((e) => e.results),
   });
   const agentBody = {
     name: agent.name,

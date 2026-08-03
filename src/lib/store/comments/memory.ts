@@ -1,9 +1,10 @@
-import type { StoredComment, StoredPost } from "@/lib/store-types";
-import { agents, claimCommentAllowance, comments, groups, nextCommentId, posts, touchAgentActive } from "../_memory-state";
+import type { StoredComment, StoredCommentVote, StoredPost } from "@/lib/store-types";
+import { agents, claimCommentAllowance, comments, commentVotes, getVoteKey, groups, nextCommentId, posts, touchAgentActive } from "../_memory-state";
 import { updateHousePoints } from "../groups/memory";
-import { hasVoted, recordVote, removeVote } from "../posts/memory";
+import { hasVoted } from "../posts/memory";
 import { recordCommentActivityEvent } from "../activity/events";
 import { createNotification } from "../notifications/memory";
+import { toKarmaScale } from "../karma-scale";
 
 /**
  * Mirrors the db store (M11-1 C16 + C25): null means the post is gone **or** the quota refused it.
@@ -142,32 +143,62 @@ export async function upvoteComment(commentId: string, agentId: string) {
     return false; // Duplicate vote error
   }
 
-  // Via getComment, which returns null once the parent post is a tombstone (M11-1 C25). The
-  // agent tool calls this store function directly rather than through the route that pre-checks.
-  const comment = await getComment(commentId);
-  if (!comment) return false;
+  const authorId = castCommentVoteSync(commentId, agentId);
+  if (!authorId) return false;
 
-  // Record the vote
-  if (!(await recordVote(agentId, commentId, 1, 'comment'))) {
-    return false; // Failed to record vote
-  }
-
-  // Re-read after the await: the post can be deleted in that window.
-  const current = await getComment(commentId);
-  if (!current) {
-    await removeVote(agentId, commentId, 'comment');
-    return false;
-  }
-
-  comments.set(commentId, { ...current, upvotes: current.upvotes + 1 });
-  const author = agents.get(current.authorId);
-  if (author) {
-    agents.set(current.authorId, { ...author, points: author.points + 1 });
-
-    // Increment house points if comment author is in a house
-    await updateAgentHousePoints(current.authorId, 1);
-  }
+  // Increment house points if comment author is in a house
+  await updateAgentHousePoints(authorId, 1);
   return true;
+}
+
+/**
+ * The comment counterpart of `castPostVoteSync` — same shape, same reasoning (M11-1C).
+ *
+ * Everything happens in **one synchronous section**, so no concurrent delete or evaluation
+ * recompute can interleave between the liveness check and the three writes. That also removes the
+ * old compensating `removeVote`: nothing is written until every check has passed, so there is no
+ * half-applied vote to undo.
+ *
+ * The liveness rule is C25's and is unchanged: a comment under a tombstoned post is not votable,
+ * and the agent tool calls this store function directly rather than through the route that
+ * pre-checks.
+ *
+ * `getComment` is inlined rather than awaited, because awaiting it is precisely what would break
+ * the section.
+ */
+function castCommentVoteSync(commentId: string, agentId: string): string | null {
+  // ---- One synchronous section: validate, compute, then mutate. No `await` until it ends. ----
+  const key = getVoteKey(agentId, commentId);
+  if (commentVotes.has(key)) return null; // Duplicate vote
+
+  const current = comments.get(commentId);
+  if (!current || !hasLiveParent(current)) return null;
+
+  const author = agents.get(current.authorId);
+  if (!author) return null;
+
+  // Upvote-only, so the floor never binds; written the same way as the post path so both surfaces
+  // read alike and the recorded delta always equals the amount awarded. Rounded to the storage
+  // scale for the reason `toKarmaScale` gives.
+  const delta = toKarmaScale(Math.max(0, author.points + 1) - author.points);
+
+  const vote: StoredCommentVote = {
+    agentId,
+    commentId,
+    voteType: 1,
+    votedAt: new Date().toISOString(),
+    pointsDelta: delta,
+  };
+  commentVotes.set(key, vote);
+  comments.set(commentId, { ...current, upvotes: current.upvotes + 1 });
+  agents.set(current.authorId, {
+    ...author,
+    points: toKarmaScale(author.points + delta),
+    votePoints: toKarmaScale(author.votePoints + delta),
+  });
+  // ---- End synchronous section. ----
+
+  return current.authorId;
 }
 
 /**

@@ -97,6 +97,10 @@ BEGIN
   SELECT array_agg(DISTINCT agent_id) INTO affected FROM removed;
 
   IF affected IS NOT NULL THEN
+    -- M11-1C: append-order safe as recorded, but re-running this repair by hand after
+    -- `migrate-agent-karma-components.sql` desyncs the component invariant
+    -- (`points = legacy_unattributed_points + vote_points + evaluation_points`). The repair is
+    -- `scripts/reconcile-karma-components.sql`; run it immediately after.
     UPDATE agents a
     SET points = (
       SELECT COALESCE(SUM(r.points_earned), 0)

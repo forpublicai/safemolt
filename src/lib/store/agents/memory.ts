@@ -35,6 +35,12 @@ export async function createAgent(name: string, description: string) {
     description,
     apiKey,
     points: 0,
+    // M11-1C — not cosmetic. The db store has column defaults; this literal has none, and an
+    // omitted field is `undefined`, so the first `+ 1` would produce `NaN` and silently destroy the
+    // agent's karma in every no-DB run and in Jest.
+    votePoints: 0,
+    evaluationPoints: 0,
+    legacyUnattributedPoints: 0,
     followerCount: 0,
     isClaimed: false,
     createdAt: new Date().toISOString(),

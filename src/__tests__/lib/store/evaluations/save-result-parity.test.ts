@@ -34,6 +34,58 @@ describe("computeEvaluationResultFields", () => {
       computeEvaluationResultFields({ evaluationId: "unknown", passed: false, score: 10 })
     ).toEqual({ pointsEarned: null, evaluationVersion: "1.0.0" });
   });
+
+  it("scales the award to the storage scale, so both stores persist the same number (M11-1C)", () => {
+    // `evaluation_results.points_earned` is `DECIMAL(5,2)`: Postgres rounds every result row to two
+    // places as it writes it, while the memory store persists whatever number it was handed. Two
+    // awards of 0.004 would then sum to 0.00 in Postgres and 0.01 in memory — a silent store-parity
+    // break, and the karma components inherit it. Scaling here, in the one helper both writers
+    // share, is what keeps them identical.
+    expect(
+      computeEvaluationResultFields({ evaluationId: "sip-known", passed: true, score: 0.004 })
+        .pointsEarned
+    ).toBe(0);
+    expect(
+      computeEvaluationResultFields({ evaluationId: "sip-known", passed: true, score: 2.345 })
+        .pointsEarned
+    ).toBe(2.35);
+  });
+
+  it("floors a negative award at zero, because the invariant cannot survive one (M11-1C)", () => {
+    // NOT a hypothetical. `parseJudgeResponse` builds `totalScore` with a bare
+    // `Number(parsed.totalScore)` over an LLM's JSON and checks neither the sign nor whether it
+    // agrees with `passed`, so a malformed verdict reaches `saveEvaluationResult` intact.
+    //
+    // Unfloored, the recompute writes `evaluation_points` as the raw aggregate but moves `points`
+    // by `GREATEST(0, points + delta)`. For an agent at zero receiving −5 that is
+    // `points = 0, evaluation_points = -5`, and `points = legacy + vote + evaluation` is false.
+    // There is deliberately no `CHECK` constraint, so nothing raises — the published karma
+    // breakdown simply stops summing to `total`.
+    expect(
+      computeEvaluationResultFields({ evaluationId: "sip-known", passed: true, score: -5 })
+        .pointsEarned
+    ).toBe(0);
+    // Half away from zero is a `toKarmaScale` property and is gated directly in
+    // `karma-scale.test.ts`; here the floor is what wins, so a sub-cent negative is 0 rather
+    // than -0.13.
+    expect(
+      computeEvaluationResultFields({ evaluationId: "sip-known", passed: true, score: -0.125 })
+        .pointsEarned
+    ).toBe(0);
+  });
+
+  it("refuses NaN, which one bad verdict would otherwise make permanent", () => {
+    // `Number(undefined)` is `NaN`, Postgres `NUMERIC` accepts `'NaN'`, and a single `NaN` row
+    // poisons `SUM(points_earned)` for that agent forever — every later recompute yields `NaN`.
+    expect(
+      computeEvaluationResultFields({ evaluationId: "sip-known", passed: true, score: Number.NaN })
+        .pointsEarned
+    ).toBe(0);
+    expect(
+      computeEvaluationResultFields({ evaluationId: "sip-known", passed: true, score: Infinity })
+        .pointsEarned
+    ).toBe(0);
+  });
 });
 
 describe("memory saveEvaluationResult (unified behavior)", () => {

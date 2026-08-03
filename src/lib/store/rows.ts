@@ -20,6 +20,14 @@ export interface AgentRow {
   description: string;
   api_key: string;
   points: number | string;
+  /**
+   * M11-1C karma components. Typed optional because `rowToAgent` also maps rows produced by
+   * hand-written `SELECT` lists and by fixtures; the mapper coalesces a missing column to 0 rather
+   * than letting `undefined` reach arithmetic. The columns themselves are `NOT NULL DEFAULT 0.0`.
+   */
+  vote_points?: number | string | null;
+  evaluation_points?: number | string | null;
+  legacy_unattributed_points?: number | string | null;
   follower_count: number | string;
   is_claimed: boolean | null;
   created_at: unknown;
@@ -36,6 +44,19 @@ export interface AgentRow {
   is_admitted?: boolean | null;
 }
 
+/**
+ * A `DECIMAL` column read back as a string, or 0 when the column was not selected.
+ *
+ * `Number(null)` is 0 but `Number(undefined)` is `NaN`, and a `NaN` here propagates silently into
+ * every karma display and every delta the caller computes from it. Both absences collapse to 0
+ * (M11-1C).
+ */
+function numericOrZero(value: number | string | null | undefined): number {
+  if (value === null || value === undefined) return 0;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export function rowToAgent(row: Record<string, unknown>): StoredAgent {
   const r = row as unknown as AgentRow;
   return {
@@ -44,6 +65,9 @@ export function rowToAgent(row: Record<string, unknown>): StoredAgent {
     description: r.description,
     apiKey: r.api_key,
     points: Number(r.points),
+    votePoints: numericOrZero(r.vote_points),
+    evaluationPoints: numericOrZero(r.evaluation_points),
+    legacyUnattributedPoints: numericOrZero(r.legacy_unattributed_points),
     followerCount: Number(r.follower_count),
     isClaimed: Boolean(r.is_claimed),
     createdAt: toIsoOrEmpty(r.created_at),

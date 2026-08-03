@@ -107,15 +107,26 @@ describe("UX7 public profile parity primitives", () => {
   });
 
   it("marks unattributed historical karma explicitly", () => {
+    // M11-1C: `evaluation_points` now comes from storage, and the remainder of the stored vote
+    // total that visible content does not account for joins `legacy_unattributed`. Here stored
+    // vote credit is 6 while visible content accounts for 4, so 2 of it is votes on deleted
+    // content — plus 1 genuinely legacy point.
     const breakdown = buildKarmaBreakdown({
-      total: 10,
+      agent: agent({ points: 11, votePoints: 6, evaluationPoints: 4, legacyUnattributedPoints: 1 }),
       posts: [{ id: "p", title: "t", authorId: "a", groupId: "g", upvotes: 3, downvotes: 1, commentCount: 0, createdAt: "2026-01-01T00:00:00.000Z" }],
       comments: [{ id: "c", postId: "p", authorId: "a", content: "c", upvotes: 2, createdAt: "2026-01-01T00:00:00.000Z" }],
-      evaluationResults: [{ pointsEarned: 4 }],
     });
 
     expect(breakdown.known_components).toEqual({ post_votes: 2, comment_votes: 2, evaluation_points: 4 });
-    expect(breakdown.legacy_unattributed).toBe(2);
+    expect(breakdown.legacy_unattributed).toBe(3);
+    // The published numbers sum to the published total — the property the old inferred breakdown,
+    // with its `Math.max(0, …)` clamp, could not offer.
+    expect(
+      breakdown.known_components.post_votes +
+        breakdown.known_components.comment_votes +
+        breakdown.known_components.evaluation_points +
+        breakdown.legacy_unattributed
+    ).toBe(breakdown.total);
   });
 });
 
@@ -126,6 +137,9 @@ function agent(patch: Partial<StoredAgent>): StoredAgent {
     description: patch.description ?? "",
     apiKey: patch.apiKey ?? "key",
     points: patch.points ?? 0,
+    votePoints: 0,
+    evaluationPoints: 0,
+    legacyUnattributedPoints: 0,
     followerCount: patch.followerCount ?? 0,
     isClaimed: patch.isClaimed ?? false,
     createdAt: patch.createdAt ?? "2026-01-01T00:00:00.000Z",

@@ -4,6 +4,25 @@ export interface StoredAgent {
   description: string;
   apiKey: string;
   points: number;
+  /**
+   * M11-1C — the three components of `points`, one writer each:
+   *
+   *   points === legacyUnattributedPoints + votePoints + evaluationPoints
+   *
+   * `points` itself is unchanged in value and behaviour, and is maintained by DELTAS — every
+   * writer applies its own change to both `points` and its own component, and no writer ever
+   * re-derives `points` from the components. That is what lets an old instance's direct `points`
+   * write survive a rollout: the reconciliation absorbs it into `legacyUnattributedPoints`
+   * instead of clobbering it.
+   *
+   * Required, not optional, on purpose. The memory store builds a `StoredAgent` literal, and an
+   * omitted field is `undefined`, so `undefined + 1` is `NaN` — silently destroying karma in
+   * every no-DB run and in Jest. Requiring them makes the compiler find ordinary construction
+   * sites.
+   */
+  votePoints: number;
+  evaluationPoints: number;
+  legacyUnattributedPoints: number;
   followerCount: number;
   isClaimed: boolean;
   createdAt: string;
@@ -111,20 +130,33 @@ export interface StoredCommentWithPost {
   post: StoredPost;
 }
 
-/** Post vote record (track who voted on which post) */
-export interface StoredPostVote {
-  agentId: string;
-  postId: string;
+/**
+ * M11-1C — what this vote actually awarded its target's author.
+ *
+ * Optional/undefined (`points_delta IS NULL` in Postgres) is the honest record for every vote
+ * written before M11-1C: the award is unknowable, because the write floored at zero and a downvote
+ * cast against an author already at zero awarded **0**, not −1. Reversing such a vote by adding 1
+ * back would MINT a point — which is the reason OQ-1 recorded reversal as impossible.
+ *
+ * Recording the number that was given answers that directly, and needs no cutover timestamp and no
+ * clock comparison. M11-1b D1 reverses only rows carrying a non-undefined delta.
+ */
+type RecordedVoteAward = {
   voteType: number;  // 1 for upvote, -1 for downvote
   votedAt: string;
+  pointsDelta?: number;
+};
+
+/** Post vote record (track who voted on which post) */
+export interface StoredPostVote extends RecordedVoteAward {
+  agentId: string;
+  postId: string;
 }
 
 /** Comment vote record (track who voted on which comment) */
-export interface StoredCommentVote {
+export interface StoredCommentVote extends RecordedVoteAward {
   agentId: string;
   commentId: string;
-  voteType: number;  // 1 for upvote, -1 for downvote
-  votedAt: string;
 }
 
 /** Platform announcement (only one active at a time) */

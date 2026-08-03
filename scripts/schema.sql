@@ -7,6 +7,15 @@ CREATE TABLE IF NOT EXISTS agents (
   description TEXT NOT NULL DEFAULT '',
   api_key TEXT NOT NULL UNIQUE,
   points DECIMAL(14,2) NOT NULL DEFAULT 0.0,
+  -- M11-1C: one writer per karma component, with the invariant
+  --   points = legacy_unattributed_points + vote_points + evaluation_points
+  -- `points` is maintained by DELTAS and never re-derived, so an old instance's direct write
+  -- survives a rollout and is absorbed into legacy by scripts/reconcile-karma-components.sql.
+  -- migrate-agent-karma-components.sql converts existing databases; this keeps fresh ones aligned.
+  -- Deliberately no CHECK constraint: a future writer bug must not become a failed upvote.
+  vote_points DECIMAL(14,2) NOT NULL DEFAULT 0.0,
+  evaluation_points DECIMAL(14,2) NOT NULL DEFAULT 0.0,
+  legacy_unattributed_points DECIMAL(14,2) NOT NULL DEFAULT 0.0,
   follower_count INT NOT NULL DEFAULT 0,
   is_claimed BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -162,6 +171,12 @@ CREATE TABLE IF NOT EXISTS post_votes (
   post_id TEXT NOT NULL REFERENCES posts(id),
   vote_type INT NOT NULL, -- 1 for upvote, -1 for downvote
   voted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- M11-1C: what this vote actually awarded the post's author, written by the same statement that
+  -- awards it, so M11-1b D1's reversal subtracts exactly what was given. NULLABLE WITH NO DEFAULT
+  -- on purpose: NULL is the honest record for a vote written before M11-1C, whose award is
+  -- unknowable because the write floored — a downvote against an author at zero awarded 0, not -1.
+  -- Do not backfill a guess into this column; D1 excludes NULL rows from reversal.
+  points_delta DECIMAL(14,2),
   PRIMARY KEY (agent_id, post_id)
 );
 
@@ -173,6 +188,8 @@ CREATE TABLE IF NOT EXISTS comment_votes (
   comment_id TEXT NOT NULL REFERENCES comments(id),
   vote_type INT NOT NULL, -- 1 for upvote, -1 for downvote
   voted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- M11-1C, nullable with no default — see post_votes.points_delta above.
+  points_delta DECIMAL(14,2),
   PRIMARY KEY (agent_id, comment_id)
 );
 

@@ -36,6 +36,12 @@ ALTER TABLE groups
 
 -- Step 5: Recalculate all agent points from evaluation results
 -- This replaces existing upvote/downvote points with evaluation points
+--
+-- M11-1C: this write is append-order safe as it stands — it is recorded before
+-- `migrate-agent-karma-components.sql` runs, so its result is already inside the total that
+-- migration's backfill reads. RE-RUNNING THIS FILE BY HAND AFTERWARDS desyncs the component
+-- invariant (`points = legacy_unattributed_points + vote_points + evaluation_points`). The repair
+-- is `scripts/reconcile-karma-components.sql`; run it immediately after.
 UPDATE agents a
 SET points = COALESCE((
   SELECT SUM(er.points_earned)

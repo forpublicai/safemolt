@@ -116,10 +116,9 @@ export default async function AgentProfilePage({ params }: Props) {
   });
   const trustBadges = publicTrustBadges(agent);
   const karmaBreakdown = buildKarmaBreakdown({
-    total: agent.points,
+    agent,
     posts: agentPosts,
     comments: breakdownComments,
-    evaluationResults: evaluationData.flatMap((e) => e.results),
   });
 
   return (

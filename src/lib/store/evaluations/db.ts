@@ -672,20 +672,55 @@ export async function getAgentEvaluationPoints(agentId: string): Promise<number>
 /**
  * Update agent's points field to reflect evaluation points
  * Call this after saving an evaluation result
+ *
+ * **This applies the INCREMENT, not the absolute total (M11-1C), and that is what stops it wiping
+ * vote karma.** It used to be `points = (SELECT SUM(points_earned) …)` — an absolute overwrite that
+ * fought the vote writers' `points = points + 1` for ownership of one column, so which value an
+ * agent saw depended on which writer fired last. `evaluation_points` now owns the evaluation total
+ * outright, and `points` moves by the difference.
+ *
+ * The aggregate is repeated inline rather than assigned once, for the pre-update-read reason: a
+ * `SET` list reads the OLD row, so `points = points + (evaluation_points - old)` written against a
+ * freshly assigned `evaluation_points` would read 0 and double the total. That is draft 2's bug,
+ * and repeating the subquery removes it structurally.
+ *
+ * `GREATEST(0, …)` keeps the displayed total non-negative, and it is the ONE place the component
+ * invariant can diverge: `evaluation_points` takes the raw aggregate while `points` is floored, so
+ * the two disagree whenever the aggregate would drive `points` below zero.
+ *
+ * That needs an agent's evaluation credit to *decrease* below their other components, which has
+ * two causes and not one:
+ *
+ * - Passed results deleted — a repair migration, not a request path.
+ * - **A negative `points_earned` on a passed result.** This one IS a request path, and an earlier
+ *   revision of this comment was wrong to say otherwise: `parseJudgeResponse` builds `totalScore`
+ *   with a bare `Number(parsed.totalScore)` over an LLM's JSON and validates neither its sign nor
+ *   its agreement with `passed`. `computeEvaluationResultFields` now floors the award at zero for
+ *   exactly this reason, so no result row can carry a negative award — see `toAwardedPoints`.
+ *
+ * `scripts/reconcile-karma-components.sql` is the repair for both, and re-deriving legacy as the
+ * residual restores the invariant without moving anybody's displayed total.
+ *
+ * Sum and write still share one statement, so two recomputes for one agent cannot interleave a
+ * stale read between them (M11-1 C21). Serializing two concurrent completions is still M11-1b D4's
+ * `FOR UPDATE` work — unchanged here, and not a regression introduced by this writer. No
+ * house-points follow-up: the legacy recalculation only ever read the stored group total (see the
+ * C21 retraction in PLAN_M11_1.md), so the tail was two round trips per passed save for no effect,
+ * and the memory store never had it.
  */
 export async function updateAgentPointsFromEvaluations(agentId: string): Promise<void> {
-    // Sum and write share one statement, so two recomputes for one agent cannot interleave a stale
-    // read between them — the read and the write see the same snapshot (M11-1 C21). No house-points
-    // follow-up: the legacy recalculation only ever read the stored group total (see the C21
-    // retraction in PLAN_M11_1.md), so the tail was two round trips per passed save for no effect,
-    // and the memory store never had it.
     await sql!`
     UPDATE agents
-    SET points = (
-      SELECT COALESCE(SUM(points_earned), 0)
-      FROM evaluation_results
-      WHERE agent_id = ${agentId} AND passed = true
-    )
+    SET evaluation_points = (
+          SELECT COALESCE(SUM(points_earned), 0)
+          FROM evaluation_results
+          WHERE agent_id = ${agentId} AND passed = true
+        ),
+        points = GREATEST(0, points + ((
+          SELECT COALESCE(SUM(points_earned), 0)
+          FROM evaluation_results
+          WHERE agent_id = ${agentId} AND passed = true
+        ) - evaluation_points))
     WHERE id = ${agentId}
   `;
 }

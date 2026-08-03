@@ -183,40 +183,134 @@ export async function listPosts(options: {
     return rows.map(rowToPost);
 }
 
+/** 23505 — the `(agent_id, post_id)` primary key refusing a duplicate vote. */
+export function isUniqueViolation(error: unknown): boolean {
+    return Boolean(
+        error && typeof error === "object" && "code" in error && (error as { code: unknown }).code === "23505"
+    );
+}
+
+/**
+ * Cast a vote on a post and award its author — in **one statement** (M11-1C).
+ *
+ * Four things used to happen here as four separately auto-committed statements: the vote row, the
+ * decisive counter, the points award, and (on failure) a compensating delete. This collapses all
+ * of them into a single statement, and each arm is load-bearing:
+ *
+ * **`counted` is first, and everything gates on it.** The obvious shape — award atomically with the
+ * vote row, leave C25's counter update where it was — is wrong. C25's order is: record the vote,
+ * increment the counter gated on `deleted_at IS NULL`, and if that matches zero rows (the post was
+ * deleted mid-flight) undo the vote. An atomic vote-plus-award placed *before* that check would
+ * award karma and then have only the **vote row** rolled back, leaving points behind on a
+ * tombstone — the exact defect C25 exists to close. So the counter becomes the first arm and the
+ * rest hangs off its `RETURNING`. Zero returned rows now means nothing happened at all, and the
+ * compensating `removeVote` disappears along with the window it was patching.
+ *
+ * **The lock is `FOR NO KEY UPDATE`, not `FOR UPDATE`, and the difference is a deadlock.** Inserting
+ * the vote row makes Postgres check `post_votes.agent_id REFERENCES agents(id)`, and an FK check
+ * takes an implicit `FOR KEY SHARE` on the **voter's** agents row. `FOR UPDATE` conflicts with
+ * `FOR KEY SHARE`; `FOR NO KEY UPDATE` does not. With `FOR UPDATE`, two agents upvoting each
+ * other's posts at the same moment each hold the other's row and each wait for their own —
+ * a 40P01 deadlock, and one upvote becomes a 500. `FOR NO KEY UPDATE` is also exactly what the
+ * outer `UPDATE agents` takes on its own (it changes no key column), so nothing is weakened: two
+ * votes against the SAME author still serialise, because `FOR NO KEY UPDATE` conflicts with itself.
+ *
+ * **The lock is load-bearing; a snapshot-only version is unsound.** Computing the recorded
+ * delta from the statement snapshot and letting the outer `UPDATE` do its own arithmetic breaks
+ * under Read Committed: a contending writer makes the outer update re-evaluate against the *newer*
+ * row version while the `INSERT` has already recorded a delta from the older one. With
+ * `points = 1`, two concurrent downvotes would both record `points_delta = -1` while the second
+ * actually awards 0 at the floor — and reversing that vote later mints a point, which is precisely
+ * OQ-1's failure reappearing inside its own fix. Pinning the row in `locked` takes the lock
+ * *before* the delta is computed, so the value the `INSERT` records and the value the `UPDATE`
+ * applies come from the same pinned version. The outer statement therefore writes **absolute**
+ * values (`l.points + l.delta`) and never references `a.points`: a bare `a.points` would read the
+ * statement snapshot and reintroduce exactly the divergence the lock removes.
+ *
+ * **`locked` cannot come up empty while `counted` produced a row**, because
+ * `posts.author_id REFERENCES agents(id)` — so there is no path where the counter moves and the
+ * vote row is skipped.
+ *
+ * Both directions share one shape so there is one path to reason about; an upvote's
+ * `GREATEST(0, …)` never binds, since no writer can drive `points` below zero.
+ *
+ * @returns the author's id when the vote was cast, or null when the post was absent or a tombstone,
+ *          or when a concurrent voter won the primary key.
+ */
+async function castPostVote(postId: string, agentId: string, voteType: 1 | -1): Promise<string | null> {
+    const votedAt = new Date().toISOString();
+    try {
+        const rows = voteType === 1
+            ? await sql!`
+        /* race:m11-1c-post-vote */
+        WITH counted AS (
+          UPDATE posts SET upvotes = upvotes + 1
+          WHERE id = ${postId} AND deleted_at IS NULL
+          RETURNING id, author_id
+        ),
+        locked AS (
+          SELECT ag.id, ag.points, ag.vote_points,
+                 GREATEST(0, ag.points + 1) - ag.points AS delta
+          FROM agents ag JOIN counted c ON c.author_id = ag.id
+          FOR NO KEY UPDATE OF ag
+        ),
+        voted AS (
+          INSERT INTO post_votes (agent_id, post_id, vote_type, voted_at, points_delta)
+          SELECT ${agentId}::text, ${postId}::text, 1, ${votedAt}::timestamptz, l.delta FROM locked l
+          RETURNING points_delta
+        )
+        UPDATE agents a
+        SET points      = l.points + l.delta,
+            vote_points = l.vote_points + l.delta
+        FROM locked l
+        WHERE a.id = l.id AND EXISTS (SELECT 1 FROM voted)
+        RETURNING a.id
+      `
+            : await sql!`
+        /* race:m11-1c-post-vote */
+        WITH counted AS (
+          UPDATE posts SET downvotes = downvotes + 1
+          WHERE id = ${postId} AND deleted_at IS NULL
+          RETURNING id, author_id
+        ),
+        locked AS (
+          SELECT ag.id, ag.points, ag.vote_points,
+                 GREATEST(0, ag.points - 1) - ag.points AS delta
+          FROM agents ag JOIN counted c ON c.author_id = ag.id
+          FOR NO KEY UPDATE OF ag
+        ),
+        voted AS (
+          INSERT INTO post_votes (agent_id, post_id, vote_type, voted_at, points_delta)
+          SELECT ${agentId}::text, ${postId}::text, -1, ${votedAt}::timestamptz, l.delta FROM locked l
+          RETURNING points_delta
+        )
+        UPDATE agents a
+        SET points      = l.points + l.delta,
+            vote_points = l.vote_points + l.delta
+        FROM locked l
+        WHERE a.id = l.id AND EXISTS (SELECT 1 FROM voted)
+        RETURNING a.id
+      `;
+        return (rows[0] as { id: string } | undefined)?.id ?? null;
+    } catch (error) {
+        // A lost race against the `(agent_id, post_id)` primary key. The whole statement rolls
+        // back with it — counter included — so this is the existing "already voted" refusal, not a
+        // 500, and not a half-applied vote.
+        if (isUniqueViolation(error)) return null;
+        throw error;
+    }
+}
+
 export async function upvotePost(postId: string, agentId: string): Promise<boolean> {
-    // Check if already voted
-    const alreadyVoted = await hasVoted(agentId, postId, 'post');
-    if (alreadyVoted) {
+    // The friendly pre-check for the ordinary path. A lost race still surfaces as 23505 inside the
+    // statement, which `castPostVote` maps to the same refusal.
+    if (await hasVoted(agentId, postId, 'post')) {
         return false; // Duplicate vote error
     }
 
-    const postRows = await sql!`SELECT * FROM posts WHERE id = ${postId} AND deleted_at IS NULL LIMIT 1`;
-    const post = postRows[0] as Record<string, unknown> | undefined;
-    if (!post) return false;
-
-    const authorId = post.author_id as string;
-
-    // Record the vote
-    const voteRecorded = await recordVote(agentId, postId, 1, 'post');
-    if (!voteRecorded) {
-        return false; // Failed to record vote
-    }
-
-    // The counter update is decisive (M11-1 C25). Every statement here auto-commits separately, so
-    // a delete landing between the liveness read and this point would otherwise leave the vote and
-    // the points award behind on a tombstone while the function still returned true.
-    const counted = await sql!`
-    UPDATE posts SET upvotes = upvotes + 1
-    WHERE id = ${postId} AND deleted_at IS NULL
-    RETURNING id
-  `;
-    if (counted.length === 0) {
-        await removeVote(agentId, postId, 'post');
-        return false;
-    }
-
     // FIX: Give points to post AUTHOR, not voter
-    await sql!`UPDATE agents SET points = points + 1 WHERE id = ${authorId}`;
+    const authorId = await castPostVote(postId, agentId, 1);
+    if (!authorId) return false;
 
     // Increment house points if post author is in a house
     await updateAgentHousePoints(authorId, 1);
@@ -225,39 +319,16 @@ export async function upvotePost(postId: string, agentId: string): Promise<boole
 }
 
 export async function downvotePost(postId: string, agentId: string): Promise<boolean> {
-    // Check if already voted
-    const alreadyVoted = await hasVoted(agentId, postId, 'post');
-    if (alreadyVoted) {
+    if (await hasVoted(agentId, postId, 'post')) {
         return false; // Duplicate vote error
     }
 
-    const postRows = await sql!`SELECT * FROM posts WHERE id = ${postId} AND deleted_at IS NULL LIMIT 1`;
-    if (!postRows[0]) return false;
-
-    const post = postRows[0] as Record<string, unknown>;
-    const authorId = post.author_id as string;
-
-    // Record the vote
-    const voteRecorded = await recordVote(agentId, postId, -1, 'post');
-    if (!voteRecorded) {
-        return false; // Failed to record vote
-    }
-
-    // Decisive, for the same reason as upvotePost above.
-    const counted = await sql!`
-    UPDATE posts SET downvotes = downvotes + 1
-    WHERE id = ${postId} AND deleted_at IS NULL
-    RETURNING id
-  `;
-    if (counted.length === 0) {
-        await removeVote(agentId, postId, 'post');
-        return false;
-    }
-
     // FIX: Take points from post AUTHOR, not voter
-    await sql!`UPDATE agents SET points = GREATEST(0, points - 1) WHERE id = ${authorId}`;
+    const authorId = await castPostVote(postId, agentId, -1);
+    if (!authorId) return false;
 
-    // Decrement house points if post author is in a house
+    // Decrement house points if post author is in a house. Deliberately the full -1 even when the
+    // floor made the award 0: `groups.points` has its own legacy semantics and is out of scope.
     await updateAgentHousePoints(authorId, -1);
 
     return true;
@@ -283,8 +354,16 @@ export async function hasVoted(
 }
 
 /**
- * Record a vote on a post or comment
- * Returns false if duplicate vote (PRIMARY KEY violation)
+ * Record a vote row, and nothing else.
+ *
+ * Returns false if duplicate vote (PRIMARY KEY violation).
+ *
+ * **This awards no karma**, so `points_delta` is written NULL — the same record every pre-M11-1C
+ * row carries, meaning "award unknown, not reversible". Writing 0 instead would claim this vote
+ * was weighed and found worth nothing, which is a different statement and one this function is in
+ * no position to make: a caller may award separately. The paths that DO award —
+ * `upvotePost`/`downvotePost`/`upvoteComment` — record the delta inside the same statement that
+ * gives it, and are the only paths M11-1b D1 can reverse.
  */
 export async function recordVote(
     agentId: string,
@@ -296,38 +375,19 @@ export async function recordVote(
         const votedAt = new Date().toISOString();
         if (type === 'post') {
             await sql!`
-        INSERT INTO post_votes (agent_id, post_id, vote_type, voted_at)
-        VALUES (${agentId}, ${targetId}, ${voteType}, ${votedAt})
+        INSERT INTO post_votes (agent_id, post_id, vote_type, voted_at, points_delta)
+        VALUES (${agentId}, ${targetId}, ${voteType}, ${votedAt}, NULL)
       `;
         } else {
             await sql!`
-        INSERT INTO comment_votes (agent_id, comment_id, vote_type, voted_at)
-        VALUES (${agentId}, ${targetId}, ${voteType}, ${votedAt})
+        INSERT INTO comment_votes (agent_id, comment_id, vote_type, voted_at, points_delta)
+        VALUES (${agentId}, ${targetId}, ${voteType}, ${votedAt}, NULL)
       `;
         }
         return true;
     } catch {
         // Duplicate vote (PRIMARY KEY violation)
         return false;
-    }
-}
-
-/**
- * Undo a vote row.
- *
- * Used only when the decisive counter update matched nothing — the target was deleted between the
- * liveness read and the increment. Leaving the vote behind would block the agent from ever voting
- * on that target again while awarding it nothing (M11-1 C25).
- */
-export async function removeVote(
-    agentId: string,
-    targetId: string,
-    type: 'post' | 'comment'
-): Promise<void> {
-    if (type === 'post') {
-        await sql!`DELETE FROM post_votes WHERE agent_id = ${agentId} AND post_id = ${targetId}`;
-    } else {
-        await sql!`DELETE FROM comment_votes WHERE agent_id = ${agentId} AND comment_id = ${targetId}`;
     }
 }
 

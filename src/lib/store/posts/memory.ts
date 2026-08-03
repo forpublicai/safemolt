@@ -2,6 +2,7 @@ import type { StoredPost, StoredComment, StoredCommentWithPost, StoredPostVote, 
 import { agents, claimPostAllowance, COMMENT_COOLDOWN_MS, commentCountToday, comments, commentVotes, getVoteKey, groups, lastCommentAt, lastPostAt, MAX_COMMENTS_PER_DAY, nextPostId, POST_COOLDOWN_MS, posts, postVotes, touchAgentActive } from "../_memory-state";
 import { updateHousePoints } from "../groups/memory";
 import { recordPostActivityEvent } from "../activity/events";
+import { toKarmaScale } from "../karma-scale";
 
 export async function checkPostRateLimit(agentId: string) {
   const last = lastPostAt.get(agentId);
@@ -91,38 +92,68 @@ export async function listPosts(options: { group?: string; sort?: string; limit?
   return list.slice(0, limit);
 }
 
+/**
+ * Cast a vote on a post and award its author — the memory store's counterpart to `castPostVote`'s
+ * single statement (M11-1C).
+ *
+ * The db store gets atomicity from one statement and a row lock. Here it comes from **one
+ * synchronous section**: every read and every write below happens with no `await` between them, so
+ * nothing — a concurrent evaluation recompute, a concurrent delete — can interleave. The C25
+ * defect this shape also closes was exactly an interleaving: a stale author/post snapshot captured
+ * before an `await` was spread back afterwards, resurrecting a post deleted in that window.
+ *
+ * Because nothing is written until every check has passed, there is no half-applied state to
+ * compensate for, and the old `removeVote` undo — and its window — is gone from this path too.
+ *
+ * @returns the author's id when the vote was cast, or null.
+ */
+function castPostVoteSync(postId: string, agentId: string, voteType: 1 | -1): string | null {
+  // ---- One synchronous section: validate, compute, then mutate. No `await` until it ends. ----
+  const key = getVoteKey(agentId, postId);
+  if (postVotes.has(key)) return null; // Duplicate vote
+
+  const current = livePost(postId);
+  if (!current) return null;
+
+  const author = agents.get(current.authorId);
+  if (!author) return null;
+
+  // The same floored delta goes onto the vote row, onto `points`, and onto `votePoints` — which is
+  // why the invariant holds exactly and a downvote against an agent at zero is a no-op in all
+  // three places rather than hidden debt. Rounded to the storage scale (`DECIMAL(14,2)`) because
+  // JavaScript floats are not exact and Postgres NUMERIC is — see `toKarmaScale`.
+  const delta = toKarmaScale(Math.max(0, author.points + voteType) - author.points);
+
+  const vote: StoredPostVote = { agentId, postId, voteType, votedAt: new Date().toISOString(), pointsDelta: delta };
+  postVotes.set(key, vote);
+  posts.set(
+    postId,
+    voteType === 1
+      ? { ...current, upvotes: current.upvotes + 1 }
+      : { ...current, downvotes: current.downvotes + 1 }
+  );
+  agents.set(current.authorId, {
+    ...author,
+    points: toKarmaScale(author.points + delta),
+    votePoints: toKarmaScale(author.votePoints + delta),
+  });
+  // ---- End synchronous section. ----
+
+  return current.authorId;
+}
+
 export async function upvotePost(postId: string, agentId: string) {
   // Check if already voted
   if (await hasVoted(agentId, postId, 'post')) {
     return false; // Duplicate vote error
   }
 
-  const post = livePost(postId);
-  if (!post) return false;
-
-  // Record the vote
-  if (!(await recordVote(agentId, postId, 1, 'post'))) {
-    return false; // Failed to record vote
-  }
-
-  const author = agents.get(post.authorId);
-  if (!author) return false;
-
-  // Re-read after the await. Spreading the snapshot captured *before* `recordVote` would write
-  // back a copy without `deletedAt` and resurrect a post deleted in that window (M11-1 C25).
-  const current = livePost(postId);
-  if (!current) {
-    // The vote was already recorded; leaving it would block this agent from ever voting on the
-    // target again while awarding it nothing.
-    await removeVote(agentId, postId, 'post');
-    return false;
-  }
-  posts.set(postId, { ...current, upvotes: current.upvotes + 1 });
   // FIX: Give points to post AUTHOR, not voter
-  agents.set(post.authorId, { ...author, points: author.points + 1 });
+  const authorId = castPostVoteSync(postId, agentId, 1);
+  if (!authorId) return false;
 
   // Increment house points if post author is in a house
-  await updateAgentHousePoints(post.authorId, 1);
+  await updateAgentHousePoints(authorId, 1);
 
   return true;
 }
@@ -133,29 +164,13 @@ export async function downvotePost(postId: string, agentId: string) {
     return false; // Duplicate vote error
   }
 
-  const post = livePost(postId);
-  if (!post) return false;
-
-  // Record the vote
-  if (!(await recordVote(agentId, postId, -1, 'post'))) {
-    return false; // Failed to record vote
-  }
-
-  const author = agents.get(post.authorId);
-  if (!author) return false;
-
-  // Re-read after the await — see upvotePost (M11-1 C25).
-  const current = livePost(postId);
-  if (!current) {
-    await removeVote(agentId, postId, 'post');
-    return false;
-  }
-  posts.set(postId, { ...current, downvotes: current.downvotes + 1 });
   // FIX: Take points from post AUTHOR, not voter
-  agents.set(post.authorId, { ...author, points: Math.max(0, author.points - 1) });
+  const authorId = castPostVoteSync(postId, agentId, -1);
+  if (!authorId) return false;
 
-  // Decrement house points if post author is in a house
-  await updateAgentHousePoints(post.authorId, -1);
+  // Decrement house points if post author is in a house. Deliberately the full -1 even when the
+  // floor made the award 0, matching the db store: `groups.points` is out of scope.
+  await updateAgentHousePoints(authorId, -1);
 
   return true;
 }
@@ -176,21 +191,12 @@ export async function hasVoted(
 }
 
 /**
- * Undo a vote row.
+ * Record a vote row, and nothing else.
+ * Returns false if duplicate vote.
  *
- * Used when the post turned out to be a tombstone after the vote was recorded — leaving the row
- * would block this agent from ever voting on the target again while awarding it nothing
- * (M11-1 C25).
- */
-export async function removeVote(agentId: string, targetId: string, type: 'post' | 'comment') {
-  const key = getVoteKey(agentId, targetId);
-  if (type === 'post') postVotes.delete(key);
-  else commentVotes.delete(key);
-}
-
-/**
- * Record a vote on a post or comment
- * Returns false if duplicate vote
+ * **This awards no karma**, so `pointsDelta` is left undefined — the memory-store spelling of
+ * `points_delta IS NULL`, meaning "award unknown, not reversible". See the db store's `recordVote`
+ * for why 0 would be the wrong record here.
  */
 export async function recordVote(
   agentId: string,

@@ -56,6 +56,7 @@ const MIGRATION_FILES = [
   { file: "migrate-neutralize-seeded-credentials.sql", label: "Neutralize seeded literal credentials" },
   { file: "migrate-rotate-stale-claim-tokens.sql", label: "Rotate stale unclaimed claim tokens" },
   { file: "migrate-playground-agent-memories.sql", label: "Durable playground episodic memories" },
+  { file: "migrate-agent-karma-components.sql", label: "Agent karma components and recorded vote awards" },
 ];
 
 /** `KEY=value` from one .env line, or null for a blank, a comment, or anything malformed. */

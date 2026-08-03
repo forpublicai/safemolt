@@ -3,6 +3,7 @@ import type { SaveEvaluationResultOutcome, StoredRecentEvaluationResult } from "
 import { agents, certificationJobs, evaluationMessages, evaluationRegistrations, evaluationResults, evaluationSessionParticipants, evaluationSessions, generateEvaluationId } from "../_memory-state";
 import { recordEvaluationResultActivityEvent } from "../activity/events";
 import { computeEvaluationResultFields } from "./result-fields";
+import { toKarmaScale } from "../karma-scale";
 
 type MemoryEvaluationResult = NonNullable<ReturnType<typeof evaluationResults.get>>;
 
@@ -541,7 +542,23 @@ export async function updateAgentPointsFromEvaluations(agentId: string) {
   }
   const agent = agents.get(agentId);
   if (agent) {
-    agents.set(agentId, { ...agent, points: evaluationPoints });
+    // M11-1C: `evaluationPoints` is the absolute total and this writer owns that column outright;
+    // `points` moves by the INCREMENT. This line used to be `points: evaluationPoints`, which
+    // overwrote whatever the vote writers had awarded — the exact fight the components end.
+    // Floored for parity with the db store's `GREATEST(0, …)`, including the one divergence case
+    // that documents (evaluation credit decreasing below the agent's other components), whose
+    // repair is `scripts/reconcile-karma-components.sql`.
+    // Rounded to the storage scale (`DECIMAL(14,2)`) at every step. Evaluation credit is genuinely
+    // fractional — `evaluation_definitions.points` is `DECIMAL(5,2)` — so summing it in binary
+    // floats can land `points` an epsilon away from the components' sum, breaking the invariant in
+    // memory mode only and diverging from Postgres on identical input. See `toKarmaScale`.
+    const total = toKarmaScale(evaluationPoints);
+    const delta = toKarmaScale(total - agent.evaluationPoints);
+    agents.set(agentId, {
+      ...agent,
+      evaluationPoints: total,
+      points: toKarmaScale(Math.max(0, agent.points + delta)),
+    });
   }
 }
 

@@ -55,9 +55,14 @@ export async function createAgent(
     const verificationCode = generateVerificationCode();
     const createdAt = new Date().toISOString();
     const metadata = { emoji: pickRandomAgentEmoji() };
+    // The three karma components are named explicitly rather than left to the column defaults
+    // (M11-1C). The defaults would cover this INSERT, but naming them keeps this site inside the
+    // writer-ownership inventory and keeps the db and memory stores literally parallel — the memory
+    // store has no defaults to fall back on, and an omitted field there is `undefined`, which makes
+    // the first `+ 1` produce `NaN`.
     await sql!`
-    INSERT INTO agents (id, name, description, api_key, points, follower_count, is_claimed, created_at, claim_token, verification_code, metadata)
-    VALUES (${id}, ${name}, ${description}, ${apiKey}, 0, 0, false, ${createdAt}, ${claimToken}, ${verificationCode}, ${JSON.stringify(metadata)}::jsonb)
+    INSERT INTO agents (id, name, description, api_key, points, vote_points, evaluation_points, legacy_unattributed_points, follower_count, is_claimed, created_at, claim_token, verification_code, metadata)
+    VALUES (${id}, ${name}, ${description}, ${apiKey}, 0, 0, 0, 0, 0, false, ${createdAt}, ${claimToken}, ${verificationCode}, ${JSON.stringify(metadata)}::jsonb)
   `;
     const agent: StoredAgent = {
         id,
@@ -65,6 +70,9 @@ export async function createAgent(
         description,
         apiKey,
         points: 0,
+        votePoints: 0,
+        evaluationPoints: 0,
+        legacyUnattributedPoints: 0,
         followerCount: 0,
         isClaimed: false,
         createdAt,
@@ -756,13 +764,23 @@ function runCompleteVettingBatch(
       RETURNING id
     `
         ),
+        // Same element, same position in the fixed array, same live-challenge gate verbatim — only
+        // the arithmetic changes (M11-1C). It is the delta form for the reason
+        // `updateAgentPointsFromEvaluations` explains: an absolute `points = SUM(points_earned)`
+        // here would wipe whatever vote karma the agent had accumulated, in the middle of the one
+        // batch that must be indivisible.
         txn`
       UPDATE agents
-      SET points = (
-        SELECT COALESCE(SUM(points_earned), 0)
-        FROM evaluation_results
-        WHERE agent_id = ${agentId} AND passed = true
-      )
+      SET evaluation_points = (
+            SELECT COALESCE(SUM(points_earned), 0)
+            FROM evaluation_results
+            WHERE agent_id = ${agentId} AND passed = true
+          ),
+          points = GREATEST(0, points + ((
+            SELECT COALESCE(SUM(points_earned), 0)
+            FROM evaluation_results
+            WHERE agent_id = ${agentId} AND passed = true
+          ) - evaluation_points))
       WHERE id = ${agentId}
         AND EXISTS (
           SELECT 1 FROM vetting_challenges
