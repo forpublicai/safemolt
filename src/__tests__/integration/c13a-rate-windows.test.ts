@@ -14,7 +14,7 @@
  */
 import { join } from "path";
 import { closeIntegrationConnections, neonSql, pgPool } from "./helpers/db";
-import { runConcurrently } from "./helpers/concurrency";
+import { rejections, runConcurrently } from "./helpers/concurrency";
 import { consumeRateWindow, pruneExpiredRateWindows } from "@/lib/store/rate-windows/db";
 import { subscribeNewsletter, confirmNewsletter, unsubscribeNewsletter } from "@/lib/store/newsletter/db";
 
@@ -42,6 +42,18 @@ afterAll(async () => {
 });
 
 describe("rate_windows primitive (db)", () => {
+    /**
+     * The database's current 60s window bucket, on the alignment every statement here uses. Read
+     * from the database, not the test process: the window a row carries is decided by the server
+     * clock, so bounding a sequence by the local clock would compare against the wrong timeline.
+     */
+    async function currentWindowBucket(): Promise<number> {
+        const { rows } = await pgPool().query<{ bucket: number }>(
+            `SELECT floor(extract(epoch FROM now()) / 60)::int AS bucket`
+        );
+        return rows[0].bucket;
+    }
+
     it("admits up to the limit and denies after, inside one epoch-aligned window", async () => {
         const key = `c13a:${RUN}:basic`;
         for (let i = 0; i < 3; i++) {
@@ -53,21 +65,82 @@ describe("rate_windows primitive (db)", () => {
     });
 
     it("cross-instance: a second driver handle shares the same window and is denied", async () => {
-        const key = `c13a:${RUN}:cross`;
-        for (let i = 0; i < 2; i++) {
-            expect((await consumeRateWindow(key, 60_000, 2)).allowed).toBe(true);
+        // Each statement below evaluates `now()` itself, so a sequence that crosses a minute
+        // boundary keys the handles to different window rows — the second handle then lands in a
+        // fresh window, which neither supports nor refutes the claim. Such an attempt is retried
+        // on a fresh key rather than pinning the second handle to the first's window, which would
+        // stop testing that both instances derive the same window from the same expression.
+        //
+        // The discard is bounded rather than taken on trust. Before an attempt is retried, every
+        // row it wrote must be exactly minute-aligned and must sit inside the window interval the
+        // database clock actually spanned, and that clock must in fact have crossed a boundary.
+        // A split that fails any of those — a misaligned window, a window the sequence never
+        // occupied, a split while the clock stood still — fails the test rather than being retried
+        // away. What the check does not establish is causation: a defective computation that
+        // happens to split into two aligned, in-interval windows during a genuine crossing is
+        // still discarded.
+        const ATTEMPTS = 5;
+        for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+            const key = `c13a:${RUN}:cross:${attempt}`;
+            const before = await currentWindowBucket();
+            for (let i = 0; i < 2; i++) {
+                expect((await consumeRateWindow(key, 60_000, 2)).allowed).toBe(true);
+            }
+            // A separate Neon HTTP handle — a different "instance" as far as state sharing goes.
+            const other = neonSql();
+            const rows = await other`
+                INSERT INTO rate_windows (key, window_start, count)
+                VALUES (${key}, to_timestamp(floor(extract(epoch FROM now()) / 60) * 60), 1)
+                ON CONFLICT (key, window_start) DO UPDATE
+                    SET count = rate_windows.count + 1
+                    WHERE rate_windows.count < 2
+                RETURNING count
+            `;
+            const after = await currentWindowBucket();
+
+            const { rows: windows } = await pgPool().query<{
+                bucket: number;
+                aligned: boolean;
+                count: number;
+            }>(
+                // Alignment is compared on the timestamp itself. Routing it through the epoch
+                // instead invites rounding — a cast to an integer type rounds outright, and
+                // `extract(epoch ...)` is double precision before PostgreSQL 14 — either of which
+                // reads a near-aligned window as aligned.
+                `SELECT floor(extract(epoch FROM window_start) / 60)::int AS bucket,
+                        window_start = (date_trunc('minute', window_start AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+                            AS aligned,
+                        count
+                 FROM rate_windows WHERE key = $1 ORDER BY window_start`,
+                [key]
+            );
+            // The two consumes were admitted, so their row must exist: no rows means a lost or
+            // deleted write, which is a failure and not something to retry.
+            expect(windows.length).toBeGreaterThan(0);
+            for (const w of windows) {
+                // Alignment is checked on the timestamp, not on its bucket. A shorter window — say
+                // the primitive starts aligning to 30s — writes 12:00:30 next to 12:01:00, and
+                // both floor into the spanned buckets, so bounds alone would retry that split away
+                // until an attempt happened to start on a minute and pass.
+                expect(w.aligned).toBe(true);
+                expect(w.bucket).toBeGreaterThanOrEqual(before);
+                expect(w.bucket).toBeLessThanOrEqual(after);
+            }
+
+            if (windows.length > 1) {
+                expect(after).toBeGreaterThan(before); // a split with a still clock is a defect
+                continue;
+            }
+
+            // One window: all three statements keyed to it, so the second handle was refused by
+            // the counter the first handle filled — not by a window of its own.
+            expect(rows.length).toBe(0);
+            expect(Number(windows[0].count)).toBe(2);
+            return;
         }
-        // A separate Neon HTTP handle — a different "instance" as far as state sharing goes.
-        const other = neonSql();
-        const rows = await other`
-            INSERT INTO rate_windows (key, window_start, count)
-            VALUES (${key}, to_timestamp(floor(extract(epoch FROM now()) / 60) * 60), 1)
-            ON CONFLICT (key, window_start) DO UPDATE
-                SET count = rate_windows.count + 1
-                WHERE rate_windows.count < 2
-            RETURNING count
-        `;
-        expect(rows.length).toBe(0);
+        throw new Error(
+            `[c13a] every one of ${ATTEMPTS} attempts crossed a window boundary; the cross-instance sequence never ran inside one window`
+        );
     });
 
     it("concurrent consumes admit exactly the limit", async () => {
@@ -75,6 +148,14 @@ describe("rate_windows primitive (db)", () => {
         const outcomes = await runConcurrently(
             Array.from({ length: 10 }, () => () => consumeRateWindow(key, 60_000, 4))
         );
+        // Rejections first, and by content. The admitted count collapses a rejected call into a
+        // denied one, so it cannot report one: with ten callers against a limit of four, six could
+        // fail and the remaining four would still satisfy `toHaveLength(4)`, passing over a broken
+        // run. A call that committed its increment before its transport failed moves the count as
+        // well, and its error sits in the outcome the filter discards. `rejections` describes each
+        // failure — the message, prefixed by its SQLSTATE where there is one — and is asserted
+        // here before the count can hide it.
+        expect(rejections(outcomes)).toEqual([]);
         const admitted = outcomes.filter((o) => o.ok && o.value.allowed);
         expect(admitted).toHaveLength(4);
     });
