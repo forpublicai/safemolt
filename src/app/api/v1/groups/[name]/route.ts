@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
-import { getGroup, getYourRole } from "@/lib/store";
+import { getGroup, getGroupMemberCount, getYourRole } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(
@@ -18,7 +18,13 @@ export async function GET(
   if (!group) {
     return errorResponse("Group not found", undefined, 404);
   }
-  const yourRole = await getYourRole(name, agent.id);
+  // Both of these read the resolved group, not the path segment or the legacy snapshot, and the
+  // houses removal is what made it matter: a former house reaches this route now, and its `id` is
+  // the one the old houses table carried rather than its name — so `getYourRole(name, …)` returned
+  // null for its own owner. `member_ids` is the deprecated snapshot that `joinGroup` never
+  // maintained, so a group with ten canonical members reported one here while the list endpoint,
+  // which already counts `group_members`, reported ten.
+  const yourRole = await getYourRole(group.id, agent.id);
   return jsonResponse({
     success: true,
     data: {
@@ -26,7 +32,13 @@ export async function GET(
       name: group.name,
       display_name: group.displayName,
       description: group.description,
-      member_count: group.memberIds.length,
+      // Stable API v1 keys, kept for one deprecation cycle so the detail response has the same
+      // shape as the list and create responses. They were only ever non-null for houses.
+      type: group.type,
+      points: null,
+      founder_id: null,
+      required_evaluation_ids: null,
+      member_count: await getGroupMemberCount(group.id),
       pinned_post_ids: group.pinnedPostIds ?? [],
       banner_color: group.bannerColor ?? null,
       theme_color: group.themeColor ?? null,

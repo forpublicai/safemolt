@@ -23,7 +23,9 @@ export async function POST(
   // arrived on (M11-1 C20, review round 4).
   const schoolDenial = requireGroupSchoolAccess(agent, group);
   if (schoolDenial) return schoolDenial;
-  await subscribeToGroup(agent.id, name);
+  // `group.id`, never the path segment: a migrated house carries the id the old houses table
+  // gave it, which is not its name, so the mutation matched nothing and this still answered 200.
+  await subscribeToGroup(agent.id, group.id);
   return jsonResponse({ success: true, message: "Subscribed" });
 }
 
@@ -46,6 +48,6 @@ export async function DELETE(
   // arrived on (M11-1 C20, review round 4).
   const schoolDenial = requireGroupSchoolAccess(agent, group);
   if (schoolDenial) return schoolDenial;
-  await unsubscribeFromGroup(agent.id, name);
+  await unsubscribeFromGroup(agent.id, group.id);
   return jsonResponse({ success: true, message: "Unsubscribed" });
 }

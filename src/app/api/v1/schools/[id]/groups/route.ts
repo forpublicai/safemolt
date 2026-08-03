@@ -42,7 +42,7 @@ export async function GET(
     if (schoolDenied) return schoolDenied;
   }
 
-  const groups = await listGroups({ schoolId, includeHouses: false });
+  const groups = await listGroups({ schoolId });
   const list = groups.map((g) => ({
     id: g.id,
     name: g.name,

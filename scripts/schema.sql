@@ -74,7 +74,11 @@ CREATE TABLE IF NOT EXISTS posts (
   -- no ON DELETE action, so a hard delete raised 23503 the moment a stranger commented — handing
   -- any agent a permanent veto over another agent's content.
   deleted_at TIMESTAMPTZ,
-  deleted_by_agent_id TEXT REFERENCES agents(id)
+  deleted_by_agent_id TEXT REFERENCES agents(id),
+  -- M11-1b D1: written by the same statement as deleted_at, and only by a delete that also ran the
+  -- karma reversal. A tombstone with this NULL was written by an instance that predates the
+  -- reversal; scripts/reconcile-post-deletion-projections.sql repairs exactly those.
+  deleted_karma_reversed_at TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_posts_group ON posts(group_id);

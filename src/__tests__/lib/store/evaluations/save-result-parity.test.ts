@@ -96,19 +96,15 @@ describe("memory saveEvaluationResult (unified behavior)", () => {
     const reg = await mem.registerForEvaluation("agent-1", "sip-known");
     if (!reg) throw new Error("registration refused — no prior pass exists, so this cannot happen here");
     const before = await mem.getEvaluationResultCount("school-x");
-    const saved = await mem.saveEvaluationResult(
-      reg.id,
-      "agent-1",
-      "sip-known",
-      true,
-      42,
-      100,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      "school-x"
-    );
+    const saved = await mem.saveEvaluationResult({
+      registrationId: reg.id,
+      agentId: "agent-1",
+      evaluationId: "sip-known",
+      passed: true,
+      score: 42,
+      maxScore: 100,
+      schoolId: "school-x",
+    });
 
     if (saved.outcome !== "created") throw new Error(`expected created, got ${saved.outcome}`);
     expect(await mem.getEvaluationResultCount("school-x")).toBe(before + 1);
@@ -121,14 +117,29 @@ describe("db saveEvaluationResult (unified behavior)", () => {
   it("persists school_id and score-aware points", async () => {
     jest.resetModules();
     const inserts: { text: string; params: unknown[] }[] = [];
-    jest.doMock("@/lib/db", () => ({
-      hasDatabase: () => true,
-      sql: (strings: TemplateStringsArray, ...params: unknown[]) => {
-        inserts.push({ text: strings.join("$"), params });
-        return Promise.resolve([]);
-      },
-    }));
+    // M11-1b D4: completion is a `sql.transaction` batch, so the double has to record the
+    // elements the batch builds rather than a sequence of standalone tagged-template calls.
+    jest.doMock("@/lib/db", () => {
+      const tag = (strings: TemplateStringsArray | string, ...params: unknown[]) => {
+        const text = typeof strings === "string" ? strings : strings.join("$");
+        const entry = { text, params: typeof strings === "string" ? (params[0] as unknown[]) : params };
+        inserts.push(entry);
+        return entry;
+      };
+      const sql = Object.assign(
+        (strings: TemplateStringsArray | string, ...params: unknown[]) => Promise.resolve(tag(strings, ...params)) as never,
+        {
+          transaction: (build: (txn: unknown) => unknown[]) => {
+            const elements = build(tag);
+            return Promise.resolve(elements.map(() => [{ id: "row" }]));
+          },
+        }
+      );
+      return { hasDatabase: () => true, sql };
+    });
     jest.doMock("@/lib/store/activity/events", () => ({
+      buildEvaluationResultActivityUpsert: jest.fn(() => ({ text: "activity", params: [] })),
+      invalidateEvaluationResultActivityCache: jest.fn(() => Promise.resolve()),
       recordEvaluationResultActivityEvent: jest.fn(() => Promise.resolve()),
     }));
     jest.doMock("@/lib/evaluations/loader", () => ({
@@ -136,19 +147,15 @@ describe("db saveEvaluationResult (unified behavior)", () => {
     }));
 
     const db = await import("@/lib/store/evaluations/db");
-    await db.saveEvaluationResult(
-      "reg-1",
-      "agent-1",
-      "sip-known",
-      true,
-      42,
-      100,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      "school-x"
-    );
+    await db.saveEvaluationResult({
+      registrationId: "reg-1",
+      agentId: "agent-1",
+      evaluationId: "sip-known",
+      passed: true,
+      score: 42,
+      maxScore: 100,
+      schoolId: "school-x",
+    });
 
     const insert = inserts.find((q) => q.text.includes("INSERT INTO evaluation_results"));
     expect(insert).toBeDefined();
@@ -160,14 +167,29 @@ describe("db saveEvaluationResult (unified behavior)", () => {
   it("defaults school_id to foundation to match the column default", async () => {
     jest.resetModules();
     const inserts: { text: string; params: unknown[] }[] = [];
-    jest.doMock("@/lib/db", () => ({
-      hasDatabase: () => true,
-      sql: (strings: TemplateStringsArray, ...params: unknown[]) => {
-        inserts.push({ text: strings.join("$"), params });
-        return Promise.resolve([]);
-      },
-    }));
+    // M11-1b D4: completion is a `sql.transaction` batch, so the double has to record the
+    // elements the batch builds rather than a sequence of standalone tagged-template calls.
+    jest.doMock("@/lib/db", () => {
+      const tag = (strings: TemplateStringsArray | string, ...params: unknown[]) => {
+        const text = typeof strings === "string" ? strings : strings.join("$");
+        const entry = { text, params: typeof strings === "string" ? (params[0] as unknown[]) : params };
+        inserts.push(entry);
+        return entry;
+      };
+      const sql = Object.assign(
+        (strings: TemplateStringsArray | string, ...params: unknown[]) => Promise.resolve(tag(strings, ...params)) as never,
+        {
+          transaction: (build: (txn: unknown) => unknown[]) => {
+            const elements = build(tag);
+            return Promise.resolve(elements.map(() => [{ id: "row" }]));
+          },
+        }
+      );
+      return { hasDatabase: () => true, sql };
+    });
     jest.doMock("@/lib/store/activity/events", () => ({
+      buildEvaluationResultActivityUpsert: jest.fn(() => ({ text: "activity", params: [] })),
+      invalidateEvaluationResultActivityCache: jest.fn(() => Promise.resolve()),
       recordEvaluationResultActivityEvent: jest.fn(() => Promise.resolve()),
     }));
     jest.doMock("@/lib/evaluations/loader", () => ({
@@ -175,7 +197,12 @@ describe("db saveEvaluationResult (unified behavior)", () => {
     }));
 
     const db = await import("@/lib/store/evaluations/db");
-    await db.saveEvaluationResult("reg-2", "agent-1", "sip-known", true);
+    await db.saveEvaluationResult({
+      registrationId: "reg-2",
+      agentId: "agent-1",
+      evaluationId: "sip-known",
+      passed: true,
+    });
 
     const insert = inserts.find((q) => q.text.includes("INSERT INTO evaluation_results"));
     expect(insert!.params).toContain("foundation");

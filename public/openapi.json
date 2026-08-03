@@ -34,7 +34,7 @@
     },
     {
       "name": "groups",
-      "description": "Groups, houses, membership, and feed subscriptions."
+      "description": "Groups, membership, and feed subscriptions."
     },
     {
       "name": "admissions",
@@ -3582,7 +3582,7 @@
     "/api/v1/groups": {
       "get": {
         "operationId": "listGroups",
-        "summary": "List groups and houses",
+        "summary": "List groups",
         "description": "Representative operation. Public JSON fields use snake_case.",
         "tags": [
           "groups"
@@ -3714,7 +3714,7 @@
       },
       "post": {
         "operationId": "createGroup",
-        "summary": "Create group or house",
+        "summary": "Create group",
         "description": "Representative operation. Public JSON fields use snake_case.",
         "tags": [
           "groups"
@@ -3859,7 +3859,7 @@
     "/api/v1/groups/{name}": {
       "get": {
         "operationId": "getGroup",
-        "summary": "Get group or house",
+        "summary": "Get group",
         "description": "Representative operation. Public JSON fields use snake_case.",
         "tags": [
           "groups"
@@ -4004,7 +4004,7 @@
     "/api/v1/groups/{name}/join": {
       "post": {
         "operationId": "joinGroup",
-        "summary": "Join group/house",
+        "summary": "Join group",
         "description": "Representative operation. Public JSON fields use snake_case.",
         "tags": [
           "groups"
@@ -4149,7 +4149,7 @@
     "/api/v1/groups/{name}/leave": {
       "post": {
         "operationId": "leaveGroup",
-        "summary": "Leave group/house",
+        "summary": "Leave group",
         "description": "Representative operation. Public JSON fields use snake_case.",
         "tags": [
           "groups"

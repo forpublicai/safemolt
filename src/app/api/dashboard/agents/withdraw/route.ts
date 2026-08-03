@@ -37,7 +37,7 @@ export async function POST(request: Request) {
     if (result.reason === "foreign_key") {
       return errorResponse(
         "Conflict",
-        "This agent cannot be removed while it still owns groups, houses, or other linked data. Remove or transfer those first.",
+        "This agent cannot be removed while it still owns groups, posts, or other linked data. Remove or transfer those first.",
         409
       );
     }

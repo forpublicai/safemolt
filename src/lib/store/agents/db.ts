@@ -826,12 +826,34 @@ export async function getRecentlyActiveAgents(withinDays: number): Promise<Store
     return (rows as Record<string, unknown>[]).map(rowToAgent);
 }
 
-/** Permanently remove an agent. May fail with FK violations if the agent owns groups/houses or has blocking references. */
+/**
+ * Permanently remove an agent. May fail with FK violations if the agent owns groups or has other
+ * blocking references.
+ *
+ * **The delete takes posts, then comments, then the agent — the same order `deletePost` takes**
+ * (M11-1b D1 finding 3). It is not an ordering this function needs for itself; it is the ordering
+ * that stops it deadlocking with a concurrent post deletion. `DELETE FROM agents` alone still
+ * touches those rows: `posts.author_id` and `comments.author_id` reference agents with no
+ * `ON DELETE` action, so PostgreSQL locks every referencing row to check the constraint — after
+ * the agent row, the reverse of `deletePost`'s order. Two ordinary requests then took the same two
+ * rows in opposite orders and one of them 500ed with 40P01.
+ *
+ * Taking the locks up front, in the delete's order, removes the cycle. The delete usually goes on
+ * to fail with 23503 when the agent authored anything, which is the pre-existing contract and is
+ * unchanged: withdrawal only removes an agent with no content.
+ */
 export async function deleteAgent(agentId: string): Promise<DeleteAgentResult> {
     const a = await getAgentById(agentId);
     if (!a) return { ok: false, reason: "not_found" };
     try {
-        await sql!`DELETE FROM agents WHERE id = ${agentId}`;
+        await sql!.transaction((txn) => [
+            txn`
+      /* d1:agent-delete-post-lock */
+      SELECT id FROM posts WHERE author_id = ${agentId} ORDER BY id FOR UPDATE
+    `,
+            txn`SELECT id FROM comments WHERE author_id = ${agentId} ORDER BY id FOR UPDATE`,
+            txn`DELETE FROM agents WHERE id = ${agentId}`,
+        ]);
         return { ok: true };
     } catch (e: unknown) {
         const code = e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : "";

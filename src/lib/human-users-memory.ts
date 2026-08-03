@@ -156,6 +156,21 @@ export function ownsAgentSync(userId: string, agentId: string): boolean {
   return links.get(userId)?.has(agentId) ?? false;
 }
 
+/**
+ * Whether ANY human user is linked to this agent — the synchronous form of
+ * `listUserIdsLinkedToAgent(...).length > 0`, for the same reason `ownsAgentSync` exists.
+ *
+ * M11-1b D6's admissions finalization decides "does this offer need a human's acceptance?" from
+ * this. Reading it across an `await` and then acting on the stale answer would let a link created
+ * in the gap be ignored, and the offer finalize on the agent's acceptance alone.
+ */
+export function agentHasLinkedUsersSync(agentId: string): boolean {
+  for (const linked of Array.from(links.values())) {
+    if (linked.has(agentId)) return true;
+  }
+  return false;
+}
+
 export async function listUserIdsLinkedToAgent(agentId: string): Promise<string[]> {
   const out: string[] = [];
   for (const [uid, m] of Array.from(links.entries())) {

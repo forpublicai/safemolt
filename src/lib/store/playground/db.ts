@@ -9,6 +9,7 @@ import type {
     SessionAction,
     SessionParticipant,
     PlaygroundSessionListOptions,
+    ResolutionMemory,
     SubmitActionOutcome,
 } from '@/lib/playground/types';
 import { PLAYGROUND_SYSTEM_EXPIRED_REASON } from '@/lib/playground/types';
@@ -539,34 +540,123 @@ export async function renewPlaygroundResolutionClaim(
  * pre-action transcript would silently drop an action that was accepted after its lease expired.
  * Rejecting the lapsed committer leaves the round for a reclaimer, which re-reads the full set.
  */
+/**
+ * The terminal resolution CAS, with the round's episodic memories written INSIDE it
+ * (M11-1b D5 atomic follow-up).
+ *
+ * Before this, the memory upserts were a separate auto-committed statement gated on the *lease*,
+ * and D5 recorded the gap honestly as a residual: a lease that lapsed between the memory write and
+ * this CAS left a round's memory written for a round that never advanced, and a mid-loop failure
+ * could leave some participants written and others not. Both are closed here by construction —
+ * `stored` reads `advanced`'s `RETURNING`, so a losing CAS contributes zero rows to the insert, and
+ * the whole set lands in one statement.
+ *
+ * Two Postgres facts this leans on, stated so nobody "simplifies" them away:
+ * 1. A data-modifying CTE runs exactly once and to completion, so `stored` cannot be skipped; and
+ * 2. reading `advanced` (the CTE's output) is the only way a sibling sees its rows — a fresh
+ *    `SELECT … FROM playground_sessions` would read the pre-update snapshot and admit a loser.
+ *
+ * The top-level `SELECT` counts both arms rather than returning the insert's rows, because an
+ * empty memory payload is legitimate (the all-forfeited path writes none) and would otherwise be
+ * indistinguishable from a lost CAS.
+ */
 export async function applyPlaygroundResolution(
     sessionId: string,
     fence: { round: number; token: string },
-    updates: UpdateSessionInput
+    updates: UpdateSessionInput,
+    memories: ResolutionMemory[] = []
 ): Promise<boolean> {
+    // One row per agent, last wins. `participants` is unvalidated JSONB, so an agent listed twice
+    // would put two rows with the same conflict key into one insert — which Postgres rejects with
+    // 21000 ("ON CONFLICT DO UPDATE command cannot affect row a second time"). Now that the insert
+    // shares a statement with the advance, that would wedge the session permanently: every retry
+    // rebuilds the same payload. Deduping here rather than in the caller keeps the rule where the
+    // constraint is, and makes db mode agree with memory mode, whose map overwrites by the same key.
+    const deduped = Array.from(new Map(memories.map((m) => [m.agentId, m])).values());
+    const payload = JSON.stringify(
+        deduped.map((m) => ({
+            id: m.id,
+            agent_id: m.agentId,
+            agent_name: m.agentName,
+            content: m.content,
+            importance: m.importance,
+            round_created: m.roundCreated,
+            // Omitted rather than JSON-null when absent: `jsonb_to_recordset` maps a missing key to
+            // SQL NULL, which is what a memory without an embedding must store.
+            ...(m.embedding ? { embedding: m.embedding } : {}),
+            created_at: m.createdAt,
+        }))
+    );
     const rows = await sql!`
-    UPDATE playground_sessions SET
-      status = COALESCE(${updates.status ?? null}, status),
-      participants = COALESCE(${updates.participants ? JSON.stringify(updates.participants) : null}::jsonb, participants),
-      transcript = COALESCE(${updates.transcript ? JSON.stringify(updates.transcript) : null}::jsonb, transcript),
-      current_round = COALESCE(${updates.currentRound ?? null}, current_round),
-      current_round_prompt = (CASE WHEN ${updates.currentRoundPrompt === null} THEN NULL ELSE COALESCE(${updates.currentRoundPrompt}, current_round_prompt) END),
-      round_deadline = (CASE WHEN ${updates.roundDeadline === null} THEN NULL ELSE COALESCE(${updates.roundDeadline}::timestamptz, round_deadline) END),
-      summary = COALESCE(${updates.summary ?? null}, summary),
-      completed_at = COALESCE(${updates.completedAt ?? null}::timestamptz, completed_at),
-      resolve_claim_token = NULL,
-      resolve_claim_expires_at = NULL
-    WHERE id = ${sessionId}
-      AND status = 'active'
-      AND current_round = ${fence.round}
-      AND resolve_claim_token = ${fence.token}
-      AND resolve_claim_expires_at > NOW()
-    RETURNING id
+    /* d5:resolution-cas */
+    WITH advanced AS (
+      UPDATE playground_sessions SET
+        status = COALESCE(${updates.status ?? null}, status),
+        participants = COALESCE(${updates.participants ? JSON.stringify(updates.participants) : null}::jsonb, participants),
+        transcript = COALESCE(${updates.transcript ? JSON.stringify(updates.transcript) : null}::jsonb, transcript),
+        current_round = COALESCE(${updates.currentRound ?? null}, current_round),
+        current_round_prompt = (CASE WHEN ${updates.currentRoundPrompt === null} THEN NULL ELSE COALESCE(${updates.currentRoundPrompt}, current_round_prompt) END),
+        round_deadline = (CASE WHEN ${updates.roundDeadline === null} THEN NULL ELSE COALESCE(${updates.roundDeadline}::timestamptz, round_deadline) END),
+        summary = COALESCE(${updates.summary ?? null}, summary),
+        completed_at = COALESCE(${updates.completedAt ?? null}::timestamptz, completed_at),
+        resolve_claim_token = NULL,
+        resolve_claim_expires_at = NULL
+      WHERE id = ${sessionId}
+        AND status = 'active'
+        AND current_round = ${fence.round}
+        AND resolve_claim_token = ${fence.token}
+        AND resolve_claim_expires_at > NOW()
+      RETURNING id
+    ), live_agents AS (
+      -- Pinned, not merely read. A plain join would be a snapshot read: a delete committing between
+      -- the join and the insert's FK check still raises 23503 and rolls back the advance with it.
+      -- FOR KEY SHARE is exactly the lock the FK check itself takes, so either this pins the agent
+      -- and the delete waits, or the delete wins and this re-reads it as absent and drops the row.
+      -- What is guaranteed is that an agent is pinned before any tuple naming it reaches FK
+      -- enforcement -- the insert consumes this CTE. The order in which the planner evaluates this
+      -- CTE against the advanced CTE is NOT guaranteed and nothing relies on it: agent deletion goes
+      -- agents -> playground_agent_memories and never asks for a session lock, so no cycle exists
+      -- in either evaluation order.
+      SELECT a.id FROM agents a
+      WHERE a.id IN (SELECT jsonb_array_elements_text(jsonb_path_query_array(${payload}::jsonb, '$[*].agent_id')))
+      FOR KEY SHARE
+    ), stored AS (
+      INSERT INTO playground_agent_memories
+        (id, agent_id, agent_name, session_id, content, importance, round_created, embedding, created_at)
+      SELECT m.id, m.agent_id, m.agent_name, advanced.id, m.content, m.importance,
+             m.round_created, m.embedding, m.created_at
+      FROM advanced
+      CROSS JOIN jsonb_to_recordset(${payload}::jsonb) AS m(
+        id text, agent_id text, agent_name text, content text, importance text,
+        round_created int, embedding jsonb, created_at timestamptz
+      )
+      -- The memory insert must never be able to VETO the advance. playground_sessions.participants
+      -- is JSONB with no FK, so an agent deleted mid-session stays listed as a participant, while
+      -- playground_agent_memories.agent_id carries a hard FK: a bare insert would raise 23503 and,
+      -- now that the two share a statement, take the round advance down with it. The session would
+      -- then be permanently unresolvable, because every retry re-reads the same participant and
+      -- re-raises. Joining the pinned live agents drops that participant's memory instead, which is
+      -- the outcome the FK's ON DELETE CASCADE would have produced a moment later anyway.
+      JOIN live_agents a ON a.id = m.agent_id
+      ON CONFLICT (agent_id, session_id) DO UPDATE SET
+        id = EXCLUDED.id,
+        agent_name = EXCLUDED.agent_name,
+        content = EXCLUDED.content,
+        importance = EXCLUDED.importance,
+        round_created = EXCLUDED.round_created,
+        embedding = EXCLUDED.embedding,
+        created_at = EXCLUDED.created_at
+      RETURNING agent_id
+    )
+    SELECT
+      (SELECT count(*) FROM advanced) AS advanced_count,
+      (SELECT count(*) FROM stored) AS stored_count
   `;
-    if (rows.length > 0) {
+    const won = Number((rows[0] as Record<string, unknown>).advanced_count) > 0;
+    if (won) {
         await recordPlaygroundSessionActivityEvent(sessionId);
     }
-    return rows.length > 0;
+    return won;
 }
 
 export async function getPlaygroundActions(sessionId: string, round: number): Promise<SessionAction[]> {

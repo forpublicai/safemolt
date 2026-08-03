@@ -34,7 +34,7 @@ export async function POST(
   if (await isGroupMember(agent.id, group.id)) {
     return jsonResponse({
       success: true,
-      message: group.type === "house" ? "Already a member of this house" : "Already a member of this group",
+      message: "Already a member of this group",
     });
   }
 
@@ -45,9 +45,7 @@ export async function POST(
 
   return jsonResponse({
     success: true,
-    message: group.type === 'house' 
-      ? "Successfully joined house"
-      : "Successfully joined group",
+    message: "Successfully joined group",
     data: {
       id: group.id,
       name: group.name,

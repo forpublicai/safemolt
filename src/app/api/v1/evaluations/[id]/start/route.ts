@@ -97,7 +97,10 @@ export async function POST(
     if (!authorized.ok) return evaluationAuthzResponse(authorized.denial);
     const { registration, definition: evaluation } = authorized.value;
 
-    // Start evaluation
+    // Start evaluation. The `registered` read is a friendly pre-check only; the transition
+    // itself is a CAS (M11-1b D4), so a submit that completed in the gap is not dragged back to
+    // `in_progress`. A refused CAS is not an error here — the registration is simply already
+    // started or already finished, and the response below reports its standing state either way.
     if (registration.status === 'registered') {
       await startEvaluation(registration.id);
     }

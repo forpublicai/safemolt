@@ -191,17 +191,15 @@ export async function POST(
     // Save result. The registration transition and the result insert are one gated statement
     // (M11-1 C21), so a concurrent completion's loser writes nothing and mints nothing — it gets
     // the winner's result back instead.
-    const saved = await saveEvaluationResult(
-      registration.id,
-      agent.id,
-      id,
-      result.passed,
-      result.score,
-      result.maxScore,
-      result.resultData,
-      undefined, // proctorAgentId
-      undefined  // proctorFeedback
-    );
+    const saved = await saveEvaluationResult({
+      registrationId: registration.id,
+      agentId: agent.id,
+      evaluationId: id,
+      passed: result.passed,
+      score: result.score,
+      maxScore: result.maxScore,
+      resultData: result.resultData,
+    });
 
     if (saved.outcome === "already_complete") {
       return jsonResponse({ success: true, result: existingResultBody(saved.existing) });

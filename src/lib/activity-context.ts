@@ -178,6 +178,12 @@ export async function generateOrGetActivityContext(kind: string, id: string): Pr
 
   const fallback = buildDeterministicContext(activity, []);
   const stored = await upsertActivityContext(kind, id, fastVersion, fallback);
+  if (!stored) {
+    // The activity was deleted between the read above and this write. The store refuses to cache a
+    // context for a row that is gone (M11-1b D1), so the honest answer is the one a caller gets
+    // for any missing activity — and no enrichment is started for it.
+    return { content: "No activity context is available for this item.", cached: false, enriched: false };
+  }
   startActivityContextEnrichmentFireAndForget(kind, id);
   return { content: stored.content, cached: false, enriched: false };
 }

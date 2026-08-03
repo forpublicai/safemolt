@@ -79,7 +79,7 @@ describe("the veto is gone", () => {
         const post = await createPost(AUTHOR, GROUP, "veto probe", "body");
         await createComment(post.id, ATTACKER, "mine now");
 
-        expect(await deletePost(post.id, AUTHOR)).toBe(true);
+        expect(await deletePost(post.id, AUTHOR)).toMatchObject({ deleted: true });
     });
 
     it("leaves the stranger's comment in place — this chunk removes nothing", async () => {
@@ -207,53 +207,55 @@ describe("a tombstone is inert, not merely hidden", () => {
         expect(await listRecentCommentsWithPosts(25)).toHaveLength(1);
     });
 
-    it("still keeps an empty house alive, because the FK counts rows and not visibility", async () => {
-        // This test used to assert that no *live* post remained and call that "the house can
-        // dissolve" — which proved nothing, because it never attempted a dissolution. It now runs
-        // the real path, and the expectation is inverted from what an earlier review round
-        // concluded: `posts.group_id` is a RESTRICT foreign key in Postgres, so a tombstone-only
-        // house that tried to dissolve would raise 23503 and roll the founder's departure back
-        // with it. Memory must therefore refuse to dissolve too, or the two stores disagree about
-        // whether the founder can leave at all.
-        const house: StoredGroup = {
-            id: "c25m_house",
-            name: "c25mhouse",
-            displayName: "C25 memory house",
+    it("keeps an emptied group alive after a delete, because the FK counts rows and not visibility", async () => {
+        // This started as a houses test: an empty HOUSE used to dissolve when its founder left,
+        // and a tombstone-only house could not, because `posts.group_id` is a RESTRICT foreign key
+        // that counts rows rather than visibility — the dissolution raised 23503 and rolled the
+        // founder's departure back with it.
+        //
+        // Houses are removed and nothing dissolves any more, so this asserts only the property
+        // that survives: leaving empties the membership, and the group — with its tombstone still
+        // pointing at it — stays. It is a regression test for current behavior and NOT evidence
+        // that the house branches are gone; `src/__tests__/lib/store/houses-deleted.test.ts` plants
+        // a house-typed row for that, because an ordinary group behaved this way all along.
+        const group: StoredGroup = {
+            id: "c25m_group",
+            name: "c25mgroup",
+            displayName: "C25 memory group",
             description: "",
             ownerId: AUTHOR,
-            founderId: AUTHOR,
             memberIds: [AUTHOR],
             moderatorIds: [],
             pinnedPostIds: [],
-            type: "house",
+            type: "group",
             createdAt: new Date().toISOString(),
         };
-        groups.set(house.id, house);
+        groups.set(group.id, group);
 
-        const post = await createPost(AUTHOR, house.id, "title", "body");
+        const post = await createPost(AUTHOR, group.id, "title", "body");
         await deletePost(post.id, AUTHOR);
 
-        expect(await leaveGroup(AUTHOR, house.id)).toEqual({ success: true });
-        expect(groups.get(house.id)).toBeDefined();
-        expect(groups.get(house.id)!.memberIds).toEqual([]);
+        expect(await leaveGroup(AUTHOR, group.id)).toEqual({ success: true });
+        expect(groups.get(group.id)).toBeDefined();
+        expect(groups.get(group.id)!.memberIds).toEqual([]);
         // The tombstone still points at a group that exists, which is the property that broke.
-        expect(posts.get(post.id)!.groupId).toBe(house.id);
+        expect(posts.get(post.id)!.groupId).toBe(group.id);
     });
 });
 
 describe("the rules deletion always had", () => {
     it("refuses a non-author and leaves the post readable", async () => {
         const post = await createPost(AUTHOR, GROUP, "title", "body");
-        expect(await deletePost(post.id, ATTACKER)).toBe(false);
+        expect(await deletePost(post.id, ATTACKER)).toMatchObject({ deleted: false });
         expect(await getPost(post.id)).not.toBeNull();
     });
 
     it("is idempotent and does not rewrite the first timestamp", async () => {
         const post = await createPost(AUTHOR, GROUP, "title", "body");
-        expect(await deletePost(post.id, AUTHOR)).toBe(true);
+        expect(await deletePost(post.id, AUTHOR)).toMatchObject({ deleted: true });
         const first = posts.get(post.id)?.deletedAt;
 
-        expect(await deletePost(post.id, AUTHOR)).toBe(false);
+        expect(await deletePost(post.id, AUTHOR)).toMatchObject({ deleted: false });
         expect(posts.get(post.id)?.deletedAt).toBe(first);
     });
 

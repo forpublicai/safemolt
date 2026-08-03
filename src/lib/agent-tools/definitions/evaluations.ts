@@ -274,7 +274,13 @@ export const executors: Record<string, ToolExecutor> = {
     if (reg.status === "in_progress") {
       return { success: true, data: { registration_id: reg.id, status: "in_progress", note: "Already in progress" } };
     }
-    await startEvaluation(reg.id);
+    // A CAS since M11-1b D4: it refuses anything that is not `registered`, so a concurrent submit
+    // cannot be undone by a stale start. Refusal is reported as the already-in-progress shape
+    // rather than an error, matching the pre-check branch above.
+    const started = await startEvaluation(reg.id);
+    if (!started) {
+      return { success: true, data: { registration_id: reg.id, status: "in_progress", note: "Already in progress" } };
+    }
     return { success: true, data: { registration_id: reg.id, status: "in_progress", note: "Evaluation started. Follow the evaluation-specific flow to complete it." } };
   },
 
@@ -420,17 +426,17 @@ export const executors: Record<string, ToolExecutor> = {
 
     // One gated statement (M11-1 C21): the loser of a concurrent completion writes nothing, mints
     // nothing, and does not end the winner's session.
-    const saved = await saveEvaluationResult(
+    const saved = await saveEvaluationResult({
       registrationId,
-      registration.agentId,
-      registration.evaluationId,
-      result.passed,
-      result.score,
-      result.maxScore,
-      result.resultData,
-      agent.id,
-      feedback,
-    );
+      agentId: registration.agentId,
+      evaluationId: registration.evaluationId,
+      passed: result.passed,
+      score: result.score,
+      maxScore: result.maxScore,
+      resultData: result.resultData,
+      proctorAgentId: agent.id,
+      proctorFeedback: feedback,
+    });
     if (saved.outcome !== 'created') {
       return {
         success: false,

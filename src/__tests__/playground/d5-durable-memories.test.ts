@@ -10,6 +10,16 @@ jest.mock("@/lib/playground/embeddings", () => ({
   getEmbedding: jest.fn(async () => undefined),
 }));
 
+// The GM transport, captured so the prompt's memory context can be read back.
+const chatCalls: Array<Array<{ role: string; content: string }>> = [];
+jest.mock("@/lib/playground/llm", () => ({
+  chatCompletion: jest.fn(async (messages: Array<{ role: string; content: string }>) => {
+    chatCalls.push(messages);
+    return "generated prompt";
+  }),
+}));
+const lastChatMessages = () => chatCalls[chatCalls.length - 1].map((m) => m.content).join("\n");
+
 // The vector sink, captured so the chunk-id derivation can be asserted directly.
 const capturedChunkBatches: Array<{ id: string }[]> = [];
 jest.mock("@/lib/memory/memory-service", () => ({
@@ -27,22 +37,31 @@ import {
   clearSessionMemories,
   getAllSessionMemories,
   getMemoriesForAgent,
+  prepareResolutionMemory,
   retrieveMemories,
   storeMemory,
-  storeMemoryFenced,
 } from "@/lib/playground/memory";
 import {
+  applyPlaygroundResolution,
   cancelPlaygroundSession,
   claimPlaygroundResolution,
   createPlaygroundSession,
+  getPlaygroundSession,
 } from "@/lib/store";
+import { generateRoundPrompt } from "@/lib/playground/engine";
 import { ingestPlaygroundSnippetForParticipants } from "@/lib/memory/platform-ingest";
-import { playgroundAgentMemories } from "@/lib/store/_memory-state";
+import { agents, playgroundAgentMemories } from "@/lib/store/_memory-state";
 
 let seq = 0;
 
 async function seedSession(participantIds: string[], status: "pending" | "active" = "active") {
   const id = `d5_sess_${Date.now()}_${seq++}`;
+  // Participants are registered agents. Memory mode has no FK, but the CAS-coupled write checks
+  // the agent map for the same reason db mode joins `agents` — so the fixture must be honest, or
+  // it would assert a behaviour real participants never see.
+  for (const agentId of participantIds) {
+    agents.set(agentId, { id: agentId, name: agentId } as never);
+  }
   await createPlaygroundSession({
     id,
     gameId: "game-1",
@@ -112,37 +131,129 @@ describe("durable memory semantics (memory mode)", () => {
   });
 });
 
-describe("the CAS-coupled write (the reordering's precondition)", () => {
-  it("a lease-expired resolver writes NO memory; the live claimant does", async () => {
-    const sessionId = await seedSession(["p1"]);
+describe("the CAS-coupled write (D5 atomic follow-up)", () => {
+  const memory = (agentId: string, sessionId: string, content: string) =>
+    prepareResolutionMemory({ agentId, agentName: agentId, sessionId, content, importance: "high", roundCreated: 1 });
+
+  it("a resolver that loses the CAS writes NO memory; the winner writes them with the advance", async () => {
+    const sessionId = await seedSession(["p1", "p2"]);
     expect(await claimPlaygroundResolution(sessionId, 1, "live_tok", 60_000)).toBe(true);
 
-    // Wrong token: not the winner.
+    // Wrong token: not the winner. The session does not advance AND no memory lands.
     expect(
-      await storeMemoryFenced(
-        { agentId: "p1", agentName: "p1", sessionId, content: "loser", importance: "low", roundCreated: 1 },
-        { sessionId, round: 1, token: "stale_tok" }
-      )
+      await applyPlaygroundResolution(sessionId, { round: 1, token: "stale_tok" }, { currentRound: 2 }, [
+        memory("p1", sessionId, "loser"),
+      ])
     ).toBe(false);
     expect(await getAllSessionMemories(sessionId)).toHaveLength(0);
 
     // Wrong round: the round already advanced.
     expect(
-      await storeMemoryFenced(
-        { agentId: "p1", agentName: "p1", sessionId, content: "stale round", importance: "low", roundCreated: 1 },
-        { sessionId, round: 99, token: "live_tok" }
-      )
+      await applyPlaygroundResolution(sessionId, { round: 99, token: "live_tok" }, { currentRound: 100 }, [
+        memory("p1", sessionId, "stale round"),
+      ])
     ).toBe(false);
     expect(await getAllSessionMemories(sessionId)).toHaveLength(0);
 
-    // The live claimant writes.
+    // The live claimant advances the round and writes EVERY participant's memory in the same step.
     expect(
-      await storeMemoryFenced(
-        { agentId: "p1", agentName: "p1", sessionId, content: "winner", importance: "high", roundCreated: 1 },
-        { sessionId, round: 1, token: "live_tok" }
-      )
+      await applyPlaygroundResolution(sessionId, { round: 1, token: "live_tok" }, { currentRound: 2 }, [
+        memory("p1", sessionId, "winner p1"),
+        memory("p2", sessionId, "winner p2"),
+      ])
     ).toBe(true);
-    expect((await getAllSessionMemories(sessionId))[0].content).toBe("winner");
+    const stored = await getAllSessionMemories(sessionId);
+    expect(stored.map((m) => m.content).sort()).toEqual(["winner p1", "winner p2"]);
+    expect((await getPlaygroundSession(sessionId))!.currentRound).toBe(2);
+  });
+
+  it("REFUSES THE ADVANCE when any one memory row is unwritable — the db's rollback, in memory mode", async () => {
+    // Db mode gets this from the statement boundary: a NULL in a NOT NULL column aborts the insert
+    // and takes the advance with it. Memory mode has no constraints, so it validates the whole
+    // payload before touching either map. Without that the two modes disagree on exactly the case
+    // the db-side rollback gate pins.
+    const sessionId = await seedSession(["ok", "broken"]);
+    expect(await claimPlaygroundResolution(sessionId, 1, "rb_tok", 60_000)).toBe(true);
+
+    await expect(
+      applyPlaygroundResolution(sessionId, { round: 1, token: "rb_tok" }, { currentRound: 2 }, [
+        memory("ok", sessionId, "would have landed"),
+        { ...memory("broken", sessionId, "unwritable"), content: null as unknown as string },
+      ])
+    ).rejects.toThrow();
+
+    expect(await getAllSessionMemories(sessionId)).toHaveLength(0);
+    const session = (await getPlaygroundSession(sessionId))!;
+    expect(session.currentRound).toBe(1);
+    expect(session.resolveClaimToken).toBe("rb_tok"); // retryable: nothing was consumed
+  });
+
+  it("writes one row per agent even when a participant is listed twice", async () => {
+    // `participants` is unvalidated JSONB. Two rows for one agent make the db's coupled upsert
+    // raise 21000, which would wedge the session — so the builder dedupes and both stores must
+    // agree on the result.
+    const sessionId = await seedSession(["dup"]);
+    expect(await claimPlaygroundResolution(sessionId, 1, "dup_tok", 60_000)).toBe(true);
+    expect(
+      await applyPlaygroundResolution(sessionId, { round: 1, token: "dup_tok" }, { currentRound: 2 }, [
+        memory("dup", sessionId, "first"),
+        memory("dup", sessionId, "second"),
+      ])
+    ).toBe(true);
+    const stored = await getAllSessionMemories(sessionId);
+    expect(stored).toHaveLength(1);
+    expect(stored[0].content).toBe("second");
+  });
+
+  it("a deleted participant's memory cannot VETO the advance", async () => {
+    // Db mode enforces this with an FK that must never be allowed to raise; memory mode has no FK,
+    // so it checks the agent map for the same observable behaviour. Either way the advance wins.
+    const sessionId = await seedSession(["known", "vanished"]);
+    agents.delete("vanished"); // deleted mid-session; still listed as a participant
+    expect(await claimPlaygroundResolution(sessionId, 1, "veto_tok", 60_000)).toBe(true);
+
+    expect(
+      await applyPlaygroundResolution(sessionId, { round: 1, token: "veto_tok" }, { currentRound: 2 }, [
+        memory("known", sessionId, "still here"),
+        memory("vanished", sessionId, "gone"),
+      ])
+    ).toBe(true);
+
+    expect((await getAllSessionMemories(sessionId)).map((m) => m.content)).toEqual(["still here"]);
+    expect((await getPlaygroundSession(sessionId))!.currentRound).toBe(2);
+  });
+
+  it("an empty memory payload is a won CAS, not a lost one (the all-forfeited path)", async () => {
+    const sessionId = await seedSession(["p3"]);
+    expect(await claimPlaygroundResolution(sessionId, 1, "tok", 60_000)).toBe(true);
+    expect(await applyPlaygroundResolution(sessionId, { round: 1, token: "tok" }, { currentRound: 2 }, [])).toBe(true);
+    expect(await getAllSessionMemories(sessionId)).toHaveLength(0);
+  });
+});
+
+describe("the next round's GM context", () => {
+  it("sees THIS round's memories, which the CAS has not written yet", async () => {
+    // The D5 atomic follow-up moved the memory write after the prompt is generated. Reading only
+    // the store would hand the next round's GM the memories of the round BEFORE last, so the
+    // prepared rows are passed in and must win over what is stored.
+    const sessionId = await seedSession(["gm1"]);
+    await storeMemory({ agentId: "gm1", agentName: "gm1", sessionId, content: "LAST ROUND", importance: "low", roundCreated: 1 });
+
+    const session = (await getPlaygroundSession(sessionId))!;
+    const game = {
+      id: "g", name: "G", minPlayers: 1, maxPlayers: 4, premise: "", rules: "",
+      scenes: [{ name: "s", description: "d", numRounds: 3, actionSpec: { type: "free", callToAction: "act" } }],
+    };
+
+    await generateRoundPrompt(session, game as never);
+    expect(lastChatMessages()).toContain("LAST ROUND");
+
+    await generateRoundPrompt(session, game as never, [
+      prepareResolutionMemory({ agentId: "gm1", agentName: "gm1", sessionId, content: "THIS ROUND", importance: "high", roundCreated: 2 }),
+    ]);
+    const withPending = lastChatMessages();
+    expect(withPending).toContain("THIS ROUND");
+    expect(withPending).not.toContain("LAST ROUND");
   });
 });
 

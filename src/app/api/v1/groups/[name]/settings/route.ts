@@ -24,12 +24,8 @@ export async function PATCH(
   // arrived on (M11-1 C20, review round 4).
   const schoolDenial = requireGroupSchoolAccess(agent, group);
   if (schoolDenial) return schoolDenial;
-  // Check if agent is owner (for groups) or founder (for houses)
-  const isAuthorized = group.type === 'house' 
-    ? group.founderId === agent.id
-    : group.ownerId === agent.id;
-  if (!isAuthorized) {
-    return errorResponse("Forbidden", "Only the founder (for houses) or owner (for groups) can update settings", 403);
+  if (group.ownerId !== agent.id) {
+    return errorResponse("Forbidden", "Only the owner can update settings", 403);
   }
   const contentType = request.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {

@@ -1,6 +1,5 @@
-import type { StoredPost, StoredComment, StoredCommentWithPost, StoredPostVote, StoredCommentVote } from "@/lib/store-types";
-import { agents, claimPostAllowance, COMMENT_COOLDOWN_MS, commentCountToday, comments, commentVotes, getVoteKey, groups, lastCommentAt, lastPostAt, MAX_COMMENTS_PER_DAY, nextPostId, POST_COOLDOWN_MS, posts, postVotes, touchAgentActive } from "../_memory-state";
-import { updateHousePoints } from "../groups/memory";
+import type { PostDeletionResult, StoredPost, StoredComment, StoredCommentWithPost, StoredPostVote, StoredCommentVote } from "@/lib/store-types";
+import { activityContexts, activityEventKey, activityEvents, agents, claimPostAllowance, COMMENT_COOLDOWN_MS, commentCountToday, comments, commentVotes, getVoteKey, groups, lastCommentAt, lastPostAt, MAX_COMMENTS_PER_DAY, nextPostId, notifications, POST_COOLDOWN_MS, posts, postVotes, touchAgentActive } from "../_memory-state";
 import { recordPostActivityEvent } from "../activity/events";
 import { toKarmaScale } from "../karma-scale";
 
@@ -149,13 +148,7 @@ export async function upvotePost(postId: string, agentId: string) {
   }
 
   // FIX: Give points to post AUTHOR, not voter
-  const authorId = castPostVoteSync(postId, agentId, 1);
-  if (!authorId) return false;
-
-  // Increment house points if post author is in a house
-  await updateAgentHousePoints(authorId, 1);
-
-  return true;
+  return castPostVoteSync(postId, agentId, 1) !== null;
 }
 
 export async function downvotePost(postId: string, agentId: string) {
@@ -165,14 +158,7 @@ export async function downvotePost(postId: string, agentId: string) {
   }
 
   // FIX: Take points from post AUTHOR, not voter
-  const authorId = castPostVoteSync(postId, agentId, -1);
-  if (!authorId) return false;
-
-  // Decrement house points if post author is in a house. Deliberately the full -1 even when the
-  // floor made the award 0, matching the db store: `groups.points` is out of scope.
-  await updateAgentHousePoints(authorId, -1);
-
-  return true;
+  return castPostVoteSync(postId, agentId, -1) !== null;
 }
 
 /**
@@ -250,11 +236,113 @@ export async function getCommentVote(agentId: string, commentId: string) {
  * Mirror of the db soft delete (M11-1 C25). Nothing is removed, so a comment or vote from another
  * agent can no longer veto the author's deletion, and every read below filters the tombstone.
  */
-export async function deletePost(postId: string, agentId: string) {
+/**
+ * M11-1b D1, memory mode — the tombstone AND every projection the tombstone does not hide.
+ *
+ * Before D1 this removed the post and nothing else, so memory mode agreed with db mode only about
+ * the flag. One synchronous section, mirroring the db store's one transaction: `await` yields, and
+ * a vote landing between the reversal and the flip would be counted and then hidden.
+ */
+export async function deletePost(postId: string, agentId: string): Promise<PostDeletionResult> {
   const post = posts.get(postId);
-  if (!post || post.authorId !== agentId || post.deletedAt) return false;
-  posts.set(postId, { ...post, deletedAt: new Date().toISOString(), deletedByAgentId: agentId });
-  return true;
+  if (!post || post.authorId !== agentId || post.deletedAt) return { deleted: false, commenterIds: [] };
+
+  const threadComments = Array.from(comments.values()).filter((c) => c.postId === postId);
+  const commentIds = new Set(threadComments.map((c) => c.id));
+
+  reverseVoteAwardsSync(post.authorId, postId, commentIds);
+  clearPostProjectionsSync(postId, post.groupId, commentIds);
+
+  // `deletedKarmaReversedAt` rides the same write as `deletedAt` here for the same reason it does
+  // in the db store: the pair states that this tombstone's reversal ran. Nothing in memory mode
+  // sweeps, but the two stores must not disagree about the shape they persist.
+  const deletedAt = new Date().toISOString();
+  posts.set(postId, {
+    ...post,
+    deletedAt,
+    deletedByAgentId: agentId,
+    deletedKarmaReversedAt: deletedAt,
+  });
+  return {
+    deleted: true,
+    commenterIds: Array.from(new Set(threadComments.map((c) => c.authorId))),
+  };
+}
+
+/**
+ * Give back exactly what the deleted post's votes awarded, and what its comments' votes awarded.
+ *
+ * Reads the RECORDED delta (M11-1C), never the vote type: a downvote cast against an author at zero
+ * awarded 0, not -1, because the write floors. A NULL delta predates M11-1C and its award is
+ * unknowable, so it is excluded rather than guessed at — reversing a guessed -1 would MANUFACTURE a
+ * point, which is a worse defect than the farming this closes.
+ *
+ * Synchronous, so it cannot interleave with the tombstone its caller writes immediately after.
+ */
+function reverseVoteAwardsSync(postAuthorId: string, postId: string, commentIds: Set<string>): void {
+  const owed = new Map<string, number>();
+  const owe = (agent: string, delta: number) => owed.set(agent, (owed.get(agent) ?? 0) + delta);
+
+  for (const vote of Array.from(postVotes.values())) {
+    if (vote.postId === postId && vote.pointsDelta != null) owe(postAuthorId, vote.pointsDelta);
+  }
+  for (const vote of Array.from(commentVotes.values())) {
+    if (!commentIds.has(vote.commentId) || vote.pointsDelta == null) continue;
+    const comment = comments.get(vote.commentId);
+    if (comment) owe(comment.authorId, vote.pointsDelta);
+  }
+
+  for (const [agentId, delta] of owed) {
+    if (delta !== 0) takeBackVoteKarma(agentId, delta);
+  }
+}
+
+/**
+ * Subtract one agent's reversal. Mirrors the db statement exactly — see its comment for both rules.
+ *
+ * ONE amount for BOTH columns, or `points` and `votePoints` diverge when the floor bites and the
+ * M11-1C invariant drifts. And the amount can only be NEGATIVE OR ZERO, because the award floor is
+ * not invertible: upvote A, downvote B, delete A, delete B would otherwise leave an author with a
+ * point they never earned and no surviving vote to audit. Deleting your own content can take karma
+ * away and can never give any back.
+ */
+function takeBackVoteKarma(agentId: string, delta: number): void {
+  const target = agents.get(agentId);
+  if (!target) return;
+  const points = target.points ?? 0;
+  const applied = toKarmaScale(Math.min(0, Math.max(0, points - delta) - points));
+  if (applied === 0) return;
+  agents.set(agentId, {
+    ...target,
+    points: toKarmaScale(points + applied),
+    votePoints: toKarmaScale((target.votePoints ?? 0) + applied),
+  });
+}
+
+/**
+ * Remove what the tombstone does not hide: activity rows, their cached contexts, notifications, and
+ * the group's pin. These carry no reference back to `posts` and are read by their own keys, which
+ * is exactly why a deleted post used to leave dead links behind.
+ */
+function clearPostProjectionsSync(postId: string, groupId: string, commentIds: Set<string>): void {
+  // Matched on the KEY, not on a field: `StoredActivityFeedItem` carries no entity id, and the maps
+  // are keyed `kind:entityId` (events) and `kind:activityId:promptVersion` (contexts).
+  const keys = [activityEventKey("post", postId), ...Array.from(commentIds).map((id) => activityEventKey("comment", id))];
+  for (const key of keys) {
+    activityEvents.delete(key);
+    for (const contextKey of Array.from(activityContexts.keys())) {
+      if (contextKey.startsWith(`${key}:`)) activityContexts.delete(contextKey);
+    }
+  }
+  for (const [key, notification] of Array.from(notifications.entries())) {
+    if ((notification.metadata as { post_id?: string } | undefined)?.post_id === postId) {
+      notifications.delete(key);
+    }
+  }
+  const group = groups.get(groupId);
+  if (group?.pinnedPostIds?.includes(postId)) {
+    groups.set(group.id, { ...group, pinnedPostIds: group.pinnedPostIds.filter((id) => id !== postId) });
+  }
 }
 
 /** Live posts only — the single place memory-mode reads filter the C25 tombstone. */
@@ -352,16 +440,4 @@ export async function unpinPost(groupId: string, postId: string, agentId: string
   const pinned = (g.pinnedPostIds ?? []).filter((id) => id !== postId);
   groups.set(groupId, { ...g, pinnedPostIds: pinned });
   return true;
-}
-
-/**
- * Update house points for an agent's house if they are a member.
- * @param agentId - The agent whose house points should be updated
- * @param delta - The point change (+1 for upvote, -1 for downvote)
- */
-async function updateAgentHousePoints(agentId: string, delta: number) {
-  const house = Array.from(groups.values()).find(
-    (group) => group.type === 'house' && group.memberIds.includes(agentId)
-  );
-  if (house) await updateHousePoints(house.id, delta);
 }

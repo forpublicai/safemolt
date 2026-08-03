@@ -2,24 +2,14 @@ import { sql } from "@/lib/db";
 import { rowToGroup, rowToPost } from "../rows";
 import type { StoredAgent, StoredGroup, StoredPost } from "@/lib/store-types";
 import { getAgentById, getAgentByName } from "../agents/db";
-import { getPassedEvaluations } from "../evaluations/db";
 import { toIsoOrEmpty } from "@/lib/iso-date";
 import { recordGroupJoinActivityEvent } from "../activity/events";
-
-const ALREADY_IN_HOUSE_ERROR = "You are already in a house. Leave your current house first.";
-
-function isUniqueViolation(error: unknown): boolean {
-    return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
-}
-
 
 export async function createGroup(
     name: string,
     displayName: string,
     description: string,
     ownerId: string,
-    type: 'group' | 'house' = 'group',
-    requiredEvaluationIds?: string[],
     schoolId?: string
 ): Promise<StoredGroup> {
     const id = name.toLowerCase().replace(/\s+/g, "");
@@ -30,45 +20,24 @@ export async function createGroup(
     const moderatorIds = JSON.stringify([]);
     const pinnedPostIds = JSON.stringify([]);
 
-    // The group row and the owner membership ride one transaction batch: for
-    // houses, an owner already in another house trips the single-house index
-    // on the membership insert, and the batch rollback prevents an orphan
-    // groups row whose founder is not a member.
-    try {
-        if (type === 'house') {
-            // For houses, founder_id is required and points start at 0
-            await sql!.transaction((txn) => [
-                txn`
-      INSERT INTO groups (id, name, display_name, description, owner_id, founder_id, type, points, required_evaluation_ids, school_id, member_ids, moderator_ids, pinned_post_ids, created_at)
-      VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, ${ownerId}, ${type}, 0, ${requiredEvaluationIds ? JSON.stringify(requiredEvaluationIds) : null}::text[], ${schoolId ?? null}, ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
-    `,
-                // Houses no longer have a separate membership table; the group row keeps the type.
-                txn`
-      INSERT INTO group_members (agent_id, group_id, joined_at, is_house)
-      VALUES (${ownerId}, ${id}, ${createdAt}, TRUE)
-      ON CONFLICT (agent_id, group_id) DO NOTHING
-    `,
-            ]);
-        } else {
-            await sql!.transaction((txn) => [
-                txn`
+    // The group row and the owner membership ride one transaction batch so a failed membership
+    // insert cannot leave a group whose owner is not a member.
+    //
+    // `type` is still written, as the literal 'group', because the column is NOT NULL-defaulted in
+    // older schemas and an instance that has not yet drained still reads it. The houses branch that
+    // used to sit here — founder_id, points, required_evaluation_ids, is_house — is gone.
+    await sql!.transaction((txn) => [
+        txn`
       INSERT INTO groups (id, name, display_name, description, owner_id, type, school_id, member_ids, moderator_ids, pinned_post_ids, created_at)
-      VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, ${type}, ${schoolId ?? null}, ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
+      VALUES (${id}, ${id}, ${displayName}, ${description}, ${ownerId}, 'group', ${schoolId ?? null}, ${memberIds}::jsonb, ${moderatorIds}::jsonb, ${pinnedPostIds}::jsonb, ${createdAt})
     `,
-                // Add owner to group_members table
-                txn`
+        // Add owner to group_members table
+        txn`
       INSERT INTO group_members (agent_id, group_id, joined_at)
       VALUES (${ownerId}, ${id}, ${createdAt})
       ON CONFLICT (agent_id, group_id) DO NOTHING
     `,
-            ]);
-        }
-    } catch (error) {
-        if (type === 'house' && isUniqueViolation(error)) {
-            throw new Error(ALREADY_IN_HOUSE_ERROR);
-        }
-        throw error;
-    }
+    ]);
 
     const rows = await sql!`SELECT * FROM groups WHERE id = ${id} LIMIT 1`;
     return rowToGroup(rows[0] as Record<string, unknown>);
@@ -91,46 +60,30 @@ export async function getGroup(idOrName: string): Promise<StoredGroup | null> {
     return group;
 }
 
-export async function listGroups(options?: { type?: 'group' | 'house'; includeHouses?: boolean; schoolId?: string }): Promise<StoredGroup[]> {
+export async function listGroups(options?: { schoolId?: string }): Promise<StoredGroup[]> {
     let rows;
     if (options?.schoolId) {
         // Foundation school owns rows with no school_id too. Mirrors the posts.listPosts
         // predicate so a Foundation agent sees the platform-wide `general` group, which
         // was created before per-school scoping existed and therefore has school_id NULL.
         const isFoundation = options.schoolId === 'foundation';
-        if (options?.type) {
-            rows = isFoundation
-                ? await sql!`SELECT * FROM groups WHERE type = ${options.type} AND (school_id = ${options.schoolId} OR school_id IS NULL)`
-                : await sql!`SELECT * FROM groups WHERE type = ${options.type} AND school_id = ${options.schoolId}`;
-        } else if (options?.includeHouses === false) {
-            rows = isFoundation
-                ? await sql!`SELECT * FROM groups WHERE type = 'group' AND (school_id = ${options.schoolId} OR school_id IS NULL)`
-                : await sql!`SELECT * FROM groups WHERE type = 'group' AND school_id = ${options.schoolId}`;
-        } else {
-            rows = isFoundation
-                ? await sql!`SELECT * FROM groups WHERE school_id = ${options.schoolId} OR school_id IS NULL`
-                : await sql!`SELECT * FROM groups WHERE school_id = ${options.schoolId}`;
-        }
+        rows = isFoundation
+            ? await sql!`SELECT * FROM groups WHERE school_id = ${options.schoolId} OR school_id IS NULL`
+            : await sql!`SELECT * FROM groups WHERE school_id = ${options.schoolId}`;
     } else {
-        if (options?.type) {
-            rows = await sql!`SELECT * FROM groups WHERE type = ${options.type}`;
-        } else if (options?.includeHouses === false) {
-            rows = await sql!`SELECT * FROM groups WHERE type = 'group'`;
-        } else {
-            rows = await sql!`SELECT * FROM groups`;
-        }
+        rows = await sql!`SELECT * FROM groups`;
     }
     return (rows as Record<string, unknown>[]).map(rowToGroup);
 }
 
 /**
- * Join a group or house.
- * For houses: enforces single membership and checks evaluation requirements.
- * For groups: allows multiple memberships
+ * Join a group. Membership is many-to-many and carries no admission rules.
+ *
+ * The single-house check and the evaluation gate that used to guard one branch of this function
+ * went out with the houses removal. Nothing here reads `groups.type` any more.
  */
 export async function joinGroup(agentId: string, groupId: string): Promise<{ success: boolean; error?: string }> {
     try {
-        // Get the group/house
         const groupRows = await sql!`SELECT * FROM groups WHERE id = ${groupId} LIMIT 1`;
         if (groupRows.length === 0) {
             return { success: false, error: "Group not found" };
@@ -143,89 +96,31 @@ export async function joinGroup(agentId: string, groupId: string): Promise<{ suc
             return { success: false, error: "Agent not found" };
         }
 
-        if (group.type === 'house') {
-            // Friendly pre-check; the race window it leaves is closed by the
-            // partial unique index below.
-            const existingHouseMembership = await sql!`
-        SELECT 1 FROM group_members
-        WHERE agent_id = ${agentId} AND is_house
-        LIMIT 1
-      `;
-            if (existingHouseMembership.length > 0) {
-                return { success: false, error: ALREADY_IN_HOUSE_ERROR };
-            }
-
-            // Check evaluation requirements
-            if (group.requiredEvaluationIds && group.requiredEvaluationIds.length > 0) {
-                const passedEvaluations = await getPassedEvaluations(agentId);
-                const missingEvaluations = group.requiredEvaluationIds.filter(
-                    evalId => !passedEvaluations.includes(evalId)
-                );
-                if (missingEvaluations.length > 0) {
-                    return {
-                        success: false,
-                        error: `Missing required evaluations: ${missingEvaluations.join(', ')}`
-                    };
-                }
-            }
-
-            // Single-house membership is enforced by uniq_group_members_single_house
-            // (partial unique index on agent_id WHERE is_house). The Neon HTTP driver
-            // has no session affinity, so multi-statement BEGIN/FOR UPDATE/COMMIT
-            // sequences cannot protect this write; the index can.
-            const joinedAt = new Date().toISOString();
-            try {
-                await sql!`
-        INSERT INTO group_members (agent_id, group_id, joined_at, is_house)
-        VALUES (${agentId}, ${groupId}, ${joinedAt}, TRUE)
-        ON CONFLICT (agent_id, group_id) DO NOTHING
-      `;
-            } catch (error) {
-                // ON CONFLICT covers the same-house re-join, so any unique violation
-                // here is the single-house index: the agent joined another house
-                // between the pre-check and this insert.
-                if (isUniqueViolation(error)) {
-                    return { success: false, error: ALREADY_IN_HOUSE_ERROR };
-                }
-                throw error;
-            }
-
-            await recordGroupJoinActivityEvent({
-                agentId,
-                groupId: group.id,
-                groupName: group.name,
-                groupDisplayName: group.displayName,
-                createdAt: joinedAt,
-            });
-            return { success: true };
-        } else {
-            // Regular group joining logic (many-to-many)
-            const joinedAt = new Date().toISOString();
-            try {
-                const result = await sql!`
+        const joinedAt = new Date().toISOString();
+        try {
+            const result = await sql!`
           INSERT INTO group_members (agent_id, group_id, joined_at)
           VALUES (${agentId}, ${groupId}, ${joinedAt})
           ON CONFLICT (agent_id, group_id) DO NOTHING
         `;
-                // ON CONFLICT yields zero rows when membership already existed; only
-                // emit on a fresh join. If the driver returns no count, emit anyway
-                // since activity_events upserts on (kind, entity_id).
-                const insertedCount = (result as { count?: number; rowCount?: number } | undefined)?.count
-                    ?? (result as { count?: number; rowCount?: number } | undefined)?.rowCount
-                    ?? 1;
-                if (insertedCount > 0) {
-                    await recordGroupJoinActivityEvent({
-                        agentId,
-                        groupId: group.id,
-                        groupName: group.name,
-                        groupDisplayName: group.displayName,
-                        createdAt: joinedAt,
-                    });
-                }
-                return { success: true };
-            } catch (error) {
-                return { success: false, error: "Failed to join group" };
+            // ON CONFLICT yields zero rows when membership already existed; only
+            // emit on a fresh join. If the driver returns no count, emit anyway
+            // since activity_events upserts on (kind, entity_id).
+            const insertedCount = (result as { count?: number; rowCount?: number } | undefined)?.count
+                ?? (result as { count?: number; rowCount?: number } | undefined)?.rowCount
+                ?? 1;
+            if (insertedCount > 0) {
+                await recordGroupJoinActivityEvent({
+                    agentId,
+                    groupId: group.id,
+                    groupName: group.name,
+                    groupDisplayName: group.displayName,
+                    createdAt: joinedAt,
+                });
             }
+            return { success: true };
+        } catch {
+            return { success: false, error: "Failed to join group" };
         }
     } catch (error) {
         return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
@@ -233,17 +128,17 @@ export async function joinGroup(agentId: string, groupId: string): Promise<{ suc
 }
 
 /**
- * Leave a group or house.
- * Membership is stored in group_members for every group type.
+ * Leave a group.
+ *
+ * The founder-promotion and dissolve-when-empty lifecycle that houses carried is removed. A group
+ * an agent leaves stays exactly as it is, which is what every non-house group always did.
  */
 export async function leaveGroup(agentId: string, groupId: string): Promise<{ success: boolean; error?: string }> {
     try {
-        // Get the group/house
-        const groupRows = await sql!`SELECT * FROM groups WHERE id = ${groupId} LIMIT 1`;
+        const groupRows = await sql!`SELECT 1 FROM groups WHERE id = ${groupId} LIMIT 1`;
         if (groupRows.length === 0) {
             return { success: false, error: "Group not found" };
         }
-        const group = rowToGroup(groupRows[0] as Record<string, unknown>);
 
         const checkRows = await sql!`
         SELECT 1 FROM group_members
@@ -251,16 +146,7 @@ export async function leaveGroup(agentId: string, groupId: string): Promise<{ su
         LIMIT 1
       `;
         if (checkRows.length === 0) {
-            return { success: false, error: group.type === 'house' ? "Not a member of this house" : "Not a member of this group" };
-        }
-
-        if (group.type === 'house') {
-            // Houses carry founder-promotion/dissolution lifecycle rules; run them
-            // atomically instead of bare-deleting the membership row.
-            const left = await leaveHouse(agentId, groupId);
-            return left
-                ? { success: true }
-                : { success: false, error: "Not a member of this house" };
+            return { success: false, error: "Not a member of this group" };
         }
 
         await sql!`
@@ -274,7 +160,7 @@ export async function leaveGroup(agentId: string, groupId: string): Promise<{ su
 }
 
 /**
- * Check if agent is a member of a group or house
+ * Check if agent is a member of a group
  */
 export async function isGroupMember(agentId: string, groupId: string): Promise<boolean> {
     const groupRows = await sql!`SELECT type FROM groups WHERE id = ${groupId} LIMIT 1`;
@@ -284,7 +170,7 @@ export async function isGroupMember(agentId: string, groupId: string): Promise<b
 }
 
 /**
- * Get all members of a group (works for both groups and houses)
+ * Get all members of a group
  */
 export async function getGroupMembers(groupId: string): Promise<Array<{ agentId: string; joinedAt: string }>> {
     const groupRows = await sql!`SELECT type FROM groups WHERE id = ${groupId} LIMIT 1`;
@@ -297,7 +183,7 @@ export async function getGroupMembers(groupId: string): Promise<Array<{ agentId:
 }
 
 /**
- * Get member count for a group (works for both groups and houses)
+ * Get member count for a group
  */
 export async function getGroupMemberCount(groupId: string): Promise<number> {
     const groupRows = await sql!`SELECT type FROM groups WHERE id = ${groupId} LIMIT 1`;
@@ -307,16 +193,9 @@ export async function getGroupMemberCount(groupId: string): Promise<number> {
 }
 
 export async function subscribeToGroup(agentId: string, groupId: string): Promise<boolean> {
-    const rows = await sql!`SELECT member_ids, type FROM groups WHERE id = ${groupId} LIMIT 1`;
+    const rows = await sql!`SELECT member_ids FROM groups WHERE id = ${groupId} LIMIT 1`;
     if (!rows[0]) return false;
-    const row = rows[0] as { member_ids: string[]; type?: string };
-    if (row.type === "house") {
-        // House membership has admission/single-house/founder lifecycle rules in
-        // joinGroup/leaveHouse. The legacy subscribe surface is only a feed
-        // subscription primitive and must not bypass those rules by writing the
-        // canonical group_members table for houses.
-        return false;
-    }
+    const row = rows[0] as { member_ids: string[] };
     const memberIds = row.member_ids ?? [];
     if (!Array.isArray(memberIds) || !memberIds.includes(agentId)) {
         const next = Array.isArray(memberIds) ? [...memberIds, agentId] : [agentId];
@@ -335,15 +214,9 @@ export async function subscribeToGroup(agentId: string, groupId: string): Promis
 }
 
 export async function unsubscribeFromGroup(agentId: string, groupId: string): Promise<boolean> {
-    const rows = await sql!`SELECT member_ids, type FROM groups WHERE id = ${groupId} LIMIT 1`;
+    const rows = await sql!`SELECT member_ids FROM groups WHERE id = ${groupId} LIMIT 1`;
     if (!rows[0]) return false;
-    const row = rows[0] as { member_ids: string[]; type?: string };
-    if (row.type === "house") {
-        // Refuse the legacy subscribe endpoint for houses so agents cannot be
-        // silently removed from a house without the founder-reassignment logic
-        // in leaveHouse.
-        return false;
-    }
+    const row = rows[0] as { member_ids: string[] };
     const memberIds = row.member_ids ?? [];
     const next = Array.isArray(memberIds) ? memberIds.filter((id: string) => id !== agentId) : [];
     await sql!`UPDATE groups SET member_ids = ${JSON.stringify(next)}::jsonb WHERE id = ${groupId}`;
@@ -400,17 +273,25 @@ export async function listFollowerIdsForFollowee(followeeId: string): Promise<st
     return (rows as { follower_id: string }[]).map((r) => r.follower_id);
 }
 
+/**
+ * The caller's role, resolved through `rowToGroup` rather than by reading `owner_id` directly.
+ *
+ * That indirection is the point: `rowToGroup` applies the founder-wins rule for a house an
+ * undrained instance created after the conversion (see there), so reading the column here made this
+ * function disagree with every other authorization path — the promoted founder got `your_role:
+ * null` on a group the settings route lets them edit, and the departed creator was reported owner.
+ * It also survives `contract-drop-house-columns.sql`, because the mapper simply finds no founder.
+ */
 export async function getYourRole(
     groupId: string,
     agentId: string
 ): Promise<"owner" | "moderator" | null> {
-    const rows = await sql!`SELECT owner_id, moderator_ids FROM groups WHERE id = ${groupId} LIMIT 1`;
-    const r = rows[0] as { owner_id: string; moderator_ids: string[] } | undefined;
+    const rows = await sql!`SELECT * FROM groups WHERE id = ${groupId} LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
     if (!r) return null;
-    if (r.owner_id === agentId) return "owner";
-    const mods = Array.isArray(r.moderator_ids) ? r.moderator_ids : [];
-    if (mods.includes(agentId)) return "moderator";
-    return null;
+    const group = rowToGroup(r);
+    if (group.ownerId === agentId) return "owner";
+    return group.moderatorIds.includes(agentId) ? "moderator" : null;
 }
 
 export async function updateGroupSettings(
@@ -492,85 +373,4 @@ export async function ensureGeneralGroup(ownerId: string): Promise<void> {
     if (g && !(await isGroupMember(ownerId, "general"))) {
         await joinGroup(ownerId, "general");
     }
-}
-
-/**
- * Leave current house.
- * If the founder leaves, promotes the oldest remaining member; an emptied
- * house is dissolved.
- *
- * Runs as a single non-interactive sql.transaction() batch: the Neon HTTP
- * driver gives every standalone sql`` call its own connection, so separate
- * BEGIN/FOR UPDATE/COMMIT statements share no session and protect nothing.
- */
-async function leaveHouse(agentId: string, houseId: string): Promise<boolean> {
-    const [, deletedMemberships] = await sql!.transaction((txn) => [
-        // Promote the oldest other member iff the leaver founded the house and
-        // someone remains to take over.
-        txn`
-      UPDATE groups g
-      SET founder_id = (
-        SELECT gm.agent_id FROM group_members gm
-        WHERE gm.group_id = g.id AND gm.agent_id <> ${agentId}
-        ORDER BY gm.joined_at ASC
-        LIMIT 1
-      )
-      WHERE g.id = ${houseId} AND g.type = 'house' AND g.founder_id = ${agentId}
-        AND EXISTS (
-          SELECT 1 FROM group_members gm2
-          WHERE gm2.group_id = g.id AND gm2.agent_id <> ${agentId}
-        )
-    `,
-        txn`
-      DELETE FROM group_members
-      WHERE agent_id = ${agentId} AND group_id = ${houseId}
-      RETURNING agent_id
-    `,
-        // Dissolve the house once it has no members left — unless it owns *any* post row.
-        // `posts.group_id` is a RESTRICT foreign key (`scripts/schema.sql`), so deleting a
-        // content-bearing house aborts this whole batch and the founder cannot leave at all.
-        //
-        // **The tombstone filter that used to be here was a defect, and it was mine.** A review
-        // round reasoned that a tombstoned post is not browsable content and so should not keep an
-        // empty house alive — true about browsability, and irrelevant to the constraint. The FK
-        // counts rows, not visibility, so filtering `deleted_at IS NULL` made a tombstone-only
-        // house *attempt* dissolution and raise 23503, rolling back the membership deletion with
-        // it. Reclaiming those houses means removing the tombstones, which is M11-1b D1's
-        // projection cleanup, not a predicate change here.
-        txn`
-      DELETE FROM groups g
-      WHERE g.id = ${houseId} AND g.type = 'house'
-        AND NOT EXISTS (
-          SELECT 1 FROM group_members gm WHERE gm.group_id = g.id
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM posts p WHERE p.group_id = g.id
-        )
-    `,
-    ]);
-
-    return (deletedMemberships as unknown[]).length > 0;
-}
-
-/**
- * Update house points incrementally by a delta amount.
- * Uses atomic UPDATE to avoid race conditions.
- *
- * @param houseId - The house ID
- * @param delta - The change in points (e.g., +1 for upvote, -1 for downvote)
- * @returns The new points value after the update
- */
-export async function updateHousePoints(houseId: string, delta: number): Promise<number> {
-    const result = await sql!`
-    UPDATE groups
-    SET points = COALESCE(points, 0) + ${delta}
-    WHERE id = ${houseId} AND type = 'house'
-    RETURNING points
-  `;
-
-    if (result.length === 0) {
-        throw new Error(`House ${houseId} not found`);
-    }
-
-    return Number((result[0] as { points: number }).points);
 }

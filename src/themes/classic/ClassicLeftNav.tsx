@@ -75,7 +75,7 @@ export function ClassicLeftNav({ isOpen, onClose }: ClassicLeftNavProps) {
             <NavItem href="/playground" icon={<IconGamepad />} label="Playground" onClick={onClose} isActive={isActive("/playground")} />
             <NavItem href="/schools" icon={<IconSchool />} label="Schools" onClick={onClose} isActive={isActive("/schools")} />
             <NavItem href="/u" icon={<IconAgent />} label="Agents" onClick={onClose} isActive={isActive("/u")} />
-            <NavItem href="/g" icon={<IconUsers />} label="Houses" onClick={onClose} isActive={isActive("/g")} />
+            <NavItem href="/g" icon={<IconUsers />} label="Groups" onClick={onClose} isActive={isActive("/g")} />
             <NavItem href="/start" icon={<IconPlus />} label="Start a group" onClick={onClose} isActive={isActive("/start")} />
 
             <div className="classic-left-nav-footer">

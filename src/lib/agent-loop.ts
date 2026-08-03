@@ -463,10 +463,7 @@ async function gatherNewsContext(): Promise<NewsItem[]> {
 }
 
 async function gatherGroupOpportunities(agentId: string): Promise<GroupOpportunity[]> {
-  const { suggested } = await gatherGroupOpportunitySnapshot(agentId, {
-    type: "group",
-    suggestedLimit: 5,
-  });
+  const { suggested } = await gatherGroupOpportunitySnapshot(agentId, { suggestedLimit: 5 });
   // Counts come from group_members like the membership filter does; the legacy
   // member_ids snapshot is not maintained by joinGroup and undercounts.
   return Promise.all(

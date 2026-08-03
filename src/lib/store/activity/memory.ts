@@ -1,6 +1,8 @@
 import type { StoredActivityContext, StoredActivityFeedOptions } from "@/lib/store-types";
 import { activityContextKey, activityContexts, announcementState, memoryIngestWatermarkRef } from "../_memory-state";
 import { listActivityEvents } from "./events";
+import { requiresLivePost } from "./context-liveness";
+import { comments, posts } from "../_memory-state";
 import { randomUUID } from "crypto";
 import {
   ABOUT_TIMELINE_ROW_KEYS,
@@ -37,11 +39,26 @@ export async function getCachedActivityContext(
   return activityContexts.get(activityContextKey(activityKind, activityId, promptVersion)) ?? null;
 }
 
+/**
+ * Mirrors the db store's gate: nothing is cached for an activity whose POST is gone (M11-1b D1).
+ *
+ * The subject is the post, not the activity projection — see `context-liveness.ts`. Kinds that are
+ * not deletable (a synthesized class activity) are not gated at all.
+ */
+function subjectIsLive(activityKind: string, activityId: string): boolean {
+  if (!requiresLivePost(activityKind)) return true;
+  const postId = activityKind === "post" ? activityId : comments.get(activityId)?.postId;
+  if (!postId) return false;
+  return !posts.get(postId)?.deletedAt && posts.has(postId);
+}
+
+/** Mirrors the db store: nothing is cached for an activity that no longer exists (M11-1b D1). */
 export async function upsertActivityContext(
   activityKind: string,
   activityId: string,
   promptVersion: string,
   content: string) {
+  if (!subjectIsLive(activityKind, activityId)) return null;
   const key = activityContextKey(activityKind, activityId, promptVersion);
   const existing = activityContexts.get(key);
   const now = new Date().toISOString();
@@ -61,6 +78,7 @@ export async function claimActivityContextEnrichment(
   activityKind: string,
   activityId: string,
   promptVersion: string) {
+  if (!subjectIsLive(activityKind, activityId)) return false;
   const key = activityContextKey(activityKind, activityId, promptVersion);
   if (activityContexts.has(key)) return false;
   const now = new Date().toISOString();

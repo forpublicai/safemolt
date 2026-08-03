@@ -384,7 +384,7 @@ describe("one passed result per (agent, evaluation) — the round-8 index and it
         const { registerForEvaluation } = await import("@/lib/store/evaluations/db");
         const agent = await seedAgent("regGate");
         const registrationId = await seedRegistration(agent);
-        const saved = await saveEvaluationResult(registrationId, agent, EVALUATION, true, 7, 10);
+        const saved = await saveEvaluationResult({ registrationId, agentId: agent, evaluationId: EVALUATION, passed: true, score: 7, maxScore: 10 });
         expect(saved.outcome).toBe("created");
 
         expect(await registerForEvaluation(agent, EVALUATION)).toBeNull();
@@ -400,7 +400,7 @@ describe("one passed result per (agent, evaluation) — the round-8 index and it
         await pgPool().query("UPDATE agents SET points = 7 WHERE id = $1", [agent]);
         const slipped = await seedRegistration(agent);
 
-        const saved = await saveEvaluationResult(slipped, agent, EVALUATION, true, 7, 10);
+        const saved = await saveEvaluationResult({ registrationId: slipped, agentId: agent, evaluationId: EVALUATION, passed: true, score: 7, maxScore: 10 });
 
         expect(saved.outcome).toBe("not_actionable");
         expect(await registrationStatus(slipped)).toBe("in_progress");
@@ -408,7 +408,7 @@ describe("one passed result per (agent, evaluation) — the round-8 index and it
         expect(await agentPoints(agent)).toBe(7);
 
         // A failed verdict still records — the invariant covers the payout, not the attempt.
-        const failed = await saveEvaluationResult(slipped, agent, EVALUATION, false, 0, 10);
+        const failed = await saveEvaluationResult({ registrationId: slipped, agentId: agent, evaluationId: EVALUATION, passed: false, score: 0, maxScore: 10 });
         expect(failed.outcome).toBe("created");
     });
 });
@@ -419,8 +419,8 @@ describe("the gated save, raced on the Neon driver", () => {
         const registrationId = await seedRegistration(agent);
 
         const outcomes = await runConcurrently([
-            () => saveEvaluationResult(registrationId, agent, EVALUATION, true, 7, 10),
-            () => saveEvaluationResult(registrationId, agent, EVALUATION, true, 7, 10),
+            () => saveEvaluationResult({ registrationId, agentId: agent, evaluationId: EVALUATION, passed: true, score: 7, maxScore: 10 }),
+            () => saveEvaluationResult({ registrationId, agentId: agent, evaluationId: EVALUATION, passed: true, score: 7, maxScore: 10 }),
         ]);
 
         expect(rejections(outcomes)).toEqual([]);
@@ -444,8 +444,8 @@ describe("the gated save, raced on the Neon driver", () => {
         const registrationId = await seedRegistration(candidate);
 
         const outcomes = await runConcurrently([
-            () => saveEvaluationResult(registrationId, candidate, EVALUATION, true, 7, 10, undefined, routeProctor),
-            () => saveEvaluationResult(registrationId, candidate, EVALUATION, true, 7, 10, undefined, toolProctor),
+            () => saveEvaluationResult({ registrationId, agentId: candidate, evaluationId: EVALUATION, passed: true, score: 7, maxScore: 10, proctorAgentId: routeProctor }),
+            () => saveEvaluationResult({ registrationId, agentId: candidate, evaluationId: EVALUATION, passed: true, score: 7, maxScore: 10, proctorAgentId: toolProctor }),
         ]);
 
         const values = outcomes.map((o) => (o.ok ? o.value : null));
@@ -473,7 +473,7 @@ describe("the gated save, raced on the Neon driver", () => {
                     [registrationId]
                 );
             },
-            contend: () => saveEvaluationResult(registrationId, agent, EVALUATION, true, 7, 10),
+            contend: () => saveEvaluationResult({ registrationId, agentId: agent, evaluationId: EVALUATION, passed: true, score: 7, maxScore: 10 }),
             contenderMarker: "INSERT INTO evaluation_results",
         });
 
@@ -495,7 +495,7 @@ describe("the gated save, raced on the Neon driver", () => {
         const registrationId = await seedRegistration(agent);
         const existing = await seedResult({ registrationId, agentId: agent, completedAt: "2026-01-01T00:00:00Z" });
 
-        const saved = await saveEvaluationResult(registrationId, agent, EVALUATION, true, 7, 10);
+        const saved = await saveEvaluationResult({ registrationId, agentId: agent, evaluationId: EVALUATION, passed: true, score: 7, maxScore: 10 });
 
         expect(saved.outcome).toBe("already_complete");
         if (saved.outcome === "already_complete") expect(saved.existing.id).toBe(existing);
@@ -507,11 +507,11 @@ describe("the gated save, raced on the Neon driver", () => {
         const agent = await seedAgent("resubmit");
         const registrationId = await seedRegistration(agent);
 
-        const first = await saveEvaluationResult(registrationId, agent, EVALUATION, true, 7, 10);
+        const first = await saveEvaluationResult({ registrationId, agentId: agent, evaluationId: EVALUATION, passed: true, score: 7, maxScore: 10 });
         if (first.outcome !== "created") throw new Error(`expected created, got ${first.outcome}`);
         expect(await agentPoints(agent)).toBe(7);
 
-        const second = await saveEvaluationResult(registrationId, agent, EVALUATION, true, 7, 10);
+        const second = await saveEvaluationResult({ registrationId, agentId: agent, evaluationId: EVALUATION, passed: true, score: 7, maxScore: 10 });
         expect(second.outcome).toBe("already_complete");
         if (second.outcome === "already_complete") expect(second.existing.id).toBe(first.resultId);
         expect(await agentPoints(agent)).toBe(7);
@@ -522,12 +522,12 @@ describe("the gated save, raced on the Neon driver", () => {
         const agent = await seedAgent("fail");
         const registrationId = await seedRegistration(agent);
 
-        const saved = await saveEvaluationResult(registrationId, agent, EVALUATION, false, 0, 10);
+        const saved = await saveEvaluationResult({ registrationId, agentId: agent, evaluationId: EVALUATION, passed: false, score: 0, maxScore: 10 });
 
         expect(saved.outcome).toBe("created");
         expect(await registrationStatus(registrationId)).toBe("failed");
         expect(await agentPoints(agent)).toBe(0);
-        const again = await saveEvaluationResult(registrationId, agent, EVALUATION, false, 0, 10);
+        const again = await saveEvaluationResult({ registrationId, agentId: agent, evaluationId: EVALUATION, passed: false, score: 0, maxScore: 10 });
         expect(again.outcome).toBe("already_complete");
     });
 });

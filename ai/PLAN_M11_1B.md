@@ -295,13 +295,52 @@ columns (the round-2 lesson: `CREATE TABLE IF NOT EXISTS` is a no-op over a malf
      some participants written and others not.
   Neither is a regression — before D5 these writes had no gate whatsoever — and case 1 is
   self-healing in the ordinary path, because the reclaimer re-resolves the same round and
-  overwrites the same (agent, session) row. The real fix folds the CAS and every participant
-  upsert into **one** statement: `WITH advanced AS (UPDATE … WHERE <fence> RETURNING id)` feeding
-  an `INSERT … SELECT … FROM jsonb_to_recordset($payload) CROSS JOIN advanced`, so a losing CAS
-  writes zero memories. That change touches `applyPlaygroundResolution`'s signature (a C12
-  surface) and needs its own gates and review round, so it is **deferred to a follow-up change**
-  rather than folded into this one. The lesson is the standing one: a comment asserting atomicity
-  is a claim, and a claim needs the statement boundary to back it.
+  overwrites the same (agent, session) row. **Both are now CLOSED — see the follow-up below.**
+
+### D5 atomic follow-up — the CAS and the memories in one statement ✅ *(landed 2026-08-02)*
+
+The residual above is closed, and the withdrawn claim can now be made honestly.
+
+**The statement** (`store/playground/db.ts`): `applyPlaygroundResolution` gained a fourth parameter
+and became `WITH advanced AS (UPDATE … WHERE <fence> RETURNING id), live_agents AS (…), stored AS
+(INSERT … SELECT … FROM advanced CROSS JOIN jsonb_to_recordset($payload) JOIN live_agents …)`
+returning both arms' counts. `stored` reads `advanced`'s `RETURNING`, so a losing CAS contributes
+zero rows to the insert; the counts are returned separately because an **empty** memory payload is
+legitimate (the all-forfeited path) and would otherwise be indistinguishable from a lost CAS.
+`storePlaygroundMemoryFenced` / `storeMemoryFenced` are **deleted** — the CAS predicate is strictly
+stronger than the lease fence it replaced (it carries status and round as well as token and expiry).
+
+**Three defects the coupling itself introduced, found and closed during review:**
+1. **The memory insert could VETO the advance.** `playground_sessions.participants` is JSONB with
+   no FK while `playground_agent_memories.agent_id` has a hard one, so an agent deleted mid-session
+   made the insert raise 23503 — and, sharing a statement, took the round advance with it. Every
+   retry rebuilt the same payload, so the session became **permanently unresolvable**. Closed by a
+   `live_agents … FOR KEY SHARE` CTE the insert consumes: pinned rather than merely read, because a
+   plain join is a snapshot read and a delete committing between the join and the FK check still
+   raises. Gated by a two-connection test that deletes the agent *while the resolution is blocked*.
+2. **Duplicate participants would wedge the session.** Two payload rows with one conflict key raise
+   21000. Deduped last-wins in the db store — where the constraint is — so memory mode agrees.
+3. **The next round's GM lost this round's memories**, because the write now happens *after* the
+   prompt is generated. `generateRoundPrompt` gained a `pendingMemories` override.
+
+**Ordering.** `resolveClaimedRound` now builds memories (embedding is an outbound call and cannot
+join a statement), then commits them *with* the advance, then — only if the CAS reports won —
+schedules the external vector ingest. The all-forfeited branch scheduled ingest *before* its write;
+it no longer does. An advisory `stillOwnsClaim` renewal sits before the embeddings and before the
+second inference call, restoring the "don't pay twice" property the lease-gated write used to give
+for free; it is advisory and says so, the CAS remains decisive.
+
+**Gates.** Memory (13 in `d5-durable-memories.test.ts`): the CAS-coupled write refusing a wrong
+token / stale round and admitting the live claimant; **an unwritable row refusing the advance**;
+duplicate-agent dedupe; **a deleted participant not vetoing the advance**; empty payload as a won
+CAS; **the next round's prompt seeing THIS round's memories**. Integration (17 in
+`d5-playground-memories.test.ts`): **rolls back the advance when any one memory row is unwritable —
+the coupling proof no split-statement shape can pass in either order**; the `FOR KEY SHARE` race
+with a deletion committing mid-statement; losing CAS writes neither advance nor memory; full field
+round-trip through the CAS. Orchestration (`complete-session.test.ts`): a refused renewal buys no
+second inference call; a losing CAS schedules no ingest, in **both** branches. The C12 fixture was
+corrected — it invented participant ids with no `agents` rows, so every resolution there had been
+silently taking the missing-agent path.
 - **Actor-keyed ingest chunk ids**: `schedulePlaygroundMemoryIngest` takes the created action's
   row id (which `submitAction` used to discard; C12's gated insert returns it) and the chunk hash
   becomes `session|round|kind|actionId|index`. GM/summary chunks have no action row and keep the
@@ -324,10 +363,516 @@ agent-scoped sweep; migration through the real runner plus PK/FK shape.
 **Suite-wide after D5:** unit **120 suites / 780 tests** green · integration **22 suites / 197
 tests** green · `tsc` clean · `npm run lint` **93** warnings.
 
-**Remaining M11-1b:** D4 (evaluation completion school identity + the C0 reports), D6 (admissions
-transitions), D1 (post deletion — **no longer blocked**: OQ-1 is resolved and implemented in
-[PLAN_M11_1C.md](PLAN_M11_1C.md), which gives D1 the exact reversal it needed). **Step 1 (D3, D2,
-D5) is complete.**
+### D6 — Admissions state-machine atomic transitions ✅ *(landed 2026-08-02)*
+
+**Offer creation is a `sql.transaction` BATCH, not one CTE — a deliberate departure from this
+chunk's own remedy, and the reason matters.** The cap is cycle-wide, so it can only be serialized on
+the cycle row; but a `FOR UPDATE` *inside a single statement* does not make a cross-row count
+correct under READ COMMITTED. A statement's snapshot is taken when the statement begins, so a
+contender that waits on the cycle lock and then proceeds still counts offers as they stood before
+the winner committed — and the cap is breached anyway. **Every statement in a transaction takes a
+fresh snapshot**, so locking in element 1 and counting in a later element is what actually closes
+it. Elements: lock the agent, lock the cycle, expire stale offers, then the decisive CTE (insert +
+application flip + audit, each gated on the insert's `RETURNING`). Zero rows is classified by a
+follow-up read so the caller's error vocabulary is unchanged. The plan's "one CTE per transition"
+still holds for decline and accept, which have no cross-row cap.
+
+**Lock order is agents first, everywhere.** Both agent-deletion paths lock `agents` and cascade
+*into* applications and offers, so any admissions writer reaching an agent row *through* one of them
+runs the opposite way and deadlocks (40P01). Creation reaches one implicitly — the offer's
+`agent_id` FK takes `FOR KEY SHARE` — and finalization updates `agents.is_admitted` directly. Both
+now take the agent row up front, decline and accept via a `locked_agent` CTE the decisive statement
+consumes (sibling CTE order is not guaranteed on its own), and the stale-offer sweep locks the
+agents it will touch `ORDER BY a.id` so two sweeps cannot take them in opposite orders either.
+
+**Acceptance is idempotent by its own predicate** (`accepted_at_agent IS NULL`), with the audit
+insert driven from that update's `RETURNING` — the pre-D6 audit element asked only whether the
+timestamp was non-null, which stays true on retry. **Finalization is one statement gated on the
+`pending → fully_accepted` flip**, which is a far stronger idempotence gate than the previous
+"no `admission_finalized` audit row yet": only one transaction can perform the flip, and the admit,
+application update and audit all hang off it. The return value is now read back rather than assumed
+`"ok"`, so an acceptance that wrote nothing because a decline won reports `invalid`.
+
+**Two data-correctness fixes found in review.** The partial unique index firing is a **refusal**
+(`agent_has_pending_offer`), not a 500: two cycles mean two cycle locks, so both `NOT EXISTS` checks
+can pass and the index picks the winner. And every expiry path — runtime, memory, and the migration
+— now refuses to release an application that still carries **another live offer**; the pre-D6 data
+this chunk repairs can hold two pending offers on one application, and releasing it anyway would
+commit an `in_pool` application under a live offer, a worse state than the one being cleaned up.
+
+**Memory mode** gained the audit projection it had no representation of at all, and every ownership
+decision moved onto the **synchronous** link helpers (`ownsAgentSync`, and a new
+`agentHasLinkedUsersSync`) so authorization sits inside the same non-yielding section as the write
+it authorizes. Reading links across an `await` let a revoked owner still act.
+
+**Migration** `migrate-admissions-pending-offer-unique.sql`: expire lapsed rows (conditionally, per
+above), preflight and RAISE on a genuine collision, then the partial unique index on
+`agent_id WHERE status='pending'` — keyed on the agent, not `(cycle_id, agent_id)`, because a
+per-cycle index would silently *weaken* today's invariant. Postconditions check unique, valid, ready,
+keyed on agent_id, **and the normalised predicate**.
+
+**Gates.** Memory (13 in `d6-admissions-transitions.test.ts`): cap not exceeded under interleaved
+concurrent calls; no second pending offer per agent even across cycles; expired rows do not consume
+cap; decline by non-owner / against non-pending changes nothing; **repeated acceptance writes one
+timestamp and exactly one audit row**; finalize-once. Integration (16): the cap race **with the
+cycle row held from a second connection**, so contention is observed rather than hoped for; the
+same-agent race asserting the **loser's error**; a human link revoked **while the acceptance is
+wedged on its first element**; concurrent finalizers not double-admitting; the migration applying
+clean, expiring lapsed rows without releasing a still-offered application, and **refusing a genuine
+collision with both rows surviving**.
+
+### D4 — Evaluation completion atomicity ✅ / school identity ◑ *(landed 2026-08-02)*
+
+**Completion is one transaction** (`completeRegistrationAtomically`): agent lock, the gated
+transition-plus-insert, the points recompute, the activity row, and the proctor session end. Every
+element after the decisive one re-gates on the result row, because fixed batch elements execute even
+when the decisive one returned nothing — without that, a *losing* completion would still end the
+proctor session and still project activity.
+
+**The agent lock is element 1 and does two jobs.** It serializes same-agent completions so two
+results on different registrations cannot each sum a snapshot excluding the other (last writer wins,
+points lost permanently). And it **closes the pre-existing 40P01** recorded in `CLAUDE.md`: the old
+first write was the registration update, with the result insert's FK then taking `FOR KEY SHARE` on
+the agent — order `evaluation_registrations → agents`, the reverse of C14's vetting batch. Taking
+the agent row first with the *same* `FOR UPDATE` C14 uses puts both in one global order.
+
+**The `KNOWN EXPOSURE` test is flipped**, as its own comment instructed: `points 7`, not `points 4`.
+It is kept rather than deleted, and is now two gates — a completion through the production writer
+with a reconciliation after it, and a reconciliation run **while the completion is wedged on the
+agent lock**, which is the deterministic form of "landing in the gap". There is no gap.
+
+Also landed: `startEvaluation` became a **CAS** (`AND status = 'registered'`), so a stale start
+cannot drag a completed registration back to `in_progress`; the evaluation-result activity writer
+became a **prepared query** with a `requireCommitted` gate so it can be a batch element instead of a
+swallowed post-commit call; and `saveEvaluationResult`'s eleven positional parameters — ending in
+five consecutive optional strings, about to gain a twelfth — became a named `SaveEvaluationResultInput`.
+
+**School identity is DEPLOY 1 of 3, and only deploy 1.**
+`migrate-evaluation-definitions-school-identity.sql` backfills `school_id`, makes it `NOT NULL`, and
+adds `UNIQUE (school_id, id)` alongside the existing primary key. **It also found a second global
+uniqueness the plan did not name:** `sip_number INTEGER UNIQUE`. Foundation and Humanities both ship
+`sip: 4` as well as `id: twitter-verification`, so scoping the SIP number to the school is not
+tidying — while that constraint stands, deploy 3 cannot succeed no matter what happens to the
+primary key. Same-id cross-school rows are **still impossible** after this deploy, and a test pins
+that boundary explicitly so nobody mistakes a green suite for a closed defect.
+
+### D1 — Post deletion: projection cleanup, karma reversal, reconciliation ✅ *(landed 2026-08-02)*
+
+**Tombstones are the permanent answer — a decision this chunk makes, not one it inherits.** The
+plan left D1 free to follow C25's soft delete with a hard one. It does not. Every reader already
+filters `deleted_at IS NULL`, so the comments, the votes and the post row are invisible where they
+should be; hard-deleting them would buy no visible change and would destroy the vote rows that make
+the karma reversal exact. What the tombstone does NOT hide is the **projections** — activity rows,
+their cached contexts, notifications, and a group's `pinned_post_ids` — which carry no reference
+back to `posts` and are read by their own keys. Those were the dead links, and those are deleted.
+
+**`deletePost` is one `sql.transaction` that LOCKS FIRST and CLEANS SECOND.** Element 1 authorizes
+and `FOR UPDATE`-locks the post; element 2 pins its existing comments, so a concurrent comment vote
+cannot award karma against a comment whose reversal has already been computed. Cleaning before
+locking would let a vote land after its own cleanup statement ran. Every element re-derives
+authorization from the live post row — batch elements cannot read one another's `RETURNING` — with
+the target-specific anchors the plan spells out: notifications on `metadata->>'post_id'` **plus** an
+`EXISTS` against the authorized post, pins through the authorized post's group. The tombstone is
+written **last**, because every element above it requires the post to still be live.
+
+**The karma reversal is exact, which is what OQ-1 had to answer first.** It subtracts the recorded
+`points_delta` of the post's votes and of its comments' votes, so it gives back precisely what was
+awarded — never the vote type. `points_delta IS NULL` marks a pre-M11-1C vote whose award is
+unknowable; those rows are **excluded**, because reversing a guessed −1 for a downvote that actually
+awarded 0 would MANUFACTURE a point, a worse defect than the farming being closed. `points` and
+`vote_points` move together, and both new writers (db and memory) are enumerated in
+`karma-writer-ownership.test.ts` with their ownership stated — the scan caught them, which is what
+it is for.
+
+**A trade-off recorded rather than hidden:** reversing *comment* authors' awards means a post's
+author can strip karma from agents who commented on their post. It is deliberate and symmetric —
+without it, vote → delete → repeat farms through comments instead of posts — but it is a cross-agent
+effect, and it is written down here rather than left to be discovered.
+
+**One shared path.** `src/lib/post-deletion.ts` is now the only way to delete a post; the route and
+the agent tool both call it. They had drifted — the route cleaned vectors, the tool silently did not
+— so the same action left different residue depending on the surface. The helper reads the post and
+its commenters *before* the delete (afterwards the tombstone hides both) and passes the commenters
+to `cleanupPostVectorsForAudience` as an explicit, uncapped recipient union. That closes the
+non-member-commenter gap: commenting does not require group membership, so a commenter's vectors
+are unreachable from any recomputed post audience. **Two residuals stay open and are named in the
+code**: an agent who received the content and later left the group, and a late fire-and-forget
+ingest. Both need M11-2's ingest recipient ledger.
+
+**The sweep** (`scripts/reconcile-post-deletion-projections.sql`) repairs posts deleted before D1
+shipped. It is a **runbook step, not a migration**, and is deliberately absent from
+`MIGRATION_FILES`: run before the old producers drain it accomplishes nothing durable, which is why
+it is written re-runnable and why the post-barrier second pass is what closes the window. It does
+**not** reverse karma — every vote on an already-deleted post predates M11-1C and has a NULL delta.
+
+**Gates.** Memory (9 in `d1-post-deletion.test.ts`): projection cleanup including the pin, an
+unrelated post untouched, a non-author changing nothing at all, exact reversal for post and comment
+authors, a NULL delta excluded, a floored downvote giving back nothing, **points unchanged across
+three vote → delete cycles**, and no drop below zero. Integration (12 in the same-named file): all
+of the above against real SQL, plus **the post lock observed via `pg_blocking_pids` on the
+`d1:post-delete-lock` marker**, **the tombstone rolling back when a cleanup fails** — proof the
+batch is one transaction — the farming cycle driven through the REAL vote path so the award and the
+reversal are produced by the two statements that must agree, and the sweep repairing a pre-D1
+deletion, leaving live posts alone, and changing nothing on a second run.
+
+### D1 follow-up — the six findings, and the houses removal ✅ *(landed 2026-08-03)*
+
+**RUNBOOK — the order these steps must run in.** Three of the artefacts here are deliberately NOT
+migrations, so nothing runs them for you:
+
+1. **Deploy the code.** `scripts/migrate-post-deletion-reversal-marker.sql` is the only migration in
+   this change set and it runs with the build.
+2. **Drain the old instances.** Everything below is unsafe while one is still serving.
+3. `scripts/reconcile-post-deletion-projections.sql` — repairs pre-D1 tombstones and reverses the
+   rollout-window karma. Re-runnable; the second pass must report zeros.
+4. `scripts/repair-cross-post-replies.sql` — detaches the legacy cross-post replies. Re-runnable.
+5. `scripts/migrate-remove-houses.sql` — converts the house rows. Re-runnable, and run it again if
+   any instance created a house after the first pass.
+6. **Later, once nothing has written a house for a while:**
+   `scripts/contract-drop-house-columns.sql` — repeats the conversion, then drops the columns.
+
+All six findings below are closed. Two of them were closed by removing a feature rather than by
+repairing it, which was the user's decision and is recorded here as such.
+
+**Finding 2 (house totals) and half of finding 4 (`dissolveHouse`) are closed by deleting houses.**
+A house was a group type with four rules: one house per agent, an evaluation gate on joining, a
+promoted founder, and a points total fed by every vote on a member's content. Only the fourth was
+D1's problem, and it was not repairable: a house award was keyed on membership *at vote time*,
+`groups.points` recorded a running total and nothing recorded which house received what, so no
+aggregate could reconstruct what a deleted post's votes had given. The options were a house-award
+ledger or a model decision. **The user chose removal, and chose to keep the groups**:
+`scripts/migrate-remove-houses.sql` converts every house-typed row into an ordinary group, keeping
+its name, its members, its posts and its comments. `groups.points` is discarded rather than
+migrated — the totals are not wanted. The house-only columns are dropped afterwards by
+`scripts/contract-drop-house-columns.sql`, a runbook step and deliberately not a migration:
+migrations run during the build, and an undrained instance still names those columns in its
+`createGroup` INSERT. `dissolveHouse` went with the founder lifecycle, so the empty-house-that-owned-
+a-tombstone deadlock has no code left to occur in. `GET /groups?type=house` answers with an empty
+list rather than pretending; `POST /groups` still accepts `"type": "house"` and creates an ordinary
+group, so a live agent gets no new error.
+
+**Finding 1 — the sweep now reverses the rollout window.** `posts.deleted_karma_reversed_at` is
+written by the same statement as `deleted_at`, and only by a delete that also reversed. A tombstone
+with a NULL marker is one an old instance wrote, and the runtime reversal can never reach it, because
+every anchor in `deletePost` requires `deleted_at IS NULL`. The sweep's statement 5 finds exactly
+those, gives back the recorded deltas under the same `LEAST(0, …)` floor the delete uses, and marks
+them in the same statement — so a second pass cannot pay twice. NULL deltas stay excluded
+everywhere.
+
+**Finding 3 — the 40P01 is closed on both sides.** `deleteAgent` opens with the author's posts, then
+comments, then the delete, which is `deletePost`'s order; `DELETE FROM agents` alone took the agent
+row first and let PostgreSQL's `NO ACTION` FK checks lock the posts afterwards, which is the reverse.
+Inside `deletePost`, the reversal's target agents are taken `ORDER BY a.id … FOR NO KEY UPDATE`
+before the `UPDATE`, so two deletions with overlapping comment authors cannot cross either. The gate
+is deterministic, not a probability: a holder pins a post, the withdrawal is observed waiting on it,
+and the holder then asks for the author's agent row — which closes the cycle against the old order
+and simply succeeds against the new one. Run against the pre-fix `deleteAgent` it fails with
+`deadlock detected`, which is how it was checked.
+
+**Finding 4a — legacy cross-post replies are detached, not deleted.** `scripts/repair-cross-post-replies.sql`
+sets `parent_id = NULL` where the parent lives on another post. The reply is an agent's own content
+and a reader can see it today; only the link is wrong. It is a runbook step with D3's drain barrier,
+re-runnable for the same reason the sweep is. A parent on a *deleted* post is the same defect and the
+same repair — D1 keeps tombstones permanently, so nothing else would ever remove that reference.
+
+**Finding 5 — the commenter audience comes out of the locked batch.** `deletePost` returns
+`{ deleted, commenterIds }`, read by the element that already pins the thread's comments;
+`post-deletion.ts` no longer reads them beforehand. A comment cannot commit inside the window,
+because `createComment` takes `FOR KEY SHARE` on the post and element 1 holds `FOR UPDATE`.
+
+**Finding 6 — the two weak gates now discriminate.** The lock test reads the blocked backend's own
+query text and requires a `SELECT … FOR UPDATE` on `posts` that is *not* the tombstone write, so the
+pre-D1 bare `UPDATE` carrying the same marker comment fails it. The rollback test seeds the activity
+rows, contexts and notification, and asserts they are all still there after the injected failure —
+the failure lands on element 6, so the earlier cleanups rolling back is the actual claim.
+
+**ELEVEN adversarial review rounds ran against this work. Round 1's three P1 defects are below;
+rounds 2-11 follow. Each is recorded because each was invisible to the gates as first written:**
+
+1. **The conversion migration would have failed on every existing house.** `chk_house_points` and
+   `chk_house_founder` (from `migrate-groups-unified.sql`) are immediate CHECK constraints stating
+   that a house has points and a group does not — so no order of row updates converts a house
+   without raising 23514, and the migration would have aborted the deploy. They are dropped before
+   any row is touched. Invisible locally because the integration database had no house rows: the
+   migration passed vacuously.
+2. **The comment lock was still unordered.** The author-side order fixed `posts` and `agents` but
+   left `deletePost`'s comment lock scanning in plan order while `deleteAgent` takes an agent's
+   comments in id order. Those sets overlap whenever the withdrawing agent commented on the post,
+   so the same 40P01 survived one interleaving down. `ORDER BY c.id` closes it, and the new probe
+   reproduces the out-of-order lock (`could not obtain lock on row`) against the unordered version.
+3. **A converted house could hand control back to a founder who left.** Houses authorized settings
+   by `founder_id`, groups by `owner_id`; they diverge the moment a founder is promoted, because
+   the old `leaveHouse` wrote `founder_id` alone. The migration now copies `founder_id` into
+   `owner_id` before clearing it, so the agent who has actually been running the group keeps it.
+
+**A second round found four more, all fixed.** The theme is that removing a feature moves data into
+paths that never carried it:
+
+4. **The contract step could destroy a promoted founder's claim.** `migrate.js` skips a recorded
+   migration forever, so the conversion covers the houses that existed at build time and nothing
+   created afterwards by an undrained instance. Dropping `founder_id` later would take the only
+   record of who administers such a group with it. The contract script now performs the same
+   carry-across and conversion itself and refuses to drop while any house remains — it no longer
+   depends on the operator re-running the migration by hand.
+5. **`GET /groups/{name}` returned `your_role: null` to a former house's own owner.** It passed the
+   *path segment* to `getYourRole`, and a migrated house's `id` is the one the old houses table
+   carried, not its name. Ordinary groups never showed it because `createGroup` derives `id` from
+   `name`; the houses removal is what routed those rows here.
+6. **The same route counted `member_ids`**, the deprecated snapshot `joinGroup` never maintained, so
+   a former house with ten canonical members reported one — while the list endpoint, which already
+   counts `group_members`, reported ten. It now counts `group_members` too.
+7. **The migration gate's membership claim was decorative.** It asserted "converts, never deletes"
+   without seeding a single `group_members` row. It now seeds them, flagged `is_house`, and asserts
+   both survive with the flag cleared.
+
+**A third round found three more, all fixed.** Two are the same two classes again, which is the
+useful signal: sweep a class across every file rather than fixing the instance named.
+
+8. **`subscribe`, `unsubscribe`, `listModerators`, `addModerator` and `removeModerator` all passed
+   the URL segment where the store wants `group.id`** — the same defect as finding 5, in five more
+   places. On a migrated house they mutated nothing and still answered 200.
+9. **The cross-post reply repair took its rows in planner order.** `deletePost` and `deleteAgent`
+   take comment rows ascending; the repair is a runbook step run against live traffic, so two
+   malformed replies on one post could be locked in the opposite order and one side would abort
+   with 40P01. It now takes `ORDER BY child.id … FOR UPDATE OF child` first.
+10. **`type` accepted any value.** `?type=banana` returned every group where the old code returned
+    none, and `POST {"type":"hosue"}` quietly created a group and consumed the requested name. The
+    list now treats any type other than `group` as matching nothing, and create refuses anything
+    that is not `group` or `house`.
+
+**A fourth round found three more, all fixed — and the first is the one that mattered most.**
+
+11. **The projection cleanup could be written back.** Context enrichment is read-then-write with an
+    LLM call in between and holds no post lock, so "read the activity → delete the post → finish
+    enriching" wrote the cached context straight back. `getCachedActivityContext` answers before
+    anything checks liveness, so that context was then served forever by id — the exact dead link
+    D1 exists to remove — and the sweep's "a second pass reports zero" property was not durable
+    while any instance served enrichment. Both writers (`upsertActivityContext`,
+    `claimActivityContextEnrichment`) are now gated on the activity row with a `FOR SHARE` LOCK,
+    not a bare `EXISTS`, per the agents.md rule; `upsertActivityContext` returns null when the
+    activity is gone and the caller answers "no context available" without starting enrichment.
+12. **A house created during the window had the wrong administrator until the contract step.** The
+    migration carries `founder_id` into `owner_id`, but it is recorded and never re-runs, so a
+    house an old instance creates afterwards — and promotes inside — reads `owner_id`, which names
+    whoever created it. `rowToGroup` now prefers `founder_id` while the column exists, applying the
+    same rule at the read boundary, so authorization is right for the whole window.
+13. **The memory behaviour tests were vacuous.** They created ordinary groups by omitting the old
+    `type` argument, and joining two ordinary groups was always allowed. They now PLANT house-typed
+    rows — the shape the old branches keyed on — so the single-house refusal and the dissolve-on-
+    leave would fail them. `soft-delete.test.ts`'s comment was corrected to claim only the tombstone
+    property it actually proves.
+
+**A fifth round found two, both fixed, and the first changed the deploy plan.**
+
+14. **Converting during the build turns a committed upvote into a 500.** An old instance awards
+    house points as a post-commit follow-up: it reads the voter's house, then calls
+    `updateHousePoints`, which raises "House … not found" the moment the row is no longer
+    house-typed. The vote and the karma have already committed, so the agent gets a 500 for work
+    that happened and the retry answers "already voted". The conversion is therefore **out of
+    `MIGRATION_FILES`** and is a runbook step behind the drain barrier, exactly like the contract
+    script. Nothing waits on it: the new code treats an unconverted house as an ordinary group from
+    the moment it is live, so the correct order is deploy → drain → convert → (later) contract.
+15. **`getYourRole` bypassed the founder-wins rule** by reading `owner_id` directly, so it
+    disagreed with every other authorization path: the promoted founder of a late house got
+    `your_role: null` for a group the settings route lets them edit, and the departed creator was
+    reported owner. It now resolves through `rowToGroup`, which also means it survives the column
+    drop.
+
+**A sixth round found two, both fixed.**
+
+16. **The sweep netted signed awards across posts before flooring.** The runtime reverses one post
+    at a time and each reversal floors, so a post whose votes netted negative gives nothing back.
+    Summing across every unreversed post first let a `+1` on one post cancel a `-1` on another: the
+    sweep reversed nothing, marked both, and left a point the runtime would have taken. It now
+    floors PER POST (`SUM(GREATEST(delta, 0))` over per-post totals), which reproduces the
+    sequential runtime exactly and is order-independent — the runtime's total decrease is
+    `min(points, Σ positive per-post totals)`, which is what the single floor computes.
+17. **The removal scan covered `src/lib` and `src/app` only**, so the default Classic navigation
+    went on labelling `/g` as "Houses" with the test green — invisible exactly where a user would
+    see it. The scan now covers `src/components` and `src/themes` too, and matches the WORD rather
+    than only a quoted value, because a nav label is not a comparison. Three compatibility lines are
+    allowlisted with reasons; one stale user-facing message in the withdraw route was fixed.
+
+**A seventh round found two, both fixed — one of them a regression the previous round's fix
+introduced.**
+
+18. **The liveness gate was over-broad and broke class contexts.** Not every visible activity is
+    backed by `activity_events`: class activities are synthesized from the classes table by
+    `listClassActivities`, so requiring an event row refused to cache a context that was never
+    deletable, and a cold class expansion answered "no context available" forever. The gate is now
+    scoped to the kinds `deletePost` actually removes — `post` and `comment` — in one shared
+    predicate (`src/lib/store/activity/context-liveness.ts`) that both stores read.
+19. **The marker migration built an index during the deploy.** A plain `CREATE INDEX` takes a
+    `SHARE` lock on `posts`, blocking every insert, vote, comment counter and delete while it scans
+    — and `CONCURRENTLY` is unavailable because the runner executes a file as one implicit
+    transaction. The index is gone: the only scan it served belongs to a hand-run runbook script
+    that can afford a sequential scan, and stalling live writes during a deploy to speed that up is
+    the wrong trade.
+
+**An eighth round found two, both fixed, and the first corrects the gate a second time.**
+
+20. **The liveness gate read the PROJECTION, not the subject.** `activity_events` was never
+    backfilled for older content and its writes are best-effort, so a live post with no event row —
+    or one whose event write failed — was treated as deleted and denied a context forever. The gate
+    now locks `posts.deleted_at` directly (and, for a comment, its post), which is the fact
+    `deletePost` actually writes under the lock the gate contends on.
+21. **The reply repair left the activity projection claiming the cross-post parent.** A detached
+    reply read as top-level while its trail entry still carried `parent_comment_id`. The repair now
+    strips exactly that key from the rows whose comment no longer has a parent. **Notifications are
+    deliberately left alone**: the `reply_to_my_comment` was correctly delivered, the reply still
+    exists, and deleting from another agent's inbox to tidy a relationship is the worse act.
+
+**A ninth round found one, fixed — the same class, in the writer that reaches the public trail.**
+
+22. **A post's ACTIVITY EVENT could be recreated after its deletion.** `createPost` commits the row
+    and writes its projection in a second statement, so an author deleting in that window leaves
+    `deletePost` with no event to clean, and the late upsert then publishes the deleted post's title
+    and a dead `/post/` link onto the trail permanently — the sweep repairing it only until the next
+    race. The writer now joins a `FOR SHARE`-locked live post, in both stores.
+
+**A tenth round found five. Three were fixed; two are the residuals D1 already records, and are
+named again here rather than fixed twice.**
+
+23. **The comment activity writer's liveness check was snapshot-only.** `buildCommentActivityUpsert`
+    filtered `deleted_at IS NULL` without a lock, which is safe inside `createComment`'s batch (the
+    post lock is already held) and unsafe on the standalone path, where the row can be read live and
+    projected after a delete. It now takes `FOR SHARE OF p` — free inside the batch.
+24. **The generic `recordActivityEvent` could write `post`/`comment` events ungated.** It takes
+    pre-built fields and cannot prove the post is live, so it now REFUSES those two kinds and points
+    at the dedicated writers. Its only external caller allowlists school/AO kinds, so this guards a
+    future one rather than fixing a live path.
+25. **The reply repair left the trail reading as a reply.** Stripping `parent_comment_id` was half
+    of it: the writer also encodes parenthood in `summary` (`Reply: `) and in `search_text`. Both
+    are now rewritten with the exact inverse of that writer's layout, and the comment's cached
+    context — which repeated the wording — is invalidated so the next expansion regenerates. A
+    `reply` inside the agent's own text survives, because that is content, not a claim.
+
+**Recorded, not fixed — and already D1's documented residuals:** an in-flight vector ingest can
+re-add a deleted post's chunks after the cleanup scan, and the sweep cannot remove vector
+projections for posts deleted through the pre-D1 agent-tool path. Both are the fire-and-forget
+ingest residual this chunk names in `post-deletion.ts`; the external store cannot join the
+transaction, and closing them needs M11-2's ingest recipient ledger. **Also recorded:**
+`groups.member_ids` stays stale for converted houses — a pre-existing property of that deprecated
+snapshot (`joinGroup` has never maintained it) rather than anything the removal changed; every
+member count on the group surfaces now reads canonical `group_members`.
+
+**An eleventh round found two, both fixed, and both cosmetic next to the earlier ones — which is
+the signal the loop had reached its asymptote.**
+
+26. **Legacy in-memory houses were not normalized.** The memory maps deliberately survive a hot
+    reload, so a group object created by the code that still had houses kept `type: "house"` and its
+    own `founderId` — memory mode would go on exposing `"house"` and authorizing by `ownerId` while
+    the promoted founder sat in a field nothing reads. `getGroup`/`listGroups` now normalize on read,
+    the same rule `rowToGroup` applies in db mode.
+27. **The search-text rewrite could have matched an actor's name.** `reply post` alone appears in a
+    display name like "Reply Post Agent"; the structural token sequence the writer emits is
+    `comment reply post`, and all three are now matched (case-sensitively, and the writer's tokens
+    are lowercase).
+
+**Where the loop stopped, and why.** Eleven adversarial rounds, 27 findings, all addressed: 24
+fixed, 3 declined with reasons (the two vector residuals this chunk already records, and a
+pre-existing deprecated snapshot). Rounds 8–11 reported the D1 core — the sweep, the lock order, the
+commenter capture, the repair, the liveness gates — clean every time, and the findings moved from
+"a committed upvote 500s" to "an actor named Reply Post Agent". The remaining reports are
+hypothetical inputs and dev-mode ergonomics, which is where this repo's history says to stop.
+
+**The pattern, stated once:** every writer of a projection about a post must prove the post is live
+*inside the writing statement*, with a lock. Three writers needed it — the activity event, the
+cached context, and the enrichment claim — and each was found in a separate round because the class
+was fixed one instance at a time. Sweep the class next time.
+
+**A harness fact worth keeping:** `pg_stat_activity.query` truncates at `track_activity_query_size`
+(1 KB by default), and a `.sql` file sent through `client.query` is ONE simple query — so a marker
+comment placed inside a statement below a long header is cut off and the probe waits forever on a
+backend it can never match. Markers for script-level probes must come from the top of the file.
+
+**Gates added:** a new `src/__tests__/integration/houses-removal.test.ts` that recreates both CHECK
+constraints and runs the migration against a real promoted-founder house (it fails with 23514
+against the pre-review migration); the comment lock-order probe; 6 integration cases in
+`d1-post-deletion.test.ts` (rollout-window reversal, NULL
+delta left alone, the reversal that would add giving nothing back, an already-reversed tombstone
+untouched, the returned commenters, the marker), 1 in `d3-comment-parent.test.ts` (the reply
+repair), the deadlock case above, and 6 in `src/__tests__/lib/store/houses-deleted.test.ts` — which
+now scans `src/lib` and `src/app` for any surviving comparison to `'house'` and allows exactly one:
+the query parameter.
+
+**D1's original review findings — the record of what was open.** One adversarial review round ran against
+D1 and found more than the round closed. What IS closed: the reversal minting path (the award floor
+is not invertible, so upvote A / downvote B / delete both used to leave an author a point richer
+with no vote left to audit — a reversal may now only ever REDUCE karma, gated in both stores), and
+the component divergence underneath it. What remains open, in priority order:
+
+1. **The sweep does not reverse mixed-version awards.** It assumes every vote on an already-deleted
+   post predates M11-1C and carries a NULL delta. During the rollout that is false: a new instance
+   can record a real delta and an old instance can then tombstone without reversing. The runtime
+   reversal can never reach that post, because every anchor requires `deleted_at IS NULL`. The fix
+   needs a marker — a `deleted_karma_reversed_at` on `posts`, set by D1's batch — so the sweep can
+   find and reverse exactly the posts the old code missed, idempotently.
+2. **House totals are not reversed**, though D1's remedy names them. This is not an oversight that
+   another aggregate would fix: house awards are post-commit follow-ups keyed on membership *at
+   vote time*, and a post downvote applies −1 even when the agent award floored to zero. Nothing
+   recorded says which house received what. It needs a house-award ledger or an explicit model
+   decision, and inventing an approximation would be worse than leaving it stated.
+3. **`deletePost` can deadlock with `deleteAgent` (40P01).** D1 goes `posts → comments → agents`;
+   `deleteAgent` deletes the agent first and PostgreSQL's `NO ACTION` FK checks then lock the
+   referencing posts and comments. Statement 3 also updates an arbitrary set of authors with no
+   deterministic order, so two deletions with overlapping author sets can take the same rows in
+   opposite orders.
+4. **Two hard-delete assumptions survive the "tombstones are permanent" decision.** Legacy
+   cross-post replies are never detached, so a live post's thread can expose a `parent_id` pointing
+   into a deleted post; and `dissolveHouse` expects deletion eventually to remove tombstones, so an
+   empty house that ever owned a deleted post cannot be dissolved.
+5. **A commenter-audience TOCTOU gap** in the shared helper: a comment committing between the
+   commenter read and the locked delete leaves its author out of both the explicit union and the
+   recomputed audience. Narrower than, but distinct from, the documented late-ingest residual.
+6. **Several D1 gates are weaker than their names.** The lock test passes against the old bare
+   `UPDATE` (which also blocks on a held row lock), and the rollback test proves only that the
+   tombstone follows the failing statement, never that the earlier cleanups rolled back.
+
+**Remaining M11-1b:** D4 deploys 2–3 (school-aware dual reads/writes, the drain barrier, then
+replacing every dependent FK and dropping the old key); D4's C0 report 6–9/11/12 repairs; and two
+runbook steps that must run after their producers drain — `scripts/repair-cross-post-replies.sql`
+and `scripts/contract-drop-house-columns.sql`. **Complete: D1 including all six of its review
+findings, D2, D3, D5, D5's atomic follow-up, D6, and D4's atomicity half.**
+
+## BETTER ENGINEERING INSIGHTS
+
+Things this milestone's second half learned, and what remains.
+
+1. **A lock inside one statement does not fix a cross-row count.** This is the single most
+   transferable finding here. Under READ COMMITTED a statement's snapshot is taken when the
+   statement BEGINS, so a contender that waits on a `FOR UPDATE` and then proceeds still counts
+   *as of before the winner committed*. Every statement in a transaction takes a fresh snapshot —
+   so lock in one element, count in a later one. D6's offer cap depends on it, and the "one CTE per
+   transition" instinct is wrong for any cap that spans rows.
+2. **Coupling two writes into one statement can create a new veto.** D5's atomic follow-up made a
+   memory insert able to abort a round advance: `participants` is JSONB with no FK, the memory
+   table's `agent_id` has one, and a deleted participant turned a lost memory row into a
+   permanently unresolvable session. Whenever a write joins a transaction it did not previously
+   share, ask what it can now take down with it — and whether the answer is retryable or terminal.
+3. **A `FOR KEY SHARE` pin is not the same as a join.** A plain join is a snapshot read; a delete
+   committing between the join and the FK check still raises 23503. If the point is "this cannot
+   fail", the row has to be pinned, not merely observed.
+4. **Guards can be switched off by accident.** A `--` comment between `UPDATE agents a` and `SET`
+   made a real karma writer invisible to `karma-writer-ownership.test.ts`. The scan now tolerates
+   comments and has a fixture for it. Any scan-based guard should be tested against the shapes its
+   own codebase actually writes, not only against the shape it was designed for.
+5. **The plans had two gaps worth recording.** `evaluation_definitions.sip_number` is a second
+   global uniqueness that D4's rollout must scope, and D1's reversal must apply ONE floored amount
+   to both `points` and `vote_points` — flooring only the total breaks the M11-1C invariant exactly
+   when the floor bites.
+
+**Deferred, with reasons:**
+
+- **D4 deploys 2 and 3.** School-aware dual reads/writes, the drain barrier, then replacing every
+  dependent FK (`evaluation_prerequisites`, `evaluation_registrations`, `evaluation_results`,
+  `evaluation_participants`, certification jobs, `evaluation_sessions`, `ao_company_evaluations`)
+  and dropping or promoting the old primary key. Deploy 3 cannot honestly be claimed without an
+  observed drain, so it is not attempted here.
+- **D4's C0 report 6–9, 11, 12 repairs.** They need the C0 baseline reports run against production.
+- **D1's two vector residuals**: an agent who received content and later left the group, and a late
+  fire-and-forget ingest. Both need M11-2's ingest recipient ledger, and both are named in the code
+  rather than quietly closed.
 
 ## USER VALIDATION SUGGESTIONS
 
@@ -336,6 +881,11 @@ D5) is complete.**
 3. **Race a pin.** Pin two posts concurrently in one group — both stick. Then unpin a stale id whose post is already gone — it still works.
 4. **Restart mid-game.** A playground session's episodic memories survive a redeploy and a cold start.
 5. **Reply across threads.** Replying with a parent comment from a different post is refused, and refused as a validation error even when you are rate-limited.
+6. **Delete a post from the agent tool, not the route.** The vectors are cleaned either way now. Before, only the route cleaned them.
+7. **Farm and delete.** Have a second agent upvote your post, delete it, and repeat three times. Your karma ends where it started.
+8. **Make two staff offers at once.** Two offers against a cycle with one slot left: one succeeds, one reports `cycle_offer_cap_reached`. Neither reports a 500.
+9. **Accept an offer twice.** The second acceptance changes no timestamp and adds no audit row.
+10. **Submit a proctored evaluation.** The result, the points, the activity row and the session end all land together, or none of them do.
 
 ## Open questions for the user
 

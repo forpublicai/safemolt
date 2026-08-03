@@ -15,7 +15,7 @@ import { neonSql, pgPool, pgClient, closeIntegrationConnections } from "./helper
 import { raceAgainstHeldLock, rejections, runConcurrently } from "./helpers/concurrency";
 import { downvotePost, isUniqueViolation, upvotePost, recordVote } from "@/lib/store/posts/db";
 import { upvoteComment } from "@/lib/store/comments/db";
-import { updateAgentPointsFromEvaluations } from "@/lib/store/evaluations/db";
+import { saveEvaluationResult, updateAgentPointsFromEvaluations } from "@/lib/store/evaluations/db";
 import { createAgent } from "@/lib/store/agents/db";
 import { asDbComponents, KARMA_PARITY } from "@/__tests__/helpers/karma-parity";
 
@@ -101,6 +101,29 @@ async function seedPassedResult(agentId: string, evaluationId: string, points: n
          VALUES ($1, $2, $3, $4, true, NOW(), $5)`,
         [resultId, registrationId, agentId, evaluationId, points]
     );
+}
+
+/**
+ * An ACTIONABLE registration and its definition, so a test can drive the real `saveEvaluationResult`
+ * rather than hand-inserting a result row. `seedPassedResult` above writes history; this sets up a
+ * completion that has not happened yet.
+ */
+async function seedRegistration(agentId: string, evaluationId: string): Promise<string> {
+    const registrationId = nextId("reg");
+    await pgPool().query(
+        `INSERT INTO evaluation_definitions
+           (id, sip_number, name, module, type, status, file_path, executable_handler,
+            executable_script_path, version, created_at, updated_at)
+         VALUES ($1, $2, $1, 'core', 'simple_pass_fail', 'active', 'x', 'x', 'x', '1.0.0', NOW(), NOW())
+         ON CONFLICT (id) DO NOTHING`,
+        [evaluationId, 9400 + (seq += 1)]
+    );
+    await pgPool().query(
+        `INSERT INTO evaluation_registrations (id, agent_id, evaluation_id, registered_at, status)
+         VALUES ($1, $2, $3, NOW(), 'registered')`,
+        [registrationId, agentId, evaluationId]
+    );
+    return registrationId;
 }
 
 async function components(agentId: string): Promise<Components> {
@@ -827,37 +850,76 @@ describe("the mixed-version rollout window", () => {
         expect(await components(agent)).toEqual({ points: 11, vote_points: 0, evaluation_points: 11, legacy_unattributed_points: 0 });
     });
 
-    it("KNOWN EXPOSURE: loses the award of an evaluation that commits while it runs", async () => {
-        // Characterising, not aspirational. `saveEvaluationResult` inserts the result and then
-        // moves `points` in a SECOND auto-committed statement. Reconciling in that gap attributes
-        // the new credit to `evaluation_points` before `points` has received it, so the recompute's
-        // delta is zero and the agent never gets the points.
+    it("CLOSED BY D4: a reconciliation cannot land between a result and its award", async () => {
+        // This was `KNOWN EXPOSURE`, and it is kept rather than deleted because it is the record of
+        // what M11-1b D4 bought.
         //
-        // The invariant still holds — legacy absorbs the difference — which is precisely why no
-        // postcondition catches it, and why this is written down as a test rather than trusted to a
-        // comment. Re-running the reconciliation does not repair it.
+        // Before D4, `saveEvaluationResult` inserted the result and then moved `points` in a SECOND
+        // auto-committed statement. A reconciliation landing in that gap attributed the new credit
+        // to `evaluation_points` before `points` had received it, so the recompute's delta was zero
+        // and the agent silently never got the points — the invariant still held, legacy absorbed
+        // the difference, and nothing caught it. The recorded expectation was `points 4`.
         //
-        // WHEN M11-1b D4 MAKES THE INSERT AND THE AWARD ATOMIC, THIS TEST MUST FAIL. Update it to
-        // the fixed expectation (points 7) rather than deleting it: it is the record of what the
-        // fix bought. The one-statement fix is deliberately NOT applied here — it would invert lock
-        // order against C14's vetting batch and deadlock; see scripts/reconcile-karma-components.sql.
+        // D4 folded the insert and the award into one transaction, so the gap does not exist: a
+        // reconciliation is either entirely before it or entirely after it. Both orders are asserted
+        // below, and both give the true total — `points 7`.
         const agent = await seedAgent();
         await seedPassedResult(agent, "m11c-eval-exposure-a", 4);
         await updateAgentPointsFromEvaluations(agent);
         expect(await components(agent)).toEqual({ points: 4, vote_points: 0, evaluation_points: 4, legacy_unattributed_points: 0 });
 
-        // A second passed result commits — this is the state `saveEvaluationResult` is in between
-        // its two statements.
-        await seedPassedResult(agent, "m11c-eval-exposure-b", 3);
-        await reconcile();
-        expect(await components(agent)).toEqual({ points: 4, vote_points: 0, evaluation_points: 7, legacy_unattributed_points: -3 });
+        // A real completion through the production writer, worth 3.
+        const registration = await seedRegistration(agent, "m11c-eval-exposure-b");
+        const saved = await saveEvaluationResult({
+            registrationId: registration,
+            agentId: agent,
+            evaluationId: "m11c-eval-exposure-b",
+            passed: true,
+            score: 3,
+            maxScore: 10,
+        });
+        expect(saved.outcome).toBe("created");
+        expect(await components(agent)).toEqual({ points: 7, vote_points: 0, evaluation_points: 7, legacy_unattributed_points: 0 });
 
-        // The recompute now has nothing to add.
-        await updateAgentPointsFromEvaluations(agent);
-        expect(await components(agent)).toEqual({ points: 4, vote_points: 0, evaluation_points: 7, legacy_unattributed_points: -3 });
-        // Not repairable by re-running: `points` is authoritative for the reconciliation by design.
+        // Reconciling after it changes nothing, and re-running changes nothing again.
         await reconcile();
-        expect(await components(agent)).toEqual({ points: 4, vote_points: 0, evaluation_points: 7, legacy_unattributed_points: -3 });
+        expect(await components(agent)).toEqual({ points: 7, vote_points: 0, evaluation_points: 7, legacy_unattributed_points: 0 });
+        await reconcile();
+        expect(await components(agent)).toEqual({ points: 7, vote_points: 0, evaluation_points: 7, legacy_unattributed_points: 0 });
+        expect(await driftedRowCount()).toBe(0);
+    });
+
+    it("CLOSED BY D4: a reconciliation racing a completion still leaves the true total", async () => {
+        // The other order, made deterministic. The completion's FIRST statement takes the agent row
+        // `FOR UPDATE`, so holding that row from a second connection wedges the whole completion
+        // transaction before it writes anything. The reconciliation then runs to completion in what
+        // used to be "the gap" — and finds nothing half-written, because there is no half.
+        const agent = await seedAgent();
+        await seedPassedResult(agent, "m11c-eval-race-a", 5);
+        await updateAgentPointsFromEvaluations(agent);
+        const registration = await seedRegistration(agent, "m11c-eval-race-b");
+
+        const race = await raceAgainstHeldLock({
+            hold: async (holder) => {
+                await holder.query("SELECT id FROM agents WHERE id = $1 FOR UPDATE", [agent]);
+                // The reconciliation runs while the completion is blocked on that lock.
+                await holder.query(RECONCILE_SQL);
+            },
+            contend: () =>
+                saveEvaluationResult({
+                    registrationId: registration,
+                    agentId: agent,
+                    evaluationId: "m11c-eval-race-b",
+                    passed: true,
+                    score: 2,
+                    maxScore: 10,
+                }),
+            contenderMarker: "d4:completion-agent-lock",
+        });
+
+        expect(race.observedBlocked).toBe(true);
+        expect(race.result.outcome).toBe("created");
+        expect(await components(agent)).toEqual({ points: 7, vote_points: 0, evaluation_points: 7, legacy_unattributed_points: 0 });
         expect(await driftedRowCount()).toBe(0);
     });
 

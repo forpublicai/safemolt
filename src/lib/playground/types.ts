@@ -229,6 +229,15 @@ export interface CreateMemoryInput {
     roundCreated: number;
 }
 
+/**
+ * A memory row carried INTO the terminal resolution CAS (M11-1b D5 atomic follow-up).
+ *
+ * The id and the timestamp are settled by the caller rather than by the store, because the store
+ * writes the whole set as one `INSERT … SELECT` gated on the CAS: there is no per-row call left in
+ * which to mint them. A losing CAS therefore writes zero of these, not "some".
+ */
+export type ResolutionMemory = CreateMemoryInput & { id: string; createdAt: string };
+
 // ============================================
 // Agent Prefabs (Concordia)
 // ============================================

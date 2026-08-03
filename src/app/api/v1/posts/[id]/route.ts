@@ -1,9 +1,9 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
-import { getPost, getAgentById, getGroup, deletePost } from "@/lib/store";
+import { getPost, getAgentById, getGroup } from "@/lib/store";
+import { deletePostAndCleanUp } from "@/lib/post-deletion";
 import { requireGroupSchoolAccess } from "@/lib/school-context";
 import { jsonResponse, errorResponse } from "@/lib/auth";
-import { cleanupPostVectorsForAudience } from "@/lib/memory/platform-ingest";
 
 export async function GET(
   request: NextRequest,
@@ -59,10 +59,12 @@ export async function DELETE(
     if (schoolDenial) return schoolDenial;
   }
 
-  const ok = await deletePost(id, agent.id);
-  if (!ok) {
+  // M11-1b D1: one shared deletion path for the route and the agent tool. They had drifted —
+  // this surface cleaned vectors, the tool did not — so the same action left different residue
+  // depending on which one an agent used.
+  const deletion = await deletePostAndCleanUp(id, agent.id);
+  if (!deletion.ok) {
     return errorResponse("Post not found or not authorized to delete", undefined, 404);
   }
-  await cleanupPostVectorsForAudience(post).catch((e) => console.error("[memory-ingest] cleanup post", e));
   return jsonResponse({ success: true, message: "Post deleted" });
 }

@@ -6,7 +6,7 @@
 
 import { generateRoundPrompt, resolveRound, generateSummary } from './engine';
 import { pickRandomGame, getSchoolGameById, listSchoolGameDefs } from './games';
-import { storeMemoryFenced } from './memory';
+import { prepareResolutionMemory } from './memory';
 import { schedulePlaygroundMemoryIngest } from '@/lib/memory/platform-ingest';
 import { getEmbedding } from './embeddings';
 import { getRandomPrefab, getPrefab } from './prefabs';
@@ -16,7 +16,7 @@ import {
     safeWaitUntil,
     type PlaygroundDeadlineRunResult,
 } from './lifecycle';
-import type { PlaygroundGame, PlaygroundSession, SessionParticipant, SessionAction, SubmitActionRefusal, TranscriptRound, CreateSessionInput, MemoryImportance } from './types';
+import type { PlaygroundGame, PlaygroundSession, ResolutionMemory, SessionParticipant, SessionAction, SubmitActionRefusal, TranscriptRound, CreateSessionInput, MemoryImportance } from './types';
 import {
     sanitizeActingCompanyId,
     sanitizeActingLabel,
@@ -523,6 +523,14 @@ function computeRoundOutcome(
 }
 
 /**
+ * What a fenced resolution write returned: whether THIS resolver's CAS won, and the session as it
+ * stands afterwards. The two are separate because a loser still returns a valid session — the one
+ * the winner wrote — and the caller must not mistake that for its own success and go on to
+ * schedule external work off it.
+ */
+type ResolutionOutcome = { won: boolean; session: PlaygroundSession };
+
+/**
  * The one terminal transition. Both completion paths (everyone forfeited and
  * normal max-rounds/game-over) run identical cleanup: summary generated from
  * the same transcript that is persisted, then a single terminal update that
@@ -535,7 +543,8 @@ async function completeSession(input: {
     participants: SessionParticipant[];
     transcript: TranscriptRound[];
     fence: { round: number; token: string };
-}): Promise<PlaygroundSession> {
+    memories: ResolutionMemory[];
+}): Promise<ResolutionOutcome> {
     const store = await getStore();
     const sessionForSummary: PlaygroundSession = {
         ...input.session,
@@ -544,33 +553,41 @@ async function completeSession(input: {
     };
     const summary = await generateSummary(sessionForSummary, input.game);
 
-    const won = await store.applyPlaygroundResolution(input.session.id, input.fence, {
-        status: 'completed',
-        participants: input.participants,
-        transcript: input.transcript,
-        summary,
-        completedAt: new Date().toISOString(),
-        currentRoundPrompt: null,
-        roundDeadline: null,
-    });
+    const won = await store.applyPlaygroundResolution(
+        input.session.id,
+        input.fence,
+        {
+            status: 'completed',
+            participants: input.participants,
+            transcript: input.transcript,
+            summary,
+            completedAt: new Date().toISOString(),
+            currentRoundPrompt: null,
+            roundDeadline: null,
+        },
+        input.memories
+    );
     if (!won) {
-        // Token fence rejected the write: a reclaimer already resolved this round. Discard.
+        // Token fence rejected the write: a reclaimer already resolved this round. Discard —
+        // including this round's memories, which the same statement declined to write.
         console.warn(`[playground] completion for ${input.session.id} round ${input.fence.round} lost its claim; result discarded`);
-        return (await store.getPlaygroundSession(input.session.id))!;
+        return { won: false, session: (await store.getPlaygroundSession(input.session.id))! };
     }
     revalidatePlaygroundSeed(input.session.schoolId);
 
-    return (await store.getPlaygroundSession(input.session.id))!;
+    return { won: true, session: (await store.getPlaygroundSession(input.session.id))! };
 }
 
-/** Generate the next round's prompt and apply the advance as one fenced update. */
+/** Generate the next round's prompt and apply the advance — and the round's memories — as one
+ *  fenced statement. */
 async function advanceToNextRound(input: {
     session: PlaygroundSession;
     game: PlaygroundGame;
     participants: SessionParticipant[];
     transcript: TranscriptRound[];
     fence: { round: number; token: string };
-}): Promise<PlaygroundSession> {
+    memories: ResolutionMemory[];
+}): Promise<ResolutionOutcome> {
     const store = await getStore();
     const nextRound = input.session.currentRound + 1;
     const nextSession: PlaygroundSession = {
@@ -580,21 +597,29 @@ async function advanceToNextRound(input: {
         transcript: input.transcript,
     };
 
-    const nextPrompt = await generateRoundPrompt(nextSession, input.game);
+    // The round's memories are passed in, not yet stored: the CAS below writes them. Without this
+    // the next round's GM would read the store and see the memories of the round BEFORE last,
+    // because the D5 atomic follow-up moved the write after this prompt.
+    const nextPrompt = await generateRoundPrompt(nextSession, input.game, input.memories);
     const nextDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
 
-    const won = await store.applyPlaygroundResolution(input.session.id, input.fence, {
-        participants: input.participants,
-        transcript: input.transcript,
-        currentRound: nextRound,
-        currentRoundPrompt: nextPrompt,
-        roundDeadline: nextDeadline,
-    });
+    const won = await store.applyPlaygroundResolution(
+        input.session.id,
+        input.fence,
+        {
+            participants: input.participants,
+            transcript: input.transcript,
+            currentRound: nextRound,
+            currentRoundPrompt: nextPrompt,
+            roundDeadline: nextDeadline,
+        },
+        input.memories
+    );
     if (!won) {
         console.warn(`[playground] advancement for ${input.session.id} round ${input.fence.round} lost its claim; result discarded`);
     }
 
-    return (await store.getPlaygroundSession(input.session.id))!;
+    return { won, session: (await store.getPlaygroundSession(input.session.id))! };
 }
 
 /**
@@ -647,6 +672,76 @@ export async function tryAdvanceRound(sessionId: string): Promise<PlaygroundSess
     }
 }
 
+/**
+ * Advisory, never decisive — the terminal CAS is what settles a round. This exists so a resolver
+ * that has already lost its lease stops before buying work it cannot commit: the embeddings, and
+ * the second inference call (the next round's prompt, or the summary). The pre-follow-up shape got
+ * this for free, because the lease-gated memory write sat between them and returned false.
+ *
+ * Renewing rather than merely reading is deliberate: an expired lease cannot be renewed, so this
+ * still refuses a lapsed claimant, and a live one buys the expensive call a fresh lease to finish
+ * inside instead of racing the interval renewal.
+ */
+async function stillOwnsClaim(
+    store: Awaited<ReturnType<typeof getStore>>,
+    sessionId: string,
+    fence: { round: number; token: string }
+): Promise<boolean> {
+    if (await store.renewPlaygroundResolutionClaim(sessionId, fence.token, resolveLeaseMs())) return true;
+    console.warn(`[playground] resolution for ${sessionId} round ${fence.round} lost its claim; spending nothing further`);
+    return false;
+}
+
+/**
+ * Everyone forfeited — end the session early without a GM resolution call.
+ *
+ * Kept as a separate branch (not a "synthetic resolution" through the normal path) deliberately:
+ * the point is to skip the paid GM LLM call and the per-participant memory writes when nobody
+ * acted. Both branches still converge on the same `completeSession`.
+ */
+async function completeAllForfeited(input: {
+    session: PlaygroundSession;
+    game: PlaygroundGame;
+    participants: SessionParticipant[];
+    roundActions: TranscriptRound['actions'];
+    fence: { round: number; token: string };
+}): Promise<PlaygroundSession> {
+    const store = await getStore();
+    // This branch skips the GM resolution call but `completeSession` still buys a summary, so it
+    // needs the same advisory check the resolved branch makes before its second inference call.
+    if (!(await stillOwnsClaim(store, input.session.id, input.fence))) {
+        return (await store.getPlaygroundSession(input.session.id))!;
+    }
+
+    const forfeitRound: TranscriptRound = {
+        round: input.session.currentRound,
+        gmPrompt: input.session.currentRoundPrompt || '',
+        actions: input.roundActions,
+        gmResolution: 'All participants forfeited. Session ended early.',
+        resolvedAt: new Date().toISOString(),
+    };
+
+    const outcome = await completeSession({
+        session: input.session,
+        game: input.game,
+        participants: input.participants,
+        transcript: [...input.session.transcript, forfeitRound],
+        fence: input.fence,
+        memories: [],
+    });
+    // Ingestion is scheduled only after the CAS confirmed this resolver won. It used to run first,
+    // so a resolver whose lease had lapsed still pushed vectors for a round it did not resolve —
+    // the same defect the main branch closed, in the branch that skips the GM call.
+    if (outcome.won) {
+        schedulePlaygroundMemoryIngest(input.participants.map((p) => p.agentId), forfeitRound.gmResolution, {
+            sessionId: input.session.id,
+            round: input.session.currentRound,
+            kind: 'playground_gm',
+        });
+    }
+    return outcome.session;
+}
+
 /** The claimed half of tryAdvanceRound: re-read under the lease, resolve, commit fenced. */
 async function resolveClaimedRound(
     sessionId: string,
@@ -671,32 +766,7 @@ async function resolveClaimedRound(
     }
 
     if (allForfeited) {
-        // Everyone forfeited — end session early without a GM resolution call.
-        // Kept as a separate branch (not a "synthetic resolution" through the
-        // normal path) deliberately: the point is to skip the paid GM LLM call
-        // and per-participant memory writes when nobody acted; both branches
-        // still converge on the same completeSession.
-        const forfeitRound: TranscriptRound = {
-            round: session.currentRound,
-            gmPrompt: session.currentRoundPrompt || '',
-            actions: roundActions,
-            gmResolution: 'All participants forfeited. Session ended early.',
-            resolvedAt: new Date().toISOString(),
-        };
-
-        schedulePlaygroundMemoryIngest(updatedParticipants.map((p) => p.agentId), forfeitRound.gmResolution, {
-            sessionId,
-            round: session.currentRound,
-            kind: 'playground_gm',
-        });
-
-        return completeSession({
-            session,
-            game,
-            participants: updatedParticipants,
-            transcript: [...session.transcript, forfeitRound],
-            fence,
-        });
+        return completeAllForfeited({ session, game, participants: updatedParticipants, roundActions, fence });
     }
 
     // Resolve the current round via GM
@@ -711,50 +781,69 @@ async function resolveClaimedRound(
         resolvedAt: new Date().toISOString(),
     };
 
-    const newTranscript = [...session.transcript, newRound];
+    return commitResolvedRound({
+        session,
+        game,
+        participants: updatedParticipants,
+        transcript: [...session.transcript, newRound],
+        newRound,
+        narration: resolution.narration,
+        isGameOver: resolution.isGameOver,
+        fence,
+    });
+}
 
-    // M11-1b D5: derived writes happen only for the resolver that still holds the live claim, and
-    // the lease check is INSIDE the memory statement itself. Before D5 these ran with no gate at
-    // all, so a lease-expired loser still overwrote episodic memory and scheduled vectors.
-    //
-    // Residual, stated rather than glossed: the gate is the live lease, not the terminal CAS below.
-    // A lease that lapses between this call and applyPlaygroundResolution leaves the round's memory
-    // written for a round that never advanced. The reclaimer re-resolves that round and overwrites
-    // the same (agent, session) row, so it is self-healing in the ordinary case. Recorded under D5
-    // in ai/PLAN_M11_1B.md; the fix folds the CAS and the upserts into one statement.
-    const memoriesWritten = await storeRoundMemories(sessionId, newRound, updatedParticipants, fence);
-    if (!memoriesWritten) {
-        // The claim is gone — a reclaimer owns this round. Write nothing further.
-        console.warn(`[playground] resolution for ${sessionId} round ${fence.round} lost its claim before derived writes`);
-        return (await store.getPlaygroundSession(sessionId))!;
-    }
+/**
+ * The tail of a resolved round: settle its memories, then commit them WITH the advance, then — and
+ * only then — schedule the external vector ingest that cannot join the statement.
+ *
+ * Split out from `resolveClaimedRound` so the paid-work guards read in one place. Every early
+ * return here means "another resolver owns this round"; none of them is an error.
+ */
+async function commitResolvedRound(input: {
+    session: PlaygroundSession;
+    game: PlaygroundGame;
+    participants: SessionParticipant[];
+    transcript: TranscriptRound[];
+    newRound: TranscriptRound;
+    narration: string;
+    isGameOver: boolean;
+    fence: { round: number; token: string };
+}): Promise<PlaygroundSession> {
+    const store = await getStore();
+    const { session, fence } = input;
+    const reread = async () => (await store.getPlaygroundSession(session.id))!;
+
+    // Before the embeddings, and again before the second inference call. Each is one outbound call
+    // per participant, so a resolver that has already lost its lease should discover that here
+    // rather than pay for the whole set. See stillOwnsClaim for why this is advisory.
+    if (!(await stillOwnsClaim(store, session.id, fence))) return reread();
+
+    // M11-1b D5 atomic follow-up: the round's memories are BUILT here (embedding is an outbound
+    // call and cannot join a statement) and WRITTEN by the terminal CAS below, in the same
+    // statement as the advance. So an advance and its memories now genuinely commit together —
+    // the claim D5 had to withdraw when the two were separate auto-commits.
+    const memories = await buildRoundMemories(session.id, input.newRound, input.participants);
+
+    if (!(await stillOwnsClaim(store, session.id, fence))) return reread();
+
+    const write = { ...input, memories };
+    // Max rounds reached OR game returned early termination (e.g. defection outcome).
+    const terminal = session.currentRound >= session.maxRounds || input.isGameOver;
+    const outcome = terminal ? await completeSession(write) : await advanceToNextRound(write);
+
+    // The CAS wrote neither the advance nor the memories, so nothing external may follow it.
+    if (!outcome.won) return outcome.session;
 
     // External vector ingestion cannot join the transaction: an explicit best-effort residual,
-    // scheduled only after the claim was confirmed live by the coupled memory write above.
-    schedulePlaygroundMemoryIngest(updatedParticipants.map((p) => p.agentId), resolution.narration, {
-        sessionId,
+    // scheduled only after the CAS confirmed this resolver won the round.
+    schedulePlaygroundMemoryIngest(input.participants.map((p) => p.agentId), input.narration, {
+        sessionId: session.id,
         round: session.currentRound,
         kind: 'playground_gm',
     });
 
-    // Max rounds reached OR game returned early termination (e.g. defection outcome)
-    if (session.currentRound >= session.maxRounds || resolution.isGameOver) {
-        return completeSession({
-            session,
-            game,
-            participants: updatedParticipants,
-            transcript: newTranscript,
-            fence,
-        });
-    }
-
-    return advanceToNextRound({
-        session,
-        game,
-        participants: updatedParticipants,
-        transcript: newTranscript,
-        fence,
-    });
+    return outcome.session;
 }
 
 // ============================================
@@ -1023,18 +1112,24 @@ function generateMemoryContent(
  * Store memories for all participants after a round is resolved
  */
 /**
- * M11-1b D5 — each participant's episodic memory, written **gated on a live resolution lease**.
- * Returns false as soon as the gate refuses, which is how a lease-expired resolver discovers it
- * must write nothing further. Each participant is its own statement, so a mid-loop failure can
- * leave some participants written and others not; that partial case is part of the same D5
- * residual as the missing CAS coupling.
+ * M11-1b D5 atomic follow-up — settle each active participant's episodic memory into rows the
+ * terminal CAS will write.
+ *
+ * This function no longer writes anything. Embedding is an outbound HTTP call and cannot join a
+ * statement, so it happens here, BEFORE the resolution write; the rows it produces are then handed
+ * to `applyPlaygroundResolution`, which inserts them inside its own CAS. That is what makes a
+ * losing resolver write zero memories rather than "some" — the previous shape wrote one statement
+ * per participant, so a mid-loop failure left the round half-remembered.
+ *
+ * An embedding failure is not fatal (retrieval falls back to text matching), so it degrades the row
+ * rather than dropping it.
  */
-async function storeRoundMemories(
+async function buildRoundMemories(
     sessionId: string,
     round: TranscriptRound,
-    participants: SessionParticipant[],
-    fence: { round: number; token: string }
-): Promise<boolean> {
+    participants: SessionParticipant[]
+): Promise<ResolutionMemory[]> {
+    const memories: ResolutionMemory[] = [];
     for (const participant of participants) {
         if (participant.status !== 'active') continue;
 
@@ -1050,8 +1145,8 @@ async function storeRoundMemories(
             console.log(`[playground] Embedding unavailable for memory, using text matching`);
         }
 
-        const written = await storeMemoryFenced(
-            {
+        memories.push(
+            prepareResolutionMemory({
                 agentId: participant.agentId,
                 agentName: participant.agentName,
                 sessionId,
@@ -1059,12 +1154,10 @@ async function storeRoundMemories(
                 embedding,
                 importance,
                 roundCreated: round.round,
-            },
-            { sessionId, round: fence.round, token: fence.token }
+            })
         );
-        if (!written) return false;
     }
-    return true;
+    return memories;
 }
 
 

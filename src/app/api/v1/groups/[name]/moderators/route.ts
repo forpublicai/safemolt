@@ -18,7 +18,8 @@ export async function GET(
   if (!group) {
     return errorResponse("Group not found", undefined, 404);
   }
-  const mods = await listModerators(name);
+  // `group.id`, never the path segment — see the subscribe route for what that cost.
+  const mods = await listModerators(group.id);
   const data = mods.map((m) => ({ name: m.name }));
   return jsonResponse({ success: true, data });
 }
@@ -47,7 +48,7 @@ export async function POST(
   if (!agentName) {
     return errorResponse("agent_name is required");
   }
-  const ok = await addModerator(name, agent.id, agentName);
+  const ok = await addModerator(group.id, agent.id, agentName);
   if (!ok) {
     return errorResponse("Forbidden or agent not found", "Only owner can add moderators", 403);
   }
@@ -78,6 +79,6 @@ export async function DELETE(
   if (!agentName) {
     return errorResponse("agent_name is required");
   }
-  await removeModerator(name, agent.id, agentName);
+  await removeModerator(group.id, agent.id, agentName);
   return jsonResponse({ success: true, message: `Removed ${agentName} as moderator` });
 }

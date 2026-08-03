@@ -29,6 +29,15 @@ export interface ContentionResult<T> {
     /** Backend pids observed waiting on `holderPid`. */
     waiterPids: number[];
     /**
+     * The CURRENT QUERY TEXT of each observed waiter.
+     *
+     * Assert on this when "something blocked" is too weak to distinguish the fix from the defect.
+     * A marker comment can be pasted onto any statement, so a gate that only checks the marker
+     * passes against a rewrite that blocks for the wrong reason — which is exactly what M11-1b D1's
+     * finding 6 caught in its own lock test.
+     */
+    waiterQueries: string[];
+    /**
      * What the contending callback **resolved** to. A rejection never reaches here — it is
      * rethrown. An earlier version returned the error cast to `T`, which meant a contender that
      * failed instantly satisfied both "did not block" and "produced a result", so an assertion pair
@@ -69,7 +78,10 @@ async function backendPid(client: Client): Promise<number> {
  * against the same shared database — would satisfy the assertion and make a race look detected
  * when the statement under test never blocked at all.
  */
-async function waitersOn(holderPid: number, marker?: string): Promise<number[]> {
+export async function waitersOn(
+    holderPid: number,
+    marker?: string
+): Promise<Array<{ pid: number; query: string }>> {
     const { rows } = await pgPool().query<{ pid: number; blockers: number[]; query: string }>(
         `SELECT pid, pg_blocking_pids(pid) AS blockers, query
          FROM pg_stat_activity
@@ -80,7 +92,32 @@ async function waitersOn(holderPid: number, marker?: string): Promise<number[]> 
     return rows
         .filter((row) => row.blockers.includes(holderPid))
         .filter((row) => (marker ? String(row.query ?? "").includes(marker) : true))
-        .map((row) => row.pid);
+        .map((row) => ({ pid: row.pid, query: String(row.query ?? "") }));
+}
+
+/**
+ * Poll until a backend blocked by `holderPid` matches `marker`, or the deadline passes.
+ *
+ * For the tests that must act only once the statement under test is genuinely waiting — a sleep
+ * would make them flaky in one direction and vacuous in the other.
+ */
+export async function waitForWaiter(
+    holderPid: number,
+    marker: string,
+    timeoutMs = 5000,
+    pollIntervalMs = 25
+): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if ((await waitersOn(holderPid, marker)).length > 0) return true;
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+    return false;
+}
+
+/** Backend pid of an open `pg` client, for callers driving their own hold. */
+export async function pidOf(client: Client): Promise<number> {
+    return backendPid(client);
 }
 
 /**
@@ -120,7 +157,7 @@ export async function raceAgainstHeldLock<T>(options: RaceOptions<T>): Promise<C
     let contention: Promise<T> | null = null;
     let settled = false;
     let observedBlocked = false;
-    let waiterPids: number[] = [];
+    let waiters: Array<{ pid: number; query: string }> = [];
     let failure: unknown = null;
     const startedAt = Date.now();
 
@@ -143,8 +180,8 @@ export async function raceAgainstHeldLock<T>(options: RaceOptions<T>): Promise<C
 
         const deadline = Date.now() + observeForMs;
         while (Date.now() < deadline) {
-            waiterPids = await waitersOn(holderPid, options.contenderMarker);
-            if (waiterPids.length > 0) {
+            waiters = await waitersOn(holderPid, options.contenderMarker);
+            if (waiters.length > 0) {
                 observedBlocked = true;
                 break;
             }
@@ -179,7 +216,8 @@ export async function raceAgainstHeldLock<T>(options: RaceOptions<T>): Promise<C
     return {
         observedBlocked,
         holderPid,
-        waiterPids,
+        waiterPids: waiters.map((waiter) => waiter.pid),
+        waiterQueries: waiters.map((waiter) => waiter.query),
         result: outcome.value,
         elapsedMs: Date.now() - startedAt,
     };

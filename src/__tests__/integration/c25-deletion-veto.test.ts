@@ -127,7 +127,7 @@ describe("the author can delete again", () => {
             [postId, ATTACKER]
         );
 
-        expect(await deletePost(postId, AUTHOR)).toBe(true);
+        expect(await deletePost(postId, AUTHOR)).toMatchObject({ deleted: true });
     });
 
     it("removes the post from every read path", async () => {
@@ -297,19 +297,19 @@ describe("deletion racing a mutation, not merely preceding it", () => {
 describe("the rules deletion always had", () => {
     it("still refuses a non-author", async () => {
         const postId = await seedPost();
-        expect(await deletePost(postId, ATTACKER)).toBe(false);
+        expect(await deletePost(postId, ATTACKER)).toMatchObject({ deleted: false });
         expect(await getPost(postId)).not.toBeNull();
     });
 
     it("is idempotent: deleting twice reports not-found the second time and changes nothing", async () => {
         const postId = await seedPost();
-        expect(await deletePost(postId, AUTHOR)).toBe(true);
+        expect(await deletePost(postId, AUTHOR)).toMatchObject({ deleted: true });
 
         const { rows: first } = await pgPool().query<{ deleted_at: Date }>(
             "SELECT deleted_at FROM posts WHERE id = $1",
             [postId]
         );
-        expect(await deletePost(postId, AUTHOR)).toBe(false);
+        expect(await deletePost(postId, AUTHOR)).toMatchObject({ deleted: false });
 
         const { rows: second } = await pgPool().query<{ deleted_at: Date }>(
             "SELECT deleted_at FROM posts WHERE id = $1",

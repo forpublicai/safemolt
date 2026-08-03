@@ -147,16 +147,47 @@ export async function ingestPlaygroundSnippetForParticipants(
       },
     };
     });
-    await upsertVectorChunkBatchForAgent(agentId, chunks);
-    await pruneIngestedVectorsForAgent(agentId);
+    // Per recipient, so one failure does not silently drop every recipient after it. "Best effort"
+    // has to mean best effort for each agent — a participant deleted mid-session, for instance,
+    // still reaches here (the participant list is JSONB and keeps them) and must not cost the
+    // others their vectors.
+    try {
+      await upsertVectorChunkBatchForAgent(agentId, chunks);
+      await pruneIngestedVectorsForAgent(agentId);
+    } catch (err) {
+      console.warn(`[platform-ingest] vector ingest failed for agent ${agentId}:`, err);
+    }
   }
 }
 
-export async function cleanupPostVectorsForAudience(post: StoredPost): Promise<void> {
-  const agents = await collectAgentIdsForPostAudience(post);
+/**
+ * Vectors for a deleted post, cleaned from every recipient this can still identify.
+ *
+ * **This is parity plus the commenter gap, and NOT full cleanup** (M11-1b D1). Ingestion recorded
+ * the audience *as it was at ingestion time*, while this recomputes the *current* one, so two
+ * classes of recipient are unreachable and are deferred rather than claimed closed:
+ *
+ * 1. an agent who received the content and then left the group or unfollowed the author; and
+ * 2. a late ingest — ingestion is scheduled fire-and-forget AFTER the DB call returns, so it can
+ *    write vectors after this cleanup has finished.
+ *
+ * Both need the ingest recipient ledger (who actually received each chunk) that M11-2 carries as
+ * backlog. What this DOES close is the commenter gap: commenting does not require group
+ * membership, but comment ingestion always includes the comment's author, so a non-member
+ * commenter held vectors that no recomputed post audience would ever name. `extraRecipients`
+ * carries them, uncapped, because a cap would silently drop exactly the recipients being fixed.
+ */
+export async function cleanupPostVectorsForAudience(post: StoredPost, extraRecipients: string[] = []): Promise<void> {
+  const agents = new Set([...(await collectAgentIdsForPostAudience(post)), ...extraRecipients]);
   for (const agentId of agents) {
-    const ids = await listVectorIdsForAgentByMetadata(agentId, { post_id: post.id });
-    if (ids.length > 0) await deleteVectorsForAgent(agentId, ids);
+    try {
+      const ids = await listVectorIdsForAgentByMetadata(agentId, { post_id: post.id });
+      if (ids.length > 0) await deleteVectorsForAgent(agentId, ids);
+    } catch (err) {
+      // Per recipient: one unreachable vector store must not leave every later recipient's copy
+      // in place. Best effort has to mean best effort for each.
+      console.warn(`[platform-ingest] vector cleanup failed for agent ${agentId}:`, err);
+    }
   }
 }
 

@@ -119,13 +119,13 @@ describe("store: the save is gated and pays at most once", () => {
     const agent = makeAgent({ id: "cand" });
     const registrationId = seedRegistration({ agentId: agent.id, evaluationId: FOUNDATION_ONLY });
 
-    const first = await mem.saveEvaluationResult(registrationId, agent.id, FOUNDATION_ONLY, true, 5, 10);
+    const first = await mem.saveEvaluationResult({ registrationId, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: true, score: 5, maxScore: 10 });
     if (first.outcome !== "created") throw new Error(`expected created, got ${first.outcome}`);
     const pointsAfterFirst = agents.get(agent.id)!.points;
     expect(pointsAfterFirst).toBe(5);
     expect(evaluationRegistrations.get(registrationId)!.status).toBe("completed");
 
-    const second = await mem.saveEvaluationResult(registrationId, agent.id, FOUNDATION_ONLY, true, 5, 10);
+    const second = await mem.saveEvaluationResult({ registrationId, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: true, score: 5, maxScore: 10 });
     expect(second.outcome).toBe("already_complete");
     if (second.outcome === "already_complete") {
       expect(second.existing.id).toBe(first.resultId);
@@ -142,8 +142,8 @@ describe("store: the save is gated and pays at most once", () => {
     const registrationId = seedRegistration({ agentId: agent.id, evaluationId: FOUNDATION_ONLY });
 
     const outcomes = await Promise.all([
-      mem.saveEvaluationResult(registrationId, agent.id, FOUNDATION_ONLY, true, 5, 10),
-      mem.saveEvaluationResult(registrationId, agent.id, FOUNDATION_ONLY, true, 5, 10),
+      mem.saveEvaluationResult({ registrationId, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: true, score: 5, maxScore: 10 }),
+      mem.saveEvaluationResult({ registrationId, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: true, score: 5, maxScore: 10 }),
     ]);
 
     expect(outcomes.filter((o) => o.outcome === "created")).toHaveLength(1);
@@ -156,7 +156,7 @@ describe("store: the save is gated and pays at most once", () => {
     const agent = makeAgent({ id: "cand" });
     const registrationId = seedRegistration({ agentId: agent.id, evaluationId: FOUNDATION_ONLY, status: "cancelled" });
 
-    const saved = await mem.saveEvaluationResult(registrationId, agent.id, FOUNDATION_ONLY, true, 5, 10);
+    const saved = await mem.saveEvaluationResult({ registrationId, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: true, score: 5, maxScore: 10 });
 
     expect(saved.outcome).toBe("not_actionable");
     expect(evaluationResults.size).toBe(0);
@@ -168,12 +168,12 @@ describe("store: the save is gated and pays at most once", () => {
     const agent = makeAgent({ id: "cand" });
     const registrationId = seedRegistration({ agentId: agent.id, evaluationId: FOUNDATION_ONLY });
 
-    const first = await mem.saveEvaluationResult(registrationId, agent.id, FOUNDATION_ONLY, false, 0, 10);
+    const first = await mem.saveEvaluationResult({ registrationId, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: false, score: 0, maxScore: 10 });
     if (first.outcome !== "created") throw new Error(`expected created, got ${first.outcome}`);
     expect(evaluationRegistrations.get(registrationId)!.status).toBe("failed");
     expect(agents.get(agent.id)!.points).toBe(0);
 
-    const second = await mem.saveEvaluationResult(registrationId, agent.id, FOUNDATION_ONLY, false, 0, 10);
+    const second = await mem.saveEvaluationResult({ registrationId, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: false, score: 0, maxScore: 10 });
     expect(second.outcome).toBe("already_complete");
     expect(Array.from(evaluationResults.values())).toHaveLength(1);
   });
@@ -212,7 +212,7 @@ describe("a prior pass closes registration — the surviving mint the review fou
   it("refuses re-registration of a passed evaluation on both surfaces; a failed attempt stays retryable", async () => {
     const agent = makeAgent({ id: "repeat" });
     const registrationId = seedRegistration({ agentId: agent.id, evaluationId: FOUNDATION_ONLY });
-    const first = await mem.saveEvaluationResult(registrationId, agent.id, FOUNDATION_ONLY, true, 5, 10);
+    const first = await mem.saveEvaluationResult({ registrationId, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: true, score: 5, maxScore: 10 });
     if (first.outcome !== "created") throw new Error(`expected created, got ${first.outcome}`);
     const pointsAfterPass = agents.get(agent.id)!.points;
 
@@ -237,7 +237,7 @@ describe("a prior pass closes registration — the surviving mint the review fou
     // registration is the documented path back in.
     const failer = makeAgent({ id: "failer" });
     const failedReg = seedRegistration({ agentId: failer.id, evaluationId: FOUNDATION_ONLY });
-    await mem.saveEvaluationResult(failedReg, failer.id, FOUNDATION_ONLY, false, 0, 10);
+    await mem.saveEvaluationResult({ registrationId: failedReg, agentId: failer.id, evaluationId: FOUNDATION_ONLY, passed: false, score: 0, maxScore: 10 });
     const retry = await register(post(`${BASE}/api/v1/evaluations/${FOUNDATION_ONLY}/register`, {}, failer.apiKey) as never, {
       params: Promise.resolve({ id: FOUNDATION_ONLY }),
     });
@@ -253,7 +253,7 @@ describe("the one-payout invariant holds below the authorization layer", () => {
     // pre-check effectively does — still refuses.
     const agent = makeAgent({ id: "toctou" });
     const registrationId = seedRegistration({ agentId: agent.id, evaluationId: FOUNDATION_ONLY });
-    const saved = await mem.saveEvaluationResult(registrationId, agent.id, FOUNDATION_ONLY, true, 5, 10);
+    const saved = await mem.saveEvaluationResult({ registrationId, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: true, score: 5, maxScore: 10 });
     if (saved.outcome !== "created") throw new Error(`expected created, got ${saved.outcome}`);
 
     expect(await mem.registerForEvaluation(agent.id, FOUNDATION_ONLY)).toBeNull();
@@ -265,19 +265,19 @@ describe("the one-payout invariant holds below the authorization layer", () => {
     // partial unique index — so the slipped-through registration cannot mint.
     const agent = makeAgent({ id: "sliver" });
     const first = seedRegistration({ agentId: agent.id, evaluationId: FOUNDATION_ONLY });
-    const saved = await mem.saveEvaluationResult(first, agent.id, FOUNDATION_ONLY, true, 5, 10);
+    const saved = await mem.saveEvaluationResult({ registrationId: first, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: true, score: 5, maxScore: 10 });
     if (saved.outcome !== "created") throw new Error(`expected created, got ${saved.outcome}`);
     const pointsAfterPass = agents.get(agent.id)!.points;
 
     const slipped = seedRegistration({ agentId: agent.id, evaluationId: FOUNDATION_ONLY });
-    const second = await mem.saveEvaluationResult(slipped, agent.id, FOUNDATION_ONLY, true, 5, 10);
+    const second = await mem.saveEvaluationResult({ registrationId: slipped, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: true, score: 5, maxScore: 10 });
 
     expect(second.outcome).toBe("not_actionable");
     expect(evaluationRegistrations.get(slipped)!.status).toBe("in_progress");
     expect(agents.get(agent.id)!.points).toBe(pointsAfterPass);
     // A *failed* second attempt on another registration still records — the invariant covers
     // passes (the payout), not verdicts.
-    const failed = await mem.saveEvaluationResult(slipped, agent.id, FOUNDATION_ONLY, false, 0, 10);
+    const failed = await mem.saveEvaluationResult({ registrationId: slipped, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: false, score: 0, maxScore: 10 });
     expect(failed.outcome).toBe("created");
   });
 });

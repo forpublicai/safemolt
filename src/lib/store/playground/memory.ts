@@ -1,7 +1,7 @@
-import type { CancelPlaygroundOutcome, PlaygroundSession, CreateSessionInput, UpdateSessionInput, CreateActionInput, SessionAction, SessionParticipant, PlaygroundSessionListOptions, SubmitActionOutcome } from '@/lib/playground/types';
+import type { CancelPlaygroundOutcome, PlaygroundSession, CreateSessionInput, UpdateSessionInput, CreateActionInput, ResolutionMemory, SessionAction, SessionParticipant, PlaygroundSessionListOptions, SubmitActionOutcome } from '@/lib/playground/types';
 import { PLAYGROUND_SYSTEM_EXPIRED_REASON } from '@/lib/playground/types';
-import { clearPlaygroundMemoriesForSession } from './agent-memories-memory';
-import { playgroundActions, playgroundSessions } from "../_memory-state";
+import { clearPlaygroundMemoriesForSession, writePlaygroundMemoryRecord } from './agent-memories-memory';
+import { agents, playgroundActions, playgroundSessions } from "../_memory-state";
 import {
   recordPlaygroundActionActivityEvent,
   recordPlaygroundSessionActivityEvent,
@@ -380,10 +380,16 @@ export async function renewPlaygroundResolutionClaim(sessionId: string, token: s
   return true;
 }
 
+/**
+ * M11-1b D5 atomic follow-up, memory mode: the fence check, the session write and every
+ * participant's memory happen in ONE synchronous section, mirroring the db's single statement. A
+ * losing fence writes no memories, and a winning one cannot be observed half-written.
+ */
 export async function applyPlaygroundResolution(
   sessionId: string,
   fence: { round: number; token: string },
-  updates: UpdateSessionInput
+  updates: UpdateSessionInput,
+  memories: ResolutionMemory[] = []
 ) {
   const session = playgroundSessions.get(sessionId);
   if (
@@ -399,13 +405,42 @@ export async function applyPlaygroundResolution(
     return false;
   }
 
+  // Settle the whole payload BEFORE touching either map. Db mode gets this from the statement
+  // boundary: an unwritable row (a NULL in a NOT NULL column, an uncastable timestamp) aborts the
+  // insert and rolls the advance back with it. Memory mode has no constraints, so without this it
+  // would advance the session and then happily store the bad row — the two modes would disagree on
+  // exactly the case the db-side rollback gate exists to pin.
+  // The `agents` check mirrors the db's `JOIN live_agents`: a participant whose agent is gone
+  // contributes no memory and cannot veto the advance.
+  const writable = memories.filter((m) => agents.has(m.agentId));
+  for (const record of writable) {
+    assertStorableMemory(record);
+  }
+  // Last wins, matching the db payload's dedupe and this map's own overwrite semantics.
+  const deduped = Array.from(new Map(writable.map((m) => [m.agentId, m])).values());
+
   const updated = mergeSessionUpdates(session, updates);
   updated.resolveClaimToken = null;
   updated.resolveClaimExpiresAt = null;
 
   playgroundSessions.set(sessionId, updated);
+  for (const record of deduped) {
+    writePlaygroundMemoryRecord({ ...record, sessionId });
+  }
   await recordPlaygroundSessionActivityEvent(sessionId);
   return true;
+}
+
+/** The db's NOT NULL columns and its `created_at timestamptz` cast, as a memory-mode precondition. */
+function assertStorableMemory(record: ResolutionMemory): void {
+  for (const field of ['id', 'agentId', 'agentName', 'content', 'importance'] as const) {
+    if (typeof record[field] !== 'string' || record[field].length === 0) {
+      throw new Error(`playground memory ${field} must be a non-empty string`);
+    }
+  }
+  if (Number.isNaN(Date.parse(record.createdAt))) {
+    throw new Error('playground memory createdAt must be a valid timestamp');
+  }
 }
 
 export async function getPlaygroundActions(sessionId: string, round: number) {

@@ -1,5 +1,5 @@
-import type { AgentMemory, CreateMemoryInput } from "@/lib/playground/types";
-import { playgroundAgentMemories, playgroundSessions } from "../_memory-state";
+import type { AgentMemory, CreateMemoryInput, ResolutionMemory } from "@/lib/playground/types";
+import { playgroundAgentMemories } from "../_memory-state";
 
 /**
  * M11-1b D5 — the memory-mode mirror. Keyed `agentId:sessionId`, matching the db's composite
@@ -27,23 +27,14 @@ export async function storePlaygroundMemory(input: CreateMemoryInput & { id: str
 }
 
 /**
- * The fenced form: the lease check and the write happen in ONE synchronous section, mirroring the
- * db's single lease-gated statement — a lease-expired resolver writes nothing. Like the db side,
- * this is gated on the lease, NOT on the terminal CAS; see the residual noted there.
+ * The **synchronous** row writer, used by the terminal resolution CAS (M11-1b D5 atomic follow-up).
+ *
+ * It is deliberately not `async`: the session update and every participant's memory must land in
+ * one synchronous section, or a concurrent promise can observe an advanced session whose round has
+ * no memories — the memory-mode shape of the db's single-statement coupling. `await` inside a
+ * memory-store function is not atomic (Locked decision 4).
  */
-export async function storePlaygroundMemoryFenced(
-  input: CreateMemoryInput & { id: string },
-  fence: { sessionId: string; round: number; token: string }
-): Promise<boolean> {
-  const session = playgroundSessions.get(fence.sessionId);
-  const live = Boolean(
-    session &&
-      session.currentRound === fence.round &&
-      session.resolveClaimToken === fence.token &&
-      session.resolveClaimExpiresAt &&
-      Date.parse(session.resolveClaimExpiresAt) > Date.now()
-  );
-  if (!live) return false;
+export function writePlaygroundMemoryRecord(input: ResolutionMemory): void {
   playgroundAgentMemories.set(key(input.agentId, input.sessionId), {
     id: input.id,
     agentId: input.agentId,
@@ -53,9 +44,8 @@ export async function storePlaygroundMemoryFenced(
     embedding: input.embedding,
     importance: input.importance,
     roundCreated: input.roundCreated ?? 0,
-    createdAt: new Date().toISOString(),
+    createdAt: input.createdAt,
   });
-  return true;
 }
 
 export async function getPlaygroundMemoryForAgent(sessionId: string, agentId: string): Promise<AgentMemory | null> {

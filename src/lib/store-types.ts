@@ -49,6 +49,20 @@ export type DeleteAgentResult =
   | { ok: true }
   | { ok: false; reason: "not_found" | "foreign_key" };
 
+/**
+ * Result contract shared by the db and memory `deletePost` implementations (M11-1b D1).
+ *
+ * `commenterIds` is read INSIDE the decisive transaction, under the post lock, and is the reason
+ * the shape is not a bare boolean: computing the vector-cleanup audience before the delete left a
+ * comment that committed in between out of the recipient set.
+ */
+export interface PostDeletionResult {
+  /** True only when this call wrote the tombstone. False for not found, not the author, or already deleted. */
+  deleted: boolean;
+  /** Every distinct author of a comment on the post, as pinned by the delete. Empty when `deleted` is false. */
+  commenterIds: string[];
+}
+
 /** Vetting challenge for proving agent capability */
 /**
  * M11-1 C14: the atomic vetting completion's discriminated result. `unavailable` means the
@@ -73,7 +87,12 @@ export interface VettingChallenge {
 }
 
 
-export type GroupType = 'group' | 'house';
+/**
+ * M11-1b: houses are removed. Every group is an ordinary group, and the union has one member so
+ * that no new branch on a group's type can be written. `groups.type` survives in Postgres for one
+ * deploy; `rowToGroup` normalizes it.
+ */
+export type GroupType = 'group';
 
 export interface StoredGroup {
   id: string;
@@ -82,9 +101,6 @@ export interface StoredGroup {
   description: string;
   type: GroupType;
   ownerId: string;
-  founderId?: string;  // For houses
-  points?: number;     // Only for houses
-  requiredEvaluationIds?: string[];  // For houses: evaluation IDs that must be passed
   memberIds: string[];  // Deprecated: use group_members table for regular groups
   moderatorIds: string[];
   pinnedPostIds: string[];
@@ -113,6 +129,12 @@ export interface StoredPost {
    */
   deletedAt?: string;
   deletedByAgentId?: string;
+  /**
+   * M11-1b D1: set by the same write as `deletedAt`, and only by a deletion that also ran the
+   * karma reversal. A tombstone with this unset was written by an instance that predates the
+   * reversal, and is what `scripts/reconcile-post-deletion-projections.sql` looks for.
+   */
+  deletedKarmaReversedAt?: string;
 }
 
 export interface StoredComment {
@@ -196,6 +218,35 @@ export type SaveEvaluationResultOutcome =
   | { outcome: "created"; resultId: string }
   | { outcome: "already_complete"; existing: StoredRecentEvaluationResult }
   | { outcome: "not_actionable" };
+
+/**
+ * What a completion records.
+ *
+ * Named rather than positional (M11-1b D4): this was eleven positional parameters ending in five
+ * consecutive optional strings, and D4 adds a twelfth. Misaligning `proctorFeedback` with
+ * `schoolId` at a call site would have been silent, and school is now part of an evaluation's
+ * identity — exactly the field that must not be settable by accident.
+ */
+export interface SaveEvaluationResultInput {
+  registrationId: string;
+  agentId: string;
+  evaluationId: string;
+  passed: boolean;
+  score?: number;
+  maxScore?: number;
+  resultData?: Record<string, unknown>;
+  proctorAgentId?: string;
+  proctorFeedback?: string;
+  evaluationVersion?: string;
+  /** The school the evaluation was taken under. Server-derived; never caller-supplied. */
+  schoolId?: string;
+  /**
+   * Proctored completion: the session to end in the SAME transaction as the result. Ending it
+   * afterwards is what stranded a completed registration with an active session on any failure
+   * between the two calls.
+   */
+  endProctorSessionId?: string;
+}
 
 export interface StoredRecentPlaygroundAction {
   id: string;

@@ -1,8 +1,19 @@
 import { sql } from "@/lib/db";
-import type { SaveEvaluationResultOutcome, StoredRecentEvaluationResult } from "@/lib/store-types";
+import type { NeonQueryFunctionInTransaction } from "@neondatabase/serverless";
+import type {
+    SaveEvaluationResultInput,
+    SaveEvaluationResultOutcome,
+    StoredRecentEvaluationResult,
+} from "@/lib/store-types";
 import type { CertificationJob, CertificationJobStatus, TranscriptEntry } from '@/lib/evaluations/types';
-import { recordEvaluationResultActivityEvent } from "../activity/events";
+import {
+    buildEvaluationResultActivityUpsert,
+    invalidateEvaluationResultActivityCache,
+} from "../activity/events";
 import { computeEvaluationResultFields } from "./result-fields";
+
+/** The query tag inside a `sql.transaction` batch, for helpers that build one of its elements. */
+type EvaluationsTxn = NeonQueryFunctionInTransaction<false, false>;
 
 function isUniqueViolation(error: unknown): boolean {
     return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
@@ -351,83 +362,147 @@ export async function claimProctorSession(
 
 // ==================== Evaluation (continued) ====================
 
-export async function startEvaluation(registrationId: string): Promise<void> {
-    await sql!`
+/**
+ * M11-1b D4 — a CAS, not an unconditional write.
+ *
+ * The route reads `registered` and then called this with no condition, so a submit that completed
+ * in the gap was dragged back: `completed` -> `in_progress`, which reopens a finished registration
+ * and lets its result be superseded. `registered` is the only state a start may leave, and
+ * re-starting an already-started registration is a no-op rather than a fresh `started_at`.
+ *
+ * @returns whether this call performed the transition. `false` means the registration was not
+ *   `registered` — already started, already terminal, or gone.
+ */
+export async function startEvaluation(registrationId: string): Promise<boolean> {
+    const rows = await sql!`
     UPDATE evaluation_registrations
     SET status = 'in_progress', started_at = NOW()
-    WHERE id = ${registrationId}
+    WHERE id = ${registrationId} AND status = 'registered'
+    RETURNING id
   `;
+    return rows.length > 0;
 }
 
-export async function saveEvaluationResult(
-    registrationId: string,
-    agentId: string,
-    evaluationId: string,
-    passed: boolean,
-    score?: number,
-    maxScore?: number,
-    resultData?: Record<string, unknown>,
-    proctorAgentId?: string,
-    proctorFeedback?: string,
-    evaluationVersion?: string,
-    schoolId?: string
-): Promise<SaveEvaluationResultOutcome> {
+export async function saveEvaluationResult(input: SaveEvaluationResultInput): Promise<SaveEvaluationResultOutcome> {
     const resultId = generateEvaluationId('eval_res');
     const completedAt = new Date().toISOString();
 
     const { pointsEarned, evaluationVersion: version } = computeEvaluationResultFields({
-        evaluationId,
-        passed,
-        score,
-        evaluationVersion,
+        evaluationId: input.evaluationId,
+        passed: input.passed,
+        score: input.score,
+        evaluationVersion: input.evaluationVersion,
     });
 
-    const inserted = await insertResultGatedOnTransition({
-        resultId, registrationId, agentId, evaluationId, passed, score, maxScore,
-        resultData, completedAt, proctorAgentId, proctorFeedback, pointsEarned, version, schoolId,
+    const inserted = await completeRegistrationAtomically({
+        row: { ...input, resultId, completedAt, pointsEarned, version },
+        endProctorSessionId: input.endProctorSessionId,
     });
 
     if (!inserted) {
-        const existing = await getEvaluationResultForRegistration(registrationId);
+        const existing = await getEvaluationResultForRegistration(input.registrationId);
         return existing ? { outcome: 'already_complete', existing } : { outcome: 'not_actionable' };
     }
 
-    // Update agent's points from evaluation results if they passed
-    if (passed) {
-        await updateAgentPointsFromEvaluations(agentId);
-    }
-
-    await recordEvaluationResultActivityEvent({
-        resultId,
-        agentId,
-        evaluationId,
-        completedAt,
-        passed,
-        score,
-        maxScore,
-        pointsEarned: pointsEarned ?? undefined,
-        resultData,
-        proctorFeedback,
-    });
+    // The only thing left outside the transaction: invalidating a cache for a transaction that
+    // rolled back would be wrong, so it waits until the write is known to have committed.
+    await invalidateEvaluationResultActivityCache(resultId);
 
     return { outcome: 'created', resultId };
 }
 
 /**
- * The registration transition and the result insert are one statement (M11-1 C21): the CTE arm
- * transitions the registration only while it is still actionable, and the insert is gated on that
- * arm's RETURNING — the loser of a concurrent completion matches zero rows and writes nothing. A
- * `sql.transaction` batch cannot express this, because batch elements cannot read one another's
- * RETURNING. The 23505 arm covers the one shape the gate cannot: a result row already present
- * under a still-actionable registration — the whole statement rolls back, so the transition never
- * commits without its insert.
+ * M11-1b D4 — completion as ONE transaction: the agent lock, the gated transition-plus-insert, the
+ * points recompute, the activity row, and the proctor session end.
+ *
+ * **The agent lock is element 1, and it does two jobs.**
+ *
+ * 1. *Points.* The recompute is a `SUM` over `evaluation_results` followed by an agent update.
+ *    Making it a later batch element fixes only self-visibility: two concurrent completions for the
+ *    same agent on DIFFERENT registrations each sum a snapshot excluding the other, and the last
+ *    writer wins — points lost permanently. `FOR UPDATE` on the agent row makes same-agent
+ *    completions serialize, and because each statement in a transaction takes a fresh snapshot, the
+ *    loser's recompute runs after the winner committed and sees both results.
+ *
+ * 2. *A pre-existing 40P01, closed.* Before D4 the completion's first write was the registration
+ *    update, and the result insert's `agent_id` FK then took an implicit `FOR KEY SHARE` on the
+ *    agent — order `evaluation_registrations -> agents`. M11-1 C14's vetting batch opens with
+ *    `SELECT ... FROM agents ... FOR UPDATE` and then updates the registration — order
+ *    `agents -> evaluation_registrations`. `FOR UPDATE` conflicts with `FOR KEY SHARE`, so a
+ *    vetting run and an ordinary completion for one agent could deadlock and one request 500ed.
+ *    Taking the agent row FIRST, with the same `FOR UPDATE` C14 uses, puts both writers in one
+ *    global order. This is why the lock cannot be weakened to `FOR NO KEY UPDATE` here even though
+ *    that is the gentler mode elsewhere: it must be the mode C14 already takes, or the two orders
+ *    are only half-aligned.
+ *
+ * Every element after the decisive one re-gates on the result row, because fixed batch elements
+ * execute even when the decisive element returned zero rows. Without that, a LOSING completion
+ * would still end the proctor session and still project an activity row.
+ */
+async function completeRegistrationAtomically(input: {
+    row: Parameters<typeof buildResultInsertGatedOnTransition>[0];
+    endProctorSessionId?: string;
+}): Promise<boolean> {
+    const { row } = input;
+    const recompute = buildAgentPointsRecompute(row.agentId, row.resultId);
+    const activity = buildEvaluationResultActivityUpsert(
+        {
+            resultId: row.resultId,
+            agentId: row.agentId,
+            evaluationId: row.evaluationId,
+            completedAt: row.completedAt,
+            passed: row.passed,
+            score: row.score,
+            maxScore: row.maxScore,
+            pointsEarned: row.pointsEarned ?? undefined,
+            resultData: row.resultData,
+            proctorFeedback: row.proctorFeedback,
+        },
+        { requireCommitted: true }
+    );
+
+    try {
+        const results = await sql!.transaction((txn) => [
+            txn`/* d4:completion-agent-lock */ SELECT id FROM agents WHERE id = ${row.agentId} FOR UPDATE`,
+            buildResultInsertGatedOnTransition(row)(txn),
+            // The recompute is delta-based and floors at zero (M11-1C); running it for a failed
+            // result is a no-op, so it is unconditional apart from the result-row gate.
+            txn(recompute.text, recompute.params),
+            txn(activity.text, activity.params),
+            // Proctored completion used to call `endSession` AFTER `saveEvaluationResult` returned,
+            // so a failure between them stranded a completed registration with an active session.
+            // It is an element now, gated on the winning result like everything else.
+            txn`
+              UPDATE evaluation_sessions
+              SET status = 'ended', ended_at = NOW()
+              WHERE id = ${input.endProctorSessionId ?? null}
+                AND EXISTS (SELECT 1 FROM evaluation_results WHERE id = ${row.resultId})
+            `,
+        ]);
+        return (results[1] as unknown[]).length > 0;
+    } catch (error) {
+        // A result row already present under a still-actionable registration: the whole transaction
+        // rolls back, so the transition never commits without its insert (M11-1 C21).
+        if (!isUniqueViolation(error)) throw error;
+        return false;
+    }
+}
+
+/**
+ * The decisive element: the registration transition and the result insert as ONE statement
+ * (M11-1 C21). The CTE arm transitions the registration only while it is still actionable, and the
+ * insert is gated on that arm's `RETURNING` — the loser of a concurrent completion matches zero
+ * rows and writes nothing. This cannot be split into two batch elements, because batch elements
+ * cannot read one another's `RETURNING`.
+ *
+ * Returned as a function of the transaction's query tag so it can be an element of D4's completion
+ * batch rather than a standalone auto-commit. The 23505 case is handled by the caller, which owns
+ * the transaction the violation rolls back.
  *
  * school_id defaults to 'foundation' to match the column DEFAULT on pre-existing rows;
  * getEvaluationResultCount treats NULL and 'foundation' as equivalent either way.
- *
- * @returns whether the row was written.
  */
-async function insertResultGatedOnTransition(row: {
+function buildResultInsertGatedOnTransition(row: {
     resultId: string;
     registrationId: string;
     agentId: string;
@@ -442,9 +517,8 @@ async function insertResultGatedOnTransition(row: {
     pointsEarned: number | null;
     version: string;
     schoolId?: string;
-}): Promise<boolean> {
-    try {
-        const inserted = await sql!`
+}) {
+    return (txn: EvaluationsTxn) => txn`
     WITH transitioned AS (
       UPDATE evaluation_registrations
       SET status = ${row.passed ? 'completed' : 'failed'}, completed_at = ${row.completedAt}
@@ -462,11 +536,6 @@ async function insertResultGatedOnTransition(row: {
     FROM transitioned
     RETURNING id
   `;
-        return inserted.length > 0;
-    } catch (error) {
-        if (!isUniqueViolation(error)) throw error;
-        return false;
-    }
 }
 
 export async function hasEvaluationResultForRegistration(registrationId: string): Promise<boolean> {
@@ -703,26 +772,50 @@ export async function getAgentEvaluationPoints(agentId: string): Promise<number>
  *
  * Sum and write still share one statement, so two recomputes for one agent cannot interleave a
  * stale read between them (M11-1 C21). Serializing two concurrent completions is still M11-1b D4's
- * `FOR UPDATE` work — unchanged here, and not a regression introduced by this writer. No
- * house-points follow-up: the legacy recalculation only ever read the stored group total (see the
- * C21 retraction in PLAN_M11_1.md), so the tail was two round trips per passed save for no effect,
- * and the memory store never had it.
+ * `FOR UPDATE` work — unchanged here, and not a regression introduced by this writer. The
+ * house-points follow-up this comment used to weigh is moot: houses are removed, and it never had
+ * an effect anyway (the legacy recalculation only ever read the stored group total — see the C21
+ * retraction in PLAN_M11_1.md).
  */
 export async function updateAgentPointsFromEvaluations(agentId: string): Promise<void> {
-    await sql!`
+    const prepared = buildAgentPointsRecompute(agentId, null);
+    await sql!(prepared.text, prepared.params);
+}
+
+/**
+ * The ONE writer of `agents.evaluation_points` (M11-1C's one-writer-per-component invariant).
+ *
+ * It is a prepared query rather than a tagged template because D4's completion batch has to carry
+ * it as an element while `updateAgentPointsFromEvaluations` still runs it standalone — and writing
+ * the statement twice would put two writers of this component in one file, which is exactly what
+ * `src/__tests__/lib/karma-writer-ownership.test.ts` exists to refuse.
+ *
+ * @param requireResultId gate for the batch use. Fixed batch elements always execute, so when the
+ *   decisive insert wrote nothing this must not move points either. `null` for the standalone
+ *   caller, which only runs when it already knows a result landed.
+ */
+function buildAgentPointsRecompute(
+    agentId: string,
+    requireResultId: string | null
+): { text: string; params: unknown[] } {
+    return {
+        text: `
     UPDATE agents
     SET evaluation_points = (
           SELECT COALESCE(SUM(points_earned), 0)
           FROM evaluation_results
-          WHERE agent_id = ${agentId} AND passed = true
+          WHERE agent_id = $1 AND passed = true
         ),
         points = GREATEST(0, points + ((
           SELECT COALESCE(SUM(points_earned), 0)
           FROM evaluation_results
-          WHERE agent_id = ${agentId} AND passed = true
+          WHERE agent_id = $1 AND passed = true
         ) - evaluation_points))
-    WHERE id = ${agentId}
-  `;
+    WHERE id = $1
+      AND ($2::text IS NULL OR EXISTS (SELECT 1 FROM evaluation_results WHERE id = $2))
+  `,
+        params: [agentId, requireResultId],
+    };
 }
 
 /**

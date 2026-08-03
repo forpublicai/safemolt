@@ -21,10 +21,14 @@ jest.mock("@/lib/memory/platform-ingest", () => ({
 
 jest.mock("@/lib/playground/memory", () => ({
     storeMemory: jest.fn(async () => ({})),
-    // M11-1b D5: derived writes are gated on the winning claim. Returning true keeps this suite's
-    // subject the RESOLUTION fence rather than the memory fence — the memory fence has its own
+    // M11-1b D5 atomic follow-up: memories are prepared here and written by the resolution CAS
+    // itself, so this suite's subject stays the RESOLUTION fence. The coupled write has its own
     // gates in `d5-playground-memories.test.ts`.
-    storeMemoryFenced: jest.fn(async () => true),
+    prepareResolutionMemory: jest.fn((input: Record<string, unknown>) => ({
+        ...input,
+        id: `c12_mem_${String(input.agentId)}`,
+        createdAt: new Date().toISOString(),
+    })),
     getAllSessionMemories: jest.fn(async () => []),
 }));
 
@@ -73,9 +77,30 @@ interface SeedOptions {
     claim?: { token: string; expiresInMs: number };
 }
 
+const AGENT = (name: string) => `c12_agent_${RUN}_${name}`;
+
+/**
+ * Participants must be REAL agent rows. `playground_sessions.participants` is JSONB with no FK, so
+ * a fixture can invent ids — but since M11-1b D5's atomic follow-up the resolution CAS writes each
+ * participant's memory, and that table's agent_id FK is real. An invented participant would make
+ * every resolution here silently take the missing-agent path, so this suite would stop exercising
+ * what production does.
+ */
+async function seedAgent(name: string): Promise<string> {
+    const id = AGENT(name);
+    await pgPool().query(
+        `INSERT INTO agents (id, name, description, api_key, points, follower_count, is_claimed, created_at, is_vetted)
+         VALUES ($1, $1, '', $2, 0, 0, false, NOW(), true)
+         ON CONFLICT (id) DO NOTHING`,
+        [id, `c12_key_${id}`]
+    );
+    return id;
+}
+
 async function seedSession(options: SeedOptions = {}): Promise<string> {
     const id = `c12_sess_${RUN}_${(seq += 1)}`;
-    const participants = (options.participants ?? ["p1"]).map((agentId) => ({
+    const participantIds = await Promise.all((options.participants ?? ["p1"]).map(seedAgent));
+    const participants = participantIds.map((agentId) => ({
         agentId,
         agentName: agentId,
         status: "active",
@@ -122,6 +147,7 @@ async function sessionRow(id: string) {
 afterAll(async () => {
     await pgPool().query("DELETE FROM activity_events WHERE entity_id LIKE $1", [`c12_%${RUN}%`]);
     await pgPool().query("DELETE FROM playground_sessions WHERE id LIKE $1", [`c12_sess_${RUN}%`]);
+    await pgPool().query("DELETE FROM agents WHERE id LIKE $1", [`c12_agent_${RUN}%`]);
     await closeIntegrationConnections();
 });
 
@@ -133,7 +159,7 @@ beforeEach(() => {
 describe("cross-instance deadline resolution", () => {
     it("concurrent tryAdvanceRound calls invoke the GM exactly once and advance exactly once", async () => {
         const sessionId = await seedSession({ participants: ["p1"], deadlinePassed: true });
-        await seedAction(sessionId, "p1", 1);
+        await seedAction(sessionId, AGENT("p1"), 1);
 
         await runConcurrently([
             () => tryAdvanceRound(sessionId),
@@ -156,7 +182,7 @@ describe("expired-lease reclaim", () => {
             deadlinePassed: true,
             claim: { token: "dead_claimant", expiresInMs: -60_000 },
         });
-        await seedAction(sessionId, "p1", 1);
+        await seedAction(sessionId, AGENT("p1"), 1);
 
         await tryAdvanceRound(sessionId);
 
@@ -174,7 +200,7 @@ describe("expired-lease reclaim", () => {
 describe("the overlap the two gates above cannot replace", () => {
     it("a claimant stalled past its lease: exactly one COMMIT, but TWO GM invocations — the residual, asserted", async () => {
         const sessionId = await seedSession({ participants: ["p1"], deadlinePassed: true });
-        await seedAction(sessionId, "p1", 1);
+        await seedAction(sessionId, AGENT("p1"), 1);
 
         // Claimant A takes the lease and starts inference, then wedges: its renewal never runs.
         // A's inference is driven directly here (a wedged process runs nothing), but its terminal
@@ -224,7 +250,7 @@ describe("lapsed-lease loser cannot commit a stale transcript (M11-1b review B2)
         const admitted = await submitPlaygroundActionGated({
             id: `c12_lapse_${RUN}`,
             sessionId,
-            agentId: "p1",
+            agentId: AGENT("p1"),
             round: 1,
             content: "landed after A's lease died",
         });
@@ -244,8 +270,8 @@ describe("lapsed-lease loser cannot commit a stale transcript (M11-1b review B2)
         const row = await sessionRow(sessionId);
         expect(row.current_round).toBe(1);
         const { rows } = await pgPool().query(
-            "SELECT content FROM playground_actions WHERE session_id = $1 AND round = 1 AND agent_id = 'p1'",
-            [sessionId]
+            "SELECT content FROM playground_actions WHERE session_id = $1 AND round = 1 AND agent_id = $2",
+            [sessionId, AGENT("p1")]
         );
         expect(rows[0]?.content).toBe("landed after A's lease died");
     });
@@ -259,7 +285,7 @@ describe("action-vs-advance (db)", () => {
         const duringClaim = await submitPlaygroundActionGated({
             id: `c12_late_${RUN}_a`,
             sessionId,
-            agentId: "p2",
+            agentId: AGENT("p2"),
             round: 1,
             content: "late during resolution",
         });
@@ -276,7 +302,7 @@ describe("action-vs-advance (db)", () => {
         const afterAdvance = await submitPlaygroundActionGated({
             id: `c12_late_${RUN}_b`,
             sessionId,
-            agentId: "p2",
+            agentId: AGENT("p2"),
             round: 1,
             content: "late after resolution",
         });
@@ -284,8 +310,8 @@ describe("action-vs-advance (db)", () => {
 
         // Neither refused action exists as a row — rejected, not silently dropped post-read.
         const { rows } = await pgPool().query(
-            "SELECT id FROM playground_actions WHERE session_id = $1 AND round = 1 AND agent_id = 'p2'",
-            [sessionId]
+            "SELECT id FROM playground_actions WHERE session_id = $1 AND round = 1 AND agent_id = $2",
+            [sessionId, AGENT("p2")]
         );
         expect(rows).toHaveLength(0);
     });
@@ -297,7 +323,7 @@ describe("action-vs-advance (db)", () => {
                 submitPlaygroundActionGated({
                     id: `c12_race_${RUN}_${i}`,
                     sessionId,
-                    agentId: "p1",
+                    agentId: AGENT("p1"),
                     round: 1,
                     content: `attempt ${i}`,
                 })
@@ -306,8 +332,8 @@ describe("action-vs-advance (db)", () => {
         const admitted = outcomes.filter((o) => o.ok && o.value.ok);
         expect(admitted).toHaveLength(1);
         const { rows } = await pgPool().query(
-            "SELECT id FROM playground_actions WHERE session_id = $1 AND round = 1 AND agent_id = 'p1'",
-            [sessionId]
+            "SELECT id FROM playground_actions WHERE session_id = $1 AND round = 1 AND agent_id = $2",
+            [sessionId, AGENT("p1")]
         );
         expect(rows).toHaveLength(1);
     });
@@ -334,8 +360,8 @@ describe("C12 migration through the real runner (M11-1b review B6/B4)", () => {
         for (const suffix of ["a", "b"]) {
             await pgPool().query(
                 `INSERT INTO playground_actions (id, session_id, agent_id, round, content, created_at)
-                 VALUES ($1, $2, 'p1', 1, $3, NOW())`,
-                [`c12_dup_${RUN}_${suffix}`, sessionId, `content ${suffix}`]
+                 VALUES ($1, $2, $4, 1, $3, NOW())`,
+                [`c12_dup_${RUN}_${suffix}`, sessionId, `content ${suffix}`, AGENT("p1")]
             );
         }
         await pgPool().query("DELETE FROM _migrations WHERE filename = $1", [C12_MIGRATION_FILE]);
@@ -345,8 +371,8 @@ describe("C12 migration through the real runner (M11-1b review B6/B4)", () => {
         expect(recorded).toBe(0);
         // Both rows survive — nothing was destroyed.
         const { rows } = await pgPool().query(
-            "SELECT id FROM playground_actions WHERE session_id = $1 AND round = 1 AND agent_id = 'p1' ORDER BY id",
-            [sessionId]
+            "SELECT id FROM playground_actions WHERE session_id = $1 AND round = 1 AND agent_id = $2 ORDER BY id",
+            [sessionId, AGENT("p1")]
         );
         expect(rows.map((r) => r.id)).toEqual([`c12_dup_${RUN}_a`, `c12_dup_${RUN}_b`]);
 

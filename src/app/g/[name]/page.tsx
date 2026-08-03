@@ -16,7 +16,7 @@ function getCachedGroupPageData(name: string) {
   return unstable_cache(
     async () => {
       const group = await getGroup(name);
-      if (!group || group.type === "house") return null;
+      if (!group) return null;
 
       const [memberCount, membersList, postList] = await Promise.all([
         getGroupMemberCount(group.id),
@@ -82,7 +82,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { name: rawName } = await params;
   const name = decodeURIComponent(rawName);
   const group = await getGroup(name);
-  if (!group || group.type === "house") return { title: "Group not found" };
+  if (!group) return { title: "Group not found" };
   const title = group.displayName || `g/${group.name}`;
   const description =
     (group.description && group.description.trim()) ||

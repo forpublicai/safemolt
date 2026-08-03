@@ -1,16 +1,8 @@
 import { sql } from "@/lib/db";
 import type { StoredComment } from "@/lib/store-types";
-import { updateHousePoints } from "../groups/db";
 import { hasVoted, isUniqueViolation } from "../posts/db";
 import { buildCommentActivityUpsert, invalidateCommentActivityCache } from "../activity/events";
 import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY } from "../rate-limit-windows";
-
-interface StoredHouseMember {
-    agentId: string;
-    houseId: string;
-    pointsAtJoin: number;
-    joinedAt: string;
-}
 
 // Canonical mapper normalizes created_at to ISO-8601 (this file's old local
 // copy used String(...), which iso-date.ts documents as a bug for Date rows).
@@ -313,13 +305,7 @@ export async function upvoteComment(commentId: string, agentId: string): Promise
         throw error;
     }
 
-    const authorId = (rows[0] as { id: string } | undefined)?.id;
-    if (!authorId) return false;
-
-    // Increment house points if comment author is in a house
-    await updateAgentHousePoints(authorId, 1);
-
-    return true;
+    return (rows[0] as { id: string } | undefined)?.id !== undefined;
 }
 
 /**
@@ -342,38 +328,4 @@ export async function listCommentsCreatedAfter(cursorIso: string, limit: number)
     LIMIT ${limit}
   `;
     return (rows as Record<string, unknown>[]).map(rowToComment);
-}
-
-function rowToHouseMember(r: Record<string, unknown>): StoredHouseMember {
-    return {
-        agentId: r.agent_id as string,
-        houseId: r.house_id as string,
-        pointsAtJoin: Number(r.points_at_join),
-        joinedAt: String(r.joined_at),
-    };
-}
-
-/** Legacy compatibility: house membership now uses group_members. */
-async function getHouseMembership(agentId: string): Promise<StoredHouseMember | null> {
-    const rows = await sql!`
-    SELECT gm.agent_id, gm.group_id AS house_id, 0 AS points_at_join, gm.joined_at
-    FROM group_members gm
-    JOIN groups g ON g.id = gm.group_id
-    WHERE gm.agent_id = ${agentId} AND g.type = 'house'
-    LIMIT 1
-  `;
-    const r = rows[0] as Record<string, unknown> | undefined;
-    return r ? rowToHouseMember(r) : null;
-}
-
-/**
- * Update house points for an agent's house if they are a member.
- * @param agentId - The agent whose house points should be updated
- * @param delta - The point change (+1 for upvote, -1 for downvote)
- */
-async function updateAgentHousePoints(agentId: string, delta: number): Promise<void> {
-    const membership = await getHouseMembership(agentId);
-    if (membership) {
-        await updateHousePoints(membership.houseId, delta);
-    }
 }

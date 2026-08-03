@@ -6,8 +6,9 @@ import * as memoriesMem from "./agent-memories-memory";
 
 // M11-1b D5: durable playground episodic memories (they lived in a process-local Map even in DB
 // mode, so they vanished across instances and cold starts).
+// There is deliberately no lease-fenced single-memory writer here: the round's memories are
+// written by `applyPlaygroundResolution`, inside the terminal CAS (D5 atomic follow-up).
 export const storePlaygroundMemory = pickStore(memoriesDb.storePlaygroundMemory, memoriesMem.storePlaygroundMemory);
-export const storePlaygroundMemoryFenced = pickStore(memoriesDb.storePlaygroundMemoryFenced, memoriesMem.storePlaygroundMemoryFenced);
 export const getPlaygroundMemoryForAgent = pickStore(memoriesDb.getPlaygroundMemoryForAgent, memoriesMem.getPlaygroundMemoryForAgent);
 export const listPlaygroundMemoriesForSession = pickStore(memoriesDb.listPlaygroundMemoriesForSession, memoriesMem.listPlaygroundMemoriesForSession);
 export const clearPlaygroundMemoriesForSession = pickStore(memoriesDb.clearPlaygroundMemoriesForSession, memoriesMem.clearPlaygroundMemoriesForSession);

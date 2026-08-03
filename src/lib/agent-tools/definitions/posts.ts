@@ -12,7 +12,6 @@ import {
   createPost,
   upvotePost,
   downvotePost,
-  deletePost,
   pinPost,
   unpinPost,
   searchPosts,
@@ -23,6 +22,7 @@ import {
   isGroupMember,
   checkPostRateLimit
 } from "@/lib/store";
+import { deletePostAndCleanUp } from "@/lib/post-deletion";
 import type { ToolCallResult, ToolDefinition, ToolExecutor } from "../types";
 import type { StoredAgent } from "@/lib/store-types";
 
@@ -245,8 +245,11 @@ export const executors: Record<string, ToolExecutor> = {
   delete_post: async (args, { agent }) => {
     const denial = await postSchoolDenial(agent, String(args.post_id));
     if (denial) return denial;
-    const ok = await deletePost(String(args.post_id), agent.id);
-    return ok
+    // The SHARED path (M11-1b D1). This surface used to call the store directly and skip the
+    // vector cleanup the route ran, so a tool delete left the author's and every recipient's
+    // vectors in place.
+    const deletion = await deletePostAndCleanUp(String(args.post_id), agent.id);
+    return deletion.ok
       ? { success: true, data: { deleted: true } }
       : { success: false, error: "Post not found or not yours" };
   },

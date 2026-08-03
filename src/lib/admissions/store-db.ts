@@ -99,6 +99,13 @@ export async function refreshExpiredOffersDb(): Promise<void> {
     SET state = 'in_pool', updated_at = NOW()
     FROM expired e
     WHERE a.id = e.application_id AND a.state = 'offered'
+      -- M11-1b D6: only release an application with NO OTHER live offer. Pre-D6 data can carry two
+      -- pending offers on one application; expiring the lapsed one and releasing the application
+      -- anyway would leave it in_pool while a live offer still stands.
+      AND NOT EXISTS (
+        SELECT 1 FROM admissions_offers o2
+        WHERE o2.application_id = a.id AND o2.status = 'pending' AND o2.expires_at >= NOW()
+      )
   `;
 }
 
@@ -293,53 +300,169 @@ export async function getPendingOfferForAgentDb(agentId: string): Promise<Stored
   return r ? rowOffer(r) : null;
 }
 
+/**
+ * M11-1b D6 — staff offer creation, atomic and cap-correct.
+ *
+ * **Why this is a batch and not one statement, which is the whole point of the chunk.** The cap is
+ * cycle-wide, so it can only be serialized on the cycle row. But a lock inside a single statement
+ * does not make a count correct under READ COMMITTED: the statement's snapshot is taken when the
+ * statement BEGINS, so a contender that waits on the cycle lock and then proceeds still counts
+ * offers as they stood before the winner committed, and the cap is breached anyway. Every
+ * statement in a transaction takes a FRESH snapshot, so taking the lock in element 1 and counting
+ * in a LATER element is what actually closes it — the later element's snapshot is taken after the
+ * wait ended. That is the one shape available on this driver, and it is why the plan's "one
+ * data-modifying CTE per transition" holds for decline and accept (no cross-row cap) but not here.
+ *
+ * Lock order is cycle, then application — fixed, and mandatory in that direction. An application
+ * lock alone cannot serialize a cycle-wide cap across DIFFERENT applications.
+ *
+ * Element 2 expires lapsed pending offers before anything counts them: the cap counts every
+ * `status = 'pending'` row as live, and creation never refreshed them, so stale rows silently ate
+ * the cycle's capacity. It is `refreshExpiredOffersDb`'s statement, which the read paths already
+ * run.
+ *
+ * Element 3 is the decisive one: it inserts, marks the application offered, and writes audit in a
+ * single statement, each gated on the insert's own `RETURNING`. Zero rows means refused, and the
+ * REASON is then classified by a follow-up read — the caller's error vocabulary is unchanged
+ * (Locked decision 2).
+ */
 export async function createOfferDb(input: {
   applicationId: string;
   staffHumanId: string;
   expiresAtIso: string;
   payload: Record<string, unknown>;
 }): Promise<StoredAdmissionsOffer> {
+  // An unlocked read, used only to learn which cycle to lock. Every condition it might observe is
+  // re-derived inside the decisive statement, so a stale answer here cannot admit anything.
   const app = await getApplicationByIdDb(input.applicationId);
   if (!app || app.state !== "shortlisted") throw new Error("application_not_shortlisted");
 
-  const existingPending = await sql!`
-    SELECT id FROM admissions_offers WHERE agent_id = ${app.agentId} AND status = 'pending' LIMIT 1
-  `;
-  if (existingPending.length > 0) throw new Error("agent_has_pending_offer");
-
-  const cycle = await getCycleDb(app.cycleId);
-  if (!cycle || cycle.status !== "open") throw new Error("cycle_not_open");
-
-  if (cycle.maxOffers != null) {
-    const c = await countPendingOffersInCycleDb(app.cycleId);
-    if (c >= cycle.maxOffers) throw new Error("cycle_offer_cap_reached");
-  }
-
   const id = genId("admoff");
-  await sql!`
-    INSERT INTO admissions_offers (
-      id, agent_id, cycle_id, application_id, status, offer_version, payload_json, expires_at, created_by_staff_human_id
-    )
-    VALUES (
-      ${id}, ${app.agentId}, ${app.cycleId}, ${app.id}, 'pending', 1,
-      ${JSON.stringify(input.payload)}::jsonb, ${input.expiresAtIso}, ${input.staffHumanId}
-    )
-  `;
-  await sql!`
-    UPDATE admissions_applications SET state = 'offered', updated_at = NOW() WHERE id = ${app.id}
-  `;
+  try {
+    const [, , , created] = await sql!.transaction((txn) => [
+      // Every admissions transition takes the AGENT row first. Both agent-deletion paths lock
+      // `agents` and then cascade into `admissions_applications` and `admissions_offers`, so any
+      // writer that reaches an agent row THROUGH an application or an offer runs the opposite way
+      // and can deadlock with a deletion (40P01). This offer insert reaches one implicitly: its
+      // `agent_id` FK takes `FOR KEY SHARE`. Taking that lock up front puts both writers in one
+      // order — agents, then cycles, then applications, then offers.
+      txn`SELECT id FROM agents WHERE id = ${app.agentId} FOR KEY SHARE`,
+      txn`
+        /* d6:offer-cycle-lock */
+        SELECT id FROM admissions_cycles WHERE id = ${app.cycleId} FOR UPDATE
+      `,
+      txn`
+        WITH sweep_agents AS (
+          -- The sweep touches OTHER agents' rows, so it needs the same agents-first order, and a
+          -- deterministic one (ORDER BY) so two concurrent sweeps cannot take them in opposite
+          -- orders either.
+          SELECT a.id FROM agents a
+          WHERE a.id IN (
+            SELECT o.agent_id FROM admissions_offers o
+            WHERE o.cycle_id = ${app.cycleId} AND o.status = 'pending' AND o.expires_at < NOW()
+          )
+          ORDER BY a.id
+          FOR KEY SHARE
+        ), expired AS (
+          UPDATE admissions_offers o SET status = 'expired'
+          FROM sweep_agents sa
+          WHERE o.agent_id = sa.id AND o.cycle_id = ${app.cycleId}
+            AND o.status = 'pending' AND o.expires_at < NOW()
+          RETURNING o.application_id
+        )
+        UPDATE admissions_applications a
+        SET state = 'in_pool', updated_at = NOW()
+        FROM expired e
+        WHERE a.id = e.application_id AND a.state = 'offered'
+          -- Only release an application that has NO OTHER live offer. The corruption this whole
+          -- chunk repairs can leave two pending offers on one application; expiring the lapsed one
+          -- and releasing the application anyway would leave it in_pool while a live offer still
+          -- stands, which is a worse state than the one being cleaned up.
+          AND NOT EXISTS (
+            SELECT 1 FROM admissions_offers o2
+            WHERE o2.application_id = a.id AND o2.status = 'pending' AND o2.expires_at >= NOW()
+          )
+      `,
+    txn`
+      WITH locked_app AS (
+        SELECT a.id, a.agent_id, a.cycle_id
+        FROM admissions_applications a
+        WHERE a.id = ${app.id} AND a.state = 'shortlisted' AND a.cycle_id = ${app.cycleId}
+        FOR UPDATE
+      ), open_cycle AS (
+        SELECT c.id, c.max_offers,
+          (SELECT count(*) FROM admissions_offers o WHERE o.cycle_id = c.id AND o.status = 'pending') AS pending
+        FROM admissions_cycles c
+        WHERE c.id = ${app.cycleId} AND c.status = 'open'
+      ), inserted AS (
+        INSERT INTO admissions_offers (
+          id, agent_id, cycle_id, application_id, status, offer_version, payload_json,
+          expires_at, created_by_staff_human_id
+        )
+        SELECT ${id}, la.agent_id, la.cycle_id, la.id, 'pending', 1,
+               ${JSON.stringify(input.payload)}::jsonb, ${input.expiresAtIso}, ${input.staffHumanId}
+        FROM locked_app la
+        JOIN open_cycle oc ON oc.id = la.cycle_id
+        WHERE (oc.max_offers IS NULL OR oc.pending < oc.max_offers)
+          AND NOT EXISTS (
+            SELECT 1 FROM admissions_offers o2 WHERE o2.agent_id = la.agent_id AND o2.status = 'pending'
+          )
+        RETURNING id, agent_id, application_id
+      ), offered AS (
+        UPDATE admissions_applications SET state = 'offered', updated_at = NOW()
+        WHERE id IN (SELECT application_id FROM inserted)
+        RETURNING id
+      )
+      INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
+      SELECT i.id, i.application_id, i.agent_id, 'staff', ${input.staffHumanId}, 'offer_created',
+             ${JSON.stringify({ expires_at: input.expiresAtIso })}::jsonb
+      FROM inserted i
+      RETURNING offer_id
+    `,
+    ]);
 
-  await sql!`
-    INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
-    VALUES (
-      ${id}, ${app.id}, ${app.agentId}, 'staff', ${input.staffHumanId}, 'offer_created',
-      ${JSON.stringify({ expires_at: input.expiresAtIso })}::jsonb
-    )
-  `;
+    if ((created as unknown[]).length === 0) throw new Error(await classifyOfferRefusalDb(app.id, app.agentId, app.cycleId));
+  } catch (error) {
+    // The partial unique index firing is a REFUSAL, not a crash. Two offers for one agent in two
+    // DIFFERENT cycles lock different cycle rows, so both `NOT EXISTS` checks can pass and the
+    // index picks the winner — without this the loser leaves the store as a raw 23505 and the
+    // staff route answers 500 instead of the error the caller's vocabulary already has.
+    if (isAdmissionsUniqueViolation(error)) throw new Error("agent_has_pending_offer");
+    throw error;
+  }
 
   const offer = await getOfferByIdDb(id);
   if (!offer) throw new Error("offer_create_failed");
   return offer;
+}
+
+/** Postgres `unique_violation`. Structural check, never a message match. */
+function isAdmissionsUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
+}
+
+/**
+ * Why the decisive statement admitted nothing, as the error the caller already knows.
+ *
+ * A follow-up read rather than a branchier statement: the refusal has already happened and nothing
+ * is being decided here, so a shifting answer can only mislabel a refusal, never cause one. The
+ * order matches the pre-D6 sequence of checks so the same situation reports the same error.
+ */
+async function classifyOfferRefusalDb(applicationId: string, agentId: string, cycleId: string): Promise<string> {
+  const app = await getApplicationByIdDb(applicationId);
+  if (!app || app.state !== "shortlisted") return "application_not_shortlisted";
+
+  const pending = await sql!`
+    SELECT id FROM admissions_offers WHERE agent_id = ${agentId} AND status = 'pending' LIMIT 1
+  `;
+  if (pending.length > 0) return "agent_has_pending_offer";
+
+  const cycle = await getCycleDb(cycleId);
+  if (!cycle || cycle.status !== "open") return "cycle_not_open";
+  if (cycle.maxOffers != null && (await countPendingOffersInCycleDb(cycleId)) >= cycle.maxOffers) {
+    return "cycle_offer_cap_reached";
+  }
+  return "offer_create_failed";
 }
 
 export async function getOfferByIdDb(offerId: string): Promise<StoredAdmissionsOffer | null> {
@@ -351,100 +474,113 @@ export async function getOfferByIdDb(offerId: string): Promise<StoredAdmissionsO
 type AdmissionsTxn = NeonQueryFunctionInTransaction<false, false>;
 
 /**
- * Conditional finalize statements appended to an acceptance batch (M9/C11).
+ * Finalization, as ONE statement whose own transition is the idempotence gate (M11-1b D6).
  *
- * The Neon HTTP driver has no session affinity, so the old standalone
- * BEGIN / FOR UPDATE / COMMIT finalize protected nothing, and the
- * mark-accept -> finalize -> audit sequence spanned three separate
- * auto-commit statement groups that could half-apply (admit-without-audit,
- * accept-without-finalize). Acceptance now runs as one non-interactive
- * sql.transaction() batch, with the old read-then-branch logic expressed as
- * WHERE conditions:
- *  - the status flip requires a live pending offer, the agent acceptance,
- *    and the human acceptance whenever the agent has linked users;
- *  - the admit / application / audit writes key off the flipped status plus
- *    the absence of a prior admission_finalized audit row, so finalization
- *    applies exactly once even across concurrent accepts.
+ * The pre-D6 shape was four separately-guarded statements, and the guard was "no
+ * `admission_finalized` audit row exists yet". Two concurrent accepts could each read that guard
+ * as true — sibling statements in a batch share no lock, and the audit row lands last — so both
+ * could admit the agent and both could append. The `pending -> fully_accepted` flip is a much
+ * stronger gate: only one transaction can perform it, and every other write here hangs off its
+ * `RETURNING`. A second call finds the offer already `fully_accepted`, transitions nothing, and
+ * therefore writes nothing.
  *
- * Deliberately separate statements rather than one chained CTE: the batch is
- * already atomic, each statement names its own readiness/idempotency guard,
- * and reviewing four guarded UPDATEs is easier than one mega-CTE whose later
- * arms depend on earlier RETURNING sets.
+ * Lock order is `admissions_offers -> agents`. Nothing in the repo takes an `agents` lock and then
+ * asks for an admissions row, so this cannot cycle; the `agents` write is a plain `UPDATE`
+ * (`FOR NO KEY UPDATE`), which does not conflict with the `FOR KEY SHARE` an offer insert's FK
+ * takes on the same row.
  */
-function finalizeOfferStatements(txn: AdmissionsTxn, offerId: string) {
-  return [
-    txn`
-      UPDATE admissions_offers o
-      SET status = 'fully_accepted'
-      WHERE o.id = ${offerId}
-        AND o.status = 'pending'
-        AND o.expires_at > NOW()
-        AND o.accepted_at_agent IS NOT NULL
-        AND (
-          o.accepted_at_human IS NOT NULL
-          OR NOT EXISTS (SELECT 1 FROM user_agents ua WHERE ua.agent_id = o.agent_id)
-        )
-    `,
-    txn`
-      UPDATE agents a
-      SET is_admitted = TRUE
-      FROM admissions_offers o
-      WHERE o.id = ${offerId}
-        AND o.status = 'fully_accepted'
-        AND a.id = o.agent_id
-        AND NOT EXISTS (
-          SELECT 1 FROM admissions_audit aa
-          WHERE aa.offer_id = o.id AND aa.action = 'admission_finalized'
-        )
-    `,
-    txn`
-      UPDATE admissions_applications ap
-      SET state = 'admitted', decided_at = NOW(), updated_at = NOW()
-      FROM admissions_offers o
-      WHERE o.id = ${offerId}
-        AND o.status = 'fully_accepted'
-        AND ap.id = o.application_id
-        AND NOT EXISTS (
-          SELECT 1 FROM admissions_audit aa
-          WHERE aa.offer_id = o.id AND aa.action = 'admission_finalized'
-        )
-    `,
-    txn`
+function finalizeOfferStatement(txn: AdmissionsTxn, offerId: string) {
+  return txn`
+      WITH locked_agent AS (
+        -- Agents first (see createOfferDb): this statement UPDATES the agent row, and agent
+        -- deletion holds that row while cascading into offers. Reaching the agent through the
+        -- offer would be the reverse order.
+        SELECT a.id FROM admissions_offers o JOIN agents a ON a.id = o.agent_id
+        WHERE o.id = ${offerId}
+        FOR KEY SHARE OF a
+      ), finalized AS (
+        UPDATE admissions_offers o
+        SET status = 'fully_accepted'
+        FROM locked_agent la
+        WHERE o.id = ${offerId}
+          AND o.agent_id = la.id
+          AND o.status = 'pending'
+          AND o.expires_at > NOW()
+          AND o.accepted_at_agent IS NOT NULL
+          AND (
+            o.accepted_at_human IS NOT NULL
+            OR NOT EXISTS (SELECT 1 FROM user_agents ua WHERE ua.agent_id = o.agent_id)
+          )
+        RETURNING o.id, o.agent_id, o.application_id
+      ), admitted AS (
+        UPDATE agents SET is_admitted = TRUE
+        WHERE id IN (SELECT agent_id FROM finalized)
+        RETURNING id
+      ), decided AS (
+        UPDATE admissions_applications
+        SET state = 'admitted', decided_at = NOW(), updated_at = NOW()
+        WHERE id IN (SELECT application_id FROM finalized WHERE application_id IS NOT NULL)
+        RETURNING id
+      )
       INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
-      SELECT o.id, o.application_id, o.agent_id, 'system', null, 'admission_finalized', '{}'::jsonb
-      FROM admissions_offers o
-      WHERE o.id = ${offerId}
-        AND o.status = 'fully_accepted'
-        AND NOT EXISTS (
-          SELECT 1 FROM admissions_audit aa
-          WHERE aa.offer_id = o.id AND aa.action = 'admission_finalized'
-        )
-    `,
-  ];
+      SELECT f.id, f.application_id, f.agent_id, 'system', null, 'admission_finalized', '{}'::jsonb
+      FROM finalized f
+    `;
 }
 
+/**
+ * M11-1b D6 — acceptance, made idempotent by its own predicate.
+ *
+ * The pre-D6 shape ran as a batch whose audit element asked only whether `accepted_at_agent IS NOT
+ * NULL` — which stays true on every retry, so each repeated call appended another audit row and
+ * rewrote the timestamp. A later fixed element cannot tell whether THIS invocation won. So the
+ * timestamp write carries `accepted_at_agent IS NULL` and its `RETURNING` drives the audit insert
+ * in the same statement: the second call transitions nothing and writes nothing.
+ *
+ * Finalization is the second element, and it is one statement for the same reason (see
+ * `finalizeOfferStatement`). It needs to observe this element's write, which a later statement in
+ * the same transaction does — each takes a fresh snapshot.
+ */
 export async function acceptOfferAsAgentDb(offerId: string, agentId: string): Promise<"ok" | "invalid"> {
   const offer = await getOfferByIdDb(offerId);
   if (!offer || offer.agentId !== agentId || offer.status !== "pending") return "invalid";
   if (new Date(offer.expiresAt).getTime() < Date.now()) return "invalid";
 
   await sql!.transaction((txn) => [
+    txn`SELECT id FROM agents WHERE id = ${agentId} FOR KEY SHARE`,
     txn`
-      UPDATE admissions_offers
-      SET accepted_at_agent = NOW()
-      WHERE id = ${offerId} AND agent_id = ${agentId} AND status = 'pending' AND expires_at > NOW()
-    `,
-    txn`
-      INSERT INTO admissions_audit (offer_id, agent_id, actor_type, actor_id, action, detail)
-      SELECT ${offerId}, ${agentId}, 'agent', ${agentId}, 'accept_agent', '{}'::jsonb
-      WHERE EXISTS (
-        SELECT 1 FROM admissions_offers
-        WHERE id = ${offerId} AND accepted_at_agent IS NOT NULL
+      WITH accepted AS (
+        UPDATE admissions_offers
+        SET accepted_at_agent = NOW()
+        WHERE id = ${offerId} AND agent_id = ${agentId} AND status = 'pending' AND expires_at > NOW()
+          AND accepted_at_agent IS NULL
+        RETURNING id, agent_id, application_id
       )
+      INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
+      SELECT a.id, a.application_id, a.agent_id, 'agent', ${agentId}, 'accept_agent', '{}'::jsonb
+      FROM accepted a
     `,
-    ...finalizeOfferStatements(txn, offerId),
+    finalizeOfferStatement(txn, offerId),
   ]);
-  return "ok";
+  return classifyAcceptOutcomeDb(offerId, "agent");
+}
+
+/**
+ * What an acceptance actually achieved, read back after the transaction.
+ *
+ * A decisive statement writing zero rows is NOT automatically `"ok"`: a decline could have won
+ * after the pre-read, or the offer could have lapsed, in which case the caller must hear `invalid`
+ * rather than a success that recorded nothing. But a REPEATED acceptance also writes zero rows and
+ * is genuinely `"ok"` — the offer is accepted, this call simply added nothing. The stored
+ * timestamp is what separates the two, so it is what this reads.
+ */
+async function classifyAcceptOutcomeDb(offerId: string, side: "agent" | "human"): Promise<"ok" | "invalid"> {
+  const offer = await getOfferByIdDb(offerId);
+  if (!offer) return "invalid";
+  const stamped = side === "agent" ? offer.acceptedAtAgent : offer.acceptedAtHuman;
+  if (!stamped) return "invalid";
+  // `fully_accepted` is a success too — this side's acceptance is what got it there.
+  return offer.status === "pending" || offer.status === "fully_accepted" ? "ok" : "invalid";
 }
 
 export async function acceptOfferAsHumanDb(offerId: string, humanUserId: string): Promise<"ok" | "invalid"> {
@@ -458,56 +594,89 @@ export async function acceptOfferAsHumanDb(offerId: string, humanUserId: string)
   if (links.length === 0) return "invalid";
 
   await sql!.transaction((txn) => [
+    txn`SELECT id FROM agents WHERE id = ${offer.agentId} FOR KEY SHARE`,
     txn`
-      UPDATE admissions_offers
-      SET accepted_at_human = NOW(), accepted_human_user_id = ${humanUserId}
-      WHERE id = ${offerId} AND status = 'pending' AND expires_at > NOW()
-    `,
-    txn`
-      INSERT INTO admissions_audit (offer_id, agent_id, actor_type, actor_id, action, detail)
-      SELECT ${offerId}, ${offer.agentId}, 'human', ${humanUserId}, 'accept_human', '{}'::jsonb
-      WHERE EXISTS (
-        SELECT 1 FROM admissions_offers
-        WHERE id = ${offerId} AND accepted_at_human IS NOT NULL
+      WITH accepted AS (
+        UPDATE admissions_offers o
+        SET accepted_at_human = NOW(), accepted_human_user_id = ${humanUserId}
+        WHERE o.id = ${offerId} AND o.status = 'pending' AND o.expires_at > NOW()
+          AND o.accepted_at_human IS NULL
+          -- The link is re-checked HERE, not only in the read above: a link revoked between the
+          -- two would otherwise let a stale pre-check stand in for authorization.
+          AND EXISTS (
+            SELECT 1 FROM user_agents ua WHERE ua.user_id = ${humanUserId} AND ua.agent_id = o.agent_id
+          )
+        RETURNING o.id, o.agent_id, o.application_id
       )
+      INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
+      SELECT a.id, a.application_id, a.agent_id, 'human', ${humanUserId}, 'accept_human', '{}'::jsonb
+      FROM accepted a
     `,
-    ...finalizeOfferStatements(txn, offerId),
+    finalizeOfferStatement(txn, offerId),
   ]);
-  return "ok";
+  return classifyAcceptOutcomeDb(offerId, "human");
+}
+
+/**
+ * M11-1b D6 — a decline as ONE gated statement.
+ *
+ * Ownership and status WERE checked before D6 (correcting this chunk's own problem statement); the
+ * defect was that the three writes that followed were unconditional and separately committed, so a
+ * crash between them split offer, application and audit, and a concurrent decline could run the
+ * whole sequence twice. The checks now live inside the decisive predicate and the other two writes
+ * hang off its `RETURNING`, so zero rows is a clean no-op.
+ *
+ * @param actor `agent` authorizes by owning the offer; `human` by an active `user_agents` link.
+ */
+function declineOfferStatement(
+  offerId: string,
+  actor: { type: "agent"; agentId: string } | { type: "human"; humanUserId: string }
+) {
+  const actorId = actor.type === "agent" ? actor.agentId : actor.humanUserId;
+
+  return sql!`
+    WITH locked_agent AS (
+      -- Agents first, for the reason spelled out on createOfferDb: agent deletion locks the agent
+      -- and cascades INTO offers and applications, so a writer that goes the other way deadlocks
+      -- with it. Consuming this CTE below is what forces the order — sibling CTE evaluation order
+      -- is not guaranteed on its own.
+      SELECT a.id FROM admissions_offers o JOIN agents a ON a.id = o.agent_id
+      WHERE o.id = ${offerId}
+      FOR KEY SHARE OF a
+    ), declined AS (
+      UPDATE admissions_offers o
+      SET status = 'declined'
+      FROM locked_agent la
+      WHERE o.id = ${offerId} AND o.agent_id = la.id AND o.status = 'pending'
+        -- Both ownership rules are parameterised into one predicate rather than composed from SQL
+        -- fragments: this driver's tagged template has no fragment type, so an interpolated
+        -- template would be bound as a VALUE and silently stop authorizing anything.
+        AND (
+          (${actor.type}::text = 'agent' AND o.agent_id = ${actorId})
+          OR (${actor.type}::text = 'human' AND EXISTS (
+                SELECT 1 FROM user_agents ua WHERE ua.user_id = ${actorId} AND ua.agent_id = o.agent_id
+              ))
+        )
+      RETURNING o.id, o.agent_id, o.application_id
+    ), released AS (
+      UPDATE admissions_applications
+      SET state = 'in_pool', updated_at = NOW()
+      WHERE id IN (SELECT application_id FROM declined WHERE application_id IS NOT NULL)
+      RETURNING id
+    )
+    INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
+    SELECT d.id, d.application_id, d.agent_id, ${actor.type}, ${actorId}, 'decline', '{}'::jsonb
+    FROM declined d
+    RETURNING offer_id
+  `;
 }
 
 export async function declineOfferAsAgentDb(offerId: string, agentId: string): Promise<boolean> {
-  const offer = await getOfferByIdDb(offerId);
-  if (!offer || offer.agentId !== agentId || offer.status !== "pending") return false;
-  await sql!`UPDATE admissions_offers SET status = 'declined' WHERE id = ${offerId}`;
-  if (offer.applicationId) {
-    await sql!`
-      UPDATE admissions_applications SET state = 'in_pool', updated_at = NOW() WHERE id = ${offer.applicationId}
-    `;
-  }
-  await sql!`
-    INSERT INTO admissions_audit (offer_id, agent_id, actor_type, actor_id, action, detail)
-    VALUES (${offerId}, ${agentId}, 'agent', ${agentId}, 'decline', '{}'::jsonb)
-  `;
-  return true;
+  const rows = await declineOfferStatement(offerId, { type: "agent", agentId });
+  return rows.length > 0;
 }
 
 export async function declineOfferAsHumanDb(offerId: string, humanUserId: string): Promise<boolean> {
-  const offer = await getOfferByIdDb(offerId);
-  if (!offer || offer.status !== "pending") return false;
-  const links = await sql!`
-    SELECT 1 FROM user_agents WHERE user_id = ${humanUserId} AND agent_id = ${offer.agentId} LIMIT 1
-  `;
-  if (links.length === 0) return false;
-  await sql!`UPDATE admissions_offers SET status = 'declined' WHERE id = ${offerId}`;
-  if (offer.applicationId) {
-    await sql!`
-      UPDATE admissions_applications SET state = 'in_pool', updated_at = NOW() WHERE id = ${offer.applicationId}
-    `;
-  }
-  await sql!`
-    INSERT INTO admissions_audit (offer_id, agent_id, actor_type, actor_id, action, detail)
-    VALUES (${offerId}, ${offer.agentId}, 'human', ${humanUserId}, 'decline', '{}'::jsonb)
-  `;
-  return true;
+  const rows = await declineOfferStatement(offerId, { type: "human", humanUserId });
+  return rows.length > 0;
 }

@@ -41,7 +41,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   try {
     const [agents, groups, posts] = await Promise.all([
       listAgents("recent"),
-      listGroups({ includeHouses: false }),
+      listGroups(),
       listPosts({ sort: "new", limit: 200 }),
     ]);
 

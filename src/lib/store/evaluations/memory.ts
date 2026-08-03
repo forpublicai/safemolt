@@ -1,5 +1,5 @@
 import type { CertificationJob } from '@/lib/evaluations/types';
-import type { SaveEvaluationResultOutcome, StoredRecentEvaluationResult } from "@/lib/store-types";
+import type { SaveEvaluationResultInput, SaveEvaluationResultOutcome, StoredRecentEvaluationResult } from "@/lib/store-types";
 import { agents, certificationJobs, evaluationMessages, evaluationRegistrations, evaluationResults, evaluationSessionParticipants, evaluationSessions, generateEvaluationId } from "../_memory-state";
 import { recordEvaluationResultActivityEvent } from "../activity/events";
 import { computeEvaluationResultFields } from "./result-fields";
@@ -270,12 +270,17 @@ export async function getSessionMessages(sessionId: string) {
   }));
 }
 
-export async function endSession(sessionId: string) {
+/** Synchronous on purpose: proctored completion ends the session inside its non-yielding section. */
+function endSessionSync(sessionId: string): void {
   const s = evaluationSessions.get(sessionId);
   if (s) {
     s.status = 'ended';
     s.endedAt = new Date().toISOString();
   }
+}
+
+export async function endSession(sessionId: string) {
+  endSessionSync(sessionId);
 }
 
 /**
@@ -333,33 +338,25 @@ export async function claimProctorSession(registrationId: string, proctorAgentId
 
 // ==================== Evaluation (continued) ====================
 
-export async function startEvaluation(registrationId: string) {
+/** Mirrors the db CAS (M11-1b D4): only a `registered` registration may be started, so a stale
+ *  start cannot drag a completed one back to `in_progress`. */
+export async function startEvaluation(registrationId: string): Promise<boolean> {
   const reg = evaluationRegistrations.get(registrationId);
-  if (reg) {
-    reg.status = 'in_progress';
-    reg.startedAt = new Date().toISOString();
-  }
+  if (!reg || reg.status !== 'registered') return false;
+  reg.status = 'in_progress';
+  reg.startedAt = new Date().toISOString();
+  return true;
 }
 
-export async function saveEvaluationResult(
-  registrationId: string,
-  agentId: string,
-  evaluationId: string,
-  passed: boolean,
-  score?: number,
-  maxScore?: number,
-  resultData?: Record<string, unknown>,
-  proctorAgentId?: string,
-  proctorFeedback?: string,
-  evaluationVersion?: string,
-  schoolId?: string): Promise<SaveEvaluationResultOutcome> {
+export async function saveEvaluationResult(input: SaveEvaluationResultInput): Promise<SaveEvaluationResultOutcome> {
+  const { registrationId, agentId, evaluationId, passed, score, maxScore, resultData } = input;
   // Throwing/derivation work first (memory discipline): field computation reads the definition
   // loader and may throw; nothing below it may.
   const { pointsEarned, evaluationVersion: version } = computeEvaluationResultFields({
     evaluationId,
     passed,
     score,
-    evaluationVersion,
+    evaluationVersion: input.evaluationVersion,
   });
   const resultId = generateEvaluationId('eval_res');
   const completedAt = new Date().toISOString();
@@ -367,6 +364,8 @@ export async function saveEvaluationResult(
   // Decision and decisive mutation in one synchronous section — no await between the checks and
   // the writes, mirroring the db store's single gated statement (M11-1 C21). Every `await` yields
   // the event loop, so a check separated from its mutation by one is a check that can go stale.
+  // M11-1b D4 extends the section to the proctor session end, which used to be a separate call
+  // after this function returned.
   const refusal = classifyRefusedSave(registrationId, agentId, evaluationId, passed);
   if (refusal) return refusal;
   const reg = evaluationRegistrations.get(registrationId)!;
@@ -382,13 +381,14 @@ export async function saveEvaluationResult(
     pointsEarned: pointsEarned ?? undefined,
     resultData,
     completedAt,
-    proctorAgentId,
-    proctorFeedback,
+    proctorAgentId: input.proctorAgentId,
+    proctorFeedback: input.proctorFeedback,
     evaluationVersion: version,
-    schoolId,
+    schoolId: input.schoolId,
   });
   reg.status = passed ? 'completed' : 'failed';
   reg.completedAt = completedAt;
+  if (input.endProctorSessionId) endSessionSync(input.endProctorSessionId);
 
   // Update agent's points from evaluation results if they passed
   if (passed) {
@@ -405,7 +405,7 @@ export async function saveEvaluationResult(
     maxScore,
     pointsEarned: pointsEarned ?? undefined,
     resultData,
-    proctorFeedback,
+    proctorFeedback: input.proctorFeedback,
   });
 
   return { outcome: 'created', resultId };

@@ -37,8 +37,6 @@ export async function POST(
 
   return jsonResponse({
     success: true,
-    message: group.type === 'house' 
-      ? "Successfully left house"
-      : "Successfully left group",
+    message: "Successfully left group",
   });
 }

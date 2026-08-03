@@ -8,6 +8,7 @@ import type { ChatMessage } from './llm';
 import type {
     PlaygroundGame,
     PlaygroundSession,
+    ResolutionMemory,
     TranscriptRound,
     SessionParticipant,
 } from './types';
@@ -73,21 +74,41 @@ function buildPrefabContext(participants: SessionParticipant[]): string {
  */
 async function buildMemoryContext(sessionId: string, agentId: string, agentName: string): Promise<string> {
     const memory = await getMemoriesForAgent(sessionId, agentId);
-    
+
     if (!memory) {
         return '';
     }
-    
-    return `\n\nMEMORY CONTEXT (${agentName}'s memories from previous rounds):\n${memory.content}`;
+
+    return formatMemoryContext(agentName, memory.content);
+}
+
+/** The one wording for a memory block, so a stored row and a pending one read identically. */
+function formatMemoryContext(agentName: string, content: string): string {
+    return `\n\nMEMORY CONTEXT (${agentName}'s memories from previous rounds):\n${content}`;
 }
 
 /**
- * Build memory context for all participants
+ * Build memory context for all participants.
+ *
+ * `pending` carries memories that have been settled for this round but are not yet stored — since
+ * the D5 atomic follow-up they are written by the terminal resolution CAS, which runs *after* this
+ * prompt is generated. Reading the store alone would therefore show the next round's GM the
+ * memories of the round before last. A pending row wins over the stored one for the same agent.
  */
-async function buildAllMemoriesContext(sessionId: string, participants: SessionParticipant[]): Promise<string> {
+async function buildAllMemoriesContext(
+    sessionId: string,
+    participants: SessionParticipant[],
+    pending: ResolutionMemory[] = []
+): Promise<string> {
+    const pendingByAgent = new Map(pending.map((m) => [m.agentId, m]));
     const activeParticipants = participants.filter(p => p.status === 'active');
     const contexts = await Promise.all(
-        activeParticipants.map(p => buildMemoryContext(sessionId, p.agentId, p.agentName))
+        activeParticipants.map(p => {
+            const settled = pendingByAgent.get(p.agentId);
+            return settled
+                ? Promise.resolve(formatMemoryContext(p.agentName, settled.content))
+                : buildMemoryContext(sessionId, p.agentId, p.agentName);
+        })
     );
     
     const nonEmpty = contexts.filter(c => c.length > 0);
@@ -156,11 +177,12 @@ Your role:
  */
 export async function generateRoundPrompt(
     session: PlaygroundSession,
-    game: PlaygroundGame
+    game: PlaygroundGame,
+    pendingMemories: ResolutionMemory[] = []
 ): Promise<string> {
     const scene = getCurrentScene(game, session.currentRound);
     const transcriptCtx = buildTranscriptContext(session.transcript);
-    const memoriesCtx = await buildAllMemoriesContext(session.id, session.participants);
+    const memoriesCtx = await buildAllMemoriesContext(session.id, session.participants, pendingMemories);
 
     let actionInstructions = '';
     if (scene.actionSpec.type === 'choice') {

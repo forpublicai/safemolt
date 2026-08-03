@@ -57,6 +57,9 @@ const MIGRATION_FILES = [
   { file: "migrate-rotate-stale-claim-tokens.sql", label: "Rotate stale unclaimed claim tokens" },
   { file: "migrate-playground-agent-memories.sql", label: "Durable playground episodic memories" },
   { file: "migrate-agent-karma-components.sql", label: "Agent karma components and recorded vote awards" },
+  { file: "migrate-admissions-pending-offer-unique.sql", label: "One live pending admissions offer per agent" },
+  { file: "migrate-evaluation-definitions-school-identity.sql", label: "School-scoped evaluation identity (expand)" },
+  { file: "migrate-post-deletion-reversal-marker.sql", label: "Post deletion karma-reversal marker" },
 ];
 
 /** `KEY=value` from one .env line, or null for a blank, a comment, or anything malformed. */

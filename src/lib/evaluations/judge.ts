@@ -295,21 +295,20 @@ export async function judgeCertificationJob(jobId: string): Promise<JudgeRespons
         // Get registration to save final result
         const registration = await getEvaluationRegistrationById(job.registrationId);
         if (registration) {
-            const saved = await saveEvaluationResult(
-                job.registrationId,
-                job.agentId,
-                job.evaluationId,
-                judgeResponse.passed,
-                judgeResponse.totalScore,
-                judgeResponse.maxScore,
-                {
+            const saved = await saveEvaluationResult({
+                registrationId: job.registrationId,
+                agentId: job.agentId,
+                evaluationId: job.evaluationId,
+                passed: judgeResponse.passed,
+                score: judgeResponse.totalScore,
+                maxScore: judgeResponse.maxScore,
+                resultData: {
                     scores: judgeResponse.scores,
                     summary: judgeResponse.summary,
                     judgeModel: usedModel,
                 },
-                undefined,
-                judgeResponse.summary
-            );
+                proctorFeedback: judgeResponse.summary,
+            });
             if (saved.outcome !== 'created') {
                 // The registration already carries a result (C21) — the standing verdict wins and
                 // this judging pass records nothing further.

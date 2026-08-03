@@ -9,7 +9,9 @@
  */
 import { join } from "path";
 import { closeIntegrationConnections, pgPool } from "./helpers/db";
+import { raceAgainstHeldLock } from "./helpers/concurrency";
 import {
+    applyPlaygroundResolution,
     claimPlaygroundResolution,
     cancelPlaygroundSession,
 } from "@/lib/store/playground/db";
@@ -18,7 +20,6 @@ import {
     getPlaygroundMemoryForAgent,
     listPlaygroundMemoriesForSession,
     storePlaygroundMemory,
-    storePlaygroundMemoryFenced,
 } from "@/lib/store/playground/agent-memories-db";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -111,45 +112,198 @@ describe("durability across instances (the D5 headline)", () => {
     });
 });
 
-// Named for what it actually covers: the LEASE gate, not coupling to the terminal CAS. These
-// cases prove a non-claimant writes nothing; they do not prove the memory and the advance commit
-// together, because today they do not (D5 residual in ai/PLAN_M11_1B.md).
-describe("the lease-gated write", () => {
-    it("only the live claimant writes; a wrong token, a stale round, and a lapsed lease all write nothing", async () => {
+// The D5 atomic follow-up: the round's memories are written INSIDE the terminal CAS, so these
+// cases prove the stronger property the lease-gated writer could not — the advance and the round's
+// memories commit together, or neither does.
+describe("the CAS-coupled write", () => {
+    const memoryFor = (agentId: string, sessionId: string, content: string, suffix: string) => ({
+        id: `d5_cas_${RUN}_${suffix}`,
+        agentId,
+        agentName: agentId,
+        sessionId,
+        content,
+        importance: "high" as const,
+        roundCreated: 1,
+        createdAt: new Date().toISOString(),
+    });
+
+    it("a losing CAS writes neither the advance nor any memory; the winner writes both", async () => {
         const agent = await seedAgent();
         const sessionId = await seedSession([agent]);
         expect(await claimPlaygroundResolution(sessionId, 1, "winner", 60_000)).toBe(true);
 
-        const input = {
-            id: `d5_fenced_${RUN}`,
-            agentId: agent,
-            agentName: agent,
-            sessionId,
-            content: "fenced write",
-            importance: "high" as const,
-            roundCreated: 1,
-        };
+        const row = (suffix: string) => memoryFor(agent, sessionId, "fenced write", suffix);
+        const roundOf = async () =>
+            Number((await pgPool().query("SELECT current_round FROM playground_sessions WHERE id = $1", [sessionId])).rows[0].current_round);
 
-        expect(await storePlaygroundMemoryFenced(input, { sessionId, round: 1, token: "loser" })).toBe(false);
-        expect(await storePlaygroundMemoryFenced(input, { sessionId, round: 99, token: "winner" })).toBe(false);
+        expect(await applyPlaygroundResolution(sessionId, { round: 1, token: "loser" }, { currentRound: 2 }, [row("a")])).toBe(false);
+        expect(await applyPlaygroundResolution(sessionId, { round: 99, token: "winner" }, { currentRound: 100 }, [row("b")])).toBe(false);
         expect(await listPlaygroundMemoriesForSession(sessionId)).toHaveLength(0);
+        expect(await roundOf()).toBe(1);
 
-        // Lapse the lease: the gated write must refuse — this is the lease-expired loser that
-        // used to overwrite episodic memory before the reordering.
+        // Lapse the lease: this is the lease-expired loser that used to overwrite episodic memory.
+        // The CAS carries the expiry, so the memory insert never runs.
         await pgPool().query(
             "UPDATE playground_sessions SET resolve_claim_expires_at = NOW() - interval '1 minute' WHERE id = $1",
             [sessionId]
         );
-        expect(await storePlaygroundMemoryFenced(input, { sessionId, round: 1, token: "winner" })).toBe(false);
+        expect(await applyPlaygroundResolution(sessionId, { round: 1, token: "winner" }, { currentRound: 2 }, [row("c")])).toBe(false);
         expect(await listPlaygroundMemoriesForSession(sessionId)).toHaveLength(0);
+        expect(await roundOf()).toBe(1);
 
-        // A live claim writes.
+        // A live claim writes both, in one statement.
         await pgPool().query(
             "UPDATE playground_sessions SET resolve_claim_expires_at = NOW() + interval '1 minute' WHERE id = $1",
             [sessionId]
         );
-        expect(await storePlaygroundMemoryFenced(input, { sessionId, round: 1, token: "winner" })).toBe(true);
+        expect(await applyPlaygroundResolution(sessionId, { round: 1, token: "winner" }, { currentRound: 2 }, [row("d")])).toBe(true);
         expect(await listPlaygroundMemoriesForSession(sessionId)).toHaveLength(1);
+        expect(await roundOf()).toBe(2);
+    });
+
+    it("writes every participant's memory or none — no half-remembered round", async () => {
+        const [a, b] = [await seedAgent(), await seedAgent()];
+        const sessionId = await seedSession([a, b]);
+        expect(await claimPlaygroundResolution(sessionId, 1, "multi", 60_000)).toBe(true);
+
+        expect(
+            await applyPlaygroundResolution(sessionId, { round: 1, token: "multi" }, { currentRound: 2 }, [
+                memoryFor(a, sessionId, "a remembers", "multi_a"),
+                memoryFor(b, sessionId, "b remembers", "multi_b"),
+            ])
+        ).toBe(true);
+        const stored = await listPlaygroundMemoriesForSession(sessionId);
+        expect(stored.map((m) => m.content).sort()).toEqual(["a remembers", "b remembers"]);
+    });
+
+    it("treats an empty payload as a won CAS, not a lost one (the all-forfeited path)", async () => {
+        const agent = await seedAgent();
+        const sessionId = await seedSession([agent]);
+        expect(await claimPlaygroundResolution(sessionId, 1, "empty", 60_000)).toBe(true);
+        expect(await applyPlaygroundResolution(sessionId, { round: 1, token: "empty" }, { currentRound: 2 }, [])).toBe(true);
+        expect(await listPlaygroundMemoriesForSession(sessionId)).toHaveLength(0);
+    });
+
+    it("ROLLS BACK THE ADVANCE when any one memory row is unwritable — the coupling itself", async () => {
+        // The gate that no split-statement implementation can pass, in either order. Memories
+        // first (the shape this replaced): the good row commits, then the bad row raises, leaving
+        // a half-remembered round. Advance first: current_round is already 2 when the bad row
+        // raises. One statement means the failure takes everything with it, so the round stays
+        // consistent and retryable.
+        const [good, bad] = [await seedAgent(), await seedAgent()];
+        const sessionId = await seedSession([good, bad]);
+        expect(await claimPlaygroundResolution(sessionId, 1, "rollback", 60_000)).toBe(true);
+
+        await expect(
+            applyPlaygroundResolution(sessionId, { round: 1, token: "rollback" }, { currentRound: 2 }, [
+                memoryFor(good, sessionId, "would have landed", "rb_good"),
+                // `content` is NOT NULL: this row cannot be inserted.
+                { ...memoryFor(bad, sessionId, "unwritable", "rb_bad"), content: null as unknown as string },
+            ])
+        ).rejects.toThrow();
+
+        expect(await listPlaygroundMemoriesForSession(sessionId)).toHaveLength(0);
+        const { rows } = await pgPool().query(
+            "SELECT current_round, resolve_claim_token FROM playground_sessions WHERE id = $1",
+            [sessionId]
+        );
+        expect(Number(rows[0].current_round)).toBe(1);
+        // The claim survives too — the whole statement rolled back, so this resolver can retry.
+        expect(rows[0].resolve_claim_token).toBe("rollback");
+    });
+
+    it("writes one row per agent even when a participant is listed twice", async () => {
+        // Two rows with the same conflict key in one insert raise 21000, which — coupled to the
+        // advance — would wedge the session, because every retry rebuilds the same payload.
+        const agent = await seedAgent();
+        const sessionId = await seedSession([agent]);
+        expect(await claimPlaygroundResolution(sessionId, 1, "dup", 60_000)).toBe(true);
+
+        expect(
+            await applyPlaygroundResolution(sessionId, { round: 1, token: "dup" }, { currentRound: 2 }, [
+                memoryFor(agent, sessionId, "first", "dup_1"),
+                memoryFor(agent, sessionId, "second", "dup_2"),
+            ])
+        ).toBe(true);
+        const stored = await listPlaygroundMemoriesForSession(sessionId);
+        expect(stored).toHaveLength(1);
+        expect(stored[0].content).toBe("second");
+    });
+
+    it("a deleted participant's memory cannot VETO the advance", async () => {
+        // `playground_sessions.participants` is JSONB with no FK, but the memory table's agent_id
+        // has a hard one. Coupling the two means a bare insert would raise 23503 for an agent
+        // deleted mid-session and take the advance with it — leaving the session permanently
+        // unresolvable, because every retry re-reads the same participant. The advance must win.
+        const [alive, doomed] = [await seedAgent(), await seedAgent()];
+        const sessionId = await seedSession([alive, doomed]);
+        await pgPool().query("DELETE FROM agents WHERE id = $1", [doomed]);
+        expect(await claimPlaygroundResolution(sessionId, 1, "veto", 60_000)).toBe(true);
+
+        expect(
+            await applyPlaygroundResolution(sessionId, { round: 1, token: "veto" }, { currentRound: 2 }, [
+                memoryFor(alive, sessionId, "still here", "veto_alive"),
+                memoryFor(doomed, sessionId, "gone", "veto_doomed"),
+            ])
+        ).toBe(true);
+
+        const stored = await listPlaygroundMemoriesForSession(sessionId);
+        expect(stored.map((m) => m.content)).toEqual(["still here"]);
+        const { rows } = await pgPool().query("SELECT current_round FROM playground_sessions WHERE id = $1", [sessionId]);
+        expect(Number(rows[0].current_round)).toBe(2);
+    });
+
+    it("survives a participant deletion that COMMITS mid-statement — why the pin is FOR KEY SHARE", async () => {
+        // The pre-deletion case above would pass with a plain snapshot join, so it cannot show why
+        // the lock is there. This one can: the delete is issued but NOT yet committed when the
+        // resolution starts, so the statement snapshot still shows the agent. Without the pin, the
+        // liveness join admits the row, the insert's FK check then blocks on the delete's lock,
+        // sees the committed deletion, raises 23503 and takes the advance down with it. With the
+        // pin, the resolution waits on the same lock and re-reads the agent as absent instead.
+        const [alive, doomed] = [await seedAgent(), await seedAgent()];
+        const sessionId = await seedSession([alive, doomed]);
+        expect(await claimPlaygroundResolution(sessionId, 1, "race", 60_000)).toBe(true);
+
+        const race = await raceAgainstHeldLock({
+            hold: async (holder) => {
+                await holder.query("DELETE FROM agents WHERE id = $1", [doomed]);
+            },
+            contend: () =>
+                applyPlaygroundResolution(sessionId, { round: 1, token: "race" }, { currentRound: 2 }, [
+                    memoryFor(alive, sessionId, "survivor", "race_alive"),
+                    memoryFor(doomed, sessionId, "doomed", "race_doomed"),
+                ]),
+            contenderMarker: "d5:resolution-cas",
+        });
+
+        expect(race.observedBlocked).toBe(true);
+        expect(race.result).toBe(true); // no 23503: the advance won
+        const stored = await listPlaygroundMemoriesForSession(sessionId);
+        expect(stored.map((m) => m.content)).toEqual(["survivor"]);
+        const { rows } = await pgPool().query("SELECT current_round FROM playground_sessions WHERE id = $1", [sessionId]);
+        expect(Number(rows[0].current_round)).toBe(2);
+    });
+
+    it("round-trips a memory carried through the CAS, embedding and all", async () => {
+        const agent = await seedAgent();
+        const sessionId = await seedSession([agent]);
+        expect(await claimPlaygroundResolution(sessionId, 1, "rt", 60_000)).toBe(true);
+
+        const embedding = [0.5, -0.25, 0.125];
+        expect(
+            await applyPlaygroundResolution(sessionId, { round: 1, token: "rt" }, { currentRound: 2 }, [
+                { ...memoryFor(agent, sessionId, "carried through the CAS", "rt"), embedding, roundCreated: 7 },
+            ])
+        ).toBe(true);
+        const [stored] = await listPlaygroundMemoriesForSession(sessionId);
+        expect(stored).toMatchObject({
+            id: `d5_cas_${RUN}_rt`,
+            agentId: agent,
+            content: "carried through the CAS",
+            importance: "high",
+            roundCreated: 7,
+            embedding,
+        });
     });
 });
 

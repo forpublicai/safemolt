@@ -77,9 +77,18 @@ const SET_KARMA_COLUMN = new RegExp(`(?:\\bSET|,)\\s*(?:${KARMA_COLUMNS})\\s*=`,
  */
 const AGENTS_TABLE = `(?:"?[A-Za-z_][\\w$]*"?\\s*\\.\\s*)?"?agents"?`;
 
+/**
+ * Whitespace, or an SQL line comment, or any mix of the two.
+ *
+ * Load-bearing, and discovered the hard way: a `--` comment placed between `UPDATE agents a` and
+ * `SET` made a real karma writer invisible to this scan. A guard that a comment can switch off is
+ * not a guard, and the failure mode is silent — the writer simply stops being enumerated.
+ */
+const GAP = `(?:\\s|--[^\\n]*\\n)*`;
+
 /** `UPDATE agents`, optionally aliased (`UPDATE agents a`, `UPDATE agents AS a`). */
 const UPDATE_AGENTS = new RegExp(
-    `\\bUPDATE\\s+${AGENTS_TABLE}(?:\\s+(?:AS\\s+)?(?!SET\\b)[A-Za-z_][\\w$]*)?\\s+SET\\b`,
+    `\\bUPDATE${GAP}${AGENTS_TABLE}(?:${GAP}(?:AS${GAP})?(?!SET\\b)[A-Za-z_][\\w$]*)?${GAP}SET\\b`,
     "gi"
 );
 
@@ -423,9 +432,23 @@ const KARMA_WRITERS: Array<{ file: string; kind: KarmaWriterKind; owns: string }
         owns: "vote_points, post downvote (atomic, records points_delta)",
     },
     {
+        file: "src/lib/store/posts/db.ts",
+        kind: "sql-update-agents-karma",
+        owns:
+            "vote_points, M11-1b D1's deletion REVERSAL — the only writer that subtracts. It reverses " +
+            "the recorded `points_delta` of the deleted post's votes and of its comments' votes, so it " +
+            "gives back exactly what was awarded; rows with a NULL delta predate M11-1C, their award " +
+            "is unknowable, and they are excluded rather than guessed at",
+    },
+    {
         file: "src/lib/store/posts/memory.ts",
         kind: "memory-agents-set-karma",
         owns: "vote_points, post upvote and downvote (one synchronous section)",
+    },
+    {
+        file: "src/lib/store/posts/memory.ts",
+        kind: "memory-agents-set-karma",
+        owns: "vote_points, M11-1b D1's deletion reversal (one synchronous section) — mirrors the db statement above",
     },
 ];
 
@@ -472,6 +495,19 @@ describe("the scanner detects what it claims to detect", () => {
             join(fixtureDir, "aliased.ts"),
             "const q = sql`\n  UPDATE agents a\n  SET points      = l.points + l.delta,\n" +
                 "      vote_points = l.vote_points + l.delta\n  FROM locked l WHERE a.id = l.id`;\n"
+        );
+        expect(scanKarmaWriters([fixtureDir], fixtureDir).map((h) => h.kind)).toEqual([
+            "sql-update-agents-karma",
+        ]);
+    });
+
+    it("finds one whose SET is separated from the table by a COMMENT", () => {
+        // The blind spot this closes: a `--` comment between `UPDATE agents a` and `SET` used to
+        // hide the writer entirely, so an author could switch the guard off without meaning to.
+        writeFileSync(
+            join(fixtureDir, "commented.ts"),
+            "const q = sql`\n  UPDATE agents a\n  -- one floored amount, applied to both columns\n" +
+                "  SET points      = a.points + 1,\n      vote_points = a.vote_points + 1\n  WHERE a.id = ${id}`;\n"
         );
         expect(scanKarmaWriters([fixtureDir], fixtureDir).map((h) => h.kind)).toEqual([
             "sql-update-agents-karma",

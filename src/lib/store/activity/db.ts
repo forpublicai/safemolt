@@ -62,20 +62,64 @@ export async function getCachedActivityContext(
     };
 }
 
+/**
+ * Cache one activity's context — **only while that activity still exists** (M11-1b D1).
+ *
+ * Enrichment is read-then-write with a slow LLM call in between, and it does not hold the post
+ * lock. Without this gate, a post deleted in that window had its event and its cached context
+ * removed by `deletePost`, and the in-flight enrichment then wrote the context straight back — a
+ * dead cached context for a deleted post, retrievable forever by id, because
+ * `getCachedActivityContext` answers from the cache before anything checks liveness. It also broke
+ * the sweep's "a second pass reports zero" property while instances were serving enrichment.
+ *
+ * The gate is a `FOR SHARE` LOCK on the activity row, not a bare `EXISTS` (see agents.md): an
+ * EXISTS subquery is evaluated against this statement's snapshot and never re-checked, so a delete
+ * committing in that window would let the write land anyway. `deletePost` removes the event inside
+ * its transaction, so the lock either blocks until the delete commits — and then finds no row — or
+ * holds the row and makes the delete wait.
+ *
+ * @returns the stored row, or **null when the activity is gone** and nothing was written.
+ */
 export async function upsertActivityContext(
     activityKind: string,
     activityId: string,
     promptVersion: string,
     content: string
-): Promise<StoredActivityContext> {
-    const rows = await sql!`
+): Promise<StoredActivityContext | null> {
+    const rows = activityKind === "post"
+        ? await sql!`
+    WITH live AS (
+      SELECT 1 FROM posts WHERE id = ${activityId} AND deleted_at IS NULL FOR SHARE
+    )
+    INSERT INTO activity_contexts (activity_kind, activity_id, prompt_version, content)
+    SELECT ${activityKind}, ${activityId}, ${promptVersion}, ${content} FROM live
+    ON CONFLICT (activity_kind, activity_id, prompt_version)
+    DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()
+    RETURNING activity_kind, activity_id, prompt_version, content, created_at, updated_at
+  `
+        : activityKind === "comment"
+        ? await sql!`
+    WITH live AS (
+      SELECT 1 FROM posts
+      WHERE id = (SELECT post_id FROM comments WHERE id = ${activityId})
+        AND deleted_at IS NULL
+      FOR SHARE
+    )
+    INSERT INTO activity_contexts (activity_kind, activity_id, prompt_version, content)
+    SELECT ${activityKind}, ${activityId}, ${promptVersion}, ${content} FROM live
+    ON CONFLICT (activity_kind, activity_id, prompt_version)
+    DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()
+    RETURNING activity_kind, activity_id, prompt_version, content, created_at, updated_at
+  `
+        : await sql!`
     INSERT INTO activity_contexts (activity_kind, activity_id, prompt_version, content)
     VALUES (${activityKind}, ${activityId}, ${promptVersion}, ${content})
     ON CONFLICT (activity_kind, activity_id, prompt_version)
     DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()
     RETURNING activity_kind, activity_id, prompt_version, content, created_at, updated_at
   `;
-    const r = rows[0] as Record<string, unknown>;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    if (!r) return null;
     return {
         activityKind: r.activity_kind as string,
         activityId: r.activity_id as string,
@@ -92,7 +136,35 @@ export async function claimActivityContextEnrichment(
     promptVersion: string
 ): Promise<boolean> {
     // Empty rows are lock sentinels; callers must always read contexts by prompt_version.
-    const rows = await sql!`
+    //
+    // Gated on the activity for the same reason the upsert is: a claim for a deleted activity is a
+    // sentinel row that D1's cleanup has already passed by, and only the enrichment's `finally`
+    // would remove it. Refusing the claim also ends the enrichment early, before it spends an LLM
+    // call on content nothing may store.
+    const rows = activityKind === "post"
+        ? await sql!`
+    WITH live AS (
+      SELECT 1 FROM posts WHERE id = ${activityId} AND deleted_at IS NULL FOR SHARE
+    )
+    INSERT INTO activity_contexts (activity_kind, activity_id, prompt_version, content)
+    SELECT ${activityKind}, ${activityId}, ${promptVersion}, '' FROM live
+    ON CONFLICT (activity_kind, activity_id, prompt_version) DO NOTHING
+    RETURNING 1 AS claimed
+  `
+        : activityKind === "comment"
+        ? await sql!`
+    WITH live AS (
+      SELECT 1 FROM posts
+      WHERE id = (SELECT post_id FROM comments WHERE id = ${activityId})
+        AND deleted_at IS NULL
+      FOR SHARE
+    )
+    INSERT INTO activity_contexts (activity_kind, activity_id, prompt_version, content)
+    SELECT ${activityKind}, ${activityId}, ${promptVersion}, '' FROM live
+    ON CONFLICT (activity_kind, activity_id, prompt_version) DO NOTHING
+    RETURNING 1 AS claimed
+  `
+        : await sql!`
     INSERT INTO activity_contexts (activity_kind, activity_id, prompt_version, content)
     VALUES (${activityKind}, ${activityId}, ${promptVersion}, '')
     ON CONFLICT (activity_kind, activity_id, prompt_version) DO NOTHING

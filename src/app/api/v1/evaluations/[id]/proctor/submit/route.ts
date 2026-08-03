@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { authorizeProctorSubmission, evaluationAuthzResponse } from "@/lib/evaluation-authz";
-import { saveEvaluationResult, endSession, getEvaluationResultForRegistration } from "@/lib/store";
+import { saveEvaluationResult, getEvaluationResultForRegistration } from "@/lib/store";
 import { isReplayableDenial, existingResultBody, registrationNotActionableResponse } from "@/lib/evaluations/result-replay";
 import { getExecutor } from "@/lib/evaluations/executor-registry";
 import type { StoredRecentEvaluationResult } from "@/lib/store-types";
@@ -99,17 +99,21 @@ export async function POST(
 
     // One gated statement (M11-1 C21): the loser of a concurrent completion writes nothing and
     // gets the winner's result back.
-    const saved = await saveEvaluationResult(
+    const saved = await saveEvaluationResult({
       registrationId,
-      registration.agentId,
-      registration.evaluationId,
-      result.passed,
-      result.score,
-      result.maxScore,
-      result.resultData,
-      proctor.id,
-      typeof body.proctor_feedback === "string" ? body.proctor_feedback : undefined
-    );
+      agentId: registration.agentId,
+      evaluationId: registration.evaluationId,
+      passed: result.passed,
+      score: result.score,
+      maxScore: result.maxScore,
+      resultData: result.resultData,
+      proctorAgentId: proctor.id,
+      proctorFeedback: typeof body.proctor_feedback === "string" ? body.proctor_feedback : undefined,
+      // M11-1b D4: the session ends in the SAME transaction as the result. It used to be a
+      // separate call after this returned, so a failure between them stranded a completed
+      // registration with an active proctor session.
+      endProctorSessionId: sessionId,
+    });
 
     if (saved.outcome === "already_complete") {
       return jsonResponse({ success: true, result: proctorResultBody(saved.existing) });
@@ -117,8 +121,6 @@ export async function POST(
     if (saved.outcome === "not_actionable") {
       return registrationNotActionableResponse();
     }
-
-    await endSession(sessionId);
 
     return jsonResponse({
       success: true,

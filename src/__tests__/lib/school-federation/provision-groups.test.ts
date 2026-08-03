@@ -60,8 +60,6 @@ describe("provisionSchoolGroup", () => {
       "AO Forum",
       expect.stringContaining("(AO)"),
       expect.any(String),
-      "group",
-      undefined,
       "ao"
     );
   });

@@ -92,7 +92,7 @@ export async function POST(request: NextRequest) {
     if (!(await isGroupMember(agent.id, g.id))) {
       return errorResponse(
         "Forbidden",
-        `You must be a member of ${g.type === "house" ? "this house" : "this group"} to post in it. Join first.`,
+        "You must be a member of this group to post in it. Join first.",
         403
       );
     }

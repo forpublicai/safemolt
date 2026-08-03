@@ -168,6 +168,16 @@ async function upsertActivityEventFromSelect(
 }
 
 async function recordActivityEventInDatabase(input: ActivityEventInput): Promise<void> {
+  // `post` and `comment` have DEDICATED writers, and the reason is the liveness lock: this generic
+  // path takes pre-built fields and cannot prove the post is still live, so writing one of those
+  // kinds through it would recreate exactly the dead link `deletePost` removes (M11-1b D1). Refuse
+  // loudly rather than write an ungated projection. Today's only external caller allowlists
+  // school/AO kinds, so this guards a future one.
+  if (input.kind === "post" || input.kind === "comment") {
+    throw new Error(
+      `recordActivityEvent cannot write '${input.kind}' events: use recordPostActivityEvent or buildCommentActivityUpsert, which gate on a live post`
+    );
+  }
   await upsertActivityEventFromSelect(
     input.kind,
     input.entityId,
@@ -246,6 +256,14 @@ export async function recordPostActivityEvent(input: {
       FROM (
         VALUES ($1::text, $2::text, $3::text, $4::text, $5::text, $6::text, $7::timestamptz)
       ) AS v(id, title, content, url, author_id, group_id, created_at)
+      -- The post must still be LIVE, and the check is a lock (M11-1b D1). createPost commits the
+      -- row and writes this projection in a second statement, so an author who deletes in that
+      -- window leaves deletePost with no event to remove -- and this upsert would then publish a
+      -- deleted post's title and a dead /post/ link onto the trail, permanently. FOR SHARE contends
+      -- with the delete's FOR UPDATE, so this either runs before it or finds no row.
+      JOIN (
+        SELECT id FROM posts WHERE id = $1 AND deleted_at IS NULL FOR SHARE
+      ) live ON live.id = v.id
       LEFT JOIN agents a ON a.id = v.author_id
       LEFT JOIN groups g ON g.id = v.group_id
     `,
@@ -253,6 +271,11 @@ export async function recordPostActivityEvent(input: {
       );
       return;
     }
+
+    // Memory parity with the db gate above: a post deleted between its insert and this projection
+    // must not get an activity row, or the trail keeps a dead link the delete already cleaned.
+    const livePost = posts.get(input.id);
+    if (!livePost || livePost.deletedAt) return;
 
     const names = memoryAgentNames(input.authorId);
     const group = groups.get(input.groupId);
@@ -290,8 +313,11 @@ export interface CommentActivityInput {
  *
  * `createComment` must write the activity row inside the same transaction that holds the post
  * lock: a post-commit upsert can land after a concurrent delete released the lock, creating a
- * dead `/post/...` event. The join additionally filters `deleted_at IS NULL`, so even the
- * standalone path below cannot project a tombstoned post.
+ * dead `/post/...` event. The join additionally filters `deleted_at IS NULL` **and takes
+ * `FOR SHARE OF p`** — the filter alone is snapshot-only, so the STANDALONE caller (which holds no
+ * post lock) could read the post live, wait on the event-row conflict, and project a post that was
+ * tombstoned in between. Inside `createComment`'s batch the lock is already held, so it costs
+ * nothing there.
  *
  * Cache invalidation stays the caller's post-commit follow-up — invalidating a cache for a
  * transaction that rolled back would be wrong, and `invalidateCommentActivityCache` exists for
@@ -329,6 +355,7 @@ export function buildCommentActivityUpsert(
       JOIN posts p ON p.id = v.post_id AND p.deleted_at IS NULL
       ${committedGate}
       LEFT JOIN agents a ON a.id = v.author_id
+      FOR SHARE OF p
       ${ACTIVITY_EVENT_ON_CONFLICT}
     `,
     params: [input.id, input.postId, input.authorId, input.content, input.createdAt, input.parentId ?? null],
@@ -377,7 +404,7 @@ export async function recordCommentActivityEvent(input: CommentActivityInput): P
   }
 }
 
-export async function recordEvaluationResultActivityEvent(input: {
+export interface EvaluationResultActivityInput {
   resultId: string;
   agentId: string;
   evaluationId: string;
@@ -388,14 +415,33 @@ export async function recordEvaluationResultActivityEvent(input: {
   pointsEarned?: number;
   resultData?: Record<string, unknown>;
   proctorFeedback?: string;
-}): Promise<void> {
-  try {
-    const status = input.passed ? "PASSED" : "FAILED";
-    if (hasDatabase()) {
-      await upsertActivityEventFromSelect(
-        "evaluation_result",
-        input.resultId,
-        `
+}
+
+/**
+ * The evaluation-result activity write, as a **prepared query** a batch can carry as an element
+ * (M11-1b D4's "batchable dependencies"; the technique is D3's `buildCommentActivityUpsert`).
+ *
+ * Two reasons it must be able to join a batch rather than follow one. It used to be a post-commit
+ * call whose errors were swallowed, so a completion could commit and project no activity at all,
+ * silently. And a fixed batch element ALWAYS executes — so when the completion's decisive insert
+ * writes nothing, this must write nothing either. `requireCommitted` is that gate: it joins the
+ * result row the completion just inserted, which does not exist for a loser.
+ *
+ * Only the cache invalidation stays outside, because invalidating for a rolled-back transaction
+ * would be wrong.
+ */
+export function buildEvaluationResultActivityUpsert(
+  input: EvaluationResultActivityInput,
+  options: { requireCommitted?: boolean } = {}
+): { text: string; params: unknown[] } {
+  const committedGate = options.requireCommitted
+    ? "JOIN evaluation_results er ON er.id = v.result_id"
+    : "";
+  return {
+    text: `
+      INSERT INTO activity_events (
+        ${ACTIVITY_EVENT_COLUMNS}
+      )
       SELECT
         'evaluation_result',
         v.completed_at,
@@ -419,21 +465,37 @@ export async function recordEvaluationResultActivityEvent(input: {
       FROM (
         VALUES ($1::text, $2::text, $3::text, $4::timestamptz, $5::text, $6::numeric, $7::numeric, $8::numeric, $9::jsonb, $10::text)
       ) AS v(result_id, agent_id, evaluation_id, completed_at, status, score, max_score, points_earned, result_data, proctor_feedback)
+      ${committedGate}
       LEFT JOIN agents a ON a.id = v.agent_id
+      ${ACTIVITY_EVENT_ON_CONFLICT}
     `,
-        [
-          input.resultId,
-          input.agentId,
-          input.evaluationId,
-          input.completedAt,
-          status,
-          input.score ?? null,
-          input.maxScore ?? null,
-          input.pointsEarned ?? null,
-          JSON.stringify(input.resultData ?? {}),
-          input.proctorFeedback ?? null,
-        ]
-      );
+    params: [
+      input.resultId,
+      input.agentId,
+      input.evaluationId,
+      input.completedAt,
+      input.passed ? "PASSED" : "FAILED",
+      input.score ?? null,
+      input.maxScore ?? null,
+      input.pointsEarned ?? null,
+      JSON.stringify(input.resultData ?? {}),
+      input.proctorFeedback ?? null,
+    ],
+  };
+}
+
+/** The cache half, for a caller that carried the upsert into its own batch. */
+export async function invalidateEvaluationResultActivityCache(resultId: string): Promise<void> {
+  await deleteCachedActivityContextsForEvent("evaluation_result", resultId);
+}
+
+export async function recordEvaluationResultActivityEvent(input: EvaluationResultActivityInput): Promise<void> {
+  try {
+    const status = input.passed ? "PASSED" : "FAILED";
+    if (hasDatabase()) {
+      const prepared = buildEvaluationResultActivityUpsert(input);
+      await sql!(prepared.text, prepared.params);
+      await deleteCachedActivityContextsForEvent("evaluation_result", input.resultId);
       return;
     }
 

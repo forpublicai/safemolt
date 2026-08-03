@@ -132,12 +132,27 @@ describe("unpin does not require a live post (the D2 asymmetry)", () => {
         const groupId = await seedGroup();
         const post = await seedPostRow(groupId);
         expect(await pinPost(groupId, post, OWNER)).toBe(true);
-        // The post is deleted; the pin is now an orphan (D1's sweep would remove it, but a
-        // moderator must be able to too).
-        expect(await deletePost(post, OWNER)).toBe(true);
-        expect(await pinnedIds(groupId)).toEqual([post]); // still there — soft-delete doesn't touch pins
+
+        // The stale pin is produced by a PRE-D1 delete — the bare tombstone, with no cleanup.
+        // Calling `deletePost` no longer leaves one: since M11-1b D1 the delete strips its own pin
+        // (this test asserted the opposite until D1 landed). The state still exists in two ways
+        // that matter, which is why unpin must keep working without a live post: rows deleted
+        // before D1 shipped, and rows tombstoned by an old instance during the rollout. D1's sweep
+        // clears them in bulk; a moderator must be able to clear one by hand.
+        await pgPool().query("UPDATE posts SET deleted_at = NOW(), deleted_by_agent_id = $2 WHERE id = $1", [post, OWNER]);
+        expect(await pinnedIds(groupId)).toEqual([post]);
 
         expect(await unpinPost(groupId, post, OWNER)).toBe(true);
+        expect(await pinnedIds(groupId)).toEqual([]);
+    });
+
+    it("D1's delete now strips its own pin, so no fresh orphan is created", async () => {
+        // The behaviour change the test above had to be rewritten around, pinned in its own right.
+        const groupId = await seedGroup();
+        const post = await seedPostRow(groupId);
+        expect(await pinPost(groupId, post, OWNER)).toBe(true);
+
+        expect(await deletePost(post, OWNER)).toMatchObject({ deleted: true });
         expect(await pinnedIds(groupId)).toEqual([]);
     });
 

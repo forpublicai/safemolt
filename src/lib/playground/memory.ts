@@ -10,14 +10,13 @@
  *
  * Retrieval stays here: it is pure scoring over the rows the store returns.
  */
-import { type AgentMemory, type CreateMemoryInput, type MemoryRetrievalOptions, type MemoryRetrievalResult } from './types';
+import { type AgentMemory, type CreateMemoryInput, type MemoryRetrievalOptions, type MemoryRetrievalResult, type ResolutionMemory } from './types';
 import {
     clearPlaygroundMemoriesForAgent,
     clearPlaygroundMemoriesForSession,
     getPlaygroundMemoryForAgent,
     listPlaygroundMemoriesForSession,
     storePlaygroundMemory,
-    storePlaygroundMemoryFenced,
 } from '@/lib/store';
 
 let memoryIdCounter = 1;
@@ -38,18 +37,14 @@ export async function storeMemory(input: CreateMemoryInput): Promise<AgentMemory
 }
 
 /**
- * M11-1b D5 — the memory write gated on a **live resolution lease**, in one statement. Returns
- * false when the caller's lease is no longer the live claim, which is precisely the lease-expired
- * loser that must write nothing.
+ * Settle a round's memory into the row the terminal CAS will write (M11-1b D5 atomic follow-up).
  *
- * Not coupled to the terminal CAS — that is a separate statement, and the gap is a recorded D5
- * residual (see `store/playground/agent-memories-db.ts` and ai/PLAN_M11_1B.md).
+ * The id and the timestamp are minted here rather than in the store because the store no longer
+ * has a per-memory call: `applyPlaygroundResolution` writes the whole round's set as one insert
+ * gated on its own CAS, so either all of a round's memories land with the advance or none do.
  */
-export async function storeMemoryFenced(
-    input: CreateMemoryInput,
-    fence: { sessionId: string; round: number; token: string }
-): Promise<boolean> {
-    return storePlaygroundMemoryFenced({ ...input, id: generateMemoryId() }, fence);
+export function prepareResolutionMemory(input: CreateMemoryInput): ResolutionMemory {
+    return { ...input, id: generateMemoryId(), createdAt: new Date().toISOString() };
 }
 
 /**

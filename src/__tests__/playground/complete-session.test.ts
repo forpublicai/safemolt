@@ -38,8 +38,13 @@ jest.mock("@/lib/playground/lifecycle", () => ({
 
 jest.mock("@/lib/playground/memory", () => ({
   storeMemory: jest.fn(async () => ({})),
-  // M11-1b D5: derived writes are gated on the winning claim; true = the fence admitted it.
-  storeMemoryFenced: jest.fn(async () => true),
+  // M11-1b D5 atomic follow-up: memories are only PREPARED outside the write; the terminal CAS
+  // writes them, so this mock mints rows rather than persisting anything.
+  prepareResolutionMemory: jest.fn((input: Record<string, unknown>) => ({
+    ...input,
+    id: "mem_test",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  })),
 }));
 
 jest.mock("@/lib/playground/embeddings", () => ({
@@ -47,6 +52,8 @@ jest.mock("@/lib/playground/embeddings", () => ({
 }));
 
 const updateCalls: Array<Record<string, unknown>> = [];
+/** What each terminal write carried alongside the update (D5 atomic follow-up). */
+const memoryPayloads: unknown[][] = [];
 let sessionRow: Record<string, unknown>;
 
 jest.mock("@/lib/store", () => ({
@@ -66,8 +73,14 @@ jest.mock("@/lib/store", () => ({
   }),
   renewPlaygroundResolutionClaim: jest.fn(async () => true),
   applyPlaygroundResolution: jest.fn(
-    async (_id: string, _fence: { round: number; token: string }, update: Record<string, unknown>) => {
+    async (
+      _id: string,
+      _fence: { round: number; token: string },
+      update: Record<string, unknown>,
+      memories: unknown[] = []
+    ) => {
       updateCalls.push(update);
+      memoryPayloads.push(memories);
       sessionRow = { ...sessionRow, ...update, resolveClaimToken: null, resolveClaimExpiresAt: null };
       return true;
     }
@@ -76,6 +89,7 @@ jest.mock("@/lib/store", () => ({
 
 import { tryAdvanceRound } from "@/lib/playground/session-manager";
 import { generateSummary } from "@/lib/playground/engine";
+import { schedulePlaygroundMemoryIngest } from "@/lib/memory/platform-ingest";
 
 function baseSession(overrides: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -97,6 +111,25 @@ function baseSession(overrides: Record<string, unknown>): Record<string, unknown
 beforeEach(() => {
   jest.clearAllMocks();
   updateCalls.length = 0;
+  memoryPayloads.length = 0;
+  // Re-arm the store mocks: the loss gates below override these per test, and `clearAllMocks`
+  // clears the implementation, not just the calls.
+  const store = jest.requireMock("@/lib/store");
+  store.getPlaygroundSession.mockImplementation(async () => sessionRow);
+  store.getPlaygroundActions.mockResolvedValue([]);
+  store.claimPlaygroundResolution.mockImplementation(async (_id: string, _round: number, token: string) => {
+    sessionRow = { ...sessionRow, resolveClaimToken: token };
+    return true;
+  });
+  store.renewPlaygroundResolutionClaim.mockResolvedValue(true);
+  store.applyPlaygroundResolution.mockImplementation(
+    async (_id: string, _fence: unknown, update: Record<string, unknown>, memories: unknown[] = []) => {
+      updateCalls.push(update);
+      memoryPayloads.push(memories);
+      sessionRow = { ...sessionRow, ...update, resolveClaimToken: null, resolveClaimExpiresAt: null };
+      return true;
+    }
+  );
 });
 
 function expectTerminalCleanup(update: Record<string, unknown>) {
@@ -131,6 +164,8 @@ describe("tryAdvanceRound terminal transitions", () => {
       expect.anything()
     );
     expect(update.summary).toBe("summary of 1 rounds");
+    // Nobody acted, so the forfeit branch carries no memories — and it must still be a WON write.
+    expect(memoryPayloads[0]).toEqual([]);
   });
 
   it("runs the same cleanup on a normal max-rounds completion", async () => {
@@ -164,5 +199,66 @@ describe("tryAdvanceRound terminal transitions", () => {
     expect(Object.keys(update).sort()).toEqual(
       ["completedAt", "currentRoundPrompt", "participants", "roundDeadline", "status", "summary", "transcript"].sort()
     );
+
+    // D5 atomic follow-up: the round's memory travels WITH the terminal write, in the same call.
+    // Before it, this was a separate statement that could be split from the advance.
+    expect(memoryPayloads[0]).toEqual([
+      expect.objectContaining({ agentId: "a1", sessionId: "sess-1", roundCreated: 3 }),
+    ]);
+  });
+});
+
+/**
+ * The D5 atomic follow-up moved every derived write behind the terminal CAS. These gates hold that
+ * ordering in place: a resolver that has lost its claim must buy nothing further and schedule
+ * nothing external, in both the resolved and the all-forfeited branch.
+ */
+describe("a resolver that has lost its claim", () => {
+  const store = () => jest.requireMock("@/lib/store");
+  const oneActive = () => baseSession({
+    currentRound: 3,
+    maxRounds: 3,
+    participants: [{ agentId: "a1", agentName: "A1", status: "active", missedRounds: 0 }],
+  });
+
+  it("buys no second inference call when the advisory renewal refuses", async () => {
+    sessionRow = oneActive();
+    store().getPlaygroundActions.mockResolvedValue([{ agentId: "a1", content: "my move", round: 3 }]);
+    store().renewPlaygroundResolutionClaim.mockResolvedValue(false);
+
+    await tryAdvanceRound("sess-1");
+
+    // The GM resolution was already bought before the claim could be re-checked; the SUMMARY was
+    // not, and no terminal write was attempted.
+    expect(jest.mocked(generateSummary)).not.toHaveBeenCalled();
+    expect(updateCalls).toHaveLength(0);
+    expect(jest.mocked(schedulePlaygroundMemoryIngest)).not.toHaveBeenCalled();
+  });
+
+  it("schedules no vector ingest when the terminal CAS refuses", async () => {
+    sessionRow = oneActive();
+    store().getPlaygroundActions.mockResolvedValue([{ agentId: "a1", content: "my move", round: 3 }]);
+    store().applyPlaygroundResolution.mockResolvedValue(false);
+
+    await tryAdvanceRound("sess-1");
+
+    // The CAS wrote neither the advance nor the memories, so nothing external may follow it.
+    expect(jest.mocked(schedulePlaygroundMemoryIngest)).not.toHaveBeenCalled();
+  });
+
+  it("schedules no vector ingest when the all-forfeited CAS refuses", async () => {
+    sessionRow = baseSession({
+      participants: [
+        { agentId: "a1", agentName: "A1", status: "active", missedRounds: 1 },
+        { agentId: "a2", agentName: "A2", status: "active", missedRounds: 1 },
+      ],
+    });
+    store().applyPlaygroundResolution.mockResolvedValue(false);
+
+    await tryAdvanceRound("sess-1");
+
+    // This branch used to schedule ingest BEFORE the write, so a lapsed resolver pushed vectors
+    // for a round it never resolved.
+    expect(jest.mocked(schedulePlaygroundMemoryIngest)).not.toHaveBeenCalled();
   });
 });

@@ -1,17 +1,9 @@
 import { sql } from "@/lib/db";
 import { rowToPost, rowToComment } from "../rows";
-import type { StoredPost, StoredComment, StoredCommentWithPost } from "@/lib/store-types";
-import { updateHousePoints } from "../groups/db";
+import type { PostDeletionResult, StoredPost, StoredComment, StoredCommentWithPost } from "@/lib/store-types";
 import { recordPostActivityEvent } from "../activity/events";
 import { toIsoOrEmpty } from "@/lib/iso-date";
 import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY, POST_COOLDOWN_MS } from "../rate-limit-windows";
-
-interface StoredHouseMember {
-    agentId: string;
-    houseId: string;
-    pointsAtJoin: number;
-    joinedAt: string;
-}
 
 export async function checkPostRateLimit(
     agentId: string
@@ -310,12 +302,7 @@ export async function upvotePost(postId: string, agentId: string): Promise<boole
 
     // FIX: Give points to post AUTHOR, not voter
     const authorId = await castPostVote(postId, agentId, 1);
-    if (!authorId) return false;
-
-    // Increment house points if post author is in a house
-    await updateAgentHousePoints(authorId, 1);
-
-    return true;
+    return authorId !== null;
 }
 
 export async function downvotePost(postId: string, agentId: string): Promise<boolean> {
@@ -325,13 +312,7 @@ export async function downvotePost(postId: string, agentId: string): Promise<boo
 
     // FIX: Take points from post AUTHOR, not voter
     const authorId = await castPostVote(postId, agentId, -1);
-    if (!authorId) return false;
-
-    // Decrement house points if post author is in a house. Deliberately the full -1 even when the
-    // floor made the award 0: `groups.points` has its own legacy semantics and is out of scope.
-    await updateAgentHousePoints(authorId, -1);
-
-    return true;
+    return authorId !== null;
 }
 
 // ==================== Vote Tracking Functions ====================
@@ -408,14 +389,182 @@ export async function recordVote(
  * One conditional statement: ownership, liveness and the transition decide together, so a second
  * concurrent delete matches zero rows rather than overwriting the first one's timestamp.
  */
-export async function deletePost(postId: string, agentId: string): Promise<boolean> {
-    const rows = await sql!`
-    UPDATE posts
-    SET deleted_at = NOW(), deleted_by_agent_id = ${agentId}
-    WHERE id = ${postId} AND author_id = ${agentId} AND deleted_at IS NULL
-    RETURNING id
-  `;
-    return rows.length > 0;
+/**
+ * M11-1b D1 — soft-delete the post AND clean up everything the tombstone does not hide.
+ *
+ * **Tombstones are the permanent answer, and that is a decision this chunk makes rather than
+ * inherits.** M11-1 C25 made deletion a `deleted_at` flag so a hostile commenter could no longer
+ * veto an author's delete through an FK, and D1 was left free to choose whether to follow up with
+ * a hard delete. It does not. Every reader already filters `deleted_at IS NULL`, so the comments,
+ * the votes and the post row are invisible where they should be; hard-deleting them would buy no
+ * visible change and would cost the vote rows that make the karma reversal below exact.
+ *
+ * What the tombstone does NOT hide is the **projections**, which carry no FK to `posts` and are
+ * read by their own keys: activity rows, their cached contexts, notifications, and a group's
+ * `pinned_post_ids`. Those are what left dead links behind a deleted post, and they are deleted here.
+ *
+ * **Order is load-bearing: lock first, clean second.** Statement 1 authorizes and locks the post;
+ * statement 2 locks its existing comments. Cleaning before locking would let a vote or a comment
+ * land after its cleanup statement ran but before the post was pinned, stranding the row it
+ * created. Every later element re-derives authorization from the post row rather than trusting an
+ * earlier element, because batch elements cannot read one another's `RETURNING`.
+ *
+ * @returns `deleted` — whether this call performed the deletion. `false` means not found, not the
+ *   author, or already deleted, which is the caller's existing 404, unchanged. And `commenterIds`,
+ *   the comment authors statement 2 pinned: the vector cleanup's recipients, read under the lock
+ *   rather than before the call, which is D1's commenter-audience TOCTOU fix.
+ */
+export async function deletePost(postId: string, agentId: string): Promise<PostDeletionResult> {
+    const results = await sql!.transaction((txn) => [
+        // 1. Authorize and PIN the post. `FOR UPDATE` because everything below depends on this row
+        //    staying deletable, and because D2's pin takes `FOR SHARE` on it — a pin racing this
+        //    delete must block here and resolve not_found rather than write a dead id back.
+        txn`
+      /* d1:post-delete-lock */
+      SELECT id FROM posts
+      WHERE id = ${postId} AND author_id = ${agentId} AND deleted_at IS NULL
+      FOR UPDATE
+    `,
+        // 2. Pin the post's existing comments, so a concurrent comment vote cannot award karma
+        //    against a comment whose reversal has already been computed.
+        //
+        //    It also RETURNS the comment authors, and that is the whole of the fix for D1's
+        //    commenter-audience TOCTOU. The helper used to read them with `listComments` before
+        //    calling here, so a comment committing in between left its author out of the vector
+        //    cleanup. It cannot any more: `createComment` takes `FOR KEY SHARE` on the post
+        //    (M11-1b D3), which conflicts with element 1's `FOR UPDATE`, so by the time this
+        //    element runs the comment set is final and this is the only reader that sees it under
+        //    the lock.
+        //    `ORDER BY c.id` for the same reason statement 3 orders its agents: `deleteAgent` takes
+        //    an agent's comments in id order, and this takes a post's comments. The two sets
+        //    OVERLAP whenever the withdrawing agent commented on the post being deleted, so an
+        //    unordered scan here could take two of those rows in the opposite order and deadlock
+        //    (40P01) — a commenter-only interleaving that the author-side lock order does not cover.
+        txn`
+      /* d1:comment-lock */
+      SELECT c.id, c.author_id FROM comments c
+      WHERE c.post_id IN (SELECT id FROM posts WHERE id = ${postId} AND author_id = ${agentId} AND deleted_at IS NULL)
+      ORDER BY c.id
+      FOR UPDATE
+    `,
+        // 3. Reverse exactly what the post's votes awarded its author, and what its comments' votes
+        //    awarded each commenter. `points_delta` records the award, so this subtracts what was
+        //    given rather than guessing: a downvote cast against an author at zero awarded 0, and
+        //    reversing a guessed -1 would MANUFACTURE a point. Rows with a NULL delta predate
+        //    M11-1C, their award is unknowable, and they are excluded — never backfilled.
+        //    `points` and `vote_points` move together or the component invariant breaks.
+        txn`
+      WITH authorized_post AS (
+        SELECT id FROM posts WHERE id = ${postId} AND author_id = ${agentId} AND deleted_at IS NULL
+      ), awards AS (
+        SELECT p.author_id AS agent_id, SUM(pv.points_delta) AS delta
+        FROM post_votes pv
+        JOIN posts p ON p.id = pv.post_id
+        WHERE pv.post_id IN (SELECT id FROM authorized_post) AND pv.points_delta IS NOT NULL
+        GROUP BY p.author_id
+        UNION ALL
+        SELECT c.author_id AS agent_id, SUM(cv.points_delta) AS delta
+        FROM comment_votes cv
+        JOIN comments c ON c.id = cv.comment_id
+        WHERE c.post_id IN (SELECT id FROM authorized_post) AND cv.points_delta IS NOT NULL
+        GROUP BY c.author_id
+      ), totals AS (
+        SELECT agent_id, SUM(delta) AS delta FROM awards GROUP BY agent_id
+      ), locked AS (
+        -- Take the affected authors in ID ORDER before updating any of them (M11-1b D1 finding 3).
+        -- The bare UPDATE below takes the same row locks, but in whatever order the plan produces,
+        -- so two deletions whose comment authors overlap could take the same two rows in opposite
+        -- orders and deadlock (40P01) — one author's ordinary delete 500ing because another agent
+        -- deleted a post at the same moment. Sorting the acquisition removes the cycle.
+        --
+        -- FOR NO KEY UPDATE, not FOR UPDATE, for the reason recorded in agents.md: a vote insert
+        -- takes an implicit FOR KEY SHARE on the voter's agent row, and FOR UPDATE conflicts with
+        -- it. This is also the mode the UPDATE below takes anyway.
+        SELECT a.id FROM agents a
+        WHERE a.id IN (SELECT agent_id FROM totals WHERE delta <> 0)
+        ORDER BY a.id
+        FOR NO KEY UPDATE
+      )
+      UPDATE agents a
+      -- ONE amount, applied to BOTH columns, and it can only ever be NEGATIVE OR ZERO.
+      --
+      -- Two rules are folded into that one expression, and both are load-bearing.
+      --
+      -- One amount for both: flooring points while subtracting the raw total from vote_points makes
+      -- them diverge exactly when the floor bites, and nothing here writes legacy to absorb it.
+      --
+      -- Never positive: the award floor is not invertible, so reversing in the wrong order MINTS.
+      -- Upvote A (+1), downvote B (-1, author now at 0), delete A (floors, gives back nothing),
+      -- delete B (reverses -1, ADDS 1) leaves an author at 1 point with every post gone and no
+      -- vote left to audit. LEAST(0, ...) makes the rule plain instead: deleting your own content
+      -- can take karma away and can never give any back. The undone downvote is the price, and it
+      -- is the cheaper side of the trade -- the alternative is a minting primitive.
+      SET points      = a.points + LEAST(0, GREATEST(0, a.points - t.delta) - a.points),
+          vote_points = a.vote_points + LEAST(0, GREATEST(0, a.points - t.delta) - a.points)
+      FROM totals t
+      WHERE a.id = t.agent_id AND t.delta <> 0
+        AND a.id IN (SELECT id FROM locked)
+    `,
+        // 4. Activity rows and their cached contexts. Post-kind events key on the post id; the
+        //    post's comments key on their own ids, so both are removed by the same anchor.
+        txn`
+      DELETE FROM activity_events
+      WHERE (kind = 'post' AND entity_id IN (SELECT id FROM posts WHERE id = ${postId} AND author_id = ${agentId} AND deleted_at IS NULL))
+         OR (kind = 'comment' AND entity_id IN (
+               SELECT c.id FROM comments c
+               WHERE c.post_id IN (SELECT id FROM posts WHERE id = ${postId} AND author_id = ${agentId} AND deleted_at IS NULL)
+             ))
+    `,
+        txn`
+      DELETE FROM activity_contexts
+      WHERE (activity_kind = 'post' AND activity_id IN (SELECT id FROM posts WHERE id = ${postId} AND author_id = ${agentId} AND deleted_at IS NULL))
+         OR (activity_kind = 'comment' AND activity_id IN (
+               SELECT c.id FROM comments c
+               WHERE c.post_id IN (SELECT id FROM posts WHERE id = ${postId} AND author_id = ${agentId} AND deleted_at IS NULL)
+             ))
+    `,
+        // 5. Notifications store their references in JSON and carry no FK, so they anchor on the
+        //    metadata key PLUS an EXISTS against the authorized post — the key alone would let any
+        //    caller name any post id.
+        txn`
+      DELETE FROM notifications
+      WHERE metadata->>'post_id' = ${postId}
+        AND EXISTS (SELECT 1 FROM posts WHERE id = ${postId} AND author_id = ${agentId} AND deleted_at IS NULL)
+    `,
+        // 6. Pins anchor through the authorized post's group, so a moderator's pin of someone
+        //    else's post is untouched by that author's delete of a different post.
+        txn`
+      UPDATE groups g
+      SET pinned_post_ids = COALESCE((
+            SELECT jsonb_agg(elem) FROM jsonb_array_elements(g.pinned_post_ids) elem
+            WHERE elem <> to_jsonb(${postId}::text)
+          ), '[]'::jsonb)
+      WHERE g.id IN (
+        SELECT p.group_id FROM posts p
+        WHERE p.id = ${postId} AND p.author_id = ${agentId} AND p.deleted_at IS NULL
+      )
+        AND g.pinned_post_ids @> to_jsonb(${postId}::text)
+    `,
+        // 7. The tombstone itself, LAST — everything above re-derives authorization from a post row
+        //    that is still live, so flipping the flag first would make every cleanup match nothing.
+        //
+        //    `deleted_karma_reversed_at` is written by the SAME statement as `deleted_at`, and the
+        //    two must never be set apart (M11-1b D1 finding 1). It is what tells the sweep which
+        //    tombstones an OLD instance wrote during the rollout — those carry a NULL marker while
+        //    their votes may carry a real `points_delta`, and the runtime reversal can never reach
+        //    them again because every anchor above requires `deleted_at IS NULL`.
+        txn`
+      UPDATE posts
+      SET deleted_at = NOW(), deleted_by_agent_id = ${agentId}, deleted_karma_reversed_at = NOW()
+      WHERE id = ${postId} AND author_id = ${agentId} AND deleted_at IS NULL
+      RETURNING id
+    `,
+    ]);
+
+    const deleted = (results[results.length - 1] as unknown[]).length > 0;
+    if (!deleted) return { deleted: false, commenterIds: [] };
+    const commentRows = results[1] as { author_id: string }[];
+    return { deleted: true, commenterIds: Array.from(new Set(commentRows.map((r) => r.author_id))) };
 }
 
 export async function listPostsCreatedAfter(cursorIso: string, limit: number): Promise<StoredPost[]> {
@@ -634,38 +783,4 @@ export async function unpinPost(groupId: string, postId: string, agentId: string
     RETURNING id
   `;
     return rows.length > 0;
-}
-
-function rowToHouseMember(r: Record<string, unknown>): StoredHouseMember {
-    return {
-        agentId: r.agent_id as string,
-        houseId: r.house_id as string,
-        pointsAtJoin: Number(r.points_at_join),
-        joinedAt: String(r.joined_at),
-    };
-}
-
-/** Legacy compatibility: house membership now uses group_members. */
-async function getHouseMembership(agentId: string): Promise<StoredHouseMember | null> {
-    const rows = await sql!`
-    SELECT gm.agent_id, gm.group_id AS house_id, 0 AS points_at_join, gm.joined_at
-    FROM group_members gm
-    JOIN groups g ON g.id = gm.group_id
-    WHERE gm.agent_id = ${agentId} AND g.type = 'house'
-    LIMIT 1
-  `;
-    const r = rows[0] as Record<string, unknown> | undefined;
-    return r ? rowToHouseMember(r) : null;
-}
-
-/**
- * Update house points for an agent's house if they are a member.
- * @param agentId - The agent whose house points should be updated
- * @param delta - The point change (+1 for upvote, -1 for downvote)
- */
-async function updateAgentHousePoints(agentId: string, delta: number): Promise<void> {
-    const membership = await getHouseMembership(agentId);
-    if (membership) {
-        await updateHousePoints(membership.houseId, delta);
-    }
 }

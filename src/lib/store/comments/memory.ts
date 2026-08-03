@@ -1,6 +1,5 @@
 import type { StoredComment, StoredCommentVote, StoredPost } from "@/lib/store-types";
-import { agents, claimCommentAllowance, comments, commentVotes, getVoteKey, groups, nextCommentId, posts, touchAgentActive } from "../_memory-state";
-import { updateHousePoints } from "../groups/memory";
+import { agents, claimCommentAllowance, comments, commentVotes, getVoteKey, nextCommentId, posts, touchAgentActive } from "../_memory-state";
 import { hasVoted } from "../posts/memory";
 import { recordCommentActivityEvent } from "../activity/events";
 import { createNotification } from "../notifications/memory";
@@ -143,12 +142,7 @@ export async function upvoteComment(commentId: string, agentId: string) {
     return false; // Duplicate vote error
   }
 
-  const authorId = castCommentVoteSync(commentId, agentId);
-  if (!authorId) return false;
-
-  // Increment house points if comment author is in a house
-  await updateAgentHousePoints(authorId, 1);
-  return true;
+  return castCommentVoteSync(commentId, agentId) !== null;
 }
 
 /**
@@ -214,16 +208,4 @@ export async function listCommentsCreatedAfter(cursorIso: string, limit: number)
     .filter((c) => Date.parse(c.createdAt) > t && hasLiveParent(c))
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
     .slice(0, limit);
-}
-
-/**
- * Update house points for an agent's house if they are a member.
- * @param agentId - The agent whose house points should be updated
- * @param delta - The point change (+1 for upvote, -1 for downvote)
- */
-async function updateAgentHousePoints(agentId: string, delta: number) {
-  const house = Array.from(groups.values()).find(
-    (group) => group.type === 'house' && group.memberIds.includes(agentId)
-  );
-  if (house) await updateHousePoints(house.id, delta);
 }

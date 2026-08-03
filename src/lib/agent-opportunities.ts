@@ -113,10 +113,10 @@ export interface GroupOpportunities {
  */
 export async function gatherGroupOpportunities(
   agentId: string,
-  opts: { schoolId?: string; type?: "group" | "house"; suggestedLimit?: number } = {}
+  opts: { schoolId?: string; suggestedLimit?: number } = {}
 ): Promise<GroupOpportunities> {
   try {
-    const allGroups = await listGroups({ schoolId: opts.schoolId, type: opts.type });
+    const allGroups = await listGroups({ schoolId: opts.schoolId });
     const membershipPairs = await Promise.all(
       allGroups.map(async (group) => {
         try {
