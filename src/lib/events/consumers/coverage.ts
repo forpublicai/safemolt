@@ -185,6 +185,17 @@ export const notificationsCoverage = {
   "agent.claimed": "none",
   "agent.vetting_started": "none",
   "agent.vetted": "none",
+  "agent.profile_updated": "none",
+  "memory.context_written": "none",
+  "memory.context_deleted": "none",
+  "class.enrolled": "none",
+  "class.dropped": "none",
+  "class.session_message": "none",
+  "class.evaluation_submitted": "none",
+  "admissions.application_submitted": "none",
+  "admissions.offer_accepted": "none",
+  "admissions.offer_declined": "none",
+  "admissions.offer_expired": "none",
 } satisfies CoverageManifest;
 
 export const activityTrailCoverage = {
@@ -269,6 +280,17 @@ export const activityTrailCoverage = {
   "agent.claimed": "none",
   "agent.vetting_started": "none",
   "agent.vetted": "none",
+  "agent.profile_updated": "none",
+  "memory.context_written": "none",
+  "memory.context_deleted": "none",
+  "class.enrolled": "none",
+  "class.dropped": "none",
+  "class.session_message": "none",
+  "class.evaluation_submitted": "none",
+  "admissions.application_submitted": "none",
+  "admissions.offer_accepted": "none",
+  "admissions.offer_declined": "none",
+  "admissions.offer_expired": "none",
 } satisfies CoverageManifest;
 
 export const memoryIngestCoverage = {
@@ -336,6 +358,17 @@ export const memoryIngestCoverage = {
   "agent.claimed": "none",
   "agent.vetting_started": "none",
   "agent.vetted": "none",
+  "agent.profile_updated": "none",
+  "memory.context_written": "none",
+  "memory.context_deleted": "none",
+  "class.enrolled": "none",
+  "class.dropped": "none",
+  "class.session_message": "none",
+  "class.evaluation_submitted": "none",
+  "admissions.application_submitted": "none",
+  "admissions.offer_accepted": "none",
+  "admissions.offer_declined": "none",
+  "admissions.offer_expired": "none",
 } satisfies CoverageManifest;
 
 /**

@@ -273,6 +273,18 @@ describe("coverage manifests", () => {
       "agent.claimed": "none",
       "agent.vetting_started": "none",
       "agent.vetted": "none",
+      // u3f's eleven kinds: history-only everywhere — no consumer effect and no legacy writer.
+      "agent.profile_updated": "none",
+      "memory.context_written": "none",
+      "memory.context_deleted": "none",
+      "class.enrolled": "none",
+      "class.dropped": "none",
+      "class.session_message": "none",
+      "class.evaluation_submitted": "none",
+      "admissions.application_submitted": "none",
+      "admissions.offer_accepted": "none",
+      "admissions.offer_declined": "none",
+      "admissions.offer_expired": "none",
     });
     expect(activityTrailCoverage).toEqual({
       "system.activation_fence": "none",
@@ -315,6 +327,18 @@ describe("coverage manifests", () => {
       "agent.claimed": "none",
       "agent.vetting_started": "none",
       "agent.vetted": "none",
+      // u3f's eleven kinds: history-only everywhere — no consumer effect and no legacy writer.
+      "agent.profile_updated": "none",
+      "memory.context_written": "none",
+      "memory.context_deleted": "none",
+      "class.enrolled": "none",
+      "class.dropped": "none",
+      "class.session_message": "none",
+      "class.evaluation_submitted": "none",
+      "admissions.application_submitted": "none",
+      "admissions.offer_accepted": "none",
+      "admissions.offer_declined": "none",
+      "admissions.offer_expired": "none",
     });
     expect(memoryIngestCoverage).toEqual({
       "system.activation_fence": "none",
@@ -356,6 +380,18 @@ describe("coverage manifests", () => {
       "agent.claimed": "none",
       "agent.vetting_started": "none",
       "agent.vetted": "none",
+      // u3f's eleven kinds: history-only everywhere — no consumer effect and no legacy writer.
+      "agent.profile_updated": "none",
+      "memory.context_written": "none",
+      "memory.context_deleted": "none",
+      "class.enrolled": "none",
+      "class.dropped": "none",
+      "class.session_message": "none",
+      "class.evaluation_submitted": "none",
+      "admissions.application_submitted": "none",
+      "admissions.offer_accepted": "none",
+      "admissions.offer_declined": "none",
+      "admissions.offer_expired": "none",
     });
   });
 

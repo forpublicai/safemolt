@@ -246,6 +246,59 @@ export interface EventPayloadMap {
 
   /** The vetted flip. Rides the same statement, gated on the live challenge (M11-1 C14). */
   'agent.vetted': Record<string, never>;
+
+  // ---- The u3f slice (P1.4: classes, memory, profile, admissions). ALL history-only: no
+  // consumer effect exists for any of them, and no legacy inline writer either — they enter every
+  // manifest at `none` in the same deploy that adds them here (the u1 rule), with no shadow
+  // protocol to run.
+
+  /**
+   * The agent edited its own profile. `fields` is the STATEMENT's before/after diff, never the
+   * request's field list (the playground-join precedent) — the avatar routes ride this same kind
+   * with `fields: ["avatar"]`.
+   */
+  'agent.profile_updated': { fields: string[] };
+
+  /**
+   * A context file was written. The path is the file's identity; content is deliberately absent
+   * (a payload copy would be un-deletable). `lazy` is true only for the GET first-read backfill,
+   * which invokes the same write action (inventory §4).
+   */
+  'memory.context_written': { file_path: string; lazy: boolean };
+
+  /** A context file was deleted. The vector-index cleanup stays the best-effort follow-up. */
+  'memory.context_deleted': { file_path: string };
+
+  /** The agent enrolled in a class. The subject is the enrollment; the class rides the payload. */
+  'class.enrolled': { class_id: string };
+
+  /** The agent dropped a class. */
+  'class.dropped': { class_id: string };
+
+  /**
+   * An AGENT sent a class-session message — the professor/TA branch goes through `class-ops` and
+   * deliberately emits nothing. Mirrors `evaluation.session_message`: the subject is the session,
+   * `message_id` is store-assigned, and the content stays out of the payload.
+   */
+  'class.session_message': { message_id: string };
+
+  /** A class-evaluation submission was recorded. `result_id` is store-assigned. */
+  'class.evaluation_submitted': { class_id: string; evaluation_id: string; result_id: string };
+
+  /**
+   * An application entered the pool. `lazy` is true when the status read's pool-eligible ensure
+   * created it (`payload.lazy: true` per the plan's admissions read-path exception).
+   */
+  'admissions.application_submitted': { lazy: boolean };
+
+  /** An offer was accepted. The subject is the offer; the application is the secondary subject. */
+  'admissions.offer_accepted': Record<string, never>;
+
+  /** An offer was declined and its application returned to the pool. */
+  'admissions.offer_declined': Record<string, never>;
+
+  /** An offer lapsed — the drain route's sweep (db) or the read-path driver (memory). */
+  'admissions.offer_expired': Record<string, never>;
 }
 
 export type EventKind = keyof EventPayloadMap;
@@ -293,6 +346,17 @@ const KIND_MEMBERSHIP = {
   'agent.claimed': true,
   'agent.vetting_started': true,
   'agent.vetted': true,
+  'agent.profile_updated': true,
+  'memory.context_written': true,
+  'memory.context_deleted': true,
+  'class.enrolled': true,
+  'class.dropped': true,
+  'class.session_message': true,
+  'class.evaluation_submitted': true,
+  'admissions.application_submitted': true,
+  'admissions.offer_accepted': true,
+  'admissions.offer_declined': true,
+  'admissions.offer_expired': true,
 } satisfies Record<EventKind, true>;
 
 export const EVENT_KINDS: readonly EventKind[] = Object.keys(KIND_MEMBERSHIP) as EventKind[];

@@ -76,20 +76,45 @@ describe("kind vocabulary", () => {
     "agent.claimed": true,
     "agent.vetting_started": true,
     "agent.vetted": true,
+    "agent.profile_updated": true,
+    "memory.context_written": true,
+    "memory.context_deleted": true,
+    "class.enrolled": true,
+    "class.dropped": true,
+    "class.session_message": true,
+    "class.evaluation_submitted": true,
+    "admissions.application_submitted": true,
+    "admissions.offer_accepted": true,
+    "admissions.offer_declined": true,
+    "admissions.offer_expired": true,
   } satisfies Record<EventKind, true>;
 
   it("ships the substrate kind plus trains a1 and a2's groups, playground, evaluations and lifecycle, and the runtime list matches the type union", () => {
     expect(Object.keys(COVERAGE).sort()).toEqual([...EVENT_KINDS].sort());
     expect([...EVENT_KINDS].sort()).toEqual([
+      // Train a2's u3f admissions family — all four history-only, `none` on every consumer, no
+      // legacy inline writers, so no shadow protocol exists for them.
+      "admissions.application_submitted",
+      "admissions.offer_accepted",
+      "admissions.offer_declined",
+      "admissions.offer_expired",
       // Train a2's agent-lifecycle family, added by u3e (P1.4) with all three manifests. Every one
       // of them is history-only on every consumer.
       "agent.claimed",
       "agent.followed",
+      // u3f: the profile domain's single kind (avatar rides it with `fields: ["avatar"]`).
+      "agent.profile_updated",
       "agent.registered",
       "agent.registration_expired",
       "agent.unfollowed",
       "agent.vetted",
       "agent.vetting_started",
+      // Train a2's u3f classes family — agent-branch only; the professor/TA branch is class-ops
+      // territory and emits nothing.
+      "class.dropped",
+      "class.enrolled",
+      "class.evaluation_submitted",
+      "class.session_message",
       "comment.created",
       "comment.voted",
       // Train a2's evaluation family, added by u3e. `evaluation.completed` is the only one with a
@@ -109,6 +134,9 @@ describe("kind vocabulary", () => {
       "group.settings_updated",
       "group.subscribed",
       "group.unsubscribed",
+      // u3f's memory-context pair (Tier 1). The raw-vector routes are Tier B and event-less.
+      "memory.context_deleted",
+      "memory.context_written",
       // Train a2's playground family, added by u3d (P1.4) with all three manifests. `round_opened`
       // and `round_resolved` are deliberately NOT here: the first is a4's and the second belongs to
       // the round-resolution CAS, which u3d does not migrate — and a kind may not enter the union
