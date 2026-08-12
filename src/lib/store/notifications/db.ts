@@ -5,7 +5,9 @@ import type {
   CommentNotificationInput,
   CreateNotificationInput,
   FollowNotificationInput,
+  NotificationLegacyRead,
   NotificationProjection,
+  NotificationTwinSubject,
 } from "./memory";
 
 function rowToNotification(row: Record<string, unknown>): StoredNotification {
@@ -258,22 +260,57 @@ function notificationProjectionFromRow(row: Record<string, unknown>): Notificati
   };
 }
 
+/** The same list, qualified — the twin read below joins the notification to its locked subject. */
+const NOTIFICATION_TWIN_COLUMNS = NOTIFICATION_COLUMNS.split(",")
+  .map((column) => `n.${column.trim()}`)
+  .join(", ");
+
+/**
+ * The subject a twin read re-locks, by type. `$2` is its id.
+ *
+ * The SAME rows and the SAME modes the two inserts lock — the comment kinds' post `FOR SHARE`
+ * (contending with `deletePost`'s `FOR UPDATE`), the follow kind's followee `FOR KEY SHARE`
+ * (contending with a withdrawal's `DELETE FROM agents` and with nothing a karma write takes).
+ */
+const NOTIFICATION_TWIN_SUBJECT_SQL: Record<NotificationTwinSubject["type"], string> = {
+  post: `SELECT id AS subject_id FROM posts WHERE id = $2::text AND deleted_at IS NULL FOR SHARE`,
+  agent: `SELECT id AS subject_id FROM agents WHERE id = $2::text FOR KEY SHARE`,
+};
+
 /**
  * The LEGACY twin of one shadow effect, by the key both writers stamp (Decision 6).
  *
  * Read-only, and the soak's only reason for existing: the dispatcher calls it the moment it writes
  * the shadow row, so the comparison happens seconds after the legacy insert instead of days later
  * against state that has since moved on.
+ *
+ * **The subject is re-validated and LOCKED in this same query** (u4prep2 finding 3). `describe`
+ * locks its subject too, but that lock ends when its query returns, and this is a separate
+ * auto-committed statement: a post deleted in the gap correctly removes its notifications, and this
+ * lookup then reported a perfectly-behaved deletion as a verdict-bearing `legacy_missing`. An empty
+ * locked target answers `subject_gone`, which the consumer stamps `unverifiable` — a comparison
+ * nobody can make, not an anomaly.
+ *
+ * The subject is the LEFT side of the outer join so its absence is zero rows, and the notification's
+ * absence is one row of NULLs; the two answers are therefore distinguishable, which a plain `WHERE`
+ * over both could not be.
  */
 export async function readNotificationProjectionByDedupKey(
-  dedupKey: string
-): Promise<NotificationProjection | null> {
+  dedupKey: string,
+  subject: NotificationTwinSubject
+): Promise<NotificationLegacyRead> {
   const rows = await sql!(
-    `SELECT ${NOTIFICATION_COLUMNS} FROM notifications WHERE dedup_key = $1`,
-    [dedupKey]
+    `SELECT ${NOTIFICATION_TWIN_COLUMNS}
+     FROM (${NOTIFICATION_TWIN_SUBJECT_SQL[subject.type]}) subject
+     LEFT JOIN notifications n ON n.dedup_key = $1`,
+    [dedupKey, subject.id]
   );
   const row = rows[0] as Record<string, unknown> | undefined;
-  return row ? notificationProjectionFromRow(row) : null;
+  if (!row) return { state: "subject_gone" };
+  // `notifications.id` is the primary key, so a NULL there is the outer join's no-match and nothing
+  // else — never a column a writer left empty.
+  if (row.id == null) return { state: "missing" };
+  return { state: "row", projection: notificationProjectionFromRow(row) };
 }
 
 export async function createCommentNotificationIdempotent(

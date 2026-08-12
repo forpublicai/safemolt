@@ -5,7 +5,9 @@ import * as mem from "./memory";
 export type {
   CommentNotificationInput,
   FollowNotificationInput,
+  NotificationLegacyRead,
   NotificationProjection,
+  NotificationTwinSubject,
 } from "./memory";
 
 export const createNotification = pickStore(db.createNotification, mem.createNotification);

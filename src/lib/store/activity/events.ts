@@ -1550,12 +1550,83 @@ function rowToActivityProjection(row: Record<string, unknown>): ActivityProjecti
  * The stamp is returned BESIDE the projection rather than folded into it, because the two answer
  * different questions: the payload is what is compared, and `sourceEventId` is what decides whether
  * this row is THIS event's twin at all. A natural key here is reusable in place (`agent.followed`
- * via re-follow, `group.joined` via leave-then-rejoin), so a row at the right key stamped by a
- * different event is not a mismatch — it is a different write.
+ * via re-follow, `group.joined` via leave-then-rejoin, six playground kinds sharing one session
+ * row), so a row at the right key stamped by a LATER event is not a mismatch — it is a different
+ * write, and the consumer stamps it `superseded`.
  */
 export interface ActivityLegacyRow {
   projection: ActivityProjection;
   sourceEventId: number | null;
+}
+
+/**
+ * The live row a twin read must RE-LOCK before it may call a missing trail row an anomaly
+ * (M11-2 u4prep2 finding 3).
+ *
+ * One entry per activity kind this milestone shadows, and each names the SAME row that kind's own
+ * projection SELECT locks — a `post` row's post, a `comment` row's post, a `follow` row's followee,
+ * a `group_join` row's group, and the playground rows' own session and action.
+ */
+export type ActivityTwinSubject =
+  | { type: "post"; id: string }
+  | { type: "comment"; id: string }
+  | { type: "agent"; id: string }
+  | { type: "group"; id: string }
+  | { type: "playground_session"; id: string }
+  | { type: "playground_action"; id: string };
+
+/** What a twin read answers: the row, no row, or no SUBJECT to have written one for. */
+export type ActivityLegacyRead =
+  | { state: "row"; row: ActivityLegacyRow }
+  | { state: "missing" }
+  | { state: "subject_gone" };
+
+/**
+ * The subject a twin read re-locks, by type. `$3` is its id, and each mode matches the writer's.
+ *
+ * A `comment` row's subject is the comment AND its post being live, exactly as
+ * `commentActivitySelectSql({ requireCommitted: true })` requires: the post carries the lock
+ * (`FOR SHARE OF p`, contending with `deletePost`'s `FOR UPDATE`) and the comment join carries the
+ * existence check.
+ */
+const ACTIVITY_TWIN_SUBJECT_SQL: Record<ActivityTwinSubject["type"], string> = {
+  post: `SELECT id AS subject_id FROM posts WHERE id = $3::text AND deleted_at IS NULL FOR SHARE`,
+  comment: `SELECT c.id AS subject_id FROM comments c
+              JOIN posts p ON p.id = c.post_id AND p.deleted_at IS NULL
+              WHERE c.id = $3::text FOR SHARE OF p`,
+  agent: `SELECT id AS subject_id FROM agents WHERE id = $3::text FOR KEY SHARE`,
+  group: `SELECT id AS subject_id FROM groups WHERE id = $3::text FOR KEY SHARE`,
+  playground_session: `SELECT id AS subject_id FROM playground_sessions WHERE id = $3::text FOR SHARE`,
+  playground_action: `SELECT id AS subject_id FROM playground_actions WHERE id = $3::text FOR SHARE`,
+};
+
+/** The projection's column list, qualified — the twin read joins the row to its locked subject. */
+const ACTIVITY_TWIN_COLUMNS = ACTIVITY_EVENT_COLUMNS.split(",")
+  .map((column) => `a.${column.trim()}`)
+  .join(", ");
+
+/** The memory twin of the locked subject: is the row the projection is about still there? */
+function activityTwinSubjectAlive(subject: ActivityTwinSubject): boolean {
+  switch (subject.type) {
+    case "post": {
+      const post = posts.get(subject.id);
+      return Boolean(post && !post.deletedAt);
+    }
+    case "comment": {
+      const comment = comments.get(subject.id);
+      if (!comment) return false;
+      const post = posts.get(comment.postId);
+      return Boolean(post && !post.deletedAt);
+    }
+    case "agent":
+      return agents.has(subject.id);
+    case "group":
+      return groups.has(subject.id);
+    case "playground_session":
+      return playgroundSessions.has(subject.id);
+    case "playground_action":
+      return playgroundActions.has(subject.id);
+  }
 }
 
 /**
@@ -1564,43 +1635,64 @@ export interface ActivityLegacyRow {
  * Read-only, and shared by both stores so the u4-prep comparison runs the same way in each. The
  * projection goes through the SAME row→projection mapper the describe path uses; a second copy
  * would make a formatting drift read as a payload mismatch on every event of the soak.
+ *
+ * **The subject is re-validated and LOCKED in this same query** (u4prep2 finding 3). `describe`
+ * locks its subject too, but that lock ends when its query returns, and this is a separate
+ * auto-committed statement: a post deleted in the gap correctly removes its trail rows, and this
+ * lookup then reported a perfectly-behaved deletion as a verdict-bearing `legacy_missing`. The
+ * subject is the LEFT side of the outer join, so its absence is zero rows while the trail row's
+ * absence is one row of NULLs — two answers a plain `WHERE` over both could not tell apart.
  */
 export async function readActivityProjectionByKey(
   kind: string,
-  entityId: string
-): Promise<ActivityLegacyRow | null> {
+  entityId: string,
+  subject: ActivityTwinSubject
+): Promise<ActivityLegacyRead> {
   if (hasDatabase()) {
     const rows = await sql!(
-      `SELECT ${ACTIVITY_EVENT_COLUMNS}, source_event_id FROM activity_events
-       WHERE kind = $1 AND entity_id = $2`,
-      [kind, entityId]
+      `SELECT ${ACTIVITY_TWIN_COLUMNS}, a.source_event_id
+       FROM (${ACTIVITY_TWIN_SUBJECT_SQL[subject.type]}) subject
+       LEFT JOIN activity_events a ON a.kind = $1::text AND a.entity_id = $2::text`,
+      [kind, entityId, subject.id]
     );
     const row = rows[0] as Record<string, unknown> | undefined;
-    if (!row) return null;
+    if (!row) return { state: "subject_gone" };
+    // `entity_id` is NOT NULL in the table, so a NULL there is the outer join's no-match and nothing
+    // else — never a column a writer left empty.
+    if (row.entity_id == null) return { state: "missing" };
     return {
-      projection: rowToActivityProjection(row),
-      sourceEventId: row.source_event_id == null ? null : Number(row.source_event_id),
+      state: "row",
+      row: {
+        projection: rowToActivityProjection(row),
+        sourceEventId: row.source_event_id == null ? null : Number(row.source_event_id),
+      },
     };
   }
+  // Memory mode has no locks, so the subject check and the read run with no `await` between them —
+  // the same stand-in for atomicity the rest of this store uses (Decision 4).
+  if (!activityTwinSubjectAlive(subject)) return { state: "subject_gone" };
   const key = activityEventKey(kind, entityId);
   const stored = activityEvents.get(key);
-  if (!stored) return null;
+  if (!stored) return { state: "missing" };
   return {
-    projection: {
-      kind: stored.kind,
-      occurred_at: stored.occurredAt,
-      actor_id: stored.actorId ?? null,
-      actor_name: stored.actorName ?? null,
-      actor_canonical_name: stored.actorCanonicalName ?? null,
-      entity_id: stored.id,
-      title: stored.title,
-      href: stored.href ?? null,
-      summary: stored.summary,
-      context_hint: stored.contextHint ?? "",
-      search_text: stored.searchText ?? "",
-      metadata: stored.metadata ?? {},
+    state: "row",
+    row: {
+      projection: {
+        kind: stored.kind,
+        occurred_at: stored.occurredAt,
+        actor_id: stored.actorId ?? null,
+        actor_name: stored.actorName ?? null,
+        actor_canonical_name: stored.actorCanonicalName ?? null,
+        entity_id: stored.id,
+        title: stored.title,
+        href: stored.href ?? null,
+        summary: stored.summary,
+        context_hint: stored.contextHint ?? "",
+        search_text: stored.searchText ?? "",
+        metadata: stored.metadata ?? {},
+      },
+      sourceEventId: activityEventSourceIds.get(key) ?? null,
     },
-    sourceEventId: activityEventSourceIds.get(key) ?? null,
   };
 }
 

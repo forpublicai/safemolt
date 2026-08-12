@@ -82,7 +82,13 @@ agent's context budget, hand the next round to a fresh agent with a self-contain
 5. **u3f is risk-split** (standing low-risk directive): profile/inbox/read-state get ONE codex
    round and stop unless BLOCKER/MAJOR; classes/admissions/memory-context get full rounds only
    where lock/atomicity-bearing.
-6. **Test data must be run-unique.** The reserved integration DB keeps rows across runs; every
+6. **Codex needs a quiet machine.** Two codex r8 launches died silently (exit 1, no final message,
+   different depths) while an opus harness agent was running gates and edits in the same repo; one
+   also saw the codebase-memory MCP time out repeatedly (codex falls back to git reads — that alone
+   is not fatal). Run codex only when no other agent lane is executing. Keep `< /dev/null` on every
+   codex launch anyway: one background session had stale prompt text appended from stdin as a
+   second user message.
+7. **Test data must be run-unique.** The reserved integration DB keeps rows across runs; every
    fixed identifier a test inserts under a UNIQUE constraint must carry the suite's `RUN` suffix
    (the u3e nonce collision is the precedent).
 

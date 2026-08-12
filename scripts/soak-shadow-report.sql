@@ -5,8 +5,9 @@
 --
 -- **THE COMPARISON IS NOT MADE HERE.** It is made at DRAIN TIME by the consumer dispatcher
 -- (`src/lib/events/consumers/dispatch.ts` + `legacy-compare.ts`) and stamped on the shadow row:
--- `legacy_match` is `matched | legacy_missing | payload_mismatch | unverifiable | compare_error`,
--- with the differing paths in `legacy_detail`. That is where the event, the intended payload and a
+-- `legacy_match` is
+-- `matched | legacy_missing | payload_mismatch | superseded | unverifiable | compare_error`, with the
+-- differing paths in `legacy_detail`. That is where the event, the intended payload and a
 -- freshly-committed legacy twin are all in hand. This script AGGREGATES stamps; it never
 -- reconstructs an expected key from live state. It owns only the arms no drain can stamp: a keyed
 -- legacy row with no shadow twin (`legacy_only`) and the malformed-row buckets on both sides.
@@ -15,17 +16,25 @@
 --
 -- OUTPUT (one result set, ordered by section/consumer/kind/effect_key): `summary` — one row per
 -- (consumer, kind) in `expected_pairs`, ALWAYS present, `note` carrying that pair's verdict, plus
--- two `(any)` rows totalling the malformed shadow and legacy rows; then the keys behind every count
--- — `payload_mismatch`, `legacy_missing`, `compare_error`, `not_stamped`, `legacy_only_key`,
--- `invalid_legacy_row`, `invalid_shadow_row`.
+-- two `(any)` rows totalling the malformed shadow and legacy rows; then the keys behind every
+-- ANOMALY count — `payload_mismatch`, `legacy_missing`, `compare_error`, `not_stamped`,
+-- `legacy_only_key`, `invalid_legacy_row`, `invalid_shadow_row`. `matched`, `superseded` and
+-- `unverifiable` have no detail rows: none of them names anything to go and look at.
 --
 -- VERDICT RULE: a `compare`-family row is soak-clean when `matched > 0` AND `payload_mismatch =
 -- legacy_missing = compare_error = not_stamped = legacy_only = uncorrelatable = 0`. The soak is
--- clean only when EVERY `compare` row meets that bar AND both `(any)` rows are zero. Nothing here is
--- a tolerated residual:
---   * `legacy_missing` is stamped only when `describe` produced an effect, and every describe
---     re-fetches its subject and returns nothing when it is gone — so the stamp means the subject
---     was LIVE and the legacy row was absent anyway. An anomaly, not a create-then-delete.
+-- clean only when EVERY `compare` row meets that bar AND both `(any)` rows are zero. `superseded` is
+-- NOT in that list and is not an anomaly — see below. Nothing else here is a tolerated residual:
+--   * `legacy_missing` is stamped only when `describe` produced an effect, the twin read re-locked
+--     the same subject and found it alive, and no NEWER event owns the row — so the stamp means the
+--     legacy writer's row was absent for this event anyway. An anomaly, not a create-then-delete.
+--   * `superseded` means the legacy row at a reusable key (`follow`, `group_join`, the six playground
+--     lifecycle kinds sharing `playground_session:{id}`) carries a LATER event's `source_event_id`.
+--     Routine, correct behavior on both sides: the inline upsert replaces the row on every write, so
+--     an event drained after the next write can only see the newer one, and the durable evidence
+--     that the two writers agreed is the monotonic watermark itself. It is counted and shown, never
+--     added to `anomalies`, and it is not `comparable` either — a window that produced ONLY
+--     superseded rows for a pair reads `no_data`, because nothing in it diffed a payload.
 --   * `not_stamped` (NULL) means a pre-amendment build drained that event inside the window. Extend
 --     the soak past that deploy; those rows can never be classified retroactively.
 --   * `uncorrelatable` (a legacy row with NULL `dedup_key`/`source_event_id`) is a stamping
@@ -113,8 +122,13 @@ notif_type_map(notif_type, event_kind) AS (
   VALUES ('comment_on_my_post', 'comment.created'), ('reply_to_my_comment', 'comment.created'),
          ('new_follower', 'agent.followed')
 ),
+-- The stamp vocabulary, kept identical to `LEGACY_MATCH_VALUES` in
+-- `src/lib/events/consumers/legacy-compare.ts` by `m11-2-u4prep-soak-report.test.ts`: a value this
+-- list does not know lands in `invalid_shadow` as `unknown_stamp:<value>`, so a newer build's
+-- vocabulary is loud rather than silently absorbed into a clean total.
 stamp_vocabulary(value) AS (
-  VALUES ('matched'), ('legacy_missing'), ('payload_mismatch'), ('unverifiable'), ('compare_error')
+  VALUES ('matched'), ('legacy_missing'), ('payload_mismatch'), ('superseded'), ('unverifiable'),
+         ('compare_error')
 ),
 
 -- Every WELL-FORMED, EXPECTED shadow row in the window, windowed by the PRODUCING EVENT's clock —
@@ -138,6 +152,7 @@ stamp_agg AS (
     count(*) FILTER (WHERE legacy_match = 'payload_mismatch') AS payload_mismatch,
     count(*) FILTER (WHERE legacy_match = 'legacy_missing') AS legacy_missing,
     count(*) FILTER (WHERE legacy_match = 'compare_error') AS compare_error,
+    count(*) FILTER (WHERE legacy_match = 'superseded') AS superseded,
     count(*) FILTER (WHERE legacy_match = 'unverifiable') AS unverifiable,
     count(*) FILTER (WHERE legacy_match IS NULL) AS not_stamped
   FROM shadow_rows GROUP BY consumer, event_kind
@@ -187,14 +202,21 @@ notif_legacy_events AS (
   SELECT l.*, e.id AS event_id, e.created_at AS event_created_at
   FROM notif_legacy l LEFT JOIN events e ON e.id = l.suffix_event_id
 ),
+-- **ONE ROW PER LEGACY ROW, never one per mapped kind.** `kind_map` is six-to-one for the playground
+-- family, so joining it here fanned a single `playground_session` row out to six kinds and let one
+-- missing shadow twin increment `legacy_only` on all six — turning five `no_data` pairs into
+-- anomalies over one row. The row's own activity kind is carried instead, and the EVENT's actual kind
+-- is resolved beside it; `legacy_only_keys` joins `kind_map` afterwards, on the pair, which is what
+-- collapses the fan-out to the one kind that actually produced the row.
 act_legacy AS (
-  SELECT (a.kind || ':' || a.entity_id) AS effect_key, km.event_kind, a.source_event_id,
+  SELECT (a.kind || ':' || a.entity_id) AS effect_key, a.kind AS activity_kind, a.source_event_id,
     a.occurred_at AS row_occurred_at
-  FROM activity_events a JOIN kind_map km ON km.activity_kind = a.kind
+  FROM activity_events a
   WHERE a.source_event_id IS NOT NULL
+    AND a.kind IN (SELECT activity_kind FROM kind_map)
 ),
 act_legacy_events AS (
-  SELECT l.*, e.id AS event_id, e.created_at AS event_created_at
+  SELECT l.*, e.id AS event_id, e.kind AS event_kind, e.created_at AS event_created_at
   FROM act_legacy l LEFT JOIN events e ON e.id = l.source_event_id
 ),
 legacy_only_keys AS (
@@ -208,8 +230,15 @@ legacy_only_keys AS (
   UNION ALL
   -- The shadow twin must name the SAME source event: every activity natural key is reusable in
   -- place (re-follow, leave-then-rejoin), so a shadow row from an earlier write is not this row's.
+  --
+  -- The `kind_map` join is on the PAIR — the event's own kind and the row's activity kind — so a
+  -- `playground_session` row is attributed to the one lifecycle kind whose event actually wrote it,
+  -- and a `source_event_id` naming an event of an unrelated kind matches nothing here rather than
+  -- being counted against a kind that never touched the row.
   SELECT 'activity-trail'::text, l.event_kind, l.effect_key
-  FROM act_legacy_events l CROSS JOIN params
+  FROM act_legacy_events l
+  JOIN kind_map km ON km.event_kind = l.event_kind AND km.activity_kind = l.activity_kind
+  CROSS JOIN params
   WHERE l.event_id IS NOT NULL AND l.event_created_at >= params.soak_start
     AND NOT EXISTS (
       SELECT 1 FROM shadow_rows s
@@ -224,12 +253,19 @@ invalid_legacy AS (
   FROM notif_legacy_events l CROSS JOIN params
   WHERE l.event_id IS NULL AND l.row_created_at >= params.soak_start
   UNION ALL
-  SELECT 'activity-trail'::text, l.event_kind, l.effect_key, 'source_event_id names no event'
+  -- No event resolved, so there is no event KIND to report — NULL rather than the mapped kind, which
+  -- for a `playground_session` row would have been six guesses at a kind nothing can name.
+  SELECT 'activity-trail'::text, NULL::text, l.effect_key, 'source_event_id names no event'
   FROM act_legacy_events l CROSS JOIN params
   WHERE l.event_id IS NULL AND l.row_occurred_at >= params.soak_start
 ),
 -- A legacy row with NO key at all. `occurred_at`, not `created_at`, on the activity side: the upsert
 -- refreshes the former on every write and never touches the latter.
+--
+-- The activity arm still fans out through `kind_map`, and deliberately: a row with no
+-- `source_event_id` names no event and therefore no kind, so there is nothing to attribute it to.
+-- Every mapped kind is charged, which blocks the flip for all of them — the safe direction, and the
+-- reason this is not the `legacy_only` fan-out the same map used to cause.
 uncorrelatable_agg AS (
   SELECT 'notifications'::text AS consumer, tm.event_kind, count(*) AS uncorrelatable
   FROM notifications n JOIN notif_type_map tm ON tm.notif_type = n.type CROSS JOIN params
@@ -253,6 +289,7 @@ pair_summary AS (
     COALESCE(sa.payload_mismatch, 0) AS payload_mismatch,
     COALESCE(sa.legacy_missing, 0) AS legacy_missing,
     COALESCE(sa.compare_error, 0) AS compare_error,
+    COALESCE(sa.superseded, 0) AS superseded,
     COALESCE(sa.unverifiable, 0) AS unverifiable,
     COALESCE(sa.not_stamped, 0) AS not_stamped,
     COALESCE(lo.legacy_only, 0) AS legacy_only,
@@ -263,6 +300,9 @@ pair_summary AS (
   LEFT JOIN uncorrelatable_agg ua ON ua.consumer = ep.consumer AND ua.event_kind = ep.event_kind
 ),
 pair_verdict AS (
+  -- `superseded` is in NEITHER total, and that is the whole point of the stamp: it is not an
+  -- anomaly (both writers behaved correctly), and it is not a comparison either (no payload was
+  -- diffed), so it can neither fail a pair nor make an uncompared window look clean.
   SELECT p.*, (p.matched + p.payload_mismatch + p.legacy_missing + p.compare_error) AS comparable,
     (p.payload_mismatch + p.legacy_missing + p.compare_error + p.not_stamped
        + p.legacy_only + p.uncorrelatable) AS anomalies
@@ -277,12 +317,14 @@ SELECT 'summary'::text AS section, event_kind AS kind, consumer, NULL::text AS e
   CASE WHEN family = 'compare' AND (comparable > 0 OR anomalies > 0) THEN payload_mismatch END AS payload_mismatch,
   CASE WHEN family = 'compare' AND (comparable > 0 OR anomalies > 0) THEN legacy_missing END AS legacy_missing,
   CASE WHEN family = 'compare' AND (comparable > 0 OR anomalies > 0) THEN compare_error END AS compare_error,
-  unverifiable, not_stamped, legacy_only, uncorrelatable,
+  superseded, unverifiable, not_stamped, legacy_only, uncorrelatable,
   CASE
     WHEN family = 'ingest' THEN
       'unverifiable: legacy is an external vector store, not SQL-visible — shadow volume only, EXCLUDED from any flip-clean conclusion'
     WHEN family = 'deletion' THEN
       'deletion kind: key-only, stamped unverifiable (the rows are gone on both sides before the event drains); the flip gates on the both-orders convergence tests, not this report'
+    WHEN comparable = 0 AND anomalies = 0 AND superseded > 0 THEN
+      'no_data (superseded only): ' || superseded || ' effect(s) whose legacy row a LATER event had already rewritten — correct on both sides, but nothing here diffed a payload'
     WHEN comparable = 0 AND anomalies = 0 THEN
       'no_data: nothing comparable in this window for this (consumer, kind) — absence is not evidence of a clean soak'
     WHEN anomalies > 0 THEN
@@ -290,43 +332,44 @@ SELECT 'summary'::text AS section, event_kind AS kind, consumer, NULL::text AS e
       ' compare_error=' || compare_error || ' not_stamped=' || not_stamped ||
       ' legacy_only=' || legacy_only || ' uncorrelatable=' || uncorrelatable ||
       ' — NOT flip-clean; see the detail rows'
-    ELSE 'clean: ' || matched || ' matched, no anomalies in this window'
+    ELSE 'clean: ' || matched || ' matched, ' || superseded || ' superseded, no anomalies in this window'
   END AS note
 FROM pair_verdict
 
 UNION ALL
 SELECT 'summary', NULL, '(any)', NULL, (SELECT count(*) FROM invalid_shadow),
-  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
   'malformed or unexpected event_consumer_shadow rows (NULL field, orphaned event_id, an unexpected (consumer, kind), or an unrecognized legacy_match); MUST be zero — see invalid_shadow_row'
 
 UNION ALL
 SELECT 'summary', NULL, '(any)', NULL, (SELECT count(*) FROM invalid_legacy),
-  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
   'legacy rows whose key names no event (unparseable suffix, or an id no event row carries); MUST be zero — see invalid_legacy_row'
 
--- One detail row per stamped anomaly, and the SECTION IS THE STAMP — `payload_mismatch`,
--- `legacy_missing`, `compare_error`, or `not_stamped` for the pre-amendment NULL. `matched` and
--- `unverifiable` have no detail rows: neither names anything to go and look at.
+-- One detail row per stamped ANOMALY, and the SECTION IS THE STAMP — `payload_mismatch`,
+-- `legacy_missing`, `compare_error`, or `not_stamped` for the pre-amendment NULL. `matched`,
+-- `superseded` and `unverifiable` have no detail rows: none of them names anything to go and look
+-- at, and a `superseded` list would be one line per routine re-write of a reused key.
 UNION ALL
 SELECT COALESCE(legacy_match, 'not_stamped'), event_kind, consumer, effect_key,
-  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
   'event_id=' || event_id::text || ' detail=' || COALESCE(legacy_detail::text, '(null)')
 FROM shadow_rows
 WHERE legacy_match IS NULL OR legacy_match IN ('payload_mismatch', 'legacy_missing', 'compare_error')
 
 UNION ALL
-SELECT 'legacy_only_key', event_kind, consumer, effect_key, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+SELECT 'legacy_only_key', event_kind, consumer, effect_key, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
   'a keyed legacy row whose producing event is in the window with NO shadow twin — nothing ran to compare it'
 FROM legacy_only_keys
 
 UNION ALL
-SELECT 'invalid_legacy_row', event_kind, consumer, effect_key, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+SELECT 'invalid_legacy_row', event_kind, consumer, effect_key, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
   'reason=' || reason
 FROM invalid_legacy
 
 UNION ALL
 SELECT 'invalid_shadow_row', NULL, COALESCE(consumer, '(null)'), COALESCE(effect_key, '(null)'),
-  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
   'reason=' || reason || ' shadow_row_id=' || id::text || ' event_id=' || COALESCE(event_id::text, '(null)')
 FROM invalid_shadow
 

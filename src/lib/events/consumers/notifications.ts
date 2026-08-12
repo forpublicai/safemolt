@@ -24,6 +24,7 @@ import {
   readNotificationProjectionByDedupKey,
   type CommentNotificationInput,
   type FollowNotificationInput,
+  type NotificationTwinSubject,
 } from "@/lib/store";
 import type { NotificationType, StoredEvent } from "@/lib/store-types";
 
@@ -184,6 +185,24 @@ async function plan(event: StoredEvent): Promise<PlannedNotification | null> {
 }
 
 /**
+ * The live row the twin read re-locks — the SAME subject each insert locks (u4prep2 finding 3).
+ *
+ * It comes from the EVENT, never from a re-fetch: a re-fetch is the very check-then-read gap this
+ * closes, and both ids are carried by the event itself (`post_id` in the payload, the followee in
+ * the subject column).
+ */
+function twinSubject(event: StoredEvent): NotificationTwinSubject | null {
+  switch (event.kind) {
+    case "comment.created":
+      return { type: "post", id: payloadId(event, eventPayload(event), "post_id") };
+    case "agent.followed":
+      return { type: "agent", id: requireColumn(event, "subjectId") };
+    default:
+      return null;
+  }
+}
+
+/**
  * The effects, exported beside the consumer.
  *
  * Every checked-in manifest puts every a1 kind at `legacy` or `none` in u2, so nothing else can
@@ -252,6 +271,12 @@ export const notificationEffects: ConsumerEffects = {
    * so no reconstruction of "the key a legitimate producer would have computed" is needed or wanted:
    * a row either sits at this key or does not, and both answers are decided here, seconds after the
    * transitional inline writer committed it inside the emitting statement (P1.2).
+   *
+   * **The subject is re-locked by the read itself** (u4prep2 finding 3). `describe`'s lock ends with
+   * its query, so a deletion landing between the two statements removes the legacy row correctly and
+   * left this lookup calling that an anomaly. The store re-validates the same subject in the same
+   * query — the comment kinds' post, the follow kind's followee — and a subject that is gone answers
+   * `unverifiable` rather than `legacy_missing`.
    */
   async readLegacyTwin(event: StoredEvent, effectKey: string): Promise<LegacyTwin> {
     if (event.kind === "post.deleted") {
@@ -263,9 +288,19 @@ export const notificationEffects: ConsumerEffects = {
         reason: "deletion effect: the rows are already removed on both sides, so nothing is diffable",
       };
     }
-    const legacy = await readNotificationProjectionByDedupKey(effectKey);
-    if (!legacy) return { state: "missing", detail: { dedup_key: effectKey } };
-    return { state: "row", payload: legacy as unknown as Record<string, unknown> };
+    const subject = twinSubject(event);
+    if (!subject) {
+      return { state: "unverifiable", reason: `no twin subject is defined for kind '${event.kind}'` };
+    }
+    const legacy = await readNotificationProjectionByDedupKey(effectKey, subject);
+    if (legacy.state === "subject_gone") {
+      return {
+        state: "unverifiable",
+        reason: `the ${subject.type} this notification is about was deleted before the twin read`,
+      };
+    }
+    if (legacy.state === "missing") return { state: "missing", detail: { dedup_key: effectKey } };
+    return { state: "row", payload: legacy.projection as unknown as Record<string, unknown> };
   },
 
   async apply(event: StoredEvent): Promise<void> {

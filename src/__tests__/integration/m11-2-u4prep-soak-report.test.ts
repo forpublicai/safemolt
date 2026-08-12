@@ -34,19 +34,22 @@ import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import path from "path";
 
+import { activityTrailEffects } from "@/lib/events/consumers/activity-trail";
 import {
   activityTrailCoverage,
   memoryIngestCoverage,
   notificationsCoverage,
   type CoverageManifest,
 } from "@/lib/events/consumers/coverage";
+import { LEGACY_MATCH_VALUES } from "@/lib/events/consumers/legacy-compare";
+import { notificationEffects } from "@/lib/events/consumers/notifications";
 import { eventConsumers } from "@/lib/events/consumers/registry";
 import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
 import { followAgent } from "@/lib/store/agents/db";
 import { createComment } from "@/lib/store/comments/db";
 import { emitEvent, getEventById } from "@/lib/store/events/db";
 import { drainEventConsumer } from "@/lib/store/events/drain-db";
-import { joinGroup } from "@/lib/store/groups/db";
+import { joinGroup, leaveGroup } from "@/lib/store/groups/db";
 import { createPost } from "@/lib/store/posts/db";
 import { deletePostAndCleanUp } from "@/lib/post-deletion";
 import type { StoredComment, StoredEvent, StoredPost } from "@/lib/store-types";
@@ -110,6 +113,7 @@ interface ReportRow {
   payload_mismatch: number | null;
   legacy_missing: number | null;
   compare_error: number | null;
+  superseded: number | null;
   unverifiable: number | null;
   not_stamped: number | null;
   legacy_only: number | null;
@@ -123,6 +127,7 @@ const NUMERIC_COLUMNS = [
   "payload_mismatch",
   "legacy_missing",
   "compare_error",
+  "superseded",
   "unverifiable",
   "not_stamped",
   "legacy_only",
@@ -394,6 +399,20 @@ describe("the shipped script's psql surface", () => {
     expect(() => stripPsqlMetaCommands(reordered)).toThrow();
   });
 
+  /**
+   * The report's `stamp_vocabulary` is a hand-written copy of `LEGACY_MATCH_VALUES`, and a value it
+   * does not know is claimed by `invalid_shadow` as `unknown_stamp:<value>`. That is the right
+   * failure mode for a NEWER build's vocabulary reaching an OLDER report — and exactly the wrong one
+   * for a value this build stamps routinely, which would turn every `superseded` row into a
+   * malformed-row anomaly. So the two lists are compared outright.
+   */
+  it("carries the same stamp vocabulary the dispatcher stamps", () => {
+    const block = /stamp_vocabulary\(value\) AS \(\s*VALUES([\s\S]*?)\n\),/.exec(RAW_REPORT_SQL);
+    expect(block).not.toBeNull();
+    const inSql = Array.from(block![1].matchAll(/'([a-z_]+)'/g)).map((match) => match[1]);
+    expect(inSql.slice().sort()).toEqual([...LEGACY_MATCH_VALUES].sort());
+  });
+
   it("interpolates the window as a QUOTED LITERAL, never as raw SQL", () => {
     // The hardening in one assertion: a bare `:soak_start` would substitute whatever the operator
     // typed straight into the statement. `:'soak_start'` cannot.
@@ -532,6 +551,49 @@ describe("a clean pair through the real drain is STAMPED matched and COUNTED mat
     expect(summary.note).toEqual(expect.stringContaining("clean:"));
   });
 
+  /**
+   * u4prep2 finding 1 — a REUSED natural key, through two real producers and one drain.
+   *
+   * `group_join:{agent}:{group}` survives a leave, so a re-join writes the same row again and the
+   * inline upsert replaces `source_event_id` with the second event's. The first event then drains
+   * against a row it no longer owns, which is routine on both sides: it used to stamp verdict-bearing
+   * `legacy_missing` and made an ordinary join/leave/re-join permanently un-clean.
+   */
+  it("group.joined twice on one key: the older event is superseded, the newer matched", async () => {
+    const windowStart = await dbNow();
+    const owner = await seedAgent();
+    const joiner = await seedAgent();
+    const group = await seedGroup(owner.id);
+
+    expect((await joinGroup(joiner.id, group, [groupJoinedEvent(joiner.id, group)])).success).toBe(true);
+    const firstEvent = await findEventBySubject("group.joined", group);
+    expect((await leaveGroup(joiner.id, group)).success).toBe(true);
+    // The trail row outlives the membership — leaving removes no projection — so the re-join is a
+    // second write to the SAME key.
+    expect((await joinGroup(joiner.id, group, [groupJoinedEvent(joiner.id, group)])).success).toBe(true);
+    const secondEvent = await findEventBySubject("group.joined", group);
+    expect(secondEvent.id).toBeGreaterThan(firstEvent.id);
+
+    await drainAll();
+
+    const key = `group_join:${joiner.id}:${group}`;
+    const older = await stampOf("activity-trail", firstEvent.id, key);
+    expect(older?.legacy_match).toBe("superseded");
+    expect(Number(older?.legacy_detail?.legacy_source_event_id)).toBe(secondEvent.id);
+    expect(await stampOf("activity-trail", secondEvent.id, key)).toEqual({
+      legacy_match: "matched",
+      legacy_detail: null,
+    });
+
+    const rows = await runReport(windowStart);
+    const summary = summaryFor(rows, "activity-trail", "group.joined");
+    expect(summary.superseded).toBe(1);
+    expect(summary.matched).toBe(1);
+    // Counted and shown, never an anomaly — and never a detail row either.
+    expect(summary.note).toEqual(expect.stringContaining("clean:"));
+    expect(rows.some((r) => r.section === "superseded")).toBe(false);
+  }, 30000);
+
   it("post.deleted stamps unverifiable on both non-ingest consumers, and is never called clean", async () => {
     const windowStart = await dbNow();
     const { author, post } = await seedPost("Deleted");
@@ -635,13 +697,18 @@ describe("a legacy twin that is absent when the event drains is stamped legacy_m
     expect(rows.some((r) => r.section === "legacy_missing" && r.effect_key === key)).toBe(true);
   }, 30000);
 
-  it("activity-trail: a row stamped by a DIFFERENT event is not this event's twin", async () => {
+  /**
+   * The OLDER-watermark direction, which is the verdict-bearing one (u4prep2 finding 1).
+   *
+   * A row whose `source_event_id` stopped before this event means the inline writer never landed for
+   * it — nothing newer replaced it either. The mirror case, a row a LATER event owns, is routine
+   * supersession and is stamped `superseded`; see the group.joined re-join fixture above.
+   */
+  it("activity-trail: a row whose watermark stopped at an EARLIER event", async () => {
     const windowStart = await dbNow();
     const { post, event } = await seedPost("Activity stale source");
-    // A real, in-window row at the right key — but stamped by another event. Comparing content
-    // against it would diff two different intents; it is simply not this event's twin.
     await pgPool().query(
-      `UPDATE activity_events SET source_event_id = source_event_id + 1 WHERE kind = 'post' AND entity_id = $1`,
+      `UPDATE activity_events SET source_event_id = source_event_id - 1 WHERE kind = 'post' AND entity_id = $1`,
       [post.id]
     );
 
@@ -649,11 +716,49 @@ describe("a legacy twin that is absent when the event drains is stamped legacy_m
 
     const stamp = await stampOf("activity-trail", event.id, `post:${post.id}`);
     expect(stamp?.legacy_match).toBe("legacy_missing");
-    expect(String(stamp?.legacy_detail?.reason)).toContain("stamped by a different event");
-    expect(Number(stamp?.legacy_detail?.legacy_source_event_id)).toBe(event.id + 1);
+    expect(String(stamp?.legacy_detail?.reason)).toContain("stopped at an earlier event");
+    expect(Number(stamp?.legacy_detail?.legacy_source_event_id)).toBe(event.id - 1);
 
     const rows = await runReport(windowStart);
     expect(summaryFor(rows, "activity-trail", "post.created").legacy_missing).toBe(1);
+  }, 30000);
+});
+
+/**
+ * u4prep2 finding 3 — the describe→twin-read gap, closed by re-locking the subject.
+ *
+ * **Driven directly rather than through the drain, and that is deliberate.** The window under test
+ * is the one BETWEEN `describe` and `readLegacyTwin`, two separate auto-committed statements inside
+ * one dispatch; no fixture can pause the drain there without a barrier this suite does not carry.
+ * What the fix is, though, is a property of the twin read alone — a subject that is gone answers
+ * `unverifiable`, never `legacy_missing` — so the reader is called with a real event, a real key,
+ * and a real deletion, before and after. The live half is the control: without it, an `unverifiable`
+ * could just as well come from a key nothing ever matched.
+ */
+describe("a subject deleted before the twin read is unverifiable, not legacy_missing", () => {
+  it("both consumers answer unverifiable once the post is a tombstone", async () => {
+    const { author, post, event: postEvent } = await seedPost("Deleted before twin read");
+    const { comment, event: commentEvent } = await seedComment(post, "doomed twin comment");
+    const notifKey = `comment_on_my_post:${author.id}:${commentEvent.id}`;
+
+    // Live: every reader finds its own twin. Whatever the payloads say, the STATE is `row`.
+    expect((await notificationEffects.readLegacyTwin!(commentEvent, notifKey)).state).toBe("row");
+    expect(
+      (await activityTrailEffects.readLegacyTwin!(commentEvent, `comment:${comment.id}`)).state
+    ).toBe("row");
+    expect((await activityTrailEffects.readLegacyTwin!(postEvent, `post:${post.id}`)).state).toBe("row");
+
+    // The real deletion path: the tombstone, the trail rows and the notifications, all correct.
+    await seedDeletion(author.id, post);
+
+    for (const twin of [
+      await notificationEffects.readLegacyTwin!(commentEvent, notifKey),
+      await activityTrailEffects.readLegacyTwin!(commentEvent, `comment:${comment.id}`),
+      await activityTrailEffects.readLegacyTwin!(postEvent, `post:${post.id}`),
+    ]) {
+      expect(twin.state).toBe("unverifiable");
+      expect(String((twin as { reason: string }).reason)).toContain("deleted before the twin read");
+    }
   }, 30000);
 });
 
@@ -797,4 +902,68 @@ describe("malformed rows on either side fail the verdict instead of vanishing", 
       await pgPool().query(`DELETE FROM activity_events WHERE kind = 'post' AND entity_id = $1`, [staleActivityEntity]);
     }
   });
+});
+
+/**
+ * u4prep2 finding 5 — one legacy row, one kind.
+ *
+ * `kind_map` is six-to-one for the playground family: all six lifecycle kinds write the SAME
+ * `playground_session:{id}` row. Expanding a legacy row through the map charged every one of them,
+ * so a single uncompared row turned five `no_data` pairs into anomalies and made the report's own
+ * output unusable for deciding which kind to look at.
+ *
+ * The fixture is the finest one that isolates it: a real event of ONE playground kind, a legacy trail
+ * row stamped with that event's id, and no shadow twin — which is `legacy_only` by definition. It is
+ * deliberately never drained; the assertion is the report's attribution, not a dispatch.
+ */
+describe("a legacy row shared by six kinds is attributed to exactly one", () => {
+  const OTHER_PLAYGROUND_KINDS = [
+    "playground.session_created",
+    "playground.participant_affiliation_updated",
+    "playground.session_completed",
+    "playground.session_cancelled",
+    "playground.session_expired",
+  ];
+
+  it("legacy_only increments only the kind whose event actually stamped the row", async () => {
+    const windowStart = await dbNow();
+    const actor = await seedAgent();
+    const sessionId = nextId("session");
+    const event = await emitEvent({
+      kind: "playground.session_joined",
+      actorAgentId: actor.id,
+      subjectType: "playground_session",
+      subjectId: sessionId,
+      payload: {},
+    });
+    createdEventIds.push(event.id);
+    await pgPool().query(
+      `INSERT INTO activity_events (kind, entity_id, occurred_at, actor_id, title, summary, href, source_event_id)
+       VALUES ('playground_session', $1, NOW(), $2, 'g session', 'g session', '/playground', $3)`,
+      [sessionId, actor.id, event.id]
+    );
+    try {
+      const rows = await runReport(windowStart);
+
+      const joined = summaryFor(rows, "activity-trail", "playground.session_joined");
+      expect(joined.legacy_only).toBe(1);
+      expect(joined.note).toEqual(expect.stringContaining("ANOMALIES"));
+      for (const kind of OTHER_PLAYGROUND_KINDS) {
+        const summary = summaryFor(rows, "activity-trail", kind);
+        expect([kind, summary.legacy_only]).toEqual([kind, 0]);
+        expect([kind, summary.note]).toEqual([kind, expect.stringContaining("no_data")]);
+      }
+      // And ONE detail row, not six.
+      expect(
+        rows.filter(
+          (r) => r.section === "legacy_only_key" && r.effect_key === `playground_session:${sessionId}`
+        )
+      ).toHaveLength(1);
+    } finally {
+      await pgPool().query(
+        `DELETE FROM activity_events WHERE kind = 'playground_session' AND entity_id = $1`,
+        [sessionId]
+      );
+    }
+  }, 30000);
 });

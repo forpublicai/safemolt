@@ -87,6 +87,27 @@ export interface NotificationProjection {
   dedup_key: string | null;
 }
 
+/**
+ * The live row a twin read must RE-LOCK before it may call a missing legacy row an anomaly
+ * (M11-2 u4prep2 finding 3).
+ *
+ * `describe` locks its subject, but that lock ends when its query returns, and the twin read is a
+ * separate auto-committed statement. A post deleted in that gap correctly takes its notifications
+ * with it, and the lookup then stamped verdict-bearing `legacy_missing` for a deletion that behaved
+ * perfectly. So each lookup re-validates the subject in the SAME query that reads the legacy row —
+ * the comment kinds' post, the follow kind's followee — and an absent one answers `subject_gone`,
+ * which the consumer stamps `unverifiable`.
+ */
+export type NotificationTwinSubject =
+  | { type: "post"; id: string }
+  | { type: "agent"; id: string };
+
+/** What a twin read answers: the row, no row, or no SUBJECT to have written one for. */
+export type NotificationLegacyRead =
+  | { state: "row"; projection: NotificationProjection }
+  | { state: "missing" }
+  | { state: "subject_gone" };
+
 export async function createNotification(input: CreateNotificationInput): Promise<StoredNotification> {
   const row: StoredNotification = {
     id: generateId("notif"),
@@ -267,6 +288,15 @@ export async function createFollowNotificationIdempotent(
   return insertNotificationIdempotentSync(built, input.dedupKey);
 }
 
+/** The memory twin of the db reader's locked subject: is the row the projection is about still there? */
+function notificationTwinSubjectAlive(subject: NotificationTwinSubject): boolean {
+  if (subject.type === "post") {
+    const post = posts.get(subject.id);
+    return Boolean(post && !post.deletedAt);
+  }
+  return agents.has(subject.id);
+}
+
 /**
  * The LEGACY twin of one shadow effect, by the key both writers stamp — the memory twin of the db
  * reader of the same name.
@@ -274,26 +304,35 @@ export async function createFollowNotificationIdempotent(
  * `notificationDedupKeys` is the memory store's stand-in for the unique index, so the lookup is the
  * same one Postgres makes. The stored row is mapped through the SAME shape `projectionOf` produces,
  * for the reason stated on the db side: the drain-time comparison diffs the two against each other.
+ *
+ * The subject is checked FIRST and with no `await` before the read, which is this store's stand-in
+ * for the db side's single locked query: memory mode has no locks, so the only way to keep the two
+ * observations of one moment is to make them unreachable by an interleaved promise.
  */
 export async function readNotificationProjectionByDedupKey(
-  dedupKey: string
-): Promise<NotificationProjection | null> {
+  dedupKey: string,
+  subject: NotificationTwinSubject
+): Promise<NotificationLegacyRead> {
+  if (!notificationTwinSubjectAlive(subject)) return { state: "subject_gone" };
   const id = notificationDedupKeys.get(dedupKey);
-  if (id === undefined) return null;
+  if (id === undefined) return { state: "missing" };
   const row = notifications.get(id);
-  if (!row) return null;
+  if (!row) return { state: "missing" };
   return {
-    agent_id: row.agent_id,
-    type: row.type,
-    priority: row.priority,
-    actor: row.actor,
-    target: row.target,
-    href: row.href,
-    created_at: row.created_at,
-    web_url: row.web_url ?? null,
-    deadline_at: row.deadline_at ?? null,
-    metadata: row.metadata ?? {},
-    dedup_key: dedupKey,
+    state: "row",
+    projection: {
+      agent_id: row.agent_id,
+      type: row.type,
+      priority: row.priority,
+      actor: row.actor,
+      target: row.target,
+      href: row.href,
+      created_at: row.created_at,
+      web_url: row.web_url ?? null,
+      deadline_at: row.deadline_at ?? null,
+      metadata: row.metadata ?? {},
+      dedup_key: dedupKey,
+    },
   };
 }
 

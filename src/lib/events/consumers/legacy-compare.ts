@@ -23,26 +23,38 @@
  * The stamp vocabulary.
  *
  *  - `matched` — the legacy twin exists at this key and its canonical payload is identical.
- *  - `legacy_missing` — no legacy twin at this key. **This is always an anomaly, never a residual**:
- *    a shadow row exists only because `describe` returned an effect, and every describe re-fetches
- *    its subject and returns nothing when it is gone. A stamped `legacy_missing` therefore means the
- *    subject was live and the legacy writer's row was absent anyway.
+ *  - `legacy_missing` — no legacy twin at this key, **or one whose watermark is OLDER than this
+ *    event**. Verdict-bearing: a shadow row exists only because `describe` returned an effect, the
+ *    twin read re-locks the same subject, and the legacy projection is committed by the statement
+ *    that emitted the event — so a row that is absent, or that stopped at an earlier event, means
+ *    the inline writer never landed for this one.
  *  - `payload_mismatch` — same key, different content. The differing paths are in `legacy_detail`.
- *  - `unverifiable` — no legacy row can exist to compare with: memory ingest's effect lives in an
- *    external vector provider, and a deletion effect's rows are gone by the time the event drains.
+ *  - `superseded` — the legacy row at this key was stamped by a LATER event. **Non-verdict-bearing**,
+ *    and routine rather than exceptional: every activity natural key is reusable in place (a
+ *    re-follow, a leave-then-rejoin, six playground kinds sharing `playground_session:{id}`), the
+ *    inline upsert replaces `source_event_id` on every write, and a drain that runs after the next
+ *    write can only ever see the newer row. Diffing this event's intent against it would measure two
+ *    different intents; the durable evidence that both writers agreed is the monotonic watermark
+ *    itself, which the report's final-state semantics already rest on.
+ *  - `unverifiable` — no legacy row can be compared: memory ingest's effect lives in an external
+ *    vector provider, a deletion effect's rows are gone by the time the event drains, and a subject
+ *    the twin read finds already deleted takes its projections with it (u4prep2 finding 3).
  *  - `compare_error` — the comparison itself threw. Never suppressed, never fatal.
  */
 export type LegacyMatch =
   | "matched"
   | "legacy_missing"
   | "payload_mismatch"
+  | "superseded"
   | "unverifiable"
   | "compare_error";
 
+/** The vocabulary as data — the soak report's `stamp_vocabulary` is checked against this list. */
 export const LEGACY_MATCH_VALUES: readonly LegacyMatch[] = [
   "matched",
   "legacy_missing",
   "payload_mismatch",
+  "superseded",
   "unverifiable",
   "compare_error",
 ];
@@ -58,6 +70,7 @@ export const LEGACY_MATCH_VALUES: readonly LegacyMatch[] = [
 export type LegacyTwin =
   | { state: "row"; payload: Record<string, unknown> }
   | { state: "missing"; detail?: Record<string, unknown> }
+  | { state: "superseded"; detail?: Record<string, unknown> }
   | { state: "unverifiable"; reason: string };
 
 export interface ShadowStamp {
@@ -142,6 +155,9 @@ export function stampShadowComparison(
 ): ShadowStamp {
   if (twin.state === "unverifiable") {
     return { legacyMatch: "unverifiable", legacyDetail: { reason: twin.reason } };
+  }
+  if (twin.state === "superseded") {
+    return { legacyMatch: "superseded", legacyDetail: twin.detail ?? null };
   }
   if (twin.state === "missing") {
     return { legacyMatch: "legacy_missing", legacyDetail: twin.detail ?? null };

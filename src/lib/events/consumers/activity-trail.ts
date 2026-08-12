@@ -30,6 +30,7 @@ import {
   getPost,
   readActivityProjectionByKey,
   resolvePlaygroundActionIdByTriple,
+  type ActivityTwinSubject,
   type CommentActivityInput,
   type FollowActivityInput,
   type GroupJoinActivityInput,
@@ -265,6 +266,39 @@ async function plan(event: StoredEvent): Promise<PlannedActivity | null> {
 }
 
 /**
+ * The live row the twin read re-locks — the SAME subject each kind's projection SELECT locks
+ * (u4prep2 finding 3).
+ *
+ * Derived from the EVENT and the effect key, never from a re-fetch: a re-fetch is exactly the
+ * check-then-read gap this closes. The entity id in the key IS the subject for five of the seven
+ * plans, and the two whose entity id is a colon-joined pair (`follow`, `group_join`) carry their
+ * subject in the event's own `subject_id` column.
+ */
+function twinSubject(event: StoredEvent, entityId: string): ActivityTwinSubject | null {
+  switch (event.kind) {
+    case "post.created":
+      return { type: "post", id: entityId };
+    case "comment.created":
+      return { type: "comment", id: entityId };
+    case "agent.followed":
+      return { type: "agent", id: requireColumn(event, "subjectId") };
+    case "group.joined":
+      return { type: "group", id: requireColumn(event, "subjectId") };
+    case "playground.session_created":
+    case "playground.session_joined":
+    case "playground.participant_affiliation_updated":
+    case "playground.session_completed":
+    case "playground.session_cancelled":
+    case "playground.session_expired":
+      return { type: "playground_session", id: entityId };
+    case "playground.action_submitted":
+      return { type: "playground_action", id: entityId };
+    default:
+      return null;
+  }
+}
+
+/**
  * The effects, exported beside the consumer — see the note in `notifications.ts`: every checked-in
  * manifest is `legacy` or `none` in u2, so the gates drive these directly with synthetic events and
  * build forced-`on` registry copies from them.
@@ -378,11 +412,25 @@ export const activityTrailEffects: ConsumerEffects = {
   /**
    * The legacy twin, by the natural key both writers upsert on (u4-prep).
    *
-   * **The stamped `source_event_id` must be THIS event's**, and that requirement is what makes a
-   * reusable key comparable at all: every kind here upserts on `(kind, entity_id)`, so a re-follow
-   * or a leave-then-rejoin writes the same key again. A row stamped by a different event is not this
-   * event's twin — it is a later (or earlier) write — and reporting a content diff against it would
-   * measure two different intents against each other.
+   * **Three answers, decided by the stamped watermark, because every key here is REUSABLE IN PLACE.**
+   * All of these kinds upsert on `(kind, entity_id)`, and six playground kinds share one key outright
+   * (`playground_session:{id}`), so between an event's inline write and its drain the row may already
+   * have been rewritten by a later event of the same or a different kind:
+   *
+   *  - `source_event_id = event.id` — this event's own row. Compare the payloads.
+   *  - `source_event_id > event.id` — a LATER event owns the row now. `superseded`, and
+   *    non-verdict-bearing: both writers behaved correctly, the newer write is exactly what the
+   *    monotonic guard is for, and a content diff here would measure two different intents. Stamping
+   *    `legacy_missing` made a routine join-then-cancel sequence permanently un-clean (u4prep2
+   *    finding 1).
+   *  - absent, or `source_event_id` older (or NULL, which `COALESCE(…, 0)` orders below every event)
+   *    — nothing this event wrote is on disk and nothing newer replaced it, so the inline writer
+   *    never landed for this event. `legacy_missing`, verdict-bearing.
+   *
+   * **The subject is re-validated and LOCKED by the read itself** (u4prep2 finding 3). `describe`'s
+   * lock ends with its query, so a deletion landing between the two statements removes the trail row
+   * correctly and left this lookup calling that an anomaly. A subject that is gone answers
+   * `unverifiable`; only a LIVE subject with no row of its own is `legacy_missing`.
    *
    * The key is split on the FIRST colon only: `follow` and `group_join` entity ids are themselves
    * colon-joined pairs.
@@ -397,17 +445,36 @@ export const activityTrailEffects: ConsumerEffects = {
     }
     const separator = effectKey.indexOf(":");
     if (separator <= 0) return { state: "missing", detail: { effect_key: effectKey } };
-    const legacy = await readActivityProjectionByKey(
-      effectKey.slice(0, separator),
-      effectKey.slice(separator + 1)
-    );
-    if (!legacy) return { state: "missing", detail: { effect_key: effectKey } };
+    const entityId = effectKey.slice(separator + 1);
+    const subject = twinSubject(event, entityId);
+    if (!subject) {
+      return { state: "unverifiable", reason: `no twin subject is defined for kind '${event.kind}'` };
+    }
+    const read = await readActivityProjectionByKey(effectKey.slice(0, separator), entityId, subject);
+    if (read.state === "subject_gone") {
+      return {
+        state: "unverifiable",
+        reason: `the ${subject.type} this trail row is about was deleted before the twin read`,
+      };
+    }
+    if (read.state === "missing") return { state: "missing", detail: { effect_key: effectKey } };
+    const legacy = read.row;
+    if (legacy.sourceEventId !== null && legacy.sourceEventId > event.id) {
+      return {
+        state: "superseded",
+        detail: {
+          effect_key: effectKey,
+          reason: "a later event has since rewritten the legacy row at this reusable key",
+          legacy_source_event_id: legacy.sourceEventId,
+        },
+      };
+    }
     if (legacy.sourceEventId !== event.id) {
       return {
         state: "missing",
         detail: {
           effect_key: effectKey,
-          reason: "the legacy row at this key was stamped by a different event",
+          reason: "the legacy row at this key stopped at an earlier event",
           legacy_source_event_id: legacy.sourceEventId,
         },
       };

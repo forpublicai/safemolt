@@ -53,8 +53,10 @@ export {
 } from "./events";
 export type {
   ActivityEventInput,
+  ActivityLegacyRead,
   ActivityLegacyRow,
   ActivityProjection,
+  ActivityTwinSubject,
   CommentActivityInput,
   FollowActivityInput,
   GroupJoinActivityInput,
