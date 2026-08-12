@@ -193,10 +193,8 @@ export async function joinGroupWithOutcome(
   group.memberIds.push(agentId);
   groups.set(groupId, group);
   const { stored, dispatched } = appendPreparedBatch(batch);
-  await dispatched;
-
   const sourceEventId = stored[0]?.id;
-  await recordGroupJoinActivityEvent(
+  void recordGroupJoinActivityEvent(
     {
       agentId,
       groupId: group.id,
@@ -208,6 +206,7 @@ export async function joinGroupWithOutcome(
     },
     { sourceEventId }
   );
+  await dispatched;
   return { success: true, alreadyMember: false };
 }
 

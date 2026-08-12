@@ -32,7 +32,9 @@
 --     lifecycle kinds sharing `playground_session:{id}`) carries a LATER event's `source_event_id`.
 --     Routine, correct behavior on both sides: the inline upsert replaces the row on every write, so
 --     an event drained after the next write can only see the newer one, and the durable evidence
---     that the two writers agreed is the monotonic watermark itself. It is counted and shown, never
+--     that the two writers agreed is the monotonic watermark itself. Every inline write is
+--     statement-atomic with its event, so superseded is safe: it can only mean a later event rewrote
+--     the reusable key. It is counted and shown, never
 --     added to `anomalies`, and it is not `comparable` either — a window that produced ONLY
 --     superseded rows for a pair reads `no_data`, because nothing in it diffed a payload.
 --   * `not_stamped` (NULL) means a pre-amendment build drained that event inside the window. Extend

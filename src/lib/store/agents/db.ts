@@ -7,11 +7,10 @@ import {
     computeExpectedHash,
     getChallengeExpiry,
 } from "@/lib/vetting";
-import { recordEvaluationResultActivityEvent, recordFollowActivityEvent } from "../activity/events";
-import { createFollowNotificationIdempotent } from "../notifications/db";
+import { buildFollowActivityUpsertCtes, recordEvaluationResultActivityEvent, recordFollowActivityEvent } from "../activity/events";
+import { buildFollowNotificationCte, createFollowNotificationIdempotent } from "../notifications/db";
 import type { PreparedEvent } from "@/lib/events/kinds";
 import { emitEventCtes, sqlColumn, sqlParam, sqlPayloadObject } from "../events/statement";
-import { toIsoOrEmpty } from "@/lib/iso-date";
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 
@@ -529,6 +528,9 @@ export async function followAgent(
     const followee = await getAgentByName(followeeName);
     if (!followee || followee.id === followerId) return false;
     const params: unknown[] = [followerId, followee.id];
+    if (events?.length) {
+        params.push(`notif_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`);
+    }
     const emitted = emitEventCtes(events, "followed", {
         firstParamIndex: params.length + 1,
         // Store-assigned, positionally on the PRIMARY event: `$2` is the id resolved above, still a
@@ -539,19 +541,19 @@ export async function followAgent(
     const rows = await sql!(
         `
     WITH target AS (
-      SELECT id FROM agents WHERE id = $2::text FOR KEY SHARE
+      SELECT id, name FROM agents WHERE id = $2::text FOR KEY SHARE
     ),
     followed AS (
       INSERT INTO following (follower_id, followee_id)
       SELECT $1::text, t.id FROM target t
       ON CONFLICT DO NOTHING
-      RETURNING followee_id
+      RETURNING follower_id, followee_id
     ),
     bumped AS (
       UPDATE agents SET follower_count = follower_count + 1
       WHERE id IN (SELECT followee_id FROM followed)
       RETURNING id
-    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}, ${buildFollowActivityUpsertCtes({ followCte: "followed", targetCte: "target", sourceEventCte: primary!, namePrefix: "follow_trail" }).join(", ")}, ${buildFollowNotificationCte({ followCte: "followed", targetCte: "target", sourceEventCte: primary!, notificationIdParam: 3 })}` : ""}
     SELECT (SELECT count(*) FROM target)::int AS target_exists,
            (SELECT count(*) FROM followed)::int AS inserted${
                primary
@@ -572,46 +574,15 @@ export async function followAgent(
     if (!row.target_exists) return false;
     if (!row.inserted) return true;
 
-    await stampTransitionalFollowProjections(followerId, followee, row);
-    return true;
-}
+    // Eventless fixture/seed calls retain the legacy projection contract. Agent-visible calls always
+    // supply an event and use the statement-atomic CTEs above.
+    if (!events?.length) {
+        const createdAt = new Date().toISOString();
+        await recordFollowActivityEvent({ followerId, followeeId: followee.id, followeeName: followee.name, followeeDisplayName: followee.displayName, createdAt });
+        await createFollowNotificationIdempotent({ dedupKey: null, recipientAgentId: followee.id, actorAgentId: followerId, createdAt });
+    }
 
-/**
- * The two transitional projections a first follow writes, stamped from the event its own statement
- * emitted. **P2.1 deletes both calls.**
- *
- * Extracted because it is one job — "correlate the legacy projections with the event" — done twice,
- * and because both halves need the same two values decoded from the same row. `followAgent` keeps
- * the decision; this keeps the stamping.
- */
-async function stampTransitionalFollowProjections(
-    followerId: string,
-    followee: StoredAgent,
-    row: { emitted_event_id?: number | string | null; emitted_event_created_at?: Date | string | null }
-): Promise<void> {
-    const sourceEventId = row.emitted_event_id == null ? undefined : Number(row.emitted_event_id);
-    // The event's own `created_at`, which is what the activity consumer projects into `occurred_at`
-    // for this kind — a follow carries no timestamp anywhere else. Falling back to a local clock
-    // only for the callers that emitted no event at all.
-    const createdAt = toIsoOrEmpty(row.emitted_event_created_at) || new Date().toISOString();
-    await recordFollowActivityEvent(
-        {
-            followerId,
-            followeeId: followee.id,
-            followeeName: followee.name,
-            followeeDisplayName: followee.displayName,
-            createdAt,
-        },
-        { sourceEventId }
-    );
-    // Through the consumer's own conflict-tolerant writer, so the two race for Decision 6's one key
-    // instead of producing a duplicate.
-    await createFollowNotificationIdempotent({
-        dedupKey: sourceEventId === undefined ? null : `new_follower:${followee.id}:${sourceEventId}`,
-        recipientAgentId: followee.id,
-        actorAgentId: followerId,
-        createdAt,
-    });
+    return true;
 }
 
 /**

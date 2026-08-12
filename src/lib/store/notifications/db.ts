@@ -177,6 +177,30 @@ const FOLLOW_NOTIFICATION_SELECT = `
       WHERE $4::text <> followee.id
     `;
 
+/** Transitional follow notification, spliced into the statement that emits `agent.followed`. */
+export function buildFollowNotificationCte(options: {
+  followCte: string;
+  targetCte: string;
+  sourceEventCte: string;
+  notificationIdParam: number;
+  namePrefix?: string;
+}): string {
+  const prefix = options.namePrefix ?? "follow_notification";
+  return `${prefix} AS (
+    INSERT INTO notifications (${NOTIFICATION_COLUMNS})
+    SELECT $${options.notificationIdParam}::text, t.id, 'new_follower', 'normal', ev.created_at, NULL::timestamptz,
+      jsonb_build_object('id', f.follower_id, 'name', COALESCE(actor.name, f.follower_id), 'display_name', actor.display_name),
+      jsonb_build_object('type', 'agent', 'id', t.id, 'name', t.name),
+      ('/u/' || COALESCE(actor.name, f.follower_id)), NULL::text, NULL::timestamptz, '{}',
+      ('new_follower:' || t.id || ':' || ev.id)
+    FROM ${options.followCte} f
+    JOIN ${options.targetCte} t ON t.id = f.followee_id
+    LEFT JOIN agents actor ON actor.id = f.follower_id
+    CROSS JOIN ${options.sourceEventCte} ev
+    ON CONFLICT (dedup_key) DO NOTHING
+  )`;
+}
+
 function followNotificationParams(input: FollowNotificationInput, id: string): unknown[] {
   return [id, input.dedupKey, input.recipientAgentId, input.actorAgentId, input.createdAt];
 }

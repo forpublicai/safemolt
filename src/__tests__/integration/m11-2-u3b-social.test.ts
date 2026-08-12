@@ -52,6 +52,7 @@ import { commentIngestChunkStem } from "@/lib/memory/platform-ingest";
 import { getEventById } from "@/lib/store/events/db";
 import { drainEventConsumer } from "@/lib/store/events/drain-db";
 import { deletePost as storeDeletePost } from "@/lib/store/posts/db";
+import { followAgent as storeFollowAgent } from "@/lib/store/agents/db";
 import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY } from "@/lib/store/rate-limit-windows";
 import type { StoredAgent, StoredEvent } from "@/lib/store-types";
 
@@ -1451,5 +1452,24 @@ describe("shadow parity through the real drain", () => {
     // A kind nobody has an effect for still has to be receipted, or its id wedges the scan floor.
     expect(await receipted(event.id)).toEqual([...REAL_CONSUMERS].sort());
     expect(await shadowRows(event.id)).toEqual([]);
+  });
+
+  it("keeps follow event and projections atomic under trigger injection", async () => {
+    const follower = await seedAgent();
+    const followee = await seedAgent();
+    const event = { kind: "agent.followed", actorAgentId: follower.id, subjectType: "agent", subjectId: followee.id, payload: {} } as const;
+    const suffix = nextId("atomic");
+    const fn = `u3b_fail_${suffix}`;
+    const trigger = `${fn}_trigger`;
+    const run = async (table: "events" | "activity_events", kind: string) => {
+      await pgPool().query(`CREATE OR REPLACE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $f$ BEGIN IF NEW.kind = '${kind}' THEN RAISE EXCEPTION 'u3b injected'; END IF; RETURN NEW; END; $f$;`);
+      await pgPool().query(`CREATE TRIGGER ${trigger} BEFORE INSERT ON ${table} FOR EACH ROW EXECUTE FUNCTION ${fn}()`);
+      try { await expect(storeFollowAgent(follower.id, followee.name, [event])).rejects.toThrow("u3b injected"); }
+      finally { await pgPool().query(`DROP TRIGGER IF EXISTS ${trigger} ON ${table}`); await pgPool().query(`DROP FUNCTION IF EXISTS ${fn}()`); }
+      const { rows } = await pgPool().query(`SELECT 1 FROM following WHERE follower_id = $1 AND followee_id = $2`, [follower.id, followee.id]);
+      expect(rows).toEqual([]);
+    };
+    await run("activity_events", "follow");
+    await run("events", "agent.followed");
   });
 });

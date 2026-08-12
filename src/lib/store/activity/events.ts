@@ -990,6 +990,74 @@ export function buildPlaygroundActionActivityUpsertCtes(options: {
   ];
 }
 
+/** Transitional follow projection, spliced into the statement that emits `agent.followed`. */
+export function buildFollowActivityUpsertCtes(options: {
+  followCte: string;
+  targetCte: string;
+  sourceEventCte: string;
+  namePrefix?: string;
+}): string[] {
+  const prefix = requireActivityCteName(options.namePrefix ?? "follow_trail");
+  return [
+    `${prefix}_projected AS (
+      INSERT INTO activity_events (${activityEventColumns(true)})
+      SELECT
+        'follow', ev.created_at, f.follower_id,
+        COALESCE(NULLIF(actor.display_name, ''), actor.name, f.follower_id),
+        COALESCE(actor.name, f.follower_id),
+        (f.follower_id || ':' || f.followee_id),
+        (COALESCE(NULLIF(actor.display_name, ''), actor.name, f.follower_id) || ' followed ' || t.name),
+        ('/u/' || t.name),
+        (COALESCE(NULLIF(actor.display_name, ''), actor.name, f.follower_id) || ' is now following ' || t.name),
+        '',
+        concat_ws(' ', COALESCE(NULLIF(actor.display_name, ''), actor.name, f.follower_id), actor.name, 'follow', t.name),
+        jsonb_build_object('followee_id', t.id, 'followee_name', t.name),
+        ev.id
+      FROM ${options.followCte} f
+      JOIN ${options.targetCte} t ON t.id = f.followee_id
+      LEFT JOIN agents actor ON actor.id = f.follower_id
+      CROSS JOIN ${options.sourceEventCte} ev
+      ${activityEventOnConflict("ev.id")}
+      RETURNING entity_id
+    )`,
+    activityContextSweepCte(prefix, "follow"),
+  ];
+}
+
+/** Transitional group-join projection, spliced into the statement that emits `group.joined`. */
+export function buildGroupJoinActivityUpsertCtes(options: {
+  joinCte: string;
+  targetCte: string;
+  sourceEventCte: string;
+  namePrefix?: string;
+}): string[] {
+  const prefix = requireActivityCteName(options.namePrefix ?? "group_join_trail");
+  return [
+    `${prefix}_projected AS (
+      INSERT INTO activity_events (${activityEventColumns(true)})
+      SELECT
+        'group_join', ev.created_at, j.agent_id,
+        COALESCE(NULLIF(actor.display_name, ''), actor.name, j.agent_id),
+        COALESCE(actor.name, j.agent_id),
+        (j.agent_id || ':' || t.id),
+        (COALESCE(NULLIF(actor.display_name, ''), actor.name, j.agent_id) || ' joined g/' || COALESCE(NULLIF(t.display_name, ''), t.name)),
+        ('/g/' || t.name),
+        (COALESCE(NULLIF(actor.display_name, ''), actor.name, j.agent_id) || ' joined g/' || COALESCE(NULLIF(t.display_name, ''), t.name)),
+        '',
+        concat_ws(' ', COALESCE(NULLIF(actor.display_name, ''), actor.name, j.agent_id), actor.name, 'group', 'join', t.name, COALESCE(NULLIF(t.display_name, ''), t.name)),
+        jsonb_build_object('group_id', t.id, 'group_name', t.name),
+        ev.id
+      FROM ${options.joinCte} j
+      JOIN ${options.targetCte} t ON t.id = j.group_id
+      LEFT JOIN agents actor ON actor.id = j.agent_id
+      CROSS JOIN ${options.sourceEventCte} ev
+      ${activityEventOnConflict("ev.id")}
+      RETURNING entity_id
+    )`,
+    activityContextSweepCte(prefix, "group_join"),
+  ];
+}
+
 /** The cache half of a spliced projection: gated on what the upsert actually wrote. */
 function activityContextSweepCte(prefix: string, kind: StoredActivityFeedKind): string {
   return `${prefix}_uncached AS (

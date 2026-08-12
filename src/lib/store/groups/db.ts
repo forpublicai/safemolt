@@ -4,7 +4,7 @@ import type { StoredAgent, StoredGroup, StoredPost } from "@/lib/store-types";
 import type { PreparedEvent } from "@/lib/events/kinds";
 import { getAgentById, getAgentByName } from "../agents/db";
 import { toIsoOrEmpty } from "@/lib/iso-date";
-import { recordGroupJoinActivityEvent } from "../activity/events";
+import { buildGroupJoinActivityUpsertCtes, recordGroupJoinActivityEvent } from "../activity/events";
 import { emitEventCtes, sqlParam } from "../events/statement";
 import { suppliedGroupSettingsFields, type GroupSettingsUpdates } from "./settings-fields";
 
@@ -188,8 +188,8 @@ export async function joinGroupWithOutcome(
       INSERT INTO group_members (agent_id, group_id, joined_at)
       SELECT a.id, t.id, $3::timestamptz FROM target t, actor a
       ON CONFLICT (agent_id, group_id) DO NOTHING
-      RETURNING agent_id
-    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+      RETURNING agent_id, group_id
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}, ${buildGroupJoinActivityUpsertCtes({ joinCte: "joined", targetCte: "target", sourceEventCte: primary, namePrefix: "group_join_trail" }).join(", ")}` : ""}
     SELECT (SELECT count(*) FROM target)::int AS group_exists,
            (SELECT count(*) FROM actor)::int AS actor_exists,
            (SELECT count(*) FROM joined)::int AS inserted,
@@ -208,8 +208,15 @@ export async function joinGroupWithOutcome(
         if (!row.group_exists) return { success: false, error: "Group not found", alreadyMember: false };
         if (!row.actor_exists) return { success: false, error: "Agent not found", alreadyMember: false };
         if (!row.inserted) return { success: true, alreadyMember: true };
-
-        await stampTransitionalJoinProjection(agentId, groupId, row, joinedAt);
+        if (!events?.length) {
+            await recordGroupJoinActivityEvent({
+                agentId,
+                groupId,
+                groupName: row.group_name ?? groupId,
+                groupDisplayName: row.group_display_name ?? undefined,
+                createdAt: joinedAt,
+            });
+        }
         return { success: true, alreadyMember: false };
     } catch (error) {
         return {
@@ -220,35 +227,6 @@ export async function joinGroupWithOutcome(
     }
 }
 
-/**
- * The transitional trail row a fresh join writes, stamped from the event its own statement emitted.
- * **P2.1 deletes this call.**
- *
- * Extracted for the reason `stampTransitionalFollowProjections` is: it is one job — "correlate the
- * legacy projection with the event" — and it decodes four values out of one row, none of which the
- * decision above needs. The group's name and label come from the LOCKED target rather than from a
- * later read, so a settings edit landing after the join cannot relabel the row this join wrote.
- */
-async function stampTransitionalJoinProjection(
-    agentId: string,
-    groupId: string,
-    row: EmittedEventColumns & { group_name?: string | null; group_display_name?: string | null },
-    fallbackCreatedAt: string
-): Promise<void> {
-    await recordGroupJoinActivityEvent(
-        {
-            agentId,
-            groupId,
-            groupName: row.group_name ?? groupId,
-            groupDisplayName: row.group_display_name ?? undefined,
-            // The event's own `created_at`, which is what the activity consumer projects into
-            // `occurred_at` for this kind. Falling back to the local clock only for the callers that
-            // emitted no event at all (`ensureGeneralGroup`, the seeds).
-            createdAt: toIsoOrEmpty(row.emitted_event_created_at) || fallbackCreatedAt,
-        },
-        { sourceEventId: row.emitted_event_id == null ? undefined : Number(row.emitted_event_id) }
-    );
-}
 
 /** The `{ success, error? }` projection of `joinGroupWithOutcome`, for every caller that had it. */
 export async function joinGroup(

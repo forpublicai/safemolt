@@ -509,13 +509,11 @@ export async function followAgent(
   const a = agents.get(followee.id);
   if (a) agents.set(followee.id, { ...a, followerCount: a.followerCount + 1 });
   const { stored, dispatched } = appendPreparedBatch(batch);
-  await dispatched;
-
   const sourceEventId = stored[0]?.id;
   // The event's own `created_at`: the activity consumer projects it into `occurred_at` for this
   // kind, because a follow carries no timestamp anywhere else.
   const createdAt = stored[0]?.createdAt ?? new Date().toISOString();
-  await recordFollowActivityEvent(
+  void recordFollowActivityEvent(
     {
       followerId,
       followeeId: followee.id,
@@ -526,12 +524,13 @@ export async function followAgent(
     { sourceEventId }
   );
   // Through the consumer's own idempotent writer, carrying Decision 6's key. **P2.1 removes this.**
-  await createFollowNotificationIdempotent({
+  void createFollowNotificationIdempotent({
     dedupKey: sourceEventId === undefined ? null : `new_follower:${followee.id}:${sourceEventId}`,
     recipientAgentId: followee.id,
     actorAgentId: followerId,
     createdAt,
   });
+  await dispatched;
   return true;
 }
 

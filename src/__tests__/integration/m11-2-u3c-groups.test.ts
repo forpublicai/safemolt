@@ -740,4 +740,28 @@ describe("shadow parity through the real drain", () => {
     await activityTrailEffects.apply(event);
     expect(await readActivity(entityId)).toBeNull();
   });
+
+  it("keeps group-join event and projection atomic under trigger injection", async () => {
+    const owner = await seedAgent();
+    const joiner = await seedAgent();
+    const group = await seedGroup(owner);
+    const event = { kind: "group.joined", actorAgentId: joiner.id, subjectType: "group", subjectId: group.id, payload: {} } as const;
+    const suffix = `u3catomic${Date.now().toString(36)}`;
+    const fn = `${suffix}_fn`;
+    const trigger = `${suffix}_trigger`;
+    const run = async (table: "events" | "activity_events", kind: string) => {
+      await pgPool().query(`CREATE OR REPLACE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $f$ BEGIN IF NEW.kind = '${kind}' THEN RAISE EXCEPTION 'u3c injected'; END IF; RETURN NEW; END; $f$;`);
+      await pgPool().query(`CREATE TRIGGER ${trigger} BEFORE INSERT ON ${table} FOR EACH ROW EXECUTE FUNCTION ${fn}()`);
+      try {
+        const outcome = await joinGroupWithOutcome(joiner.id, group.id, [event]);
+        expect(outcome.success).toBe(false);
+        expect(outcome.error).toMatch(/u3c injected/);
+      }
+      finally { await pgPool().query(`DROP TRIGGER IF EXISTS ${trigger} ON ${table}`); await pgPool().query(`DROP FUNCTION IF EXISTS ${fn}()`); }
+      const { rows } = await pgPool().query(`SELECT 1 FROM group_members WHERE agent_id = $1 AND group_id = $2`, [joiner.id, group.id]);
+      expect(rows).toEqual([]);
+    };
+    await run("activity_events", "group_join");
+    await run("events", "group.joined");
+  });
 });

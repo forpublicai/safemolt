@@ -443,13 +443,12 @@ export const DECLARED_LEGACY_WRITERS: Readonly<
         count: 1,
       },
     ],
-    // The `new_follower` row inside `followAgent`, in both stores — now written through the
-    // consumer's conflict-tolerant writer so the dual-write phase races for one key instead of
-    // producing a duplicate (u3b).
+    // The `new_follower` row inside `followAgent`, in both stores. The db path is a CTE of the
+    // emitting statement; memory uses the same idempotent writer synchronously after append (u4prep2).
     "agent.followed": [
       {
         file: "src/lib/store/agents/db.ts",
-        pattern: "createFollowNotificationIdempotent\\(",
+        pattern: "buildFollowNotificationCte\\(",
         count: 1,
       },
       {
@@ -485,13 +484,13 @@ export const DECLARED_LEGACY_WRITERS: Readonly<
       },
     ],
     "agent.followed": [
-      { file: "src/lib/store/agents/db.ts", pattern: "recordFollowActivityEvent\\(", count: 1 },
+      { file: "src/lib/store/agents/db.ts", pattern: "buildFollowActivityUpsertCtes\\(", count: 1 },
       { file: "src/lib/store/agents/memory.ts", pattern: "recordFollowActivityEvent\\(", count: 1 },
     ],
     // u3c: one invocation per store, each gated on the membership insert's own `RETURNING` and each
     // stamping `source_event_id` + `occurred_at` from the event its statement emitted.
     "group.joined": [
-      { file: "src/lib/store/groups/db.ts", pattern: "recordGroupJoinActivityEvent\\(", count: 1 },
+      { file: "src/lib/store/groups/db.ts", pattern: "buildGroupJoinActivityUpsertCtes\\(", count: 1 },
       { file: "src/lib/store/groups/memory.ts", pattern: "recordGroupJoinActivityEvent\\(", count: 1 },
     ],
     // u3d: six kinds, ONE projection per store, written by the statement that emits each kind and

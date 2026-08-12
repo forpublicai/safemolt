@@ -207,6 +207,15 @@ async function actionRows(sessionId: string): Promise<number> {
 
 beforeAll(async () => {
   baselineEventId = await maxEventId();
+  // Neutralize orphaned LIVE sessions before seeding: `idx_pg_sessions_one_live_per_school` admits
+  // one live session per school regardless of id, so a run-unique suffix cannot dodge a leftover —
+  // and an interrupted prior run skips afterAll and leaves exactly that. Fixture orphans (any RUN)
+  // and stale live sessions from any origin both free the index; fresh non-fixture rows survive.
+  await pgPool().query(
+    `UPDATE playground_sessions SET status = 'cancelled', completed_at = NOW()
+     WHERE status IN ('pending', 'active')
+       AND (id LIKE 'u3d%' OR created_at < NOW() - INTERVAL '1 hour')`
+  );
 });
 
 afterAll(async () => {

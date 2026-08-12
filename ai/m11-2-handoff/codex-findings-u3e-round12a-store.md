@@ -1,0 +1,3 @@
+No findings.
+
+Verdict: The scoped u3e store-layer code is ready. The karma writer set is unchanged, no house-points writer exists, and points/component updates remain aligned. Agent, job, registration, challenge, and session locks follow the required order. Decisive mutations correctly gate events and related effects. The certification start operation and its memory rollback are consistent. Vetting ensure-semantics, shared timestamps, registration conflict recovery, Cognito claim rollback, expiry boundaries, and memory preflight behavior match the stated contracts. I did not run tests or builds, as requested.
