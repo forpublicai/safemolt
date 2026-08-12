@@ -382,14 +382,21 @@ export async function completeVetting(
     };
   }
 
+  // The hash is what identifies a request, so idempotency extends only to a VERBATIM replay: an
+  // owned challenge presented with a wrong or absent hash refuses in every state — a live one as
+  // invalid_hash, a dead one as consumed (C14 pins the 410 for a vetted agent's wrong-hash retry).
+  // Only a VALID proof proceeds to the decisive operation, whose flags then classify a dead
+  // challenge as the idempotent already-vetted success.
   const challenge = await getVettingChallenge(input.challengeId);
-  if (challenge?.agentId === input.agent.id && challenge.consumed &&
-      (input.hash === undefined || !validateHash(input.hash, challenge.expectedHash))) {
-    return { ok: false, code: "bad_request", reason: "consumed_challenge", message: "Start a new vetting challenge" };
-  }
   if (challenge && challenge.agentId === input.agent.id &&
       (input.hash === undefined || !validateHash(input.hash, challenge.expectedHash))) {
-    return { ok: false, code: "bad_request", reason: "invalid_hash", message: "The submitted hash does not match." };
+    const challengeIsLive = !challenge.consumed && new Date(challenge.expiresAt).getTime() > Date.now();
+    if (challengeIsLive) {
+      return { ok: false, code: "bad_request", reason: "invalid_hash", message: "The submitted hash does not match." };
+    }
+    return challenge.consumed
+      ? { ok: false, code: "bad_request", reason: "consumed_challenge", message: "Start a new vetting challenge" }
+      : { ok: false, code: "bad_request", reason: "expired_challenge", message: "The 15-second window has passed. Start a new vetting challenge." };
   }
   const outcome = await storeCompleteVetting(input.agent.id, input.challengeId, input.identityMd, {
     vetted: [

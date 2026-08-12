@@ -34,9 +34,13 @@ jest.mock("@/lib/evaluations/executor-registry", () => ({ getExecutor: jest.fn((
 jest.mock("next/headers", () => ({
   headers: jest.fn(async () => new Headers({ "x-school-id": "foundation" })),
 }));
+jest.mock("@/auth", () => ({ auth: jest.fn(async () => null) }));
 
 import { POST as REGISTER_AGENT } from "@/app/api/v1/agents/register/route";
+import { POST as COGNITO_CLAIM } from "@/app/api/v1/agents/claim/route";
+import { POST as X_VERIFY } from "@/app/api/v1/agents/verify/route";
 import { POST as VETTING_START } from "@/app/api/v1/agents/vetting/start/route";
+import { POST as VETTING_COMPLETE } from "@/app/api/v1/agents/vetting/complete/route";
 import { POST as EVAL_REGISTER } from "@/app/api/v1/evaluations/[id]/register/route";
 import { POST as EVAL_START } from "@/app/api/v1/evaluations/[id]/start/route";
 import { POST as EVAL_SUBMIT } from "@/app/api/v1/evaluations/[id]/submit/route";
@@ -209,6 +213,32 @@ describe("POST /api/v1/agents/register", () => {
   });
 });
 
+describe("agent lifecycle route characterization", () => {
+  it("drives the Cognito claim and X verify adapters through their refusal paths", async () => {
+    const claim = await COGNITO_CLAIM(post("/api/v1/agents/claim", {}) as never);
+    expect(claim.status).toBe(401);
+    const verify = await X_VERIFY(post("/api/v1/agents/verify", { claim_id: "missing" }) as never);
+    expect(verify.status).toBe(404);
+  });
+});
+
+describe("POST /api/v1/evaluations/{id}/submit certification transcript", () => {
+  it.each([
+    [undefined, "Missing transcript"],
+    [null, "Missing transcript"],
+    ["text", "Submission rejected"],
+    [{}, "Submission rejected"],
+  ])("renders %p as %s", async (transcript, title) => {
+    const agent = makeAgent();
+    const response = await EVAL_SUBMIT(
+      post("/api/v1/evaluations/socioaffective-alignment/submit", { nonce: "invalid", transcript }, agent.apiKey) as never,
+      { params: Promise.resolve({ id: "socioaffective-alignment" }) }
+    );
+    expect(response.status).toBe(400);
+    expect((await body(response)).error).toBe(title);
+  });
+});
+
 describe("POST /api/v1/agents/vetting/start", () => {
   it("answers a challenge id, a fetch url and an expiry", async () => {
     const agent = makeAgent({ isVetted: false });
@@ -237,6 +267,24 @@ describe("POST /api/v1/agents/vetting/start", () => {
       message: "This agent has already been vetted.",
     });
     expect(vettingChallenges.size).toBe(0);
+  });
+
+  it("completes through the vetting route and preserves its decisive outcome", async () => {
+    const agent = makeAgent({ isVetted: false });
+    const started = await VETTING_START(post("/api/v1/agents/vetting/start", {}, agent.apiKey) as never);
+    const startedBody = await body(started);
+    const challengeId = String(startedBody.challenge_id);
+    const challenge = vettingChallenges.get(challengeId)!;
+    const response = await VETTING_COMPLETE(
+      post("/api/v1/agents/vetting/complete", {
+        challenge_id: challengeId,
+        hash: challenge.expectedHash,
+        identity_md: "# identity",
+      }, agent.apiKey) as never
+    );
+    expect(response.status).toBe(200);
+    expect((await body(response)).success).toBe(true);
+    expect(agents.get(agent.id)!.isVetted).toBe(true);
   });
 });
 
@@ -809,71 +857,61 @@ describe("C2 denial parity through both adapters", () => {
   it.each([
     {
       name: "registration requires vetting",
-      runRoute: async (agent: StoredAgent) => body(await EVAL_REGISTER(
+      runRoute: async (agent: StoredAgent) => EVAL_REGISTER(
         post(`/api/v1/evaluations/${SELF_SERVE}/register`, {}, agent.apiKey) as never,
         { params: Promise.resolve({ id: SELF_SERVE }) }
-      )),
+      ),
       runTool: (agent: StoredAgent) => evaluationTools.register_for_evaluation(
         { evaluation_id: SELF_SERVE }, { agent } as never
       ),
       setup: () => ({ isVetted: false }),
-      expectedRoute: "Agent must be vetted to access the Foundation School",
-      expectedTool: "vetting_required",
+      expectedStatus: 403,
+      expectedRouteCode: "forbidden",
+      expectedToolCode: "vetting_required",
     },
     {
       name: "start requires registration",
-      runRoute: async (agent: StoredAgent) => body(await EVAL_START(
+      runRoute: async (agent: StoredAgent) => EVAL_START(
         post(`/api/v1/evaluations/${PROCTORED}/start`, {}, agent.apiKey) as never,
         { params: Promise.resolve({ id: PROCTORED }) }
-      )),
+      ),
       runTool: (agent: StoredAgent) => evaluationTools.start_evaluation(
         { evaluation_id: PROCTORED }, { agent } as never
       ),
       setup: () => ({}),
-      expectedRoute: "not_registered",
-      expectedTool: "not_registered",
+      expectedStatus: 400,
+      expectedRouteCode: "not_registered",
+      expectedToolCode: "not_registered",
     },
-  ])("$name has one denial decision in route and tool", async ({ runRoute, runTool, setup, expectedRoute, expectedTool }) => {
-    const agent = makeAgent(setup());
-    const routeBefore = evaluationStateSnapshot();
-    const routeResult = await runRoute(agent);
-    expect(evaluationStateSnapshot()).toBe(routeBefore);
-    const toolBefore = evaluationStateSnapshot();
-    const toolResult = await runTool(agent);
-    expect(evaluationStateSnapshot()).toBe(toolBefore);
-    expect(JSON.stringify(routeResult)).toContain(expectedRoute);
-    expect(JSON.stringify(toolResult)).toContain(expectedTool);
-  });
-
-  it.each([
     {
       name: "proctor claim",
-      route: (agent: StoredAgent) => PROCTOR_CLAIM(post("/api/v1/evaluations/non-spamminess/proctor/claim", { registration_id: "missing" }, agent.apiKey) as never, { params: Promise.resolve({ id: PROCTORED }) }),
-      tool: (agent: StoredAgent) => evaluationTools.claim_proctor_session({ registration_id: "missing" }, { agent } as never),
+      runRoute: async (agent: StoredAgent) => PROCTOR_CLAIM(post("/api/v1/evaluations/non-spamminess/proctor/claim", { registration_id: "missing" }, agent.apiKey) as never, { params: Promise.resolve({ id: PROCTORED }) }),
+      runTool: (agent: StoredAgent) => evaluationTools.claim_proctor_session({ registration_id: "missing" }, { agent } as never),
+      setup: () => ({}), expectedStatus: 404, expectedRouteCode: "registration_not_found", expectedToolCode: "registration_not_found",
     },
     {
       name: "session message",
-      route: (agent: StoredAgent) => SESSION_MESSAGE(post("/api/v1/evaluations/non-spamminess/sessions/missing/messages", { content: "hello" }, agent.apiKey) as never, { params: Promise.resolve({ id: PROCTORED, sessionId: "missing" }) }),
-      tool: (agent: StoredAgent) => evaluationTools.send_eval_session_message({ session_id: "missing", content: "hello" }, { agent } as never),
+      runRoute: async (agent: StoredAgent) => SESSION_MESSAGE(post("/api/v1/evaluations/non-spamminess/sessions/missing/messages", { content: "hello" }, agent.apiKey) as never, { params: Promise.resolve({ id: PROCTORED, sessionId: "missing" }) }),
+      runTool: (agent: StoredAgent) => evaluationTools.send_eval_session_message({ session_id: "missing", content: "hello" }, { agent } as never),
+      setup: () => ({}), expectedStatus: 404, expectedRouteCode: "session_not_found", expectedToolCode: "session_not_found",
     },
     {
       name: "proctor submission",
-      route: (agent: StoredAgent) => PROCTOR_SUBMIT(post("/api/v1/evaluations/non-spamminess/proctor/submit", { registration_id: "missing", passed: true }, agent.apiKey) as never, { params: Promise.resolve({ id: PROCTORED }) }),
-      tool: (agent: StoredAgent) => evaluationTools.submit_evaluation_result({ registration_id: "missing", passed: true }, { agent } as never),
+      runRoute: async (agent: StoredAgent) => PROCTOR_SUBMIT(post("/api/v1/evaluations/non-spamminess/proctor/submit", { registration_id: "missing", passed: true }, agent.apiKey) as never, { params: Promise.resolve({ id: PROCTORED }) }),
+      runTool: (agent: StoredAgent) => evaluationTools.submit_evaluation_result({ registration_id: "missing", passed: true }, { agent } as never),
+      setup: () => ({}), expectedStatus: 404, expectedRouteCode: "registration_not_found", expectedToolCode: "registration_not_found",
     },
-  ])("$name has matching denial and no mutation", async ({ route, tool }) => {
-    const agent = makeAgent();
-    const before = { registrations: evaluationRegistrations.size, sessions: evaluationSessions.size, messages: evaluationMessages.size, results: evaluationResults.size };
-    const routeBefore = evaluationStateSnapshot();
-    const routeResponse = await route(agent);
-    expect(evaluationStateSnapshot()).toBe(routeBefore);
-    const toolBefore = evaluationStateSnapshot();
-    const toolResult = await tool(agent);
-    expect(evaluationStateSnapshot()).toBe(toolBefore);
-    expect(routeResponse.status).toBeGreaterThanOrEqual(400);
-    expect(JSON.stringify(await routeResponse.json())).toContain("not_found");
-    expect(JSON.stringify(toolResult)).toContain("not_found");
-    expect({ registrations: evaluationRegistrations.size, sessions: evaluationSessions.size, messages: evaluationMessages.size, results: evaluationResults.size }).toEqual(before);
+  ])("$name has exact denial and no mutation", async ({ runRoute, runTool, setup, expectedStatus, expectedRouteCode, expectedToolCode }) => {
+    const agent = makeAgent(setup());
+    const before = evaluationStateSnapshot();
+    const routeResult = await runRoute(agent);
+    expect(routeResult.status).toBe(expectedStatus);
+    const routeBody = await body(routeResult);
+    expect((routeBody.error_detail as Record<string, unknown>).code).toBe(expectedRouteCode);
+    expect(evaluationStateSnapshot()).toBe(before);
+    const toolResult = await runTool(agent);
+    expect(String(toolResult.error).split(":", 1)[0]).toBe(expectedToolCode);
+    expect(evaluationStateSnapshot()).toBe(before);
   });
 });
 

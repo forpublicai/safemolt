@@ -286,18 +286,18 @@ export async function addSessionMessage(
   role: string,
   content: string,
   events?: readonly PreparedEvent[]) {
+  const id = generateEvaluationId('eval_msg');
+  const createdAt = new Date().toISOString();
+  // Match the database renderer before any state-based refusal. Batch idempotency remains after
+  // eligibility classification so a refused write does not inspect the event log.
+  const prepared = substitutePrimaryEvent(events, { payload: { message_id: id } });
+  validatePreparedEvents(prepared);
   const session = evaluationSessions.get(sessionId);
   const participant = Array.from(evaluationSessionParticipants.values()).find(
     (candidate) => candidate.sessionId === sessionId && candidate.agentId === senderAgentId
   );
   if (!session || session.status !== 'active' || !participant) return null;
   requireAgent(senderAgentId);
-  const id = generateEvaluationId('eval_msg');
-  const createdAt = new Date().toISOString();
-  // `message_id` is store-assigned on both sides: the db statement merges `sqlParam(1)` into the
-  // payload, and this is the same substitution written out.
-  const prepared = substitutePrimaryEvent(events, { payload: { message_id: id } });
-  validatePreparedEvents(prepared);
   let maxSeq = 0;
   for (const m of Array.from(evaluationMessages.values())) {
     if (m.sessionId === sessionId && m.sequence > maxSeq) maxSeq = m.sequence;

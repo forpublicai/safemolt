@@ -999,7 +999,8 @@ export async function completeVetting(
         };
     });
 
-    const attempt = () => runCompleteVettingBatch(agentId, challengeId, identityMd, bootstrap, events);
+    const completedAt = new Date().toISOString();
+    const attempt = () => runCompleteVettingBatch(agentId, challengeId, identityMd, completedAt, bootstrap, events);
 
     let results: Array<Array<Record<string, unknown>>>;
     try {
@@ -1026,7 +1027,6 @@ export async function completeVetting(
         return { outcome: "unavailable", reason };
     }
 
-    const completedAt = new Date().toISOString();
     const created: Array<{ evaluationId: string; resultId: string }> = [];
     bootstrap.forEach((spec, index) => {
         const rows = results[3 + index];
@@ -1060,6 +1060,7 @@ function runCompleteVettingBatch(
     agentId: string,
     challengeId: string,
     identityMd: string,
+    completedAt: string,
     bootstrap: Array<{
         evaluationId: string;
         pointsEarned: number | null;
@@ -1070,7 +1071,6 @@ function runCompleteVettingBatch(
     }>,
     events?: CompleteVettingEvents
 ): Promise<Array<Array<Record<string, unknown>>>> {
-    const now = new Date().toISOString();
     const vettedParams: unknown[] = [agentId, identityMd, challengeId];
     // The decision token is stamped in the locked transition and remains transaction-local for
     // every later statement in this batch. A second challenge can be live, but it cannot inherit
@@ -1109,7 +1109,7 @@ function runCompleteVettingBatch(
                 challengeId,
                 agentId,
                 spec.evaluationId,
-                now,
+                completedAt,
                 spec.registrationId,
                 spec.resultId,
                 JSON.stringify(spec.resultData),

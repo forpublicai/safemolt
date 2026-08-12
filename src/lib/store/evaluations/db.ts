@@ -138,15 +138,23 @@ export async function registerForEvaluation(
     SELECT id, registered_at, status, true, false FROM registered
     WHERE NOT EXISTS (SELECT 1 FROM passed) AND NOT EXISTS (SELECT 1 FROM existing)
   `;
-    let transactionResults: Awaited<ReturnType<NonNullable<typeof sql>["transaction"]>>;
-    try {
-        transactionResults = await sql!.transaction((txn) => [
+    const run = () => sql!.transaction((txn) => [
             txn`SELECT id FROM agents WHERE id = ${agentId} FOR UPDATE`,
             txn(query, [...params, ...emitted.params]),
         ]);
+    let transactionResults: Awaited<ReturnType<NonNullable<typeof sql>["transaction"]>>;
+    try {
+        transactionResults = await run();
     } catch (error) {
-        if (isActiveRegistrationViolation(error)) return classifyRegistrationAfterActiveConflict(agentId, evaluationId);
-        throw error;
+        if (!isActiveRegistrationViolation(error)) throw error;
+        try {
+            // One fresh conditional attempt covers a conflict whose winner rolled back before
+            // either classifier query observed it.
+            transactionResults = await run();
+        } catch (retryError) {
+            if (!isActiveRegistrationViolation(retryError)) throw retryError;
+            return classifyRegistrationAfterActiveConflict(agentId, evaluationId);
+        }
     }
     const rows = transactionResults[1] as Array<Record<string, unknown>>;
     const r = (rows as Array<Record<string, unknown>>)[0];

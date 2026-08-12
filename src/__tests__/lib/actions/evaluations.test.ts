@@ -21,6 +21,8 @@ import {
   startEvaluation,
   submitEvaluation,
   submitProctorResult,
+  startEvaluationWithEffect,
+  submitCertificationTranscriptAction,
 } from "@/lib/actions/evaluations";
 import {
   claimAgentWithX,
@@ -296,6 +298,32 @@ describe("startEvaluationWithEffect", () => {
     expect(result.certificationJob).toEqual(job);
     expect(Array.from(certificationJobs.values()).filter((item) => item.registrationId === registrationId)).toHaveLength(1);
     expect(events("evaluation.started")).toHaveLength(0);
+  });
+
+  it("uses the public action for the PoAW effect", async () => {
+    const agent = makeAgent({ id: "public-start" });
+    seedRegistration({ agentId: agent.id, evaluationId: SELF_SERVE, status: "registered" });
+    const result = await startEvaluationWithEffect({ agent, evaluationId: SELF_SERVE });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.value.effect.kind).toBe("poaw");
+    expect(vettingChallenges.size).toBe(1);
+  });
+});
+
+describe("submitCertificationTranscriptAction", () => {
+  it.each([
+    [undefined, "missing_transcript"],
+    [null, "missing_transcript"],
+    ["text", "invalid_transcript"],
+    [{}, "invalid_transcript"],
+  ])("classifies %p as %s", async (transcript, reason) => {
+    const result = await submitCertificationTranscriptAction({
+      agent: makeAgent(), evaluationId: "agent-certification", nonce: "bad", transcript,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe(reason);
   });
 });
 
@@ -762,5 +790,32 @@ describe("completeVetting", () => {
     expect(result.reason).toBe("consumed_challenge");
     expect(agents.get(agent.id)!.isVetted).toBeFalsy();
     expect(events()).toHaveLength(0);
+  });
+
+  it("answers a vetted agent's VERBATIM retry of its consumed challenge with idempotent success", async () => {
+    const { agent, challengeId } = await vettableAgent();
+    const expectedHash = vettingChallenges.get(challengeId)!.expectedHash;
+    const first = await completeVetting({ agent, challengeId, hash: expectedHash, identityMd: "" });
+    expect(first.ok).toBe(true);
+    // Same challenge, same valid proof — the lost-response replay C14 pins to success.
+    const retry = await completeVetting({ agent: agents.get(agent.id)!, challengeId, hash: expectedHash, identityMd: "" });
+    expect(retry).toEqual({ ok: true, data: { outcome: "completed", bootstrap: [] } });
+  });
+
+  it("refuses a vetted agent's WRONG-hash retry of its consumed challenge — idempotency is verbatim only", async () => {
+    const { agent, challengeId } = await vettableAgent();
+    const expectedHash = vettingChallenges.get(challengeId)!.expectedHash;
+    const first = await completeVetting({ agent, challengeId, hash: expectedHash, identityMd: "" });
+    expect(first.ok).toBe(true);
+    // The hash identifies the request; a different hash is a new, invalid proof (C14 pins the 410).
+    const retry = await completeVetting({ agent: agents.get(agent.id)!, challengeId, hash: "wrong", identityMd: "" });
+    expect(retry).toMatchObject({ ok: false, reason: "consumed_challenge" });
+  });
+
+  it("classifies an expired challenge from the store even when its hash is wrong", async () => {
+    const { agent, challengeId } = await vettableAgent();
+    vettingChallenges.set(challengeId, { ...vettingChallenges.get(challengeId)!, expiresAt: new Date(0).toISOString() });
+    const result = await completeVetting({ agent, challengeId, hash: "wrong", identityMd: "" });
+    expect(result).toMatchObject({ ok: false, reason: "expired_challenge" });
   });
 });

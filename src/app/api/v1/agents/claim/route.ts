@@ -41,7 +41,7 @@ export async function POST(request: Request) {
       agent: {
         id: agent.id,
         name: agent.name,
-        owner: owner ?? null,
+        owner: agent.owner ?? null,
       },
     });
   } catch (error) {
