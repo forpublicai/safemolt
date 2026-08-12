@@ -63,6 +63,29 @@ agent's context budget, hand the next round to a fresh agent with a self-contain
    `shadow → on` (dual-write) → inline-writer deletion, each a separate fully-rolled-out deploy
    behind the consumer-contract-hash barrier (inventory §8 protocols).
 
+## Working rules added 2026-08-12 (user-directed acceleration)
+
+1. **Checkpoint commits are ON.** The no-commit instruction is lifted. Policy: the orchestrator
+   owns ALL commits; implementation agents and luna stay forbidden from git writes. One commit per
+   green round boundary ("<unit>: codex r<N> fixes — gates green"), plus a WIP checkpoint before
+   any parallel-agent phase (state the known-red gates honestly in the body). First checkpoint:
+   `7efa80d`. Do not push unless the user asks.
+2. **Two implementation lanes.** The codex CLI (luna + reviews) is ONE serial lane — parallel codex
+   runs crash each other. Harness subagents are the second lane: opus for implementation rounds,
+   sonnet/haiku for mechanical work (extraction, doc updates, log parsing). Lanes only run
+   concurrently on disjoint file fences.
+3. **Targeted gates while iterating; full gates at round boundaries.** During a fix round, agents
+   run only the affected suites. The full five gates run once before each codex review and before
+   each checkpoint commit. The full integration suite (~28 min) serializes on the advisory lock —
+   concurrent runs queue; wait, never kill.
+4. **Batched convergence.** u3d + u4prep2 share one combined codex convergence round.
+5. **u3f is risk-split** (standing low-risk directive): profile/inbox/read-state get ONE codex
+   round and stop unless BLOCKER/MAJOR; classes/admissions/memory-context get full rounds only
+   where lock/atomicity-bearing.
+6. **Test data must be run-unique.** The reserved integration DB keeps rows across runs; every
+   fixed identifier a test inserts under a UNIQUE constraint must carry the suite's `RUN` suffix
+   (the u3e nonce collision is the precedent).
+
 ## How to work (the pattern that converged five units)
 
 Orchestrator writes a spec → an implementation agent executes it (characterization first,

@@ -377,11 +377,20 @@ describe("conditional evaluation starts", () => {
     const evaluationId = `u3e_race_${RUN}`;
     await ensureEvaluationDefinition(evaluationId);
     const registrationId = await seedRegistration(agent.id, evaluationId, "registered");
+    // The winner commits its status transition AND its job in one statement, so the holder plants
+    // both: a loser must return the winner's job untouched, never mint a second one. (A bare
+    // in_progress with no live job is the torn legacy state, and reissuing there is deliberate.)
+    const winnerJobId = nextId("race_winner_job");
     const race = await raceAgainstHeldLock({
       contenderMarker: "start-evaluation-with-effect",
       hold: async (holder) => {
         await holder.query(`SELECT id FROM agents WHERE id = $1 FOR UPDATE`, [agent.id]);
         await holder.query(`UPDATE evaluation_registrations SET status = 'in_progress' WHERE id = $1`, [registrationId]);
+        await holder.query(
+          `INSERT INTO certification_jobs (id, registration_id, agent_id, evaluation_id, nonce, nonce_expires_at, status, created_at)
+           VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '10 minutes', 'pending', NOW())`,
+          [winnerJobId, registrationId, agent.id, evaluationId, `u3e-race-winner-nonce-${RUN}`]
+        );
       },
       contend: () => startEvaluationWithEffectDb(registrationId, {
         kind: "certification", agentId: agent.id, evaluationId, nonce: `u3e-race-nonce-${RUN}`,
@@ -390,7 +399,9 @@ describe("conditional evaluation starts", () => {
     });
     expect(race.observedBlocked).toBe(true);
     expect(race.result.started).toBe(false);
-    expect((await pgPool().query(`SELECT count(*)::int AS n FROM certification_jobs WHERE registration_id = $1`, [registrationId])).rows[0].n).toBe(0);
+    expect(race.result.certificationJob?.id).toBe(winnerJobId);
+    expect((await pgPool().query(`SELECT count(*)::int AS n FROM certification_jobs WHERE registration_id = $1`, [registrationId])).rows[0].n).toBe(1);
+    expect((await pgPool().query(`SELECT nonce FROM certification_jobs WHERE id = $1`, [winnerJobId])).rows[0].nonce).toBe(`u3e-race-winner-nonce-${RUN}`);
     expect(await eventsSince("evaluation.started")).toHaveLength(0);
   });
 

@@ -432,7 +432,12 @@ export async function startEvaluationWithEffect(
   events?: readonly PreparedEvent[]
 ): Promise<EvaluationStartOutcome> {
   const reg = evaluationRegistrations.get(registrationId);
-  if (!reg || (reg.status !== "registered" && reg.status !== "in_progress")) return { started: false };
+  if (!reg) return { started: false };
+  if (reg.status !== "registered" && reg.status !== "in_progress") {
+    // Parity with the db projection: a terminal registration still surfaces its decided job.
+    const decided = effect.kind === "certification" ? findCertificationStartJob(registrationId) : null;
+    return { started: false, certificationJob: decided ?? undefined };
+  }
   const oldReg = { ...reg };
   if (effect.kind === "poaw") {
     if (reg.status !== "registered") return { started: false };

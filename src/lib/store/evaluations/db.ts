@@ -510,9 +510,9 @@ export async function startEvaluationWithEffect(
               INSERT INTO certification_jobs (id, registration_id, agent_id, evaluation_id, nonce, nonce_expires_at, status, created_at)
               SELECT $2::text, l.id, $3::text, $4::text, $5::text, $6::timestamptz, 'pending', NOW()
               FROM locked l
-              WHERE NOT EXISTS (SELECT 1 FROM live)
-                 OR (l.status = 'registered' AND EXISTS (SELECT 1 FROM live WHERE status = 'pending' AND nonce_expires_at <= NOW()))
-                 OR (l.status = 'in_progress' AND EXISTS (SELECT 1 FROM live WHERE status = 'pending' AND nonce_expires_at <= NOW()))
+              WHERE l.status IN ('registered', 'in_progress')
+                AND (NOT EXISTS (SELECT 1 FROM live)
+                     OR EXISTS (SELECT 1 FROM live WHERE status = 'pending' AND nonce_expires_at <= NOW()))
               ON CONFLICT (registration_id) WHERE status = 'pending'
               DO UPDATE SET nonce = EXCLUDED.nonce, nonce_expires_at = EXCLUDED.nonce_expires_at,
                             created_at = EXCLUDED.created_at, status = 'pending'
@@ -524,7 +524,7 @@ export async function startEvaluationWithEffect(
               RETURNING r.id
             )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
             SELECT started.id AS started_id, COALESCE(effect.id, live.id) AS job_id
-            FROM locked LEFT JOIN effect ON true LEFT JOIN live ON true`;
+            FROM locked LEFT JOIN effect ON true LEFT JOIN live ON true LEFT JOIN started ON true`;
     const transactionResults = await sql!.transaction((txn) => [
         // D4 completion locks the acting/candidate agent before the registration. Keep this order
         // for both PoAW and certification starts; ORDER BY prevents crossed two-agent starts.
@@ -540,7 +540,8 @@ export async function startEvaluationWithEffect(
         txn(query, [...params, ...emitted.params]),
     ]);
     const rows = transactionResults[2] as Array<Record<string, unknown>>;
-    if (rows.length === 0 || !rows[0]?.job_id) return { started: false };
+    // The PoAW projection carries no job_id column — its zero-row result alone means "refused".
+    if (rows.length === 0 || (!isPoaw && !rows[0]?.job_id)) return { started: false };
     if (isPoaw) return { started: true, challenge: { id: effect.challengeId, agentId: String((rows[0] as Record<string, unknown>).agent_id), values: effect.values, nonce: effect.nonce, expectedHash: effect.expectedHash, createdAt: effect.createdAt, expiresAt: effect.expiresAt, fetched: false, consumed: false } };
     const job = await getCertificationJobByRegistration(registrationId);
     return { started: Boolean(rows[0].started_id), certificationJob: job ?? undefined };
