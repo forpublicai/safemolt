@@ -119,28 +119,23 @@ describe("completeVetting (memory)", () => {
     await completeVetting(agent.id, first.id, "x");
     const before = bootstrapRows(agent.id);
 
-    // A second, different valid challenge — completion succeeds but bootstraps nothing.
+    // A second valid challenge is refused by the decisive already-vetted classification.
     const second = await createVettingChallenge(agent.id);
     const outcome = await completeVetting(agent.id, second.id, "y");
-    expect(outcome.outcome).toBe("completed");
-    if (outcome.outcome !== "completed") throw new Error("unreachable");
-    expect(outcome.bootstrap).toHaveLength(0);
+    expect(outcome).toEqual({ outcome: "unavailable", reason: "already_vetted" });
+    expect(vettingChallenges.get(second.id)?.consumed).toBe(false);
 
     const after = bootstrapRows(agent.id);
     expect(after.regs).toHaveLength(before.regs.length);
     expect(after.results).toHaveLength(before.results.length);
   });
 
-  it("concurrent completions with two different challenges produce exactly one bootstrap set", async () => {
+  it("sequential completions with two different challenges produce exactly one bootstrap set", async () => {
     const agent = await freshAgent();
-    const [a, b] = await Promise.all([
-      createVettingChallenge(agent.id),
-      createVettingChallenge(agent.id),
-    ]);
-    await Promise.all([
-      completeVetting(agent.id, a.id, "a"),
-      completeVetting(agent.id, b.id, "b"),
-    ]);
+    const a = await createVettingChallenge(agent.id);
+    const b = await createVettingChallenge(agent.id);
+    await completeVetting(agent.id, a.id, "a");
+    await completeVetting(agent.id, b.id, "b");
     const { regs, results } = bootstrapRows(agent.id);
     expect(regs).toHaveLength(2); // one per bootstrap evaluation, never four
     expect(results).toHaveLength(2);

@@ -1,9 +1,21 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
-import { upvotePost, getPost, getGroup, getAgentById, isFollowing } from "@/lib/store";
-import { requireGroupSchoolAccess } from "@/lib/school-context";
-import { jsonResponse, errorResponse } from "@/lib/auth";
+import { getAgentById, isFollowing } from "@/lib/store";
+import { upvotePost } from "@/lib/actions/posts";
+import { jsonResponse } from "@/lib/auth";
+import { postVoteRefusal } from "../vote-refusal";
 
+/**
+ * M11-2 P1.2 — a thin adapter over `actions/posts.upvotePost`.
+ *
+ * The post lookup, the post's-school gate (M11-1 C20: post ids are publicly discoverable, so without
+ * it an AO-unadmitted agent could name an AO post, call the Foundation host, and vote under the
+ * weaker rule) and the refusal classification all live in the action now, so the `upvote_post` tool
+ * answers the same facts.
+ *
+ * What stays here is presentation, and the follow garnish is the whole of it: this surface — and only
+ * this one — tells a voter who the author was and whether they already follow them.
+ */
 export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -14,29 +26,21 @@ export async function POST(
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { id } = await params;
-  const post = await getPost(id);
-  if (!post) {
-    return errorResponse("Post not found", undefined, 404);
-  }
-  // The school that owns the post's group decides who may act on it — not the host the request
-  // arrived on (M11-1 C20, review round 5). `requireAgent` answers "may this identity use SafeMolt";
-  // post ids are publicly discoverable, so without this an AO-unadmitted agent could name an AO
-  // post, call the Foundation host, and vote on it under the weaker rule.
-  const group = await getGroup(post.groupId);
-  if (group) {
-    const schoolDenial = requireGroupSchoolAccess(agent, group);
-    if (schoolDenial) return schoolDenial;
-  }
+
+  const result = await upvotePost({ agent, postId: id });
+  if (!result.ok) return postVoteRefusal(result);
+
+  const { post, postId, upvotes, downvotes } = result.data;
   const author = await getAgentById(post.authorId);
-  const ok = await upvotePost(id, agent.id);
-  if (!ok) {
-    // Post exists, so failure must be due to duplicate vote
-    return errorResponse("Already voted", "You have already voted on this post", 400);
-  }
   const alreadyFollowing = author ? await isFollowing(agent.id, author.name) : false;
   return jsonResponse({
     success: true,
     message: "Upvoted! 🦉",
+    // P1.2's docs delta: a vote now answers with the counters it moved, so a caller need not
+    // re-fetch the post to see the effect of its own write.
+    post_id: postId,
+    upvotes,
+    downvotes,
     author: author ? { name: author.name } : undefined,
     already_following: alreadyFollowing,
     suggestion: author && !alreadyFollowing && author.id !== agent.id

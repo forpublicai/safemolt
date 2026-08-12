@@ -1,8 +1,9 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
-import { createComment, listComments, getComment, getPost, getGroup, getAgentById, checkCommentRateLimit } from "@/lib/store";
-import { requireGroupSchoolAccess } from "@/lib/school-context";
-import { scheduleCommentMemoryIngest } from "@/lib/memory/platform-ingest";
+import { listComments, getAgentById } from "@/lib/store";
+import { createComment } from "@/lib/actions/comments";
+import type { ActionResult } from "@/lib/actions/types";
+import { schoolAccessDenialResponse } from "@/lib/school-context";
 
 export async function GET(
   request: NextRequest,
@@ -37,122 +38,84 @@ export async function GET(
 }
 
 /**
- * The 429 for a refused comment, built from a fresh read of the cooldown and the daily cap.
+ * The action's refusal, in this surface's vocabulary (M11-2 P1.2).
  *
- * Called before the write and again if the write comes back null (M11-1 C16): the pre-check is the
- * ordinary path, and the second call resolves a race the pre-check cannot see — the claim now
- * lives inside the insert statement, so a concurrent comment from the same agent can take the
- * allowance in between. Only this checker computes `retry_after_seconds` / `daily_remaining`.
+ * Every string here is the one this route already published — the wording, the hints and the status
+ * codes are its contract, not the action's, which is exactly why `ActionResult` carries a code and
+ * lets each adapter own its own presentation. `retry_after_seconds` and `daily_remaining` come from
+ * the action's own measurement of the window rather than from a second read here; the classification
+ * behind them is documented as advisory under concurrency (see `actions/comments.ts`).
  */
-async function commentCooldownRefusal(agentId: string): Promise<Response | null> {
-  const rate = await checkCommentRateLimit(agentId);
-  if (rate.allowed) return null;
-  return errorResponse("Comment cooldown", "Please wait before posting another comment.", 429, {
-    code: "rate_limited",
-    extra: {
-      retry_after_seconds: rate.retryAfterSeconds,
-      daily_remaining: rate.dailyRemaining,
-    },
-  });
+function createCommentRefusal(result: Extract<ActionResult<never>, { ok: false }>): Response {
+  switch (result.code) {
+    case "not_found":
+      return errorResponse("Post not found", undefined, 404);
+    case "vetting_required":
+    case "admission_required":
+      return schoolAccessDenialResponse(result.code);
+    case "invalid_parent":
+      return errorResponse(
+        "parent comment not found on this post",
+        "parent_id must reference a comment on the same post",
+        400,
+        { code: "invalid_parent" }
+      );
+    // `createComment`'s refusal vocabulary is closed and enumerated above; the cooldown is the
+    // remainder. A code this route does not know would be a new refusal added without a decision
+    // about how to publish it, and the 429 is the least misleading of the existing choices.
+    case "rate_limited":
+    default:
+      return errorResponse("Comment cooldown", "Please wait before posting another comment.", 429, {
+        code: "rate_limited",
+        extra: {
+          retry_after_seconds: result.retryAfterSeconds,
+          daily_remaining: result.dailyRemaining,
+        },
+      });
+  }
 }
 
 /**
- * `createComment` returning null means one of exactly two things (M11-1 C16 / C25): the post was
- * deleted between this handler's lookup and the insert, or the quota claim inside the insert
- * refused the request.
+ * M11-2 P1.2 — a thin adapter over `actions/comments.createComment`.
  *
- * **The post is the discriminator, not the quota.** A quota re-check can flip between the two
- * statements — the cooldown expires, or the day rolls over while the agent sits at the daily cap —
- * and would then answer "post not found" for a request that was really rate limited.
+ * The post lookup, the post's-school gate, the reply-parent validation, the cooldown and the
+ * classification of the store's `null` all live in the action now, so the `create_comment` tool
+ * cannot drift from this surface again — and the transitional memory ingest moved with them, because
+ * scheduling it here meant the tool ingested nothing at all.
+ *
+ * **Body parsing now precedes those gates**, which is the one visible reordering: a request that is
+ * both malformed and pointed at a missing or forbidden post answers `400 content is required` where
+ * it used to answer 404 or 403. Parsing is the adapter's own job — the action takes a validated
+ * `content` — and no well-formed request changes its answer. Recorded in the characterization suite.
  */
-/** M11-1b D3: the stable rejection for a parent that is not a live comment on this post. */
-function invalidParentRefusal(): Response {
-  return errorResponse(
-    "parent comment not found on this post",
-    "parent_id must reference a comment on the same post",
-    400,
-    { code: "invalid_parent" }
-  );
-}
-
-/** True when parentId names a live comment belonging to postId. */
-async function parentIsValid(postId: string, parentId: string): Promise<boolean> {
-  const parent = await getComment(parentId);
-  return Boolean(parent && parent.postId === postId);
-}
-
-async function classifyCommentRefusal(postId: string, agentId: string, parentId?: string): Promise<Response> {
-  if (!(await getPost(postId))) return errorResponse("Post not found", undefined, 404);
-  // The parent can vanish or move out of scope between the pre-check and the insert's gate
-  // (M11-1b D3): re-derive it so a raced invalid parent answers as a validation error, never as
-  // a fabricated cooldown.
-  if (parentId && !(await parentIsValid(postId, parentId))) return invalidParentRefusal();
-  return (
-    (await commentCooldownRefusal(agentId)) ??
-    errorResponse("Comment cooldown", "Please wait before posting another comment.", 429, {
-      code: "rate_limited",
-    })
-  );
-}
-
-/**
- * The comment write itself: syntactic and parent validation BEFORE the rate-limit check (M11-1b
- * D3 — the pre-D3 order gave a rate-limited caller with an invalid parent the rate-limit shape,
- * promising a precedence the code did not have), then the cooldown, then the create.
- */
-async function writeComment(request: NextRequest, postId: string, agentId: string, post: Awaited<ReturnType<typeof getPost>>): Promise<Response> {
-  const body = await request.json();
-  const content = body?.content?.trim();
-  const parentId = body?.parent_id?.trim() || undefined;
-  if (!content) {
-    return errorResponse("content is required");
-  }
-  if (parentId && !(await parentIsValid(postId, parentId))) {
-    return invalidParentRefusal();
-  }
-
-  const cooldown = await commentCooldownRefusal(agentId);
-  if (cooldown) return cooldown;
-
-  const comment = await createComment(postId, agentId, content, parentId);
-  if (!comment) return classifyCommentRefusal(postId, agentId, parentId);
-  if (post) scheduleCommentMemoryIngest(comment, post);
-  return jsonResponse({
-    success: true,
-    data: {
-      id: comment.id,
-      content: comment.content,
-      parent_id: comment.parentId,
-      created_at: comment.createdAt,
-    },
-  });
-}
-
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const access = await requireAgent(request);
   if (!access.ok) return access.response;
-  const agent = access.agent;
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  const rateLimitResponse = checkRateLimitAndRespond(access.agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { id: postId } = await params;
-  const post = await getPost(postId);
-  if (!post) {
-    return errorResponse("Post not found", undefined, 404);
-  }
-
-  // A comment belongs to the post's group, so the school that owns that group decides who may
-  // write here — not the host the request arrived on (M11-1 C20, review round 4).
-  const group = await getGroup(post.groupId);
-  if (group) {
-    const schoolDenial = requireGroupSchoolAccess(agent, group);
-    if (schoolDenial) return schoolDenial;
-  }
 
   try {
-    return await writeComment(request, postId, agent.id, post);
+    const body = await request.json();
+    const content = body?.content?.trim();
+    const parentId = body?.parent_id?.trim() || undefined;
+    if (!content) return errorResponse("content is required");
+
+    const result = await createComment({ agent: access.agent, postId, content, parentId });
+    if (!result.ok) return createCommentRefusal(result);
+    const { comment } = result.data;
+    return jsonResponse({
+      success: true,
+      data: {
+        id: comment.id,
+        content: comment.content,
+        parent_id: comment.parentId,
+        created_at: comment.createdAt,
+      },
+    });
   } catch {
     return errorResponse("Failed to create comment", undefined, 500);
   }

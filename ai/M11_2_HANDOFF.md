@@ -1,0 +1,84 @@
+# M11-2 execution handoff — status at the 2026-08-05 break
+
+Work on `ai/PLAN_M11_2.md` stopped deliberately at a clean break. This file is the pickup point for
+the next agent. The whole tree is **uncommitted on `ops/code-improve`** (HEAD `a7f4cd3`) by user
+instruction — do not commit until asked. Companion state also lives in the orchestrator memory file
+`~/.claude/projects/-Users-mohsin-Github-safemolt/memory/m11-2-execution-state.md`.
+
+## Verified state at the break
+
+- `npx tsc --noEmit` — clean.
+- `npm test -- --runInBand` — 157 suites / **1419 tests, all green** (2026-08-12, post luna r8b + nonce fix).
+- `npm run lint` — 0 errors (pre-existing complexity warnings only).
+- `npm run test:integration` — 42 suites / **549 green** (2026-08-12). `npm run build` — green.
+- Note: the u3e integration suite's certification nonces are RUN-suffixed now — `certification_jobs.nonce` is UNIQUE and the reserved DB keeps rows across runs.
+- The M11 migrations including `scripts/migrate-m11-shadow-compare.sql` are applied to the dev and
+  integration databases.
+
+## Achieved (all codex-converged unless noted)
+
+| Unit | Content | Review state |
+|---|---|---|
+| P0 | inventory (`ai/validation/m11-inventory.md`), baseline, tick-log instrumentation | done |
+| u1 | P1.0 events substrate + P2.2 drain/cursor/receipt/retry + `internal/events-drain` | converged (6 rounds, prior session) |
+| u2 | P2.1 three consumers + kind union + manifests + shadow machinery | converged (10 rounds, prior session) |
+| u3 | P1.1 posts producer | converged (6 rounds, prior session) |
+| u3b | P1.2 comments/votes/follows | **converged this session** (4 rounds → clean; daily-cap 429 gained `retry_after_seconds`; `created_at` joined the notification soak projection) |
+| u3c | P1.3 groups | **converged this session** (7 rounds → clean; security fix: settings tool had no ownership check; subscription snapshot sidecar; founder-wins centralization) |
+| u4-prep | shadow-soak verification | **pivoted** after 6 non-converging rounds: comparison now stamps at DRAIN time (`legacy_match`/`legacy_detail` on `event_consumer_shadow`, written by the dispatcher; `src/lib/events/consumers/legacy-compare.ts`); `scripts/soak-shadow-report.sql` is a ~300-line stamp aggregator. **Three [A] findings still open — see next steps** |
+| u3d | P1.4 playground slice (7 kinds, join/submit/cancel/create/expiry/cap producers) | round 1 done + its 3 [B] findings **fixed** (transitional projections spliced into the emitting statements with trigger-injection proof; lifetime-cap starvation fixed; JSON-null route guard). **Convergence round not yet run** |
+| u3e | P1.4 evaluations + agent-lifecycle slice | **in full codex rounds** (karma-bearing). Trail: r1 (2B+4M+1m) → r2 (2B+3M+1m) → r3 (4M+1m) → r4 (1B+2M) → r5 crashed 4× → split into scoped store-A/actions-B reviews → r5a/b (9M+2m) → r6a/b (2B+8M) → luna r8+r8b fixed all → **r7a/b (2026-08-12): 3 BLOCKER + 7 MAJOR + 1 MINOR** (cert-start sibling-CTE race on the live-job index; D4 completion vs proctor-claim 40P01; nonce lapse on `in_progress` permanently blocks certification; memory rollback/parity gaps; adapter transcript 500; parity-table gaps; vetting misclassification). Luna r9 in flight — findings + prompt in `ai/m11-2-handoff/` (`codex-findings-u3e-round7{a,b}-*.md`, `luna-u3e-fix-round9-prompt.md`) |
+
+Standing user directives (recorded in memory): **fewer review rounds on low-risk chunks** (full
+convergence only for karma/lock/atomicity-bearing units); **agent freshness** (past ~50–60% of an
+agent's context budget, hand the next round to a fresh agent with a self-contained spec).
+
+## Next steps, in order
+
+1. **Converge u3e.** Luna r9 is fixing codex r7's 3 BLOCKER + 7 MAJOR + 1 MINOR (findings:
+   `codex-findings-u3e-round7{a,b}-*.md`; prompt: `luna-u3e-fix-round9-prompt.md`). After its five
+   gates pass, run codex r8 with the two scoped prompts (`codex-u3e-review-{a,b}.md` — rewrite their
+   "Recent (this round's subject)" sections first), SOLO and sequentially: parallel codex runs crash
+   each other, and luna is also a codex run. Iterate to convergence — u3e is karma-bearing.
+   `karma-writer-ownership.test.ts`'s enumerated inventory must stay unchanged.
+2. **Execute the open u4prep2 fix round** — spec: `ai/m11-2-handoff/u4prep2-fix-round.md`; findings
+   text: `ai/m11-2-handoff/codex-findings-u3d-u4prep2-round1.md` ([A]1 superseded stamp for reused
+   keys, [A]3 locked twin lookups → `unverifiable`, [A]5 kind_map exact-kind attribution). The
+   stopped agent had made **no edits** — start clean.
+3. **Convergence rounds**: one combined codex round over u3d(+fixes) and u4prep2(+fixes); iterate
+   only on BLOCKER/MAJOR per the low-risk directive.
+4. **u3f — the last P1.4 slice**: classes enroll/drop + the mixed-actor session-message split
+   (`src/lib/class-ops/*` operator entry), memory-context writes (Tier 1) and raw-vector routes
+   (Tier B), profile update + avatar + the reserved-key allowlist (unconditional — D1 superseded),
+   admissions transitions + the offer-expiry housekeeping move to the drain route, inbox read-state
+   (Tier B). Write the spec from `ai/PLAN_M11_2.md` P1.4's table + inventory §3c/§3d/§4.
+5. **P1.5 / P1.6** — tools and routes become adapters everywhere; the generated ESLint boundary +
+   AST discipline test + manifest-completeness test; the permanent exemption list per the Surface
+   bound.
+6. **a3 = P4** (senses), **a4 = P3** (worker + wakeups, internally P3.2 → P3.3 → P3.1 → P3.4);
+   then M11b (P5/P6/P7).
+7. **Deploy-time (not code)**: deploy the shadow state, run the ≥3-day production soak
+   (`scripts/soak-shadow-report.sql` is the operator report; flip-clean = matched-only stamps and
+   zero anomalies, ingest rows are `unverifiable` and never count as passing), then per-kind
+   `shadow → on` (dual-write) → inline-writer deletion, each a separate fully-rolled-out deploy
+   behind the consumer-contract-hash barrier (inventory §8 protocols).
+
+## How to work (the pattern that converged five units)
+
+Orchestrator writes a spec → an implementation agent executes it (characterization first,
+mutation-check every behavioral fix: test first, watch it fail, fix) → `codex exec --sandbox
+read-only "$(cat <review-prompt>)"` reviews fresh each round, no reference to prior rounds → fix
+rounds until clean (full rounds only for karma/lock/atomicity surfaces). Gates per round:
+`npx tsc --noEmit && npm run lint && npm test -- --runInBand && npm run test:integration &&
+npm run build`. Integration serializes on a Postgres advisory lock; the known flake is `c13a`
+(re-run before concluding). Review prompts for every converged unit are in `ai/m11-2-handoff/`.
+
+## Cautions
+
+- `claude -p` is broken (expired OAuth); the user must run `claude login`. Use harness subagents.
+- Concurrent agents need explicit file fences; two agents once collided on `activity/events.ts`.
+- Piped shell commands report the pipe tail's exit code — read jest's summary lines, not the code.
+- The Neon integration DB intermittently reset connections on 2026-08-05; probe and retry before
+  diagnosing test failures as real.
+- `agents.md` (= CLAUDE.md) accumulated new invariants across u3b–u3d — read its store/migration
+  section before touching any producer.

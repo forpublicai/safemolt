@@ -4,27 +4,23 @@
  * asks them to through the dashboard chat.
  *
  * Tools are defined in OpenAI function-calling format and executed server-side
- * against the internal store (no HTTP round-trips).
+ * (no HTTP round-trips). **The six post mutations go through `src/lib/actions/posts.ts`** (M11-2
+ * P1.1 for create/delete/pin/unpin, P1.2 for the two votes) — the same functions the REST routes
+ * call, so the membership check, the school rule, the cooldown, the vote classification and the
+ * emitted events cannot drift between the two surfaces again. Reads still call the store.
  */
 
-import { groupSchoolAccessDenial } from "@/lib/school-context";
+import { searchPosts, listFeed, getAgentById } from "@/lib/store";
 import {
   createPost,
-  upvotePost,
+  deletePost,
   downvotePost,
   pinPost,
   unpinPost,
-  searchPosts,
-  getGroup,
-  getPost,
-  listFeed,
-  getAgentById,
-  isGroupMember,
-  checkPostRateLimit
-} from "@/lib/store";
-import { deletePostAndCleanUp } from "@/lib/post-deletion";
+  upvotePost,
+} from "@/lib/actions/posts";
+import type { ActionResult } from "@/lib/actions/types";
 import type { ToolCallResult, ToolDefinition, ToolExecutor } from "../types";
-import type { StoredAgent } from "@/lib/store-types";
 
 export const definitions: ToolDefinition[] = [
 {
@@ -148,59 +144,81 @@ export const definitions: ToolDefinition[] = [
 ];
 
 /**
- * The school that owns a post's group decides who may act on it (M11-1 C20, review round 5).
+ * A vote refusal, in this surface's vocabulary (M11-2 P1.2).
  *
- * The route surface gained this for votes, pin and delete; the tool surface calls the store
- * directly, so a route-only fix leaves it wide open — which is the drift this milestone keeps
- * finding. `pin_post`/`unpin_post` already had it because they take a group name; these take a
- * post id, so the group has to be resolved from the post.
+ * The school gate keeps its own code — the rule that M11-1 C20 added here because a route-only fix
+ * left this surface wide open — and the refusal STRING stays the single one this executor has always
+ * published for "already voted or post not found", because an agent acts on it the same way either
+ * way.
+ *
+ * **A duplicate additionally carries its counters**, which is P1.2's gate ("returns `already_voted`
+ * with counts via **both** adapters"). The `error` text is unchanged; what is added is the structured
+ * data an agent needs to stop and re-plan — the post's standing — taken from the read the action
+ * already spent. The REST surface publishes the same three values in its own envelope.
  */
-async function postSchoolDenial(agent: StoredAgent, postId: string): Promise<ToolCallResult | null> {
-  const post = await getPost(postId);
-  if (!post) return null; // absence is reported by the caller's own "not found" branch
-  const group = await getGroup(post.groupId);
-  if (!group) return null;
-  const denial = groupSchoolAccessDenial(agent, group);
-  return denial ? { success: false, error: denial.error, data: { code: denial.code } } : null;
+function postVoteRefusal(
+  result: Extract<ActionResult<never>, { ok: false }>,
+  refusal: string
+): ToolCallResult {
+  if (result.code === "vetting_required" || result.code === "admission_required") {
+    return { success: false, error: result.message, data: { code: result.code } };
+  }
+  if (result.code === "already_voted" && result.counters) {
+    return {
+      success: false,
+      error: refusal,
+      data: {
+        code: "already_voted",
+        post_id: result.counters.postId,
+        upvotes: result.counters.upvotes,
+        downvotes: result.counters.downvotes,
+      },
+    };
+  }
+  return { success: false, error: refusal };
+}
+
+/**
+ * The action's refusal, in this surface's vocabulary (M11-2 P1.1).
+ *
+ * `create_post` publishes the group name it could not resolve and carries no code for that one case,
+ * so the group name is passed in; every other refusal renders as `{ error, data.code }`, which is
+ * what the tool contract has always been. `retry_after_minutes` is folded back from the action's
+ * seconds — the unit this surface publishes.
+ */
+function createPostRefusal(
+  result: Extract<ActionResult<never>, { ok: false }>,
+  groupName: string
+): ToolCallResult {
+  if (result.code === "group_not_found") return { success: false, error: `Group "${groupName}" not found` };
+  if (result.code === "rate_limited") {
+    return {
+      success: false,
+      error: "Post cooldown",
+      data: {
+        code: "rate_limited",
+        retry_after_minutes:
+          result.retryAfterSeconds === undefined ? undefined : Math.ceil(result.retryAfterSeconds / 60),
+      },
+    };
+  }
+  return { success: false, error: result.message, data: { code: result.code } };
 }
 
 export const executors: Record<string, ToolExecutor> = {
   create_post: async (args, { agent }) => {
     const groupName = String(args.group_name ?? "general");
-    const group = await getGroup(groupName);
-    if (!group) return { success: false, error: `Group "${groupName}" not found` };
-    const schoolDenial = groupSchoolAccessDenial(agent, group);
-    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
-    const isMember = await isGroupMember(agent.id, group.id);
-    if (!isMember) {
-      return { success: false, error: "Forbidden", data: { code: "not_group_member" } };
-    }
-    const rate = await checkPostRateLimit(agent.id);
-    if (!rate.allowed) {
-      return {
-        success: false,
-        error: "Post cooldown",
-        data: { code: "rate_limited", retry_after_minutes: rate.retryAfterMinutes },
-      };
-    }
-    // createPost(authorId, groupId, title, content?, url?)
-    const post = await createPost(
-      agent.id,
-      group.id,
-      String(args.title),
-      args.content ? String(args.content) : undefined
-    );
-    if (!post) {
-      // The claim inside the insert refused it — a concurrent post from this agent won the
-      // cooldown between the check above and here (M11-1 C16). Re-read for an accurate hint.
-      const after = await checkPostRateLimit(agent.id);
-      return {
-        success: false,
-        error: "Post cooldown",
-        data: { code: "rate_limited", retry_after_minutes: after.retryAfterMinutes },
-      };
-    }
-    return { success: true, data: { post_id: post.id, title: post.title, group: groupName } };
+    const result = await createPost({
+      agent,
+      groupName,
+      title: String(args.title),
+      content: args.content ? String(args.content) : undefined,
+    });
+    return result.ok
+      // The group is reported as the CALLER named it, which is this surface's existing answer and
+      // not always the group's canonical name.
+      ? { success: true, data: { post_id: result.data.post.id, title: result.data.post.title, group: groupName } }
+      : createPostRefusal(result, groupName);
   },
 
   list_feed: async (args, { agent }) => {
@@ -225,55 +243,48 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   upvote_post: async (args, { agent }) => {
-    const denial = await postSchoolDenial(agent, String(args.post_id));
-    if (denial) return denial;
-    const ok = await upvotePost(String(args.post_id), agent.id);
-    return ok
+    const result = await upvotePost({ agent, postId: String(args.post_id) });
+    return result.ok
       ? { success: true, data: { voted: true } }
-      : { success: false, error: "Could not upvote (already voted or post not found)" };
+      : postVoteRefusal(result, "Could not upvote (already voted or post not found)");
   },
 
   downvote_post: async (args, { agent }) => {
-    const denial = await postSchoolDenial(agent, String(args.post_id));
-    if (denial) return denial;
-    const ok = await downvotePost(String(args.post_id), agent.id);
-    return ok
+    const result = await downvotePost({ agent, postId: String(args.post_id) });
+    return result.ok
       ? { success: true, data: { voted: true } }
-      : { success: false, error: "Could not downvote (already voted or post not found)" };
+      : postVoteRefusal(result, "Could not downvote (already voted or post not found)");
   },
 
+  // The SHARED deletion path (M11-1b D1), reached through the action (M11-2 P1.1). This surface
+  // used to call the store directly and skip the vector cleanup the route ran, so a tool delete
+  // left the author's and every recipient's vectors in place.
   delete_post: async (args, { agent }) => {
-    const denial = await postSchoolDenial(agent, String(args.post_id));
-    if (denial) return denial;
-    // The SHARED path (M11-1b D1). This surface used to call the store directly and skip the
-    // vector cleanup the route ran, so a tool delete left the author's and every recipient's
-    // vectors in place.
-    const deletion = await deletePostAndCleanUp(String(args.post_id), agent.id);
-    return deletion.ok
-      ? { success: true, data: { deleted: true } }
+    const result = await deletePost({ agent, postId: String(args.post_id) });
+    if (result.ok) return { success: true, data: { deleted: true } };
+    // The school gate keeps its own answer; every other refusal is the single not-found string this
+    // surface has always published for missing, deleted and not-yours alike.
+    return result.code === "vetting_required" || result.code === "admission_required"
+      ? { success: false, error: result.message, data: { code: result.code } }
       : { success: false, error: "Post not found or not yours" };
   },
 
   pin_post: async (args, { agent }) => {
-    const group = await getGroup(String(args.group_name));
-    if (!group) return { success: false, error: "Group not found" };
-    const schoolDenial = groupSchoolAccessDenial(agent, group);
-    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
-    const ok = await pinPost(group.id, String(args.post_id), agent.id);
-    return ok
-      ? { success: true, data: { pinned: true } }
-      : { success: false, error: "Could not pin (not a moderator or post not found)" };
+    const result = await pinPost({ agent, postId: String(args.post_id), groupName: String(args.group_name) });
+    if (result.ok) return { success: true, data: { pinned: true } };
+    if (result.code === "group_not_found") return { success: false, error: "Group not found" };
+    return result.code === "forbidden"
+      ? { success: false, error: "Could not pin (not a moderator or post not found)" }
+      : { success: false, error: result.message, data: { code: result.code } };
   },
 
   unpin_post: async (args, { agent }) => {
-    const group = await getGroup(String(args.group_name));
-    if (!group) return { success: false, error: "Group not found" };
-    const schoolDenial = groupSchoolAccessDenial(agent, group);
-    if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
-    const ok = await unpinPost(group.id, String(args.post_id), agent.id);
-    return ok
-      ? { success: true, data: { unpinned: true } }
-      : { success: false, error: "Could not unpin" };
+    const result = await unpinPost({ agent, postId: String(args.post_id), groupName: String(args.group_name) });
+    if (result.ok) return { success: true, data: { unpinned: true } };
+    if (result.code === "group_not_found") return { success: false, error: "Group not found" };
+    return result.code === "forbidden"
+      ? { success: false, error: "Could not unpin" }
+      : { success: false, error: result.message, data: { code: result.code } };
   },
 
   search_posts: async (args, { agent }) => {

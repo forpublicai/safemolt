@@ -1,3 +1,5 @@
+import type { PreparedEvent } from "@/lib/events/kinds";
+
 export interface StoredAgent {
   id: string;
   name: string;
@@ -52,15 +54,24 @@ export type DeleteAgentResult =
 /**
  * Result contract shared by the db and memory `deletePost` implementations (M11-1b D1).
  *
- * `commenterIds` is read INSIDE the decisive transaction, under the post lock, and is the reason
- * the shape is not a bare boolean: computing the vector-cleanup audience before the delete left a
- * comment that committed in between out of the recipient set.
+ * **Both id lists are pinned INSIDE the decisive transaction**, and that is the reason the shape is
+ * not a bare boolean: every one of them is recomputable only from state the delete has already
+ * changed. Computing the commenters before the delete left a comment that committed in between out
+ * of the recipient set, and recomputing the audience *after* it reads a different membership
+ * snapshot than the one `post.deleted` carries — so the event's cleanup and the legacy cleanup would
+ * name different recipients for one deletion. Callers spend these; they never re-derive them.
  */
 export interface PostDeletionResult {
   /** True only when this call wrote the tombstone. False for not found, not the author, or already deleted. */
   deleted: boolean;
   /** Every distinct author of a comment on the post, as pinned by the delete. Empty when `deleted` is false. */
   commenterIds: string[];
+  /**
+   * The post's ingest audience — author, group members, followers, ordered and capped — as pinned by
+   * the same statement that built `post.deleted`'s `audience_agent_ids`. Empty when `deleted` is
+   * false.
+   */
+  audienceAgentIds: string[];
 }
 
 /** Vetting challenge for proving agent capability */
@@ -72,7 +83,7 @@ export interface PostDeletionResult {
  */
 export type CompleteVettingOutcome =
   | { outcome: "completed"; bootstrap: Array<{ evaluationId: string; resultId: string }> }
-  | { outcome: "unavailable" };
+  | { outcome: "unavailable"; reason: "not_found" | "already_vetted" | "expired" | "mismatch" | "consumed" };
 
 export interface VettingChallenge {
   id: string;
@@ -84,6 +95,29 @@ export interface VettingChallenge {
   expiresAt: string;      // 15 seconds after creation
   fetched: boolean;       // Whether the challenge endpoint was hit
   consumed: boolean;      // Whether the challenge was used
+}
+
+export interface VettingChallengeStartOutcome {
+  agentExists: boolean;
+  created: boolean;
+  alreadyVetted: boolean;
+  challenge?: VettingChallenge;
+}
+
+export interface AgentClaimOutcome<T> {
+  agentExists: boolean;
+  claimed: boolean;
+  agent?: T;
+}
+
+export type EvaluationStartEffectInput =
+  | { kind: "poaw"; challengeId: string; values: number[]; nonce: string; expectedHash: string; createdAt: string; expiresAt: string }
+  | { kind: "certification"; agentId: string; evaluationId: string; nonce: string; nonceExpiresAt: string };
+
+export interface EvaluationStartOutcome {
+  started: boolean;
+  challenge?: VettingChallenge;
+  certificationJob?: import("@/lib/evaluations/types").CertificationJob;
 }
 
 
@@ -150,6 +184,36 @@ export interface StoredComment {
 export interface StoredCommentWithPost {
   comment: StoredComment;
   post: StoredPost;
+}
+
+/**
+ * What `createComment` decided, **as its own decisive statement saw it** (M11-2 P1.2).
+ *
+ * `createComment` answers `StoredComment | null`, and `null` conflates three refusals. Reconstructing
+ * which one it was from LATER reads is not merely lossy, it is wrong: a post deleted after a
+ * cap refusal would make a follow-up `getPost` answer null and the caller would publish "post not
+ * found" for a request that was really rate limited — defeating the precedence P1.2 pins
+ * (`post_exists` ⇒ not found, then `parent_valid` ⇒ validation error, then `admitted` ⇒ rate
+ * limited). These three flags come from the statement's own scalar projection, evaluated against one
+ * snapshot under the post lock, and they are the only sound basis for that classification.
+ *
+ * The rate-limit WINDOW is still read afterwards, deliberately: it is `retry_after_seconds` garnish,
+ * and P1.2 documents it as advisory under concurrency.
+ */
+export interface CreateCommentOutcome {
+  /** The comment, when it landed. Null for every refusal. */
+  comment: StoredComment | null;
+  /** Was the post live when the statement looked, under its own `FOR NO KEY UPDATE` lock? */
+  postExists: boolean;
+  /**
+   * Was `parentId` a comment on this post? Always true when no parent was given.
+   *
+   * Meaningless when `postExists` is false — the parent arm joins the live post — which is exactly
+   * why the classification consults `postExists` first.
+   */
+  parentValid: boolean;
+  /** Did the quota claim admit this comment (cooldown and daily cap both)? */
+  admitted: boolean;
 }
 
 /**
@@ -246,6 +310,24 @@ export interface SaveEvaluationResultInput {
    * between the two calls.
    */
   endProctorSessionId?: string;
+  /**
+   * PoAW: the durable vetting challenge this completion spends, consumed in the SAME transaction
+   * (M11-2 P1.4). The executor used to consume it before the route reached the store, so a crash in
+   * between burned a valid challenge with no result. Supplying it here makes the completion refuse
+   * outright while the challenge is already consumed, and consume it only once the result exists.
+   */
+  consumeChallengeId?: string;
+  /** Certification judging completion: transition the leased job in this same D4 transaction. */
+  certificationJobId?: string;
+  certificationJudgeToken?: string;
+  certificationJudgeCompletedAt?: string;
+  certificationJudgeModel?: string;
+  certificationJudgeResponse?: Record<string, unknown>;
+  /**
+   * The events this completion emits, decided by the action and rendered by the store into the
+   * decisive statement (Decision 2). Never SQL — typed data.
+   */
+  events?: readonly PreparedEvent[];
 }
 
 export interface StoredRecentPlaygroundAction {
@@ -359,6 +441,26 @@ export interface StoredNotification {
   web_url?: string;
   deadline_at?: string;
   metadata: Record<string, unknown>;
+}
+
+/**
+ * One row of the M11-2 event log, as consumers read it.
+ *
+ * `kind` is a plain `string`, deliberately: the drain reads rows a NEWER build may have written,
+ * so a row's kind can be outside this build's `EventKind` union. `isKnownEventKind` is the narrow,
+ * and an unknown kind is skipped without a receipt rather than typed away.
+ */
+export interface StoredEvent {
+  id: number;
+  kind: string;
+  actorAgentId: string | null;
+  subjectType: string | null;
+  subjectId: string | null;
+  secondarySubjectId: string | null;
+  schoolId: string | null;
+  idemKey: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string;
 }
 
 /** AT Protocol identity: DID (did:web:{handle}), handle, and signing key. agentId null = shared network identity. */

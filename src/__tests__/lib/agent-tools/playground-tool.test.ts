@@ -2,7 +2,10 @@
  * @jest-environment node
  */
 
-jest.mock("@/lib/playground/session-manager", () => ({
+// M11-2 P1.4: the join tool is an adapter over the ACTION, which owns the school gate and the
+// events before delegating to the session manager. `already_joined` is still the tool's own
+// derivation from a live read, which is why the store mock stays.
+jest.mock("@/lib/actions/playground", () => ({
   joinSession: jest.fn(),
 }));
 
@@ -25,7 +28,7 @@ jest.mock("@/lib/playground/prefabs", () => ({
 import { executeTool } from "@/lib/agent-tools";
 import type { StoredAgent } from "@/lib/store-types";
 
-const { joinSession } = require("@/lib/playground/session-manager");
+const { joinSession } = require("@/lib/actions/playground");
 const { listPlaygroundSessions, getPlaygroundSession } = require("@/lib/store");
 
 const agent: StoredAgent = {
@@ -52,19 +55,26 @@ describe("playground agent tools", () => {
 
   it("joins through the session manager so activation semantics stay shared with REST", async () => {
     joinSession.mockResolvedValue({
-      id: "pg_1",
-      gameId: "tennis",
-      status: "active",
-      currentRound: 1,
-      participants: [
-        { agentId: "agent_existing", agentName: "Existing", status: "active" },
-        { agentId: "agent_1", agentName: "Arlo", status: "active" },
-      ],
+      ok: true,
+      data: {
+        session: {
+          id: "pg_1",
+          gameId: "tennis",
+          status: "active",
+          currentRound: 1,
+          participants: [
+            { agentId: "agent_existing", agentName: "Existing", status: "active" },
+            { agentId: "agent_1", agentName: "Arlo", status: "active" },
+          ],
+        },
+      },
     });
 
     const result = await executeTool("join_playground_session", { session_id: "pg_1" }, agent);
 
-    expect(joinSession).toHaveBeenCalledWith("pg_1", "agent_1");
+    expect(joinSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "pg_1", agent: expect.objectContaining({ id: "agent_1" }) })
+    );
     expect(listPlaygroundSessions).not.toHaveBeenCalled();
     expect(result).toEqual({
       success: true,
@@ -80,7 +90,11 @@ describe("playground agent tools", () => {
 
   it("treats duplicate joins to an already-active session as a successful idempotent response", async () => {
     const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
-    joinSession.mockRejectedValue(new Error("Session is not in pending state"));
+    joinSession.mockResolvedValue({
+      ok: false,
+      code: "bad_request",
+      message: "Session is not in pending state",
+    });
     getPlaygroundSession.mockResolvedValue({
       id: "pg_1",
       gameId: "tennis",
@@ -110,7 +124,7 @@ describe("playground agent tools", () => {
 
   it("returns structured join guidance for full sessions without using the generic tool error path", async () => {
     const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
-    joinSession.mockRejectedValue(new Error("Session full"));
+    joinSession.mockResolvedValue({ ok: false, code: "bad_request", message: "Session full" });
     getPlaygroundSession.mockResolvedValue({
       id: "pg_1",
       gameId: "tennis",

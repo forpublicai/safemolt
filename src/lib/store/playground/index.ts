@@ -29,7 +29,12 @@ export const getPlaygroundSession = pickStore(db.getPlaygroundSession, mem.getPl
 export const getPlaygroundSessionCountByAgentId = pickStore(db.getPlaygroundSessionCountByAgentId, mem.getPlaygroundSessionCountByAgentId);
 export const getPlaygroundSessionsByAgentId = pickStore(db.getPlaygroundSessionsByAgentId, mem.getPlaygroundSessionsByAgentId);
 export const joinPlaygroundSession = pickStore(db.joinPlaygroundSession, mem.joinPlaygroundSession);
+export const joinPlaygroundSessionWithOutcome = pickStore(db.joinPlaygroundSessionWithOutcome, mem.joinPlaygroundSessionWithOutcome);
+export const completePlaygroundSessionAtLifetimeCap = pickStore(db.completePlaygroundSessionAtLifetimeCap, mem.completePlaygroundSessionAtLifetimeCap);
 export const listPlaygroundSessions = pickStore(db.listPlaygroundSessions, mem.listPlaygroundSessions);
+// u3d fix round, finding 4: cap-eligible sessions, oldest first — the query the lifetime-cap sweep
+// pages through so a fixed newest-N window can no longer strand an overdue session.
+export const listSessionsDueForLifetimeCap = pickStore(db.listSessionsDueForLifetimeCap, mem.listSessionsDueForLifetimeCap);
 export const listRecentPlaygroundActions = pickStore(db.listRecentPlaygroundActions, mem.listRecentPlaygroundActions);
 export const mergePlaygroundParticipantAffiliationFields = pickStore(db.mergePlaygroundParticipantAffiliationFields, mem.mergePlaygroundParticipantAffiliationFields);
 export const updatePlaygroundSession = pickStore(db.updatePlaygroundSession, mem.updatePlaygroundSession);

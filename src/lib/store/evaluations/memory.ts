@@ -1,9 +1,35 @@
 import type { CertificationJob } from '@/lib/evaluations/types';
-import type { SaveEvaluationResultInput, SaveEvaluationResultOutcome, StoredRecentEvaluationResult } from "@/lib/store-types";
-import { agents, certificationJobs, evaluationMessages, evaluationRegistrations, evaluationResults, evaluationSessionParticipants, evaluationSessions, generateEvaluationId } from "../_memory-state";
+import type { PreparedEvent } from "@/lib/events/kinds";
+import type { EvaluationStartEffectInput, EvaluationStartOutcome, SaveEvaluationResultInput, SaveEvaluationResultOutcome, StoredRecentEvaluationResult } from "@/lib/store-types";
+import { agents, certificationJobs, evaluationMessages, evaluationRegistrations, evaluationResults, evaluationSessionParticipants, evaluationSessions, generateEvaluationId, vettingChallenges } from "../_memory-state";
 import { recordEvaluationResultActivityEvent } from "../activity/events";
+import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents } from "../events/memory";
 import { computeEvaluationResultFields } from "./result-fields";
 import { toKarmaScale } from "../karma-scale";
+
+/**
+ * The memory twin of the db statements' per-event substitution — **positional, primary event only**.
+ *
+ * The db side applies `overrides[0]` to `events[0]` and leaves every later event alone, whatever
+ * kind it is (`emitEventCtes`). A kind-keyed rule here would agree with Postgres for one event and
+ * diverge for two, which is the shape every primary+derived batch takes.
+ */
+function substitutePrimaryEvent(
+  events: readonly PreparedEvent[] | undefined,
+  substitution: { subjectId?: string; payload?: Record<string, unknown> }
+): PreparedEvent[] {
+  return (events ?? []).map((event, index) =>
+    index === 0
+      ? ({
+          ...event,
+          ...(substitution.subjectId === undefined ? {} : { subjectId: substitution.subjectId }),
+          ...(substitution.payload === undefined
+            ? {}
+            : { payload: { ...event.payload, ...substitution.payload } }),
+        } as PreparedEvent)
+      : event
+  );
+}
 
 type MemoryEvaluationResult = NonNullable<ReturnType<typeof evaluationResults.get>>;
 
@@ -53,6 +79,14 @@ function classifyRefusedSave(
   return null;
 }
 
+function requireAgent(agentId: string): void {
+  if (agents.has(agentId)) return;
+  const error = new Error(`agent ${agentId} does not exist`) as Error & { code: string; constraint: string };
+  error.code = "23503";
+  error.constraint = "evaluation_agent_id_fkey";
+  throw error;
+}
+
 function toEvaluationResultRecord(r: MemoryEvaluationResult): StoredRecentEvaluationResult {
   return {
     id: r.id,
@@ -87,9 +121,15 @@ export async function listRecentEvaluationResults(limit = 25) {
 export async function registerForEvaluation(
   agentId: string,
   evaluationId: string,
-  trustedSchoolId?: string) {
+  trustedSchoolId?: string,
+  events?: readonly PreparedEvent[]) {
+  requireAgent(agentId);
   const id = generateEvaluationId('eval_reg');
   const registeredAt = new Date().toISOString();
+  // The store's own id, substituted into the primary event exactly where the db statement writes
+  // `sqlParam(1)` into `subject_id`. Kind and payload are validated HERE, where the db store renders.
+  const prepared = substitutePrimaryEvent(events, { subjectId: id });
+  validatePreparedEvents(prepared);
 
   for (const result of Array.from(evaluationResults.values())) {
     if (result.agentId === agentId && result.evaluationId === evaluationId && result.passed) {
@@ -101,10 +141,13 @@ export async function registerForEvaluation(
   for (const reg of Array.from(evaluationRegistrations.values())) {
     if (reg.agentId === agentId && reg.evaluationId === evaluationId &&
       (reg.status === 'registered' || reg.status === 'in_progress')) {
+      // Nothing is written, so nothing is emitted — the db side never reaches its insert here
+      // either, because both surfaces return the standing registration before calling the store.
       return { id: reg.id, registeredAt: reg.registeredAt };
     }
   }
 
+  const batch = prepareEventBatch(prepared);
   evaluationRegistrations.set(id, {
     id,
     agentId,
@@ -114,6 +157,8 @@ export async function registerForEvaluation(
     schoolId: trustedSchoolId ?? 'foundation',
     schoolScopeTrusted: trustedSchoolId != null,
   });
+  const { dispatched } = appendPreparedBatch(batch);
+  await dispatched;
 
   return { id, registeredAt };
 }
@@ -237,24 +282,38 @@ export async function addSessionMessage(
   sessionId: string,
   senderAgentId: string,
   role: string,
-  content: string) {
+  content: string,
+  events?: readonly PreparedEvent[]) {
+  const session = evaluationSessions.get(sessionId);
+  const participant = Array.from(evaluationSessionParticipants.values()).find(
+    (candidate) => candidate.sessionId === sessionId && candidate.agentId === senderAgentId
+  );
+  if (!session || session.status !== 'active' || !participant) return null;
+  requireAgent(senderAgentId);
   const id = generateEvaluationId('eval_msg');
   const createdAt = new Date().toISOString();
+  // `message_id` is store-assigned on both sides: the db statement merges `sqlParam(1)` into the
+  // payload, and this is the same substitution written out.
+  const prepared = substitutePrimaryEvent(events, { payload: { message_id: id } });
+  validatePreparedEvents(prepared);
   let maxSeq = 0;
   for (const m of Array.from(evaluationMessages.values())) {
     if (m.sessionId === sessionId && m.sequence > maxSeq) maxSeq = m.sequence;
   }
   const sequence = maxSeq + 1;
+  const batch = prepareEventBatch(prepared);
   evaluationMessages.set(id, {
     id,
     sessionId,
     senderAgentId,
-    role,
+    role: participant.role,
     content,
     createdAt,
     sequence,
   });
-  return { id, sequence, createdAt };
+  const { dispatched } = appendPreparedBatch(batch);
+  await dispatched;
+  return { id, sequence, createdAt, role: participant.role };
 }
 
 export async function getSessionMessages(sessionId: string) {
@@ -293,11 +352,18 @@ export async function endSession(sessionId: string) {
  * a mutation that cannot throw and cannot be interleaved: everything below the ids is one
  * synchronous section with no `await` inside it.
  */
-export async function claimProctorSession(registrationId: string, proctorAgentId: string) {
+export async function claimProctorSession(
+  registrationId: string,
+  proctorAgentId: string,
+  events?: readonly PreparedEvent[]) {
   const sessionId = generateEvaluationId('eval_sess');
   const proctorParticipantId = generateEvaluationId('eval_part');
   const candidateParticipantId = generateEvaluationId('eval_part');
   const now = new Date().toISOString();
+  // Store-assigned session id, merged into the primary event's payload where the db statement
+  // merges `sqlParam(2)`. Validated here, where the db store renders.
+  const prepared = substitutePrimaryEvent(events, { payload: { session_id: sessionId } });
+  validatePreparedEvents(prepared);
 
   const registration = evaluationRegistrations.get(registrationId);
   if (!registration) return null;
@@ -308,7 +374,9 @@ export async function claimProctorSession(registrationId: string, proctorAgentId
   for (const r of Array.from(evaluationResults.values())) {
     if (r.registrationId === registrationId) return null;
   }
-
+  requireAgent(registration.agentId);
+  requireAgent(proctorAgentId);
+  const batch = prepareEventBatch(prepared);
   evaluationSessions.set(sessionId, {
     id: sessionId,
     evaluationId: registration.evaluationId,
@@ -333,6 +401,8 @@ export async function claimProctorSession(registrationId: string, proctorAgentId
       joinedAt: now,
     });
   }
+  const { dispatched } = appendPreparedBatch(batch);
+  await dispatched;
   return sessionId;
 }
 
@@ -340,12 +410,103 @@ export async function claimProctorSession(registrationId: string, proctorAgentId
 
 /** Mirrors the db CAS (M11-1b D4): only a `registered` registration may be started, so a stale
  *  start cannot drag a completed one back to `in_progress`. */
-export async function startEvaluation(registrationId: string): Promise<boolean> {
+export async function startEvaluation(
+  registrationId: string,
+  events?: readonly PreparedEvent[]
+): Promise<boolean> {
+  const prepared = substitutePrimaryEvent(events, { subjectId: registrationId });
+  validatePreparedEvents(prepared);
   const reg = evaluationRegistrations.get(registrationId);
   if (!reg || reg.status !== 'registered') return false;
+  const batch = prepareEventBatch(prepared);
   reg.status = 'in_progress';
   reg.startedAt = new Date().toISOString();
+  const { dispatched } = appendPreparedBatch(batch);
+  await dispatched;
   return true;
+}
+
+export async function startEvaluationWithEffect(
+  registrationId: string,
+  effect: EvaluationStartEffectInput,
+  events?: readonly PreparedEvent[]
+): Promise<EvaluationStartOutcome> {
+  const reg = evaluationRegistrations.get(registrationId);
+  if (!reg || (reg.status !== "registered" && reg.status !== "in_progress")) return { started: false };
+  const oldReg = { ...reg };
+  if (effect.kind === "poaw") {
+    if (reg.status !== "registered") return { started: false };
+    const prepared = substitutePrimaryEvent(events, { subjectId: registrationId });
+    validatePreparedEvents(prepared);
+    const batch = prepareEventBatch(prepared);
+    const challenge = {
+      id: effect.challengeId, agentId: reg.agentId, values: effect.values, nonce: effect.nonce,
+      expectedHash: effect.expectedHash, createdAt: effect.createdAt, expiresAt: effect.expiresAt, fetched: false, consumed: false,
+    };
+    vettingChallenges.set(challenge.id, challenge);
+    reg.status = "in_progress";
+    reg.startedAt = new Date().toISOString();
+    try {
+      const { dispatched } = appendPreparedBatch(batch);
+      await dispatched;
+    } catch (error) {
+      vettingChallenges.delete(challenge.id);
+      evaluationRegistrations.set(registrationId, oldReg);
+      throw error;
+    }
+    return { started: true, challenge };
+  }
+  const live = findCertificationStartJob(registrationId);
+  const oldJob = live ? { ...live } : undefined;
+  const expiredPending = live?.status === 'pending' && Date.parse(live.nonceExpiresAt) <= Date.now();
+  if (live && !expiredPending) return { started: false, certificationJob: live };
+  const shouldEmitStart = reg.status === "registered";
+  const prepared = shouldEmitStart ? substitutePrimaryEvent(events, { subjectId: registrationId }) : [];
+  if (shouldEmitStart) validatePreparedEvents(prepared);
+  const batch = shouldEmitStart ? prepareEventBatch(prepared) : undefined;
+  const job = live && expiredPending
+    ? { ...live, nonce: effect.nonce, nonceExpiresAt: effect.nonceExpiresAt, status: 'pending' as const, createdAt: new Date().toISOString() }
+    : { id: generateEvaluationId('cert_job'), registrationId, agentId: effect.agentId, evaluationId: effect.evaluationId, nonce: effect.nonce, nonceExpiresAt: effect.nonceExpiresAt, status: 'pending' as const, createdAt: new Date().toISOString() };
+  const created = !live;
+  certificationJobs.set(job.id, job);
+  if (shouldEmitStart) {
+    reg.status = "in_progress";
+    reg.startedAt = new Date().toISOString();
+  }
+  try {
+    if (batch) {
+      const { dispatched } = appendPreparedBatch(batch);
+      await dispatched;
+    }
+  } catch (error) {
+    if (created) certificationJobs.delete(job.id);
+    else if (oldJob) certificationJobs.set(oldJob.id, oldJob);
+    evaluationRegistrations.set(registrationId, oldReg);
+    throw error;
+  }
+  return { started: shouldEmitStart, certificationJob: job };
+}
+
+/**
+ * The PoAW challenge as part of the DECISION, exactly as it is in the db statement's transition arm
+ * (M11-2 P1.4): a replayed submit whose challenge is already consumed writes no result at all.
+ *
+ * Synchronous, like every other gate in this file, so the caller's check-and-mutate section carries
+ * no await. The refusal is classified the way every other loser is — the standing result if there
+ * is one, else `not_actionable` — because that is exactly what the db store's caller derives from a
+ * zero-row insert.
+ */
+function classifyChallengeRefusal(
+  registrationId: string,
+  consumeChallengeId?: string
+): SaveEvaluationResultOutcome | null {
+  if (!consumeChallengeId) return null;
+  const challenge = vettingChallenges.get(consumeChallengeId);
+  if (challenge && !challenge.consumed) return null;
+  const existing = findResultForRegistration(registrationId);
+  return existing
+    ? { outcome: 'already_complete', existing: toEvaluationResultRecord(existing) }
+    : { outcome: 'not_actionable' };
 }
 
 export async function saveEvaluationResult(input: SaveEvaluationResultInput): Promise<SaveEvaluationResultOutcome> {
@@ -360,15 +521,49 @@ export async function saveEvaluationResult(input: SaveEvaluationResultInput): Pr
   });
   const resultId = generateEvaluationId('eval_res');
   const completedAt = new Date().toISOString();
+  // `result_id` is store-assigned on both sides — the db statement merges `sqlParam(4)` into the
+  // payload. Kind and payload are validated here, where the db store renders.
+  const prepared = substitutePrimaryEvent(input.events, { payload: { result_id: resultId } });
+  validatePreparedEvents(prepared);
 
   // Decision and decisive mutation in one synchronous section — no await between the checks and
   // the writes, mirroring the db store's single gated statement (M11-1 C21). Every `await` yields
   // the event loop, so a check separated from its mutation by one is a check that can go stale.
   // M11-1b D4 extends the section to the proctor session end, which used to be a separate call
-  // after this function returned.
-  const refusal = classifyRefusedSave(registrationId, agentId, evaluationId, passed);
-  if (refusal) return refusal;
+  // after this function returned; M11-2 P1.4 extends it again to the PoAW challenge.
+  const certificationJob = input.certificationJobId ? certificationJobs.get(input.certificationJobId) : undefined;
+  if (input.certificationJobId && (!certificationJob || certificationJob.status !== "judging" || certificationJob.judgeToken !== input.certificationJudgeToken)) {
+    return { outcome: "not_actionable" };
+  }
+  const refusal =
+    classifyRefusedSave(registrationId, agentId, evaluationId, passed) ??
+    classifyChallengeRefusal(registrationId, input.consumeChallengeId);
+  if (refusal) {
+    if (refusal.outcome === "already_complete" && certificationJob) {
+      certificationJob.status = "completed";
+      certificationJob.errorMessage = "superseded_by_existing_result";
+      certificationJobs.set(certificationJob.id, certificationJob);
+    }
+    return refusal;
+  }
+  // The db statement classifies a refused registration before its result foreign keys are
+  // reached. Keep the same precedence in memory: a withdrawn candidate's old registration is
+  // `not_actionable`, not an actor 23503. Only an eligible write checks its actors.
+  requireAgent(agentId);
+  if (input.proctorAgentId) requireAgent(input.proctorAgentId);
+  const challenge = input.consumeChallengeId ? vettingChallenges.get(input.consumeChallengeId) : undefined;
+  // The actor and proctor checks are now reached only for an eligible write. This preserves the
+  // database's refusal precedence while matching its foreign-key failure for a live eligible row.
   const reg = evaluationRegistrations.get(registrationId)!;
+  const batch = prepareEventBatch(prepared);
+
+  if (certificationJob) {
+    certificationJob.status = "completed";
+    certificationJob.judgeCompletedAt = input.certificationJudgeCompletedAt;
+    certificationJob.judgeModel = input.certificationJudgeModel;
+    certificationJob.judgeResponse = input.certificationJudgeResponse;
+    certificationJobs.set(certificationJob.id, certificationJob);
+  }
 
   evaluationResults.set(resultId, {
     id: resultId,
@@ -389,11 +584,14 @@ export async function saveEvaluationResult(input: SaveEvaluationResultInput): Pr
   reg.status = passed ? 'completed' : 'failed';
   reg.completedAt = completedAt;
   if (input.endProctorSessionId) endSessionSync(input.endProctorSessionId);
-
-  // Update agent's points from evaluation results if they passed
-  if (passed) {
-    await updateAgentPointsFromEvaluations(agentId);
-  }
+  // Consumption rides the same synchronous section as the result, which is what the db side's
+  // "last element of one transaction, gated on the result row" buys there: a completion that wrote
+  // nothing consumes nothing, and a crash between validation and completion leaves the challenge
+  // spendable.
+  if (challenge) vettingChallenges.set(challenge.id, { ...challenge, consumed: true });
+  if (passed) updateAgentPointsFromEvaluationsSync(agentId);
+  const { dispatched } = appendPreparedBatch(batch);
+  await dispatched;
 
   await recordEvaluationResultActivityEvent({
     resultId,
@@ -531,7 +729,7 @@ export async function getAgentEvaluationPoints(agentId: string) {
  * Update agent's points field to reflect evaluation points
  * Call this after saving an evaluation result
  */
-export async function updateAgentPointsFromEvaluations(agentId: string) {
+export function updateAgentPointsFromEvaluationsSync(agentId: string) {
   // Sum and write in one synchronous section, matching the db store's single-statement recompute
   // (M11-1 C21) — an await between them would let a concurrent recompute interleave a stale read.
   let evaluationPoints = 0;
@@ -560,6 +758,10 @@ export async function updateAgentPointsFromEvaluations(agentId: string) {
       points: toKarmaScale(Math.max(0, agent.points + delta)),
     });
   }
+}
+
+export async function updateAgentPointsFromEvaluations(agentId: string) {
+  updateAgentPointsFromEvaluationsSync(agentId);
 }
 
 /**
@@ -658,6 +860,30 @@ function findLiveCertificationJob(registrationId: string): CertificationJob | nu
   return null;
 }
 
+function findCertificationStartJob(registrationId: string): CertificationJob | null {
+  return Array.from(certificationJobs.values())
+    .filter((job) => job.registrationId === registrationId && ["pending", "submitted", "judging", "completed"].includes(job.status))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null;
+}
+
+function createCertificationJobSync(
+  registrationId: string,
+  agentId: string,
+  evaluationId: string,
+  nonce: string,
+  nonceExpiresAt: Date
+): CertificationJob {
+  const existing = findLiveCertificationJob(registrationId);
+  if (existing) return existing;
+  const job: CertificationJob = {
+    id: generateEvaluationId('cert_job'), registrationId, agentId, evaluationId,
+    nonce, nonceExpiresAt: nonceExpiresAt.toISOString(), status: 'pending',
+    createdAt: new Date().toISOString(),
+  };
+  certificationJobs.set(job.id, job);
+  return job;
+}
+
 /**
  * Create a live job for the registration, or return the one that already exists — the memory
  * mirror of the db store's 23505-and-re-read shape (M11-1 C22). Check and insert share one
@@ -669,23 +895,7 @@ export async function createCertificationJob(
   evaluationId: string,
   nonce: string,
   nonceExpiresAt: Date) {
-  const existing = findLiveCertificationJob(registrationId);
-  if (existing) return existing;
-
-  const id = generateEvaluationId('cert_job');
-  const createdAt = new Date().toISOString();
-  const job: CertificationJob = {
-    id,
-    registrationId,
-    agentId,
-    evaluationId,
-    nonce,
-    nonceExpiresAt: nonceExpiresAt.toISOString(),
-    status: 'pending',
-    createdAt,
-  };
-  certificationJobs.set(id, job);
-  return job;
+  return createCertificationJobSync(registrationId, agentId, evaluationId, nonce, nonceExpiresAt);
 }
 
 export async function getLiveCertificationJobForRegistration(registrationId: string) {

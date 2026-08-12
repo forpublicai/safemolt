@@ -367,7 +367,11 @@ describe("UX6 class evaluation contract", () => {
 describe("UX6 vetting identity sync", () => {
   beforeEach(() => jest.resetModules());
 
-  function mockVettingComplete(syncImpl: jest.Mock) {
+  function mockVettingComplete(
+    syncImpl: jest.Mock,
+    getFreshAgent: () => Promise<StoredAgent> = async () => agent(),
+    completeImpl: (_agentId: string, _challengeId: string, _identityMd: string) => Promise<{ outcome: "completed"; bootstrap: never[] }> = async () => ({ outcome: "completed", bootstrap: [] })
+  ) {
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent()),
       optionalAgent: jest.fn(async () => ({ agent: agent(), denial: null })),
@@ -388,11 +392,15 @@ describe("UX6 vetting identity sync", () => {
       validateHash: jest.fn(() => true),
     }));
     jest.doMock("@/lib/memory/memory-service", () => ({ putContextAndMaybeIndex: syncImpl }));
-    // M11-1 C14: the route's store surface is the atomic completeVetting plus reads.
+    // M11-1 C14: the route's store surface is the atomic completeVetting plus reads. **M11-2 P1.4
+    // moved the call one layer down** — the route now invokes `actions/agents.completeVetting`,
+    // which builds the event set and forwards to this same store export, so the mock additionally
+    // has to answer the constant that action reads to name the bootstrap evaluations.
     jest.doMock("@/lib/store", () => ({
+      VETTING_BOOTSTRAP_EVALUATIONS: ["poaw", "identity-check"],
       getVettingChallenge: jest.fn(async () => ({ id: "challenge-1", agentId: "agent-1", expectedHash: "ok", expiresAt: "2999-01-01T00:00:00.000Z", consumed: false })),
-      getAgentById: jest.fn(async () => agent()),
-      completeVetting: jest.fn(async () => ({ outcome: "completed", bootstrap: [] })),
+      getAgentById: jest.fn(getFreshAgent),
+      completeVetting: jest.fn(completeImpl),
       ensureGeneralGroup: jest.fn(async () => undefined),
     }));
   }
@@ -422,6 +430,31 @@ describe("UX6 vetting identity sync", () => {
     expect(body.success).toBe(true);
     expect(sync).toHaveBeenCalled();
   });
+
+  it("syncs and reports the identity that won between two valid completions", async () => {
+    let storedIdentity = "";
+    let completions = 0;
+    const sync = jest.fn(async () => ({ path: "IDENTITY.md" }));
+    mockVettingComplete(
+      sync,
+      async () => agent({ identityMd: storedIdentity }),
+      async (_agentId: string, _challengeId: string, identityMd: string) => {
+        if (completions++ === 0) storedIdentity = identityMd;
+        return { outcome: "completed", bootstrap: [] };
+      }
+    );
+
+    const { POST } = await import("@/app/api/v1/agents/vetting/complete/route");
+    const request = (identity_md: string) => new Request("https://safe.test", {
+      method: "POST", body: JSON.stringify({ challenge_id: "challenge-1", hash: "ok", identity_md }),
+    });
+    await POST(request("winner") as never);
+    const second = await POST(request("loser") as never);
+    const body = await second.json();
+
+    expect(body.identity_received).toBe(true);
+    expect(sync).toHaveBeenLastCalledWith("agent-1", "IDENTITY.md", "winner", { sessionUserId: null });
+  });
 });
 
 describe("UX6 vector cleanup", () => {
@@ -447,8 +480,12 @@ describe("UX6 vector cleanup", () => {
       listVectorIdsForAgentByMetadata,
     }));
 
-    const { cleanupPostVectorsForAudience } = await import("@/lib/memory/platform-ingest");
-    await cleanupPostVectorsForAudience({
+    // The audience derivation and the cleanup are separate calls since M11-2 u3: a deletion spends
+    // the recipients its own statement pinned, so nothing in the cleanup path recomputes them.
+    const { cleanupPostVectorsForRecipients, collectAgentIdsForPostAudience } = await import(
+      "@/lib/memory/platform-ingest"
+    );
+    const post = {
       id: "post-1",
       title: "Post",
       authorId: "agent-1",
@@ -457,7 +494,8 @@ describe("UX6 vector cleanup", () => {
       downvotes: 0,
       commentCount: 0,
       createdAt: "2026-01-01T00:00:00.000Z",
-    } as never);
+    } as never;
+    await cleanupPostVectorsForRecipients("post-1", await collectAgentIdsForPostAudience(post));
 
     expect(listVectorIdsForAgentByMetadata).toHaveBeenCalledTimes(4);
     expect(deleteVectorsForAgent).toHaveBeenCalledWith("agent-1", ["agent-1-match-1", "agent-1-match-2"]);

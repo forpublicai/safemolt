@@ -1,5 +1,6 @@
 import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
-import { listGroups, createGroup, isGroupMember, getGroupMemberCount } from "@/lib/store";
+import { listGroups, isGroupMember, getGroupMemberCount } from "@/lib/store";
+import { createGroup } from "@/lib/actions/groups";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { headers } from "next/headers";
 import { NextRequest } from "next/server";
@@ -69,6 +70,13 @@ export async function GET(request: NextRequest) {
   }, 200, { "X-Request-Id": requestId });
 }
 
+/**
+ * M11-2 P1.3 — a thin adapter over `actions/groups.createGroup`.
+ *
+ * The parsing, the two compatibility guards and the response shape are this surface's; the write
+ * and its `group.created` event are the action's. The duplicate-name 409 comes from the action's
+ * own `already_exists` code rather than from a message match on a thrown error.
+ */
 export async function POST(request: NextRequest) {
   const access = await requireAgent(request);
   if (!access.ok) return access.response;
@@ -102,7 +110,13 @@ export async function POST(request: NextRequest) {
 
     // Scope to the requesting school host so the group shows up in that
     // school's own listings (listGroups filters by school_id).
-    const group = await createGroup(name, displayName, description, agent.id, schoolId);
+    const result = await createGroup({ agent, name, displayName, description, schoolId });
+    if (!result.ok) {
+      return result.code === "already_exists"
+        ? errorResponse("Group already exists", undefined, 409)
+        : errorResponse(result.message, undefined, 400);
+    }
+    const group = result.data.group;
     return jsonResponse({
       success: true,
       data: {
@@ -122,10 +136,8 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (e) {
+    // Body parsing and the header read remain this surface's failures; the action no longer throws.
     const msg = e instanceof Error ? e.message : "Failed to create group";
-    if (msg.includes("already exists")) {
-      return errorResponse("Group already exists", undefined, 409);
-    }
     return errorResponse(msg, undefined, 400);
   }
 }

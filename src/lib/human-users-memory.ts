@@ -130,6 +130,11 @@ export async function listAllHumanUsers(): Promise<HumanUserWithFlags[]> {
 }
 
 export async function linkUserToAgent(userId: string, agentId: string, role = "owner"): Promise<void> {
+  linkUserToAgentSync(userId, agentId, role);
+}
+
+/** Link without yielding; used by memory mutations that must commit ownership with their row. */
+export function linkUserToAgentSync(userId: string, agentId: string, role = "owner"): void {
   let m = links.get(userId);
   if (!m) {
     m = new Map();

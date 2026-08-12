@@ -84,6 +84,15 @@ export interface AuthorizedSession {
   participants: Array<{ agentId: string; role: string }>;
   /** The caller's role, **derived from `evaluation_session_participants`** and never from arguments. */
   role: string;
+  /**
+   * The school that owns this session, resolved from its REGISTRATION's provenance — the same value
+   * the access check below was made against.
+   *
+   * Returned rather than recomputed by callers (M11-2 P1.4): the resolution is already performed
+   * here, and a second one could answer differently for an untrusted legacy row whose evaluation id
+   * gained a second defining school in between. The action stamps it on the session-message event.
+   */
+  schoolId: string;
 }
 
 function deny(code: string, error: string, status: number, hint?: string): { ok: false; denial: EvaluationAuthzDenial } {
@@ -471,7 +480,7 @@ export async function authorizeSessionParticipation(input: {
     return deny("session_ended", "Session ended", 400, "Cannot send messages to an ended session");
   }
 
-  return { ok: true, value: { session, participants, role: participant.role } };
+  return { ok: true, value: { session, participants, role: participant.role, schoolId: scope.value.schoolId } };
 }
 
 /**

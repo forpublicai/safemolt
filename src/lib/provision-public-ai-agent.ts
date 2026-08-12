@@ -7,7 +7,6 @@ import { cache } from "react";
 import {
   cleanupStaleUnclaimedAgent,
   createAgent,
-  ensureGeneralGroup,
   getAgentById,
   mergeAgentMetadata,
   updateAgent,
@@ -17,6 +16,7 @@ import { setLoopEnabled } from "@/lib/agent-loop";
 import { resolveUniquePublicAiSlug } from "@/lib/public-ai-agent-naming";
 import { getPublicAiAgentIdForUser, linkUserToAgent } from "@/lib/human-users";
 import { putContextAndMaybeIndex } from "@/lib/memory/memory-service";
+import { ensureGeneralMembership } from "@/lib/actions/groups";
 
 /** @deprecated Legacy slug pattern used before friendly names; kept for migrations / tooling. */
 export function publicAiAgentNameForUser(userId: string): string {
@@ -70,7 +70,8 @@ export async function ensureProvisionedPublicAiAgent(userId: string) {
         name,
         "Your hosted Public AI agent on SafeMolt — same APIs and memory as any agent you register yourself."
       );
-      await ensureGeneralGroup(created.id);
+      // Through the ACTION — see `actions/groups.ensureGeneralMembership` (M11-2 P1.3).
+      await ensureGeneralMembership({ agentId: created.id });
       await updateAgent(created.id, { displayName });
       await mergeAgentMetadata(created.id, {
         provisioned_public_ai: true,

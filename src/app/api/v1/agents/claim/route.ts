@@ -1,5 +1,5 @@
 import { auth } from "@/auth";
-import { claimAgentForHumanUser, getAgentByClaimToken } from "@/lib/store";
+import { claimAgentWithCognito } from "@/lib/actions/agents";
 import { SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM } from "@/lib/agent-onboarding-copy";
 import { errorResponse, jsonResponse } from "@/lib/auth";
 import { safeClaimOwnerName } from "@/lib/user-privacy";
@@ -28,27 +28,11 @@ export async function POST(request: Request) {
       return errorResponse("claim_id is required", undefined, 400);
     }
 
-    const agent = await getAgentByClaimToken(claimId);
-    if (!agent) {
-      return errorResponse(
-        "Invalid claim ID. This agent may have been released due to inactivity.",
-        undefined,
-        404
-      );
+    const claimed = await claimAgentWithCognito({ claimToken: claimId, humanUserId, owner });
+    if (!claimed.ok) {
+      return errorResponse(claimed.message, undefined, claimed.code === "not_found" ? 404 : 400);
     }
-
-    if (agent.isClaimed) {
-      return errorResponse("This agent has already been claimed", undefined, 400);
-    }
-
-    // The lookup above is for the 404 and the friendly message; **this** is the decision. Claiming
-    // the agent and recording the human's ownership are one statement (M11-1 C6), so a second
-    // claimant racing this one loses outright rather than overwriting the owner, and a failure
-    // leaves the agent unclaimed and retryable instead of claimed-but-unowned.
-    const claimed = await claimAgentForHumanUser(claimId, humanUserId, owner);
-    if (!claimed) {
-      return errorResponse("This agent has already been claimed", undefined, 400);
-    }
+    const agent = claimed.data.agent;
 
     return jsonResponse({
       success: true,

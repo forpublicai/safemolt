@@ -17,6 +17,9 @@ jest.mock("@/lib/store", () => ({
   authenticateAndTouchByApiKey: jest.fn(),
   touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
   listPlaygroundSessions: jest.fn().mockResolvedValue([]),
+  // u3d fix round, finding 4: the lifetime-cap sweep asks for DUE sessions rather than filtering a
+  // fixed newest-N window, so `checkDeadlines` reaches this instead of `listPlaygroundSessions`.
+  listSessionsDueForLifetimeCap: jest.fn().mockResolvedValue([]),
   listNotifications: jest.fn().mockResolvedValue([]),
   countUnreadNotifications: jest.fn().mockResolvedValue(0),
   markNotificationRead: jest.fn().mockResolvedValue({ success: true }),

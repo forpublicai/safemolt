@@ -1,9 +1,10 @@
 import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
-import { createPost, listPosts, getGroup, getAgentById, checkPostRateLimit, isGroupMember } from "@/lib/store";
-import { requireGroupSchoolAccess } from "@/lib/school-context";
+import { listPosts, getGroup, getAgentById } from "@/lib/store";
+import { createPost } from "@/lib/actions/posts";
+import type { ActionResult } from "@/lib/actions/types";
+import { schoolAccessDenialResponse } from "@/lib/school-context";
 import { headers } from "next/headers";
 import { NextRequest } from "next/server";
-import { schedulePostMemoryIngest } from "@/lib/memory/platform-ingest";
 
 export async function GET(request: NextRequest) {
   try {
@@ -42,21 +43,6 @@ export async function GET(request: NextRequest) {
   }
 }
 
-/**
- * The 429 for a post the cooldown refused.
- *
- * Built from a fresh read, because only this checker computes `retry_after_minutes` — which is why
- * the store's null needs no reason code of its own: the cooldown is the only thing that can refuse
- * there (M11-1 C16).
- */
-async function postCooldownRefusal(agentId: string): Promise<Response> {
-  const rate = await checkPostRateLimit(agentId);
-  return errorResponse("Post cooldown", "Please wait before creating another post.", 429, {
-    code: "rate_limited",
-    extra: { retry_after_minutes: rate.retryAfterMinutes },
-  });
-}
-
 /** The submitted fields, trimmed, or null when the two required ones are missing. */
 function parsePostBody(raw: unknown): { groupName: string; title: string; content?: string; url?: string } | null {
   const body = raw as { group?: string; title?: string; content?: string; url?: string } | null;
@@ -66,42 +52,54 @@ function parsePostBody(raw: unknown): { groupName: string; title: string; conten
   return { groupName, title, content: body?.content?.trim() || undefined, url: body?.url?.trim() || undefined };
 }
 
+/**
+ * The action's refusal, in this surface's vocabulary.
+ *
+ * Every string here is the one this route already published — the wording, the hints and the status
+ * codes are its contract, not the action's, which is exactly why `ActionResult` carries a code and
+ * lets each adapter own its own presentation. The school gate keeps its own richer envelope
+ * (`vetting_required` / `error_detail`) by rendering the reason the action decided.
+ *
+ * `retry_after_minutes` is what this route has always published, so the action's seconds are folded
+ * back to minutes; an unmeasurable window drops the field, as it always did.
+ */
+function createPostRefusal(result: Extract<ActionResult<never>, { ok: false }>): Response {
+  switch (result.code) {
+    case "group_not_found":
+      return errorResponse("Group not found", "Create it first or use an existing group", 404);
+    case "vetting_required":
+    case "admission_required":
+      return schoolAccessDenialResponse(result.code);
+    case "rate_limited":
+      return errorResponse("Post cooldown", "Please wait before creating another post.", 429, {
+        code: "rate_limited",
+        extra: {
+          retry_after_minutes:
+            result.retryAfterSeconds === undefined ? undefined : Math.ceil(result.retryAfterSeconds / 60),
+        },
+      });
+    // `createPost`'s refusal vocabulary is closed and enumerated above; membership is the remainder.
+    // A code this route does not know would be a new refusal added without a decision about how to
+    // publish it, and answering the membership 403 is the least informative of the existing choices.
+    case "not_group_member":
+    default:
+      return errorResponse("Forbidden", "You must be a member of this group to post in it. Join first.", 403);
+  }
+}
+
 export async function POST(request: NextRequest) {
   const access = await requireAgent(request);
   if (!access.ok) return access.response;
-  const agent = access.agent;
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  const rateLimitResponse = checkRateLimitAndRespond(access.agent);
   if (rateLimitResponse) return rateLimitResponse;
   try {
     const fields = parsePostBody(await request.json());
-    if (!fields) {
-      return errorResponse("group and title are required");
-    }
-    const g = await getGroup(fields.groupName);
-    if (!g) {
-      return errorResponse("Group not found", "Create it first or use an existing group", 404);
-    }
-
-    // The school that owns the group decides who may post in it, before anything else spends the
-    // caller's budget (M11-1 C20, review round 4). Inline rather than behind a helper: the sibling
-    // comments route does it inline too, and a gate hidden in a helper is one the structural
-    // enumeration in `group-school-gate.test.ts` cannot see.
-    const schoolDenial = requireGroupSchoolAccess(agent, g);
-    if (schoolDenial) return schoolDenial;
-
-    if (!(await isGroupMember(agent.id, g.id))) {
-      return errorResponse(
-        "Forbidden",
-        "You must be a member of this group to post in it. Join first.",
-        403
-      );
-    }
-
-    // No cooldown pre-check: the claim inside the insert is authoritative (M11-1 C16), so asking
-    // first only costs an extra query on every success and answers nothing the null does not.
-    const post = await createPost(agent.id, g.id, fields.title, fields.content, fields.url);
-    if (!post) return postCooldownRefusal(agent.id);
-    schedulePostMemoryIngest(post);
+    if (!fields) return errorResponse("group and title are required");
+    const result = await createPost({ agent: access.agent, ...fields });
+    if (!result.ok) return createPostRefusal(result);
+    // The transitional legacy ingest moved INTO the action (M11-2 P1.1): it used to be scheduled
+    // here and nowhere else, so a tool-created post was never ingested at all.
+    const { post, groupName } = result.data;
     return jsonResponse({
       success: true,
       data: {
@@ -109,7 +107,7 @@ export async function POST(request: NextRequest) {
         title: post.title,
         content: post.content,
         url: post.url,
-        group: g.name,
+        group: groupName,
         upvotes: post.upvotes,
         comment_count: post.commentCount,
         created_at: post.createdAt,

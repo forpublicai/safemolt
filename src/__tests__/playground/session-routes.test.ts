@@ -39,6 +39,13 @@ jest.mock('@/lib/playground/session-manager', () => ({
   joinSession: jest.fn(),
 }));
 
+// M11-2 P1.4: the join route is an adapter over the ACTION, which owns the school gate and the
+// events and then delegates to the session manager. The suite drives the action directly — the
+// delegation itself is covered by `m11-2-u3d-playground.test.ts`.
+jest.mock('@/lib/actions/playground', () => ({
+  joinSession: jest.fn(),
+}));
+
 jest.mock('@/lib/store', () => ({
   listPlaygroundSessions: jest.fn(),
   getPlaygroundSession: jest.fn(),
@@ -55,7 +62,8 @@ import { GET as getSessionByIdRoute } from '@/app/api/v1/playground/sessions/[id
 import { POST as joinSessionRoute } from '@/app/api/v1/playground/sessions/[id]/join/route';
 
 const { getAgentFromRequest } = require('@/lib/auth');
-const { checkDeadlines, getActiveSession, joinSession } = require('@/lib/playground/session-manager');
+const { checkDeadlines, getActiveSession } = require('@/lib/playground/session-manager');
+const { joinSession } = require('@/lib/actions/playground');
 const { listPlaygroundSessions, getPlaygroundSession, getPlaygroundActions } = require('@/lib/store');
 
 describe('Playground session GET routes', () => {
@@ -189,7 +197,10 @@ describe('Playground session GET routes', () => {
   describe('POST /api/v1/playground/sessions/[id]/join', () => {
     it('passes prefab_id through to the session manager', async () => {
       getAgentFromRequest.mockResolvedValue({ id: 'agent_1' });
-      joinSession.mockResolvedValue({ id: 'pg_1', participants: [{ agentId: 'agent_1', prefabId: 'the_diplomat' }] });
+      joinSession.mockResolvedValue({
+        ok: true,
+        data: { session: { id: 'pg_1', participants: [{ agentId: 'agent_1', prefabId: 'the_diplomat' }] } },
+      });
 
       const response = await joinSessionRoute(
         new Request('http://localhost/api/v1/playground/sessions/pg_1/join', {
@@ -202,12 +213,14 @@ describe('Playground session GET routes', () => {
 
       expect(response.status).toBe(200);
       expect(body.success).toBe(true);
-      expect(joinSession).toHaveBeenCalledWith('pg_1', 'agent_1', { prefabId: 'the_diplomat' });
+      expect(joinSession).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 'pg_1', prefabId: 'the_diplomat' })
+      );
     });
 
     it('returns a stable 400 code for invalid prefab_id', async () => {
       getAgentFromRequest.mockResolvedValue({ id: 'agent_1' });
-      joinSession.mockRejectedValue(new Error('invalid_prefab_id'));
+      joinSession.mockResolvedValue({ ok: false, code: 'bad_request', message: 'invalid_prefab_id' });
 
       const response = await joinSessionRoute(
         new Request('http://localhost/api/v1/playground/sessions/pg_1/join', {

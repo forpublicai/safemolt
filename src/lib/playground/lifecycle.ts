@@ -1,11 +1,16 @@
 import { waitUntil } from "@vercel/functions";
 import { revalidateTag } from "next/cache";
 
-import { listPlaygroundSessions, updatePlaygroundSession } from "@/lib/store";
+import { completePlaygroundSessionAtLifetimeCap, listSessionsDueForLifetimeCap } from "@/lib/store";
+import { playgroundSessionCompletedEvent } from "@/lib/actions/playground-events";
 
 const DEFAULT_SESSION_MAX_LIFETIME_MS = 6 * 60 * 60 * 1000;
 const SESSION_CAP_SUMMARY =
   "Session ran past its time budget and was completed automatically.";
+
+/** How many due sessions one query returns, and how many such queries one sweep makes. */
+const LIFETIME_CAP_PAGE_SIZE = 50;
+const LIFETIME_CAP_MAX_PAGES = 20;
 
 type DeadlineRunner = () => Promise<Partial<PlaygroundDeadlineRunResult> | void>;
 
@@ -43,35 +48,64 @@ export function revalidatePlaygroundSeed(schoolId?: string): void {
   }
 }
 
+/**
+ * Complete every session that has outlived its budget — **oldest first, and paged**
+ * (u3d fix round, finding 4).
+ *
+ * This used to read the 50 NEWEST active sessions and filter them by age here. That window is the
+ * defect: with 51 live sessions the oldest is not in it at all, so a session that had already blown
+ * its budget was skipped by every sweep while the newest 50 were still young, and continuous
+ * creation stranded it indefinitely. The store now answers with the sessions that are DUE, ordered by
+ * `COALESCE(started_at, created_at)` ascending — so the sweep always sees the ones that have waited
+ * longest — and this pages until a page comes back short.
+ *
+ * **The page cursor is the predicate, not an offset.** Every returned row is `status = 'active'` with
+ * `completed_at IS NULL`, and the conditional completion either changes one of those columns or loses
+ * to a writer that already did, so a processed row cannot come back on the next page. An offset would
+ * instead skip rows whenever a concurrent completion shifted the window.
+ *
+ * `LIFETIME_CAP_MAX_PAGES` bounds one invocation rather than the backlog: the ordering means the next
+ * run resumes at the oldest sessions still due, so a backlog drains across runs instead of starving.
+ */
 export async function enforceSessionLifetimeCap(): Promise<{ completed: number }> {
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
-  const activeSessions = await listPlaygroundSessions({ status: "active", limit: 50 });
+  const cutoff = new Date(nowMs - PLAYGROUND_SESSION_MAX_LIFETIME_MS).toISOString();
   let completed = 0;
   const touchedSchools = new Set<string>();
 
-  for (const session of activeSessions) {
-    if (session.completedAt) continue;
+  for (let page = 0; page < LIFETIME_CAP_MAX_PAGES; page += 1) {
+    const due = await listSessionsDueForLifetimeCap(cutoff, LIFETIME_CAP_PAGE_SIZE);
+    if (due.length === 0) break;
 
-    const startedAt = session.startedAt ?? session.createdAt;
-    const startedAtMs = Date.parse(startedAt);
-    if (!Number.isFinite(startedAtMs)) continue;
-    if (nowMs - startedAtMs < PLAYGROUND_SESSION_MAX_LIFETIME_MS) continue;
+    for (const session of due) {
+      // The cap is a lifecycle safety stop, not a GM resolution. Preserve the
+      // transcript exactly as-written and surface the stop reason in summary.
+      //
+      // **Conditional since u3d, and that is what lets it carry an event.** It used to run through
+      // the generic `updatePlaygroundSession`, whose `WHERE id = $1` matches whatever it finds and
+      // whose boolean is an unconditional `true` — so two overlapping sweeps, or a sweep racing a
+      // genuine GM completion, would each have "succeeded" and each emitted. The predicate below is
+      // what the caller actually means, so exactly one writes and exactly one event exists.
+      const updated = await completePlaygroundSessionAtLifetimeCap(
+        session.id,
+        { summary: session.summary ?? SESSION_CAP_SUMMARY, completedAt: nowIso },
+        [
+          playgroundSessionCompletedEvent({
+            sessionId: session.id,
+            schoolId: session.schoolId ?? null,
+            reason: "lifetime_cap",
+          }),
+        ]
+      );
 
-    // The cap is a lifecycle safety stop, not a GM resolution. Preserve the
-    // transcript exactly as-written and surface the stop reason in summary.
-    const updated = await updatePlaygroundSession(session.id, {
-      status: "completed",
-      summary: session.summary ?? SESSION_CAP_SUMMARY,
-      completedAt: nowIso,
-      currentRoundPrompt: null,
-      roundDeadline: null,
-    });
-
-    if (updated) {
-      completed += 1;
-      touchedSchools.add(session.schoolId ?? "foundation");
+      if (updated) {
+        completed += 1;
+        touchedSchools.add(session.schoolId ?? "foundation");
+      }
     }
+
+    if (due.length < LIFETIME_CAP_PAGE_SIZE) break;
   }
 
   for (const schoolId of touchedSchools) {

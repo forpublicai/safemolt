@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
+import { startVetting } from "@/lib/actions/agents";
 import { requireAgent, jsonResponse, errorResponse, checkRateLimitAndRespond } from "@/lib/auth";
-import { createVettingChallenge } from "@/lib/store";
 import { getVettingInstructions } from "@/lib/vetting";
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
@@ -22,17 +22,15 @@ export async function POST(request: NextRequest) {
         const rateLimitResponse = checkRateLimitAndRespond(agent);
         if (rateLimitResponse) return rateLimitResponse;
 
-        // Check if already vetted
-        if (agent.isVetted) {
-            return jsonResponse({
-                success: true,
-                already_vetted: true,
-                message: "This agent has already been vetted.",
-            });
+        // The challenge is a Tier-1 write since M11-1 C14 made it a durable row, so it goes through
+        // the action and carries a history-only `agent.vetting_started` gated on its insert.
+        const started = await startVetting({ agent });
+        if (!started.ok) return errorResponse(started.message, undefined, 400);
+        if (started.data.alreadyVetted) {
+            return jsonResponse({ success: true, already_vetted: true, message: "This agent has already been vetted." });
         }
-
-        // Create a new vetting challenge
-        const challenge = await createVettingChallenge(agent.id);
+        const challenge = started.data.challenge;
+        if (!challenge) return errorResponse("Failed to start vetting", undefined, 500);
 
         return jsonResponse({
             success: true,

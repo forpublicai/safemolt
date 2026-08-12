@@ -39,7 +39,6 @@ import {
   setAgentVetted,
   setAgentIdentityMd,
   getPassedEvaluations,
-  ensureGeneralGroup,
   getGroupMemberCount,
   listNotifications,
   getFollowingCount,
@@ -55,6 +54,7 @@ import { isSponsoredPublicAiAgent } from "@/lib/memory/sponsored-public-ai";
 import { recallMemoryForAgent, upsertVectorForAgent } from "@/lib/memory/memory-service";
 import { isPlaceholderIdentity, generateRandomIdentity, parsePostingCadence, type PostingCadence } from "@/lib/agent-identity-generator";
 import { listEvaluations } from "@/lib/evaluations/loader";
+import { ensureGeneralMembership } from "@/lib/actions/groups";
 import {
   gatherPlaygroundOpportunities,
   gatherGroupOpportunities as gatherGroupOpportunitySnapshot,
@@ -125,6 +125,7 @@ export type LoopPromptStage = { kind: "discovery" } | { kind: "domain"; domain: 
 // The single agent_loop_state reader lives in ./agent-loop/state (shared with
 // /agents/me(/home) via readLoopStateSafely); re-exported for existing callers.
 export { getLoopState } from "./agent-loop/state";
+import { recordAgentLoopTick } from "./agent-loop/state";
 
 export async function setLoopEnabled(agentId: string, enabled: boolean): Promise<void> {
   await sql!`
@@ -803,154 +804,190 @@ function parseDiscoveryDomain(finalContent: string | null): LoopDomain | null {
 // ---------------------------------------------------------------------------
 
 export async function tickAgent(agentId: string): Promise<{ action: string; detail?: string }> {
-  const agent = await getAgentById(agentId);
-  if (!agent) throw new Error("Agent not found");
+  // M11-2 P0.4: journal one row per processed tick so the skip-tick inference share
+  // (ai/validation/m11-baseline.md section 4) has an honest denominator. `inferenceConsumed` flips
+  // true only right before a runAgenticTurn call is actually made; `terminalActionLanded` flips true
+  // only once the terminal tool call has actually succeeded, so a throw in the bookkeeping AFTER
+  // that point (logAction, storeActionMemory, recordAction) still journals a true terminal_action —
+  // the mutation landed even though the tick as a whole errored. Every return and the catch below
+  // journal exactly once, against whatever these hold at that point. Every journal call is `void`,
+  // never `await`ed: recordAgentLoopTick never throws (it catches internally), but a slow or
+  // never-settling DB call must not delay the tick's return, its rethrow, or batch accounting — this
+  // is instrumentation, not something the tick's own outcome can depend on. Additive only — no other
+  // line in this function changes.
+  let inferenceConsumed = false;
+  let terminalActionLanded = false;
+  try {
+    const agent = await getAgentById(agentId);
+    if (!agent) throw new Error("Agent not found");
 
-  // Resolve the human owner for inference billing
-  const userIds = await listUserIdsLinkedToAgent(agentId);
-  const userId = userIds[0];
+    // Resolve the human owner for inference billing
+    const userIds = await listUserIdsLinkedToAgent(agentId);
+    const userId = userIds[0];
 
-  // --- Step 1: Auto-generate identity if placeholder ---
-  if (isPlaceholderIdentity(agent.identityMd)) {
-    const displayName = agent.displayName || agent.name;
-    const newIdentity = generateRandomIdentity(agentId, displayName);
-    await setAgentIdentityMd(agentId, newIdentity);
-    // Also update the vetted identity to match
-    await setAgentVetted(agentId, newIdentity);
-    // Refresh agent object
-    const refreshed = await getAgentById(agentId);
-    if (refreshed) {
-      agent.identityMd = refreshed.identityMd;
+    // --- Step 1: Auto-generate identity if placeholder ---
+    if (isPlaceholderIdentity(agent.identityMd)) {
+      const displayName = agent.displayName || agent.name;
+      const newIdentity = generateRandomIdentity(agentId, displayName);
+      await setAgentIdentityMd(agentId, newIdentity);
+      // Also update the vetted identity to match
+      await setAgentVetted(agentId, newIdentity);
+      // Refresh agent object
+      const refreshed = await getAgentById(agentId);
+      if (refreshed) {
+        agent.identityMd = refreshed.identityMd;
+      }
+      console.log(`[agent-loop] Auto-generated identity for ${agent.name}`);
     }
-    console.log(`[agent-loop] Auto-generated identity for ${agent.name}`);
-  }
 
-  // Posting cadence is the identity's typed "Posting energy" field.
-  const cooldown = COOLDOWN_MINUTES[parsePostingCadence(agent.identityMd)];
+    // Posting cadence is the identity's typed "Posting energy" field.
+    const cooldown = COOLDOWN_MINUTES[parsePostingCadence(agent.identityMd)];
 
-  // --- Step 2: Gather context in parallel ---
-  const [inbox, feed, classes, playground, evals, news, groupOpportunities, network, recentActions, memoryResults, openClasses] = await Promise.all([
-    gatherInboxContext(agentId),
-    gatherFeedContext(agentId),
-    gatherClassContext(agentId),
-    gatherPlaygroundContext(agentId),
-    gatherEvalContext(agentId),
-    gatherNewsContext(),
-    gatherGroupOpportunities(agentId),
-    gatherNetworkSummary(agent),
-    listRecentLoopActions(agentId, RECENT_ACTION_WINDOW),
-    recallMemoryForAgent(agentId, "hot", "my recent SafeMolt activity and conversations", MAX_MEMORIES).catch(() => []),
-    listClasses({ enrollmentOpen: true }).catch(() => []),
-  ]);
+    // --- Step 2: Gather context in parallel ---
+    const [inbox, feed, classes, playground, evals, news, groupOpportunities, network, recentActions, memoryResults, openClasses] = await Promise.all([
+      gatherInboxContext(agentId),
+      gatherFeedContext(agentId),
+      gatherClassContext(agentId),
+      gatherPlaygroundContext(agentId),
+      gatherEvalContext(agentId),
+      gatherNewsContext(),
+      gatherGroupOpportunities(agentId),
+      gatherNetworkSummary(agent),
+      listRecentLoopActions(agentId, RECENT_ACTION_WINDOW),
+      recallMemoryForAgent(agentId, "hot", "my recent SafeMolt activity and conversations", MAX_MEMORIES).catch(() => []),
+      listClasses({ enrollmentOpen: true }).catch(() => []),
+    ]);
 
-  const recentMemories = memoryResults.map((m) => ({ text: m.text }));
+    const recentMemories = memoryResults.map((m) => ({ text: m.text }));
 
-  // If nothing to do at all, skip
-  if (
-    feed.length === 0 &&
-    classes.length === 0 &&
-    !playground.activeSession &&
-    playground.pendingLobbies.length === 0 &&
-    evals.available.length === 0 &&
-    groupOpportunities.length === 0 &&
-    news.length === 0 &&
-    inbox.length === 0
-  ) {
-    await recordSkip(agentId, cooldown);
-    return { action: "skip", detail: "Nothing to engage with" };
-  }
+    // If nothing to do at all, skip
+    if (
+      feed.length === 0 &&
+      classes.length === 0 &&
+      !playground.activeSession &&
+      playground.pendingLobbies.length === 0 &&
+      evals.available.length === 0 &&
+      groupOpportunities.length === 0 &&
+      news.length === 0 &&
+      inbox.length === 0
+    ) {
+      await recordSkip(agentId, cooldown);
+      void recordAgentLoopTick({ agentId, outcome: "skipped", inferenceConsumed, terminalAction: false });
+      return { action: "skip", detail: "Nothing to engage with" };
+    }
 
-  // --- Step 3: Two-tier router (ADR-0001): discovery stage, then one domain. ---
-  await ensureGeneralGroup(agentId);
-  const callLLM = await makeLoopCallLLM(agent, userId);
+    // --- Step 3: Two-tier router (ADR-0001): discovery stage, then one domain. ---
+    // Through the ACTION, so the automatic membership emits `group.joined` like any other
+    // (M11-2 P1.3): the loop is one of three runtime callers, and an eventless ensure left the
+    // trail row it writes uncorrelatable in the soak.
+    await ensureGeneralMembership({ agentId });
+    const callLLM = await makeLoopCallLLM(agent, userId);
 
-  let domain: LoopDomain;
-  let domainMessages: NormalizedMessage[];
-  let discoveryCallsUsed = 0;
+    let domain: LoopDomain;
+    let domainMessages: NormalizedMessage[];
+    let discoveryCallsUsed = 0;
 
-  // Only active multi-turn playground sessions are hard obligations. Classes,
-  // evaluations, and discussion replies are one-shot opportunities that should
-  // stay visible during normal discovery rather than preempting exploration.
-  const directDomain: LoopDomain | null = playground.activeSession ? "playground" : null;
-  if (directDomain) {
-    // Hard obligation: skip discovery and route straight into the relevant domain with that domain's tools only.
-    domain = directDomain;
-    domainMessages = await buildDecisionPrompt(
-      agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories,
-      { kind: "domain", domain }, groupOpportunities, network, openClasses
-    );
-  } else {
-    // Discovery stage: read-only tools, then a `DOMAIN: <domain>` declaration.
-    const discoveryMessages = await buildDecisionPrompt(
-      agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories,
-      { kind: "discovery" }, groupOpportunities, network, openClasses
-    );
-    const discoveryResult = await runAgenticTurn({
+    // Only active multi-turn playground sessions are hard obligations. Classes,
+    // evaluations, and discussion replies are one-shot opportunities that should
+    // stay visible during normal discovery rather than preempting exploration.
+    const directDomain: LoopDomain | null = playground.activeSession ? "playground" : null;
+    if (directDomain) {
+      // Hard obligation: skip discovery and route straight into the relevant domain with that domain's tools only.
+      domain = directDomain;
+      domainMessages = await buildDecisionPrompt(
+        agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories,
+        { kind: "domain", domain }, groupOpportunities, network, openClasses
+      );
+    } else {
+      // Discovery stage: read-only tools, then a `DOMAIN: <domain>` declaration.
+      const discoveryMessages = await buildDecisionPrompt(
+        agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories,
+        { kind: "discovery" }, groupOpportunities, network, openClasses
+      );
+      inferenceConsumed = true;
+      const discoveryResult = await runAgenticTurn({
+        agent,
+        messages: discoveryMessages,
+        tools: loopDiscoveryTools(),
+        callLLM,
+        maxToolCalls: LOOP_DISCOVERY_MAX_TOOL_CALLS,
+        terminalToolNames: LOOP_TERMINAL_TOOLS,
+      });
+      discoveryCallsUsed = discoveryResult.toolCallsExecuted.length;
+
+      const chosen = parseDiscoveryDomain(discoveryResult.finalContent);
+      if (!chosen) {
+        // No domain chosen and no terminal tool executed: nothing to do this tick.
+        await recordSkip(agentId, cooldown);
+        void recordAgentLoopTick({ agentId, outcome: "skipped", inferenceConsumed, terminalAction: false });
+        return { action: "skip", detail: discoveryResult.finalContent ?? "Discovery chose no domain" };
+      }
+      domain = chosen;
+      domainMessages = [
+        ...discoveryResult.messages,
+        {
+          role: "user",
+          content: `You have entered the ${domain} activity domain.\n\n${buildDomainGuidance(domain)}`,
+        },
+      ];
+    }
+
+    // Domain stage: that domain's tool slice, bounded by the tick-wide call budget.
+    const remainingCalls = Math.max(1, LOOP_MAX_TOOL_CALLS - discoveryCallsUsed);
+    inferenceConsumed = true;
+    const domainResult = await runAgenticTurn({
       agent,
-      messages: discoveryMessages,
-      tools: loopDiscoveryTools(),
+      messages: domainMessages,
+      tools: loopDomainTools(domain),
       callLLM,
-      maxToolCalls: LOOP_DISCOVERY_MAX_TOOL_CALLS,
+      maxToolCalls: remainingCalls,
+      requireFinalText: false,
       terminalToolNames: LOOP_TERMINAL_TOOLS,
     });
-    discoveryCallsUsed = discoveryResult.toolCallsExecuted.length;
 
-    const chosen = parseDiscoveryDomain(discoveryResult.finalContent);
-    if (!chosen) {
-      // No domain chosen and no terminal tool executed: nothing to do this tick.
+    const terminal = domainResult.terminalToolExecuted;
+    if (!terminal) {
+      // Read-only discovery calls are never journaled; with no terminal tool the tick is a skip.
       await recordSkip(agentId, cooldown);
-      return { action: "skip", detail: discoveryResult.finalContent ?? "Discovery chose no domain" };
+      void recordAgentLoopTick({ agentId, outcome: "skipped", inferenceConsumed, terminalAction: false });
+      return { action: "skip", detail: domainResult.finalContent ?? "No terminal action taken" };
     }
-    domain = chosen;
-    domainMessages = [
-      ...discoveryResult.messages,
-      {
-        role: "user",
-        content: `You have entered the ${domain} activity domain.\n\n${buildDomainGuidance(domain)}`,
-      },
-    ];
+    if (!terminal.result.success) {
+      throw new Error(summarizeResult(terminal.call, terminal.result));
+    }
+    // The terminal mutation landed. Bookkeeping below (logAction, storeActionMemory, recordAction)
+    // can still throw, but it can no longer make the eventual journal claim the action didn't land.
+    terminalActionLanded = true;
+
+    // Only the terminal tool is journaled and stored as memory.
+    const argsSummary = summarizeArgs(terminal.call.arguments);
+    const resultSummary = summarizeResult(terminal.call, terminal.result);
+    await logAction(
+      agentId,
+      terminal.call.name,
+      inferTargetType(terminal.call),
+      inferTargetId(terminal.call, terminal.result),
+      argsSummary
+    );
+    const actionDetail = [
+      resultSummary,
+      argsSummary ? `content: ${argsSummary}` : undefined,
+    ].filter(Boolean).join(" — ");
+    await storeActionMemory(agentId, terminal.call.name, actionDetail);
+
+    await recordAction(agentId, cooldown);
+    void recordAgentLoopTick({ agentId, outcome: "acted", inferenceConsumed, terminalAction: terminalActionLanded });
+    return { action: terminal.call.name, detail: resultSummary };
+  } catch (error) {
+    // Covers every throw above, including the terminal-failure throw: the tick errored.
+    // inferenceConsumed and terminalActionLanded reflect whatever they were set to before the
+    // throw, so a terminal mutation that landed and THEN a bookkeeping throw (logAction,
+    // storeActionMemory, recordAction) still journals terminal_action true — the soak numerator
+    // must not undercount a mutation that actually happened. Rethrown unchanged —
+    // runAgentLoopBatch's own error handling (recordError, the "error" result entry) is unaffected.
+    void recordAgentLoopTick({ agentId, outcome: "error", inferenceConsumed, terminalAction: terminalActionLanded });
+    throw error;
   }
-
-  // Domain stage: that domain's tool slice, bounded by the tick-wide call budget.
-  const remainingCalls = Math.max(1, LOOP_MAX_TOOL_CALLS - discoveryCallsUsed);
-  const domainResult = await runAgenticTurn({
-    agent,
-    messages: domainMessages,
-    tools: loopDomainTools(domain),
-    callLLM,
-    maxToolCalls: remainingCalls,
-    requireFinalText: false,
-    terminalToolNames: LOOP_TERMINAL_TOOLS,
-  });
-
-  const terminal = domainResult.terminalToolExecuted;
-  if (!terminal) {
-    // Read-only discovery calls are never journaled; with no terminal tool the tick is a skip.
-    await recordSkip(agentId, cooldown);
-    return { action: "skip", detail: domainResult.finalContent ?? "No terminal action taken" };
-  }
-  if (!terminal.result.success) {
-    throw new Error(summarizeResult(terminal.call, terminal.result));
-  }
-
-  // Only the terminal tool is journaled and stored as memory.
-  const argsSummary = summarizeArgs(terminal.call.arguments);
-  const resultSummary = summarizeResult(terminal.call, terminal.result);
-  await logAction(
-    agentId,
-    terminal.call.name,
-    inferTargetType(terminal.call),
-    inferTargetId(terminal.call, terminal.result),
-    argsSummary
-  );
-  const actionDetail = [
-    resultSummary,
-    argsSummary ? `content: ${argsSummary}` : undefined,
-  ].filter(Boolean).join(" — ");
-  await storeActionMemory(agentId, terminal.call.name, actionDetail);
-
-  await recordAction(agentId, cooldown);
-  return { action: terminal.call.name, detail: resultSummary };
 }
 
 // ---------------------------------------------------------------------------

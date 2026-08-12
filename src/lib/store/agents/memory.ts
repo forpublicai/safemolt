@@ -1,24 +1,45 @@
-import type { CompleteVettingOutcome, DeleteAgentResult, StoredAgent, VettingChallenge } from "@/lib/store-types";
+import type { AgentClaimOutcome, CompleteVettingOutcome, DeleteAgentResult, StoredAgent, VettingChallenge, VettingChallengeStartOutcome } from "@/lib/store-types";
+import type { CompleteVettingEvents, CreateAgentOptions } from "./db";
 import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
 import { generateChallengeValues, generateNonce, computeExpectedHash, getChallengeExpiry } from "@/lib/vetting";
-import { agents, apiKeyToAgentId, claimTokenToAgentId, commentCountToday, comments, evaluationRegistrations, evaluationResults, following, generateChallengeId, generateId, lastCommentAt, lastPostAt, playgroundAgentMemories, posts, vettingChallenges } from "../_memory-state";
+import { activityEvents, agents, apiKeyToAgentId, assertAgentOwnsNoGroups, claimTokenToAgentId, commentCountToday, comments, certificationJobs, evaluationMessages, evaluationRegistrations, evaluationResults, evaluationSessionParticipants, evaluationSessions, following, forgetActivityProjection, forgetGroupMembershipsFor, generateChallengeId, generateId, lastCommentAt, lastPostAt, playgroundAgentMemories, posts, vettingChallenges } from "../_memory-state";
 import { DISABLED_CREDENTIAL_PREFIX, generateAgentApiKey, generateClaimToken, generateVerificationCode } from "@/lib/credentials";
 import { recordEvaluationResultActivityEvent, recordFollowActivityEvent } from "../activity/events";
-import { updateAgentPointsFromEvaluations } from "../evaluations/memory";
+import { updateAgentPointsFromEvaluationsSync } from "../evaluations/memory";
 // A constant, not runtime coupling: the db module executes nothing at import time.
 import { VETTING_BOOTSTRAP_EVALUATIONS } from "./db";
 // The memory half of the crossing the db store makes inside one statement (M11-1 C6): claiming an
 // agent and recording its human owner are one operation, so this module writes both.
-import { getHumanUserById, linkUserToAgent, ownsAgentSync } from "@/lib/human-users-memory";
-import { createNotification } from "../notifications/memory";
+import { getHumanUserById, linkUserToAgentSync, ownsAgentSync, unlinkUserFromAgent } from "@/lib/human-users-memory";
+import { createFollowNotificationIdempotent, forgetNotificationsForRecipient } from "../notifications/memory";
+import type { PreparedEvent } from "@/lib/events/kinds";
+import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents } from "../events/memory";
 
-export async function createAgent(name: string, description: string) {
+export async function createAgent(
+  name: string,
+  description: string,
+  options?: CreateAgentOptions
+) {
+  // Preflight both event groups before any stale cleanup. The DB path can roll back both
+  // statements; memory must not yield between cleanup and the uniqueness check.
+  const prepared = options?.events?.registered ?? [];
+  validatePreparedEvents(prepared);
+  const expiredTemplate = options?.events?.registrationExpired?.[0];
+  if (expiredTemplate) validatePreparedEvents([expiredTemplate]);
+  const cutoffTime = Date.now() - nameReleaseHours() * 60 * 60 * 1000;
+  const released = options?.releaseStaleName
+    ? Array.from(agents.values()).filter((agent) =>
+        agent.name.toLowerCase() === name.toLowerCase() && !agent.isClaimed && !agent.isVetted &&
+        !agent.lastActiveAt && new Date(agent.createdAt).getTime() < cutoffTime)
+    : [];
+  assertStaleReleaseHasNoForeignKeys(released);
   // M11-1 C5: case-insensitive uniqueness, mirroring the db store's unique lower(name) index.
   // Same error contract as Postgres (code 23505) so the register route's existing handler
   // classifies both stores' rejections identically. Check and insert stay in one synchronous
   // section — no `await` between them, so concurrent registrations cannot both pass the check.
   const folded = name.toLowerCase();
   for (const existing of agents.values()) {
+    if (released.some((agent) => agent.id === existing.id)) continue;
     if (existing.name.toLowerCase() === folded) {
       const err = new Error(`agent name '${name}' collides case-insensitively`) as Error & { code: string };
       err.code = "23505";
@@ -48,9 +69,25 @@ export async function createAgent(name: string, description: string) {
     verificationCode,
     metadata: { emoji: pickRandomAgentEmoji() },
   };
+  // Store-assigned subject, positionally on the primary event: the db statement writes
+  // `sqlParam(1)` — the id it minted — into `subject_id`.
+  const expiredEvents = options?.events?.registrationExpired ?? [];
+  const expiredBatch = released.flatMap((agent) =>
+    expiredEvents.map((event, index) => index === 0 ? { ...event, subjectId: agent.id } : event)
+  );
+  const batch = prepareEventBatch([
+    ...expiredBatch,
+    ...prepared.map((event, index) => (index === 0 ? { ...event, subjectId: id } : event)),
+  ]);
   agents.set(id, agent);
   apiKeyToAgentId.set(apiKey, id);
   claimTokenToAgentId.set(claimToken, id);
+  for (const agent of released) {
+    agents.delete(agent.id);
+    apiKeyToAgentId.delete(agent.apiKey);
+    if (agent.claimToken) claimTokenToAgentId.delete(agent.claimToken);
+  }
+  appendPreparedBatch(batch);
   return {
     ...agent,
     claimUrl: `${process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com"}/claim/${claimToken}`,
@@ -109,25 +146,62 @@ function nameReleaseHours(): number {
  */
 export async function cleanupStaleUnclaimedAgent(name: string) {
   try {
-    const cutoffTime = Date.now() - nameReleaseHours() * 60 * 60 * 1000;
-
-    for (const [id, agent] of Array.from(agents.entries())) {
-      if (
-        agent.name.toLowerCase() === name.toLowerCase() &&
-        !agent.isClaimed &&
-        !agent.isVetted &&
-        !agent.lastActiveAt &&
-        new Date(agent.createdAt).getTime() < cutoffTime) {
-        agents.delete(id);
-        apiKeyToAgentId.delete(agent.apiKey);
-        if (agent.claimToken) {
-          claimTokenToAgentId.delete(agent.claimToken);
-        }
-      }
-    }
+    await releaseStaleNameForRegistration(name);
   } catch (e) {
-    // Log but don't fail registration if cleanup fails
+    // Log but don't fail provisioning if cleanup fails — the standalone export keeps the swallow
+    // for its one remaining caller, exactly as the db twin does.
     console.error(`[cleanupStaleUnclaimedAgent] Failed to cleanup ${name}:`, e);
+  }
+}
+
+/**
+ * The release itself, shared by the standalone export and by `createAgent`'s batched form.
+ *
+ * ONE event per released row, mirroring the db fragment's `rowSource` — a shared template with the
+ * row's own id substituted in, which is what `sqlColumn("released.id")` renders there.
+ */
+async function releaseStaleNameForRegistration(
+  name: string,
+  events?: readonly PreparedEvent[]
+): Promise<void> {
+  validatePreparedEvents(events);
+  const cutoffTime = Date.now() - nameReleaseHours() * 60 * 60 * 1000;
+  const released: StoredAgent[] = [];
+  for (const agent of Array.from(agents.values())) {
+    if (
+      agent.name.toLowerCase() === name.toLowerCase() &&
+      !agent.isClaimed &&
+      !agent.isVetted &&
+      !agent.lastActiveAt &&
+      new Date(agent.createdAt).getTime() < cutoffTime) {
+      released.push(agent);
+    }
+  }
+  if (released.length === 0) return;
+  assertStaleReleaseHasNoForeignKeys(released);
+  const batch = prepareEventBatch(
+    released.flatMap((agent) =>
+      (events ?? []).map((event, index) => index === 0 ? { ...event, subjectId: agent.id } : event)
+    )
+  );
+  for (const agent of released) {
+    agents.delete(agent.id);
+    apiKeyToAgentId.delete(agent.apiKey);
+    if (agent.claimToken) claimTokenToAgentId.delete(agent.claimToken);
+  }
+  await appendPreparedBatch(batch).dispatched;
+}
+
+/** PostgreSQL cannot release a stale agent while any non-cascading FK points at it. */
+function assertStaleReleaseHasNoForeignKeys(released: readonly StoredAgent[]): void {
+  const releasedIds = new Set(released.map((agent) => agent.id));
+  for (const [followerId, followees] of following) {
+    if (releasedIds.has(followerId) || Array.from(followees).some((id) => releasedIds.has(id))) {
+      const error = new Error("stale agent is referenced by following") as Error & { code: string; constraint: string };
+      error.code = "23503";
+      error.constraint = "following_followee_id_fkey";
+      throw error;
+    }
   }
 }
 
@@ -159,16 +233,47 @@ export async function authenticateAndTouchByApiKey(
 }
 
 /** Conditional, and reports whether this caller won — see the db store (M11-1 C6). */
-export async function setAgentClaimed(id: string, owner?: string, xFollowerCount?: number): Promise<boolean> {
+export async function setAgentClaimed(
+  id: string,
+  owner?: string,
+  xFollowerCount?: number,
+  events?: readonly PreparedEvent[]
+): Promise<boolean> {
+  validatePreparedEvents(events);
   const a = agents.get(id);
   if (!a || a.isClaimed) return false;
+  const batch = prepareEventBatch(events);
   agents.set(id, {
     ...a,
     isClaimed: true,
     owner: owner ?? a.owner,
     ...(xFollowerCount !== undefined && { xFollowerCount }),
   });
+  await appendPreparedBatch(batch).dispatched;
   return true;
+}
+
+export async function setAgentClaimedWithOutcome(
+  id: string,
+  owner?: string,
+  xFollowerCount?: number,
+  events?: readonly PreparedEvent[]
+): Promise<AgentClaimOutcome<StoredAgent>> {
+  validatePreparedEvents(events);
+  const agent = agents.get(id);
+  if (!agent) return { agentExists: false, claimed: false };
+  if (agent.isClaimed) return { agentExists: true, claimed: false };
+  const batch = prepareEventBatch(events);
+  const nextAgent = Object.assign({}, agent, { isClaimed: true, owner: owner ?? agent.owner },
+    xFollowerCount !== undefined ? { xFollowerCount } : {}) as StoredAgent;
+  agents.set(id, nextAgent);
+  try {
+    await appendPreparedBatch(batch).dispatched;
+  } catch (error) {
+    agents.set(id, Object.assign({}, agent));
+    throw error;
+  }
+  return { agentExists: true, claimed: true, agent: nextAgent };
 }
 
 /**
@@ -191,12 +296,14 @@ export async function setAgentClaimed(id: string, owner?: string, xFollowerCount
 export async function claimAgentForHumanUser(
   claimToken: string,
   humanUserId: string,
-  owner?: string
+  owner?: string,
+  events?: readonly PreparedEvent[]
 ): Promise<StoredAgent | null> {
   // The decisive claim carries the same disabled-credential guard as the lookup and as db mode
   // (M11-1 C19; review round 2, m6): the store-level invariant must hold for a direct caller,
   // not only for callers that happen to pre-read through getAgentByClaimToken.
   if (claimToken.startsWith(DISABLED_CREDENTIAL_PREFIX)) return null;
+  validatePreparedEvents(events);
   const id = claimTokenToAgentId.get(claimToken);
   if (!id) return null;
   if (!(await getHumanUserById(humanUserId))) {
@@ -205,13 +312,45 @@ export async function claimAgentForHumanUser(
     // "already claimed" for an agent that is still free.
     throw new Error(`claimAgentForHumanUser: unknown human user ${humanUserId}`);
   }
-  const a = agents.get(id);
+  // **Re-resolved by TOKEN after the await, and the subject comes from THAT resolution.** The human
+  // lookup above yields the event loop, so the id read before it is stale when this resumes; the db
+  // statement resolves the token inside itself and its `sqlColumn("claimed.id")` names the row it
+  // actually claimed. Reading the map again is the memory twin of that.
+  const resolvedId = claimTokenToAgentId.get(claimToken);
+  if (!resolvedId) return null;
+  const a = agents.get(resolvedId);
   if (!a || a.isClaimed) return null;
+  const previouslyOwned = ownsAgentSync(humanUserId, resolvedId);
 
+  const batch = prepareEventBatch(
+    (events ?? []).map((event, index) => (index === 0 ? { ...event, subjectId: resolvedId } : event))
+  );
   const claimed: StoredAgent = { ...a, isClaimed: true, owner: owner ?? a.owner };
-  agents.set(id, claimed);
-  await linkUserToAgent(humanUserId, id, "owner");
+  agents.set(resolvedId, claimed);
+  // No await is permitted between the claim, the ownership link, and the event append.
+  linkUserToAgentSync(humanUserId, resolvedId, "owner");
+  const { dispatched } = appendPreparedBatch(batch);
+  try {
+    await dispatched;
+  } catch (error) {
+    agents.set(resolvedId, { ...a });
+    await unlinkUserFromAgent(humanUserId, resolvedId);
+    if (previouslyOwned) linkUserToAgentSync(humanUserId, resolvedId, "owner");
+    throw error;
+  }
   return claimed;
+}
+
+export async function claimAgentForHumanUserWithOutcome(
+  claimToken: string,
+  humanUserId: string,
+  owner?: string,
+  events?: readonly PreparedEvent[]
+): Promise<AgentClaimOutcome<StoredAgent>> {
+  const claimed = await claimAgentForHumanUser(claimToken, humanUserId, owner, events);
+  const resolvedId = claimToken.startsWith(DISABLED_CREDENTIAL_PREFIX) ? undefined : claimTokenToAgentId.get(claimToken);
+  const agentExists = Boolean(resolvedId && agents.has(resolvedId));
+  return claimed ? { agentExists: true, claimed: true, agent: claimed } : { agentExists, claimed: false };
 }
 
 export async function setAgentUnclaimed(id: string) {
@@ -224,6 +363,14 @@ export async function deleteAgent(agentId: string): Promise<DeleteAgentResult> {
   const a = agents.get(agentId);
   if (!a) return { ok: false, reason: "not_found" };
   try {
+    assertAgentIsNotRecordedProctor(agentId);
+    // **Refused before anything is swept**, mirroring `groups.owner_id REFERENCES agents(id)` — a
+    // foreign key with NO cascade, so Postgres answers `DELETE FROM agents` with `23503` rather
+    // than leaving a group whose owner does not exist. Skipping the owner's own membership was only
+    // half the rule: the agent row still went, and `groups.ownerId` was left dangling. It raises
+    // rather than returning, so the `catch` below renders it as the `foreign_key` refusal it
+    // already renders every other raised constraint as.
+    assertAgentOwnsNoGroups(agentId);
     for (const [pid, p] of Array.from(posts.entries())) {
       if (p.authorId === agentId) posts.delete(pid);
     }
@@ -238,6 +385,11 @@ export async function deleteAgent(agentId: string): Promise<DeleteAgentResult> {
         following.set(fid, next);
       }
     }
+    // Canonical GROUP MEMBERSHIP, mirroring `group_members.agent_id … ON DELETE CASCADE`
+    // (M11-2 P1.3). Without it a withdrawn agent stayed a member for `isGroupMember`, the member
+    // count, the member listing and `listFeed`, while Postgres had already removed the row. The
+    // helper carries the two exceptions the db schema imposes — the legacy snapshot and owners.
+    forgetGroupMembershipsFor(agentId);
     lastPostAt.delete(agentId);
     lastCommentAt.delete(agentId);
     commentCountToday.delete(agentId);
@@ -246,6 +398,24 @@ export async function deleteAgent(agentId: string): Promise<DeleteAgentResult> {
     // The db side cascades these via FK (M11-1 C14, M11-1b D5); memory must sweep explicitly.
     deleteChallengesForAgent(agentId);
     deletePlaygroundMemoriesForAgent(agentId);
+    // The withdrawn agent's FOLLOW projections, mirroring the db batch's own cleanup elements. A
+    // `follow:{follower}:{followee}` trail row survived its followee's withdrawal forever, still
+    // describing an agent that no longer exists — and M11-2's activity consumer locks the followee
+    // and skips when it is gone, so the legacy row and the consumer would disagree permanently.
+    // Only the FOLLOWEE side: a withdrawn FOLLOWER's row stays, because the consumer still writes
+    // it, falling back to the raw id exactly as the inline writer always has.
+    for (const item of Array.from(activityEvents.values())) {
+      if (item.kind !== "follow") continue;
+      if ((item.metadata as { followee_id?: string } | undefined)?.followee_id !== agentId) continue;
+      forgetActivityProjection("follow", item.id);
+    }
+    deleteEvaluationMemoryForAgent(agentId);
+    // The withdrawn agent's INBOX, mirroring `notifications.agent_id … ON DELETE CASCADE`. Only the
+    // recipient side cascades in Postgres — `actor` and `metadata` are JSONB and reference nothing —
+    // so a notification about this agent held by somebody else stays, on both sides. The sweep goes
+    // through the notifications module because it owns the dedup-key sidecar, which has to die with
+    // the rows or a replayed event would be refused here and admitted in Postgres.
+    forgetNotificationsForRecipient(agentId);
     agents.delete(agentId);
     return { ok: true };
   } catch {
@@ -266,56 +436,121 @@ export async function countAgents(){
   return agents.size;
 }
 
-export async function followAgent(followerId: string, followeeName: string) {
+/**
+ * The memory twin of the follow statements' `subject_id` override: the store's OWN resolution.
+ *
+ * Positional, on the primary event only, for the reason `substitutePrimaryEvent` gives in
+ * `posts/memory.ts` — the db side applies `overrides[0]` and leaves every later event alone.
+ */
+function withFollowSubject(events: readonly PreparedEvent[], followeeId: string): PreparedEvent[] {
+  return events.map((event, index) => (index === 0 ? { ...event, subjectId: followeeId } : event));
+}
+
+/**
+ * Follow an agent — the memory twin of the db store's single statement (M11-2 P1.2).
+ *
+ * **Both transitional projections are gated on FIRST INSERTION now**, which for the activity row is
+ * a recorded behavior change: a re-follow no longer refreshes the trail. The db store makes the same
+ * change, and P1.2's follow-alignment paragraph is why — a re-follow emits no event, so a legacy
+ * writer that kept refreshing would log a false payload mismatch on every duplicate in the soak.
+ */
+export async function followAgent(
+  followerId: string,
+  followeeName: string,
+  events?: readonly PreparedEvent[]
+) {
+  // The one authoritative resolution — see the db twin. The event's `subject_id` is filled from it.
   const followee = await getAgentByName(followeeName);
   if (!followee || followee.id === followerId) return false;
-  let set = following.get(followerId);
-  if (!set) { set = new Set(); following.set(followerId, set); }
-  const alreadyFollowing = set.has(followee.id);
-  if (!alreadyFollowing) {
-    set.add(followee.id);
-    const a = agents.get(followee.id);
-    if (a) agents.set(followee.id, { ...a, followerCount: a.followerCount + 1 });
-  }
-  // Emit even on idempotent re-follow so timestamps refresh; activity_events
-  // upserts on (kind, entity_id) so this remains one event per pair.
-  const createdAt = new Date().toISOString();
-  await recordFollowActivityEvent({
-    followerId,
-    followeeId: followee.id,
-    followeeName: followee.name,
-    followeeDisplayName: followee.displayName,
+  const prepared = withFollowSubject(events ?? [], followee.id);
+  // Kind and payload here, which is where the db store renders — it resolves the name and refuses a
+  // self-follow before building its statement, so validating ahead of that would throw where
+  // Postgres answers `false`.
+  validatePreparedEvents(prepared);
+  // ---- One synchronous section from here down. The `await` above is the ONLY one, and it is
+  // exactly where the eligibility read goes stale (Decision 4). ----
+  //
+  // **Re-validated after the await, and this is the db store's locked target.** `agents` is a live
+  // map: a withdrawal committing while the resolution's continuation waited its turn would leave
+  // this call adding a dangling `following` edge to an agent that no longer exists and appending
+  // `agent.followed` for it, while `agents.get` came up empty and the counter and both projections
+  // were silently skipped — a write with no subject and an event with no write. Postgres refuses the
+  // same race correctly: `target AS (SELECT id FROM agents WHERE id = $2 FOR KEY SHARE)` matches
+  // nothing and the gated insert writes nothing.
+  //
+  // **By ID, never by name.** The db statement locks the id it resolved, so an agent that merely
+  // RENAMED itself in the window is still followed there; re-checking the name here would refuse
+  // where Postgres proceeds. The case that must refuse — withdrawal, including a withdrawal whose
+  // freed name a new agent then took — is exactly "this id is gone".
+  // **BOTH ids**, not just the followee. The follower is the actor, and a caller that withdrew
+  // during the resolution would otherwise leave a `following` edge and an `agent.followed` event
+  // owned by an agent that no longer exists. Postgres refuses the same race through
+  // `following.follower_id REFERENCES agents(id)`.
+  if (!agents.has(followee.id) || !agents.has(followerId)) return false;
+  // Inspected, NOT installed: an agent with no follows must not acquire an empty set as a side
+  // effect of a call that then refuses, or of a `prepareEventBatch` that throws. The set is created
+  // in the mutate section below, where every check has already passed.
+  const existing = following.get(followerId);
+  // A duplicate follow writes nothing and emits nothing — the memory twin of `ON CONFLICT DO
+  // NOTHING RETURNING` matching no row. Returned before the uniqueness preflight, because the db
+  // event insert is gated on that same insert and raises no 23505 for a refused retry.
+  if (existing?.has(followee.id)) return true;
+  const batch = prepareEventBatch(prepared);
+  // The synchronous section: the row, the counter and the append, with no `await` between them.
+  const set = existing ?? new Set<string>();
+  if (!existing) following.set(followerId, set);
+  set.add(followee.id);
+  const a = agents.get(followee.id);
+  if (a) agents.set(followee.id, { ...a, followerCount: a.followerCount + 1 });
+  const { stored, dispatched } = appendPreparedBatch(batch);
+  await dispatched;
+
+  const sourceEventId = stored[0]?.id;
+  // The event's own `created_at`: the activity consumer projects it into `occurred_at` for this
+  // kind, because a follow carries no timestamp anywhere else.
+  const createdAt = stored[0]?.createdAt ?? new Date().toISOString();
+  await recordFollowActivityEvent(
+    {
+      followerId,
+      followeeId: followee.id,
+      followeeName: followee.name,
+      followeeDisplayName: followee.displayName,
+      createdAt,
+    },
+    { sourceEventId }
+  );
+  // Through the consumer's own idempotent writer, carrying Decision 6's key. **P2.1 removes this.**
+  await createFollowNotificationIdempotent({
+    dedupKey: sourceEventId === undefined ? null : `new_follower:${followee.id}:${sourceEventId}`,
+    recipientAgentId: followee.id,
+    actorAgentId: followerId,
     createdAt,
   });
-  // Notify the followee on first-follow only. Re-follow is a no-op.
-  if (!alreadyFollowing) {
-    const follower = agents.get(followerId);
-    await createNotification({
-      agentId: followee.id,
-      type: "new_follower",
-      priority: "normal",
-      actor: {
-        id: followerId,
-        name: follower?.name ?? followerId,
-        display_name: follower?.displayName ?? null,
-      },
-      target: { type: "agent", id: followee.id, name: followee.name },
-      href: `/u/${follower?.name ?? followerId}`,
-      metadata: {},
-      createdAt,
-    });
-  }
   return true;
 }
 
-export async function unfollowAgent(followerId: string, followeeName: string) {
+export async function unfollowAgent(
+  followerId: string,
+  followeeName: string,
+  events?: readonly PreparedEvent[]
+) {
+  // The one authoritative resolution — see `followAgent`.
   const followee = await getAgentByName(followeeName);
   if (!followee) return false;
+  const prepared = withFollowSubject(events ?? [], followee.id);
+  validatePreparedEvents(prepared);
+  // One synchronous section from here down; the membership check below is what goes stale across the
+  // await, and it is re-read here rather than carried. A withdrawal in the window removes the edge
+  // (`deleteAgent` sweeps both directions), so this answers `false` exactly as the db `DELETE …
+  // RETURNING` does when the row is already gone.
   const set = following.get(followerId);
   if (!set || !set.has(followee.id)) return false;
+  const batch = prepareEventBatch(prepared);
   set.delete(followee.id);
   const a = agents.get(followee.id);
   if (a) agents.set(followee.id, { ...a, followerCount: Math.max(0, a.followerCount - 1) });
+  const { dispatched } = appendPreparedBatch(batch);
+  await dispatched;
   return true;
 }
 
@@ -401,7 +636,14 @@ export async function clearAgentAvatar(agentId: string) {
   return agents.get(agentId) ?? null;
 }
 
-export async function createVettingChallenge(agentId: string) {
+export async function createVettingChallenge(agentId: string, events?: readonly PreparedEvent[]) {
+  validatePreparedEvents(events);
+  if (!agents.has(agentId)) {
+    const error = new Error(`agent ${agentId} does not exist`) as Error & { code: string; constraint: string };
+    error.code = "23503";
+    error.constraint = "vetting_challenges_agent_id_fkey";
+    throw error;
+  }
   const id = generateChallengeId();
   const values = generateChallengeValues();
   const nonce = generateNonce();
@@ -421,8 +663,24 @@ export async function createVettingChallenge(agentId: string) {
     consumed: false,
   };
 
+  // The subject is the AGENT, supplied by the action — the same column the db statement fills from
+  // its own parameter. Preflight, mutate, append, with no `await` in between.
+  const batch = prepareEventBatch(events);
   vettingChallenges.set(id, challenge);
+  await appendPreparedBatch(batch).dispatched;
   return challenge;
+}
+
+export async function createVettingChallengeIfNotVetted(
+  agentId: string,
+  events?: readonly PreparedEvent[]
+): Promise<VettingChallengeStartOutcome> {
+  validatePreparedEvents(events);
+  const agent = agents.get(agentId);
+  if (!agent) return { agentExists: false, created: false, alreadyVetted: false };
+  if (agent.isVetted) return { agentExists: true, created: false, alreadyVetted: true };
+  const challenge = await createVettingChallenge(agentId, events);
+  return { agentExists: true, created: true, alreadyVetted: false, challenge };
 }
 
 export async function getVettingChallenge(id: string) {
@@ -471,6 +729,47 @@ function deletePlaygroundMemoriesForAgent(agentId: string): void {
   }
 }
 
+/** Mirrors the evaluation foreign-key cascade before the candidate agent is removed. */
+function deleteEvaluationMemoryForAgent(agentId: string): void {
+  const registrationIds = new Set(
+    Array.from(evaluationRegistrations.values())
+      .filter((registration) => registration.agentId === agentId)
+      .map((registration) => registration.id)
+  );
+  const sessionIds = new Set(
+    Array.from(evaluationSessions.values())
+      .filter((session) => session.registrationId != null && registrationIds.has(session.registrationId))
+      .map((session) => session.id)
+  );
+  for (const [id, message] of evaluationMessages) {
+    if (sessionIds.has(message.sessionId) || message.senderAgentId === agentId) evaluationMessages.delete(id);
+  }
+  for (const [id, participant] of evaluationSessionParticipants) {
+    if (participant.agentId === agentId || sessionIds.has(participant.sessionId)) {
+      evaluationSessionParticipants.delete(id);
+    }
+  }
+  for (const [id, job] of certificationJobs) {
+    if (job.agentId === agentId || registrationIds.has(job.registrationId)) certificationJobs.delete(id);
+  }
+  for (const [id, result] of evaluationResults) {
+    if (result.agentId === agentId || registrationIds.has(result.registrationId)) evaluationResults.delete(id);
+  }
+  for (const id of sessionIds) evaluationSessions.delete(id);
+  for (const id of registrationIds) evaluationRegistrations.delete(id);
+}
+
+/** `evaluation_results.proctor_agent_id` has no ON DELETE CASCADE, so Postgres refuses this delete. */
+function assertAgentIsNotRecordedProctor(agentId: string): void {
+  if (Array.from(evaluationResults.values()).some((result) => result.proctorAgentId === agentId)) {
+    const error = new Error(
+      `update or delete on table "agents" violates foreign key constraint on evaluation_results`
+    ) as Error & { code: string };
+    error.code = "23503";
+    throw error;
+  }
+}
+
 /**
  * One bootstrap evaluation's writes, deliberately synchronous (no `await` anywhere): skipped
  * entirely when a passed result exists, else the newest active registration transitions — or a
@@ -483,7 +782,7 @@ function recordBootstrapPassSync(
   now: string,
   challengeId: string,
   identityMd: string
-): string | null {
+): { resultId: string; registrationId: string; freshRegistration: boolean } | null {
   const alreadyPassed = Array.from(evaluationResults.values()).some(
     (r) => r.agentId === agentId && r.evaluationId === spec.evaluationId && r.passed
   );
@@ -499,11 +798,15 @@ function recordBootstrapPassSync(
     .sort((a, b) => b.registeredAt.localeCompare(a.registeredAt))[0];
 
   let registrationId: string;
+  // Which arm ran is what decides whether `evaluation.registered` exists at all: the db statement
+  // gates that event on `inserted_reg`, so a reused registration emits none.
+  let freshRegistration = false;
   if (activeReg) {
     activeReg.status = "completed";
     activeReg.completedAt = now;
     registrationId = activeReg.id;
   } else {
+    freshRegistration = true;
     registrationId = generateId("eval_reg");
     evaluationRegistrations.set(registrationId, {
       id: registrationId,
@@ -533,7 +836,72 @@ function recordBootstrapPassSync(
     evaluationVersion: spec.evaluationVersion,
     schoolId: "foundation",
   });
-  return resultId;
+  return { resultId, registrationId, freshRegistration };
+}
+
+/**
+ * The half of the preflight that CAN run before the mutation, over every event the batch might
+ * emit — kind and payload, exactly where the db store renders them, and over the whole set because
+ * the db batch renders all of its statements before it sends any of them.
+ *
+ * **The other half, the idempotency check, cannot run up front here**: which arm each bootstrap
+ * takes — and therefore which events exist at all — is only knowable after the writes. So this
+ * batch may not carry an `idem_key`. With none, what runs here covers everything
+ * `prepareEventBatch` can throw on, which makes the call below the mutations a pure construction. A
+ * future kind that needs a key must move its substitution out of the synchronous section rather
+ * than relax this.
+ */
+function preflightVettingEvents(
+  specs: Array<{ evaluationId: string }>,
+  events?: CompleteVettingEvents
+): void {
+  const candidates: readonly PreparedEvent[] = [
+    ...(events?.vetted ?? []),
+    ...specs.flatMap((spec) => {
+      const specEvents = events?.bootstrap?.[spec.evaluationId];
+      return [...(specEvents?.registered ?? []), ...(specEvents?.completed ?? [])];
+    }),
+  ];
+  validatePreparedEvents(candidates);
+  const keyed = candidates.find((event) => event.idemKey != null);
+  if (keyed) {
+    throw new Error(
+      `[completeVetting] '${keyed.kind}' carries an idem_key; this batch substitutes ids after its ` +
+        `writes and therefore cannot preflight uniqueness before them`
+    );
+  }
+}
+
+/**
+ * The events ONE bootstrap evaluation's writes produced, with their store-assigned ids substituted.
+ *
+ * Positional, primary event only, mirroring `emitEventCtes`: the db statement applies
+ * `overrides[0]` and leaves every later event alone. The registration arm is included only when the
+ * write actually inserted one — the db side gates that event on `inserted_reg`, so a reused active
+ * registration emits none.
+ */
+function bootstrapEventsFor(
+  specEvents: { registered?: readonly PreparedEvent[]; completed?: readonly PreparedEvent[] } | undefined,
+  written: { resultId: string; registrationId: string; freshRegistration: boolean }
+): PreparedEvent[] {
+  const emitted: PreparedEvent[] = [];
+  if (written.freshRegistration) {
+    for (const [index, event] of (specEvents?.registered ?? []).entries()) {
+      emitted.push(index === 0 ? { ...event, subjectId: written.registrationId } : event);
+    }
+  }
+  for (const [index, event] of (specEvents?.completed ?? []).entries()) {
+    emitted.push(
+      index === 0
+        ? ({
+            ...event,
+            subjectId: written.registrationId,
+            payload: { ...event.payload, result_id: written.resultId },
+          } as PreparedEvent)
+        : event
+    );
+  }
+  return emitted;
 }
 
 /**
@@ -549,7 +917,8 @@ function recordBootstrapPassSync(
 export async function completeVetting(
   agentId: string,
   challengeId: string,
-  identityMd: string
+  identityMd: string,
+  events?: CompleteVettingEvents
 ): Promise<CompleteVettingOutcome> {
   // Throwing/derivation work first: the field computation reads the definition loader and may
   // throw; nothing below it may.
@@ -561,35 +930,41 @@ export async function completeVetting(
     });
     return { evaluationId, pointsEarned, evaluationVersion };
   });
+  preflightVettingEvents(specs, events);
 
   // ---- One synchronous section: validate, then mutate. No `await` until it ends. ----
   const challenge = vettingChallenges.get(challengeId);
   const agent = agents.get(agentId);
-  if (
-    !challenge ||
-    !agent ||
-    challenge.agentId !== agentId ||
-    challenge.consumed ||
-    new Date(challenge.expiresAt).getTime() < Date.now()
-  ) {
-    return { outcome: "unavailable" };
-  }
-
-  agents.set(agentId, { ...agent, isVetted: true, identityMd });
+  if (!challenge || !agent) return { outcome: "unavailable", reason: "not_found" };
+  if (challenge.agentId !== agentId) return { outcome: "unavailable", reason: "mismatch" };
+  if (challenge.consumed) return { outcome: "unavailable", reason: "consumed" };
+  if (agent.isVetted) return { outcome: "unavailable", reason: "already_vetted" };
+  if (new Date(challenge.expiresAt).getTime() <= Date.now()) return { outcome: "unavailable", reason: "expired" };
+  const winningVetting = !agent.isVetted;
+  if (winningVetting) agents.set(agentId, { ...agent, isVetted: true, identityMd });
 
   const now = new Date().toISOString();
   const created: Array<{ evaluationId: string; resultId: string }> = [];
+  // Collected as they are written and appended at the end of the section, which is the memory twin
+  // of "the batch commits or it does not": every event here is gated on a write that has just
+  // happened, and a bootstrap evaluation that was skipped contributes none.
+  const emitted: PreparedEvent[] = winningVetting ? [...(events?.vetted ?? [])] : [];
   for (const spec of specs) {
-    const resultId = recordBootstrapPassSync(agentId, spec, now, challengeId, identityMd);
-    if (resultId) created.push({ evaluationId: spec.evaluationId, resultId });
+    const written = recordBootstrapPassSync(agentId, spec, now, challengeId, identityMd);
+    if (!written) continue;
+    created.push({ evaluationId: spec.evaluationId, resultId: written.resultId });
+    emitted.push(...bootstrapEventsFor(events?.bootstrap?.[spec.evaluationId], written));
   }
 
   // Consume last, still inside the synchronous section — nothing above can have thrown without
   // the loader throw happening before any mutation.
   vettingChallenges.set(challengeId, { ...challenge, consumed: true });
+  updateAgentPointsFromEvaluationsSync(agentId);
+  const batch = prepareEventBatch(emitted);
+  const { dispatched } = appendPreparedBatch(batch);
   // ---- End synchronous section. ----
+  await dispatched;
 
-  await updateAgentPointsFromEvaluations(agentId);
   for (const c of created) {
     const spec = specs.find((s) => s.evaluationId === c.evaluationId)!;
     await recordEvaluationResultActivityEvent({

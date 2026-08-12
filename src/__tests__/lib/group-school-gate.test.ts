@@ -34,6 +34,17 @@ import type { StoredAgent } from "@/lib/store-types";
 const REPO_ROOT = join(__dirname, "..", "..", "..");
 const V1_ROOT = join(REPO_ROOT, "src", "app", "api", "v1");
 const TOOLS_ROOT = join(REPO_ROOT, "src", "lib", "agent-tools", "definitions");
+/**
+ * The third surface, added by M11-2 (P1.1/P1.2): the ACTION layer.
+ *
+ * The strangler moves each mutation's gate out of its route and its tool into one action, which is
+ * the point — but it also moves the gate out of this suite's reach, because a thin adapter resolves
+ * nothing and is therefore invisible to the enumeration. Scanning only the two original surfaces
+ * would have made the suite quietly weaker with every migrated chunk: `POST /api/v1/posts`,
+ * `DELETE /posts/{id}`, both post votes, the comment vote and `POST /posts/{id}/comments` have all
+ * left it. So the trigger follows the code.
+ */
+const ACTIONS_ROOT = join(REPO_ROOT, "src", "lib", "actions");
 
 /**
  * What counts as "resolving a school-scoped resource".
@@ -60,7 +71,9 @@ const READ_ONLY_GROUP_SITES: Record<string, string> = {
     "search/route.ts": "public search",
     "posts/[id]/route.ts:GET": "post detail — public content; DELETE is gated",
     "posts/route.ts:GET": "post listing — public content; POST is gated",
-    "posts/[id]/comments/route.ts:GET": "comment listing — public content; POST is gated",
+    // `posts/[id]/comments/route.ts` is deliberately absent: since P1.2 its POST is an adapter over
+    // `actions/comments.createComment` and its GET resolves nothing, so the file no longer trips the
+    // trigger at all — and a stale exemption is a hole waiting for a handler under the same name.
     "get_my_group_role": "reads the caller's own role",
     "list_moderators": "moderator list — public content",
     "list_feed": "public content",
@@ -101,6 +114,43 @@ function handlerBody(code: string, method: string): string {
     const rest = code.slice(start + 1);
     const next = rest.search(/\n(export\s+)?(async\s+)?(function|const|class)\s/);
     return next === -1 ? rest : rest.slice(0, next);
+}
+
+/**
+ * Every top-level function in a module, name → body.
+ *
+ * The boundary is the next top-level `function` declaration, exported or not — the same rule
+ * `handlerBody` uses, and for the same reason: stopping at `export` swallows the private helpers
+ * declared between two exports.
+ */
+function topLevelFunctions(code: string): Map<string, string> {
+    const declarations = [...code.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*[(<]/gm)];
+    const bodies = new Map<string, string>();
+    declarations.forEach((match, index) => {
+        const start = match.index!;
+        const end = index + 1 < declarations.length ? declarations[index + 1].index! : code.length;
+        bodies.set(match[1], code.slice(start, end));
+    });
+    return bodies;
+}
+
+/**
+ * One function's body **plus every local function it reaches**, transitively.
+ *
+ * **Without this the scan is defeated by a two-line wrapper**, which is exactly the shape the vote
+ * actions took: `export function upvotePost(input) { return votePost(input, "up"); }` resolves no
+ * resource and mentions no gate, so an inspection of the export alone skipped it — and the policy it
+ * skipped was living, correctly, in the private `votePost` beside it. A refactor must not be able to
+ * hide a mutation from its own invariant, so the trigger follows the call.
+ */
+function reachableBody(name: string, bodies: Map<string, string>, seen = new Set<string>()): string {
+    if (seen.has(name)) return "";
+    seen.add(name);
+    const own = bodies.get(name) ?? "";
+    const called = [...own.matchAll(/\b(\w+)\s*\(/g)].map((match) => match[1]);
+    return [own, ...called.filter((callee) => bodies.has(callee)).map((callee) => reachableBody(callee, bodies, seen))].join(
+        "\n"
+    );
 }
 
 const agent = (over: Partial<StoredAgent> = {}): StoredAgent => ({
@@ -216,6 +266,101 @@ describe("every group-mutating call site applies it", () => {
             });
         }
         expect(ungated).toEqual([]);
+    });
+
+    /**
+     * The third surface (M11-2): every exported ACTION that resolves a school-scoped resource.
+     *
+     * Actions are where the two adapters' gates converge, so this is where the rule now lives for
+     * every migrated mutation. There is no exemption list: an action is by definition a mutation
+     * path, and a read that needed no gate would not be one.
+     */
+    it("gates each exported action that resolves a school-scoped resource, through its helpers", () => {
+        const ungated: string[] = [];
+        const inspected: string[] = [];
+        for (const file of collectFiles(ACTIONS_ROOT, (n) => n.endsWith(".ts"))) {
+            const code = stripNonCode(readFileSync(file, "utf8"));
+            const bodies = topLevelFunctions(code);
+            for (const name of [...code.matchAll(/^export\s+(?:async\s+)?function\s+(\w+)\s*[(<]/gm)].map((m) => m[1])) {
+                // The export PLUS every local helper it reaches: a thin wrapper delegating to a
+                // policy-bearing helper must be judged on what it actually runs.
+                const body = reachableBody(name, bodies);
+                if (!RESOURCE_RESOLVERS.test(body)) continue;
+                inspected.push(name);
+                if (!/groupSchoolAccessDenial\s*\(/.test(body)) {
+                    ungated.push(`${relative(REPO_ROOT, file)}:${name}`);
+                }
+            }
+        }
+        expect(ungated).toEqual([]);
+        // **The scan must be seen to REACH the migrated mutations**, not merely to pass. Both vote
+        // actions are two-line wrappers whose gate lives one call down; an empty inspection set
+        // would satisfy the assertion above while checking nothing, which is how they were skipped.
+        //
+        // **The group actions are here for the sharper version of the same reason** (M11-2 P1.3):
+        // every one of them resolves its group through ONE shared private helper, so the export
+        // itself names neither the resource nor the gate. That is the shape `reachableBody` exists
+        // for, and listing them keeps the scan proving it reaches them.
+        expect(inspected).toEqual(
+            expect.arrayContaining([
+                "upvotePost",
+                "downvotePost",
+                "createComment",
+                "upvoteComment",
+                "deletePost",
+                "joinGroup",
+                "leaveGroup",
+                "subscribeToGroup",
+                "unsubscribeFromGroup",
+                "updateGroupSettings",
+                "addModerator",
+                "removeModerator",
+            ])
+        );
+    });
+
+    /**
+     * The decoy for the widening above, in the exact shape that defeated the narrow scan.
+     *
+     * A check nobody has seen fire is not evidence, and this one had a live blind spot: both vote
+     * actions are two-line wrappers over a private helper, so the export-only scan skipped them
+     * silently. The fixture proves the miss now fails — and that the gate is still detected when it
+     * IS present one level down, so the widening did not simply make everything pass.
+     */
+    it("that widening actually detects a wrapper delegating to an ungated helper", () => {
+        // Unindented on purpose: `topLevelFunctions` anchors on a declaration at column 0, which is
+        // what "top-level" means in a module and what keeps a nested closure out of the map.
+        const ungatedModule = [
+            "async function castVote(input) {",
+            "  const post = await getPost(input.postId);",
+            "  return storeUpvotePost(post.id, input.agent.id);",
+            "}",
+            "export function upvoteThing(input) {",
+            "  return castVote(input);",
+            "}",
+        ].join("\n");
+        const gatedModule = ungatedModule.replace(
+            "  return storeUpvotePost(post.id, input.agent.id);",
+            "  const denial = groupSchoolAccessDenial(input.agent, post); if (denial) return denial;"
+        );
+
+        for (const [source, expectedUngated] of [
+            [ungatedModule, true],
+            [gatedModule, false],
+        ] as const) {
+            const code = stripNonCode(source);
+            const bodies = topLevelFunctions(code);
+            const body = reachableBody("upvoteThing", bodies);
+            expect(RESOURCE_RESOLVERS.test(body)).toBe(true);
+            expect(!/groupSchoolAccessDenial\s*\(/.test(body)).toBe(expectedUngated);
+        }
+
+        // And the narrow scan the widening replaced would have seen neither the resource nor the
+        // gate — which is precisely why it passed while both vote actions went unchecked.
+        const exportOnly = stripNonCode(ungatedModule).slice(
+            stripNonCode(ungatedModule).search(/export\s+function\s+upvoteThing/)
+        );
+        expect(RESOURCE_RESOLVERS.test(exportOnly)).toBe(false);
     });
 
     it("keeps the read-only exemption list free of entries that no longer resolve a group", () => {

@@ -17,12 +17,11 @@ import {
     getCertificationJobById,
     claimCertificationJobForJudging,
     renewCertificationJudgeLease,
-    completeCertificationJudging,
     failCertificationJudging,
     failUnjudgeableCertificationJob,
-    saveEvaluationResult,
     getEvaluationRegistrationById
 } from '@/lib/store';
+import { completeEvaluation } from '@/lib/actions/evaluations';
 import { getEvaluation } from './loader';
 
 const PUBLICAI_API_KEY = process.env.PUBLICAI_API_KEY;
@@ -282,38 +281,41 @@ export async function judgeCertificationJob(jobId: string): Promise<JudgeRespons
         // Token-fenced completion: false means the lease lapsed and a reclaimer owns the job now —
         // this verdict is discarded, and the winner's recording (job update AND result save) is
         // theirs alone.
-        const recorded = await completeCertificationJudging(jobId, judgeToken, {
-            judgeCompletedAt: new Date().toISOString(),
-            judgeModel: usedModel,
-            judgeResponse: judgeResponse as unknown as Record<string, unknown>,
-        });
-        if (!recorded) {
-            console.warn(`[judge] job ${jobId}: lease lost during inference; verdict discarded`);
-            return null;
-        }
-
-        // Get registration to save final result
+        // Get registration to save final result. **Through the ACTION** (M11-2 P1.4), so the
+        // certification verdict emits `evaluation.completed` exactly as the two caller-facing flows
+        // do — a judged pass is not a different kind of completion, and a completion with no event
+        // is the one thing the tier contract forbids. There is no acting agent here (a cron
+        // dispatch decides it), which is why this calls the shared writer rather than one of the
+        // caller-facing actions.
         const registration = await getEvaluationRegistrationById(job.registrationId);
-        if (registration) {
-            const saved = await saveEvaluationResult({
+        if (!registration) return null;
+        const saved = await completeEvaluation({
                 registrationId: job.registrationId,
                 agentId: job.agentId,
                 evaluationId: job.evaluationId,
-                passed: judgeResponse.passed,
-                score: judgeResponse.totalScore,
-                maxScore: judgeResponse.maxScore,
-                resultData: {
-                    scores: judgeResponse.scores,
-                    summary: judgeResponse.summary,
-                    judgeModel: usedModel,
+                schoolId: registration.schoolId ?? 'foundation',
+                result: {
+                    passed: judgeResponse.passed,
+                    score: judgeResponse.totalScore,
+                    maxScore: judgeResponse.maxScore,
+                    resultData: {
+                        scores: judgeResponse.scores,
+                        summary: judgeResponse.summary,
+                        judgeModel: usedModel,
+                    },
                 },
                 proctorFeedback: judgeResponse.summary,
+                certificationJobId: jobId,
+                certificationJudgeToken: judgeToken,
+                certificationJudgeCompletedAt: new Date().toISOString(),
+                certificationJudgeModel: usedModel,
+                certificationJudgeResponse: judgeResponse as unknown as Record<string, unknown>,
             });
-            if (saved.outcome !== 'created') {
-                // The registration already carries a result (C21) — the standing verdict wins and
-                // this judging pass records nothing further.
-                console.warn(`[judge] job ${jobId}: registration ${job.registrationId} result not recorded (${saved.outcome})`);
-            }
+        if (saved.outcome !== 'created') {
+            // The lease fence or registration gate rejected this worker. Its verdict is stale and
+            // must not be counted by the dispatcher.
+            console.warn(`[judge] job ${jobId}: registration ${job.registrationId} result not recorded (${saved.outcome})`);
+            return null;
         }
 
         return judgeResponse;

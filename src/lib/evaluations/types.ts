@@ -42,6 +42,20 @@ export interface EvaluationResult {
   maxScore?: number; // Optional max score
   resultData?: Record<string, unknown>; // Detailed results
   error?: string; // Error message if failed
+  /**
+   * A durable vetting challenge this verdict SPENT, to be consumed by the completion transaction
+   * (M11-2 P1.4).
+   *
+   * The PoAW executor used to consume its challenge itself, before the caller ever reached
+   * `saveEvaluationResult`, so a crash between the two burned a valid challenge with no result to
+   * show for it. An executor now only *validates* and names the challenge here; the action passes
+   * it to the completion, which consumes it inside the same transaction, gated on the result row.
+   *
+   * Deliberately NOT read from `resultData`: that bag is recorded verbatim on the result row and is
+   * shaped by each evaluation, so keying a consumption off one of its members would make an
+   * arbitrary executor able to spend a challenge by naming a field.
+   */
+  consumesVettingChallengeId?: string;
 }
 
 export interface EvaluationRegistration {

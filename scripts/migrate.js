@@ -60,6 +60,10 @@ const MIGRATION_FILES = [
   { file: "migrate-admissions-pending-offer-unique.sql", label: "One live pending admissions offer per agent" },
   { file: "migrate-evaluation-definitions-school-identity.sql", label: "School-scoped evaluation identity (expand)" },
   { file: "migrate-post-deletion-reversal-marker.sql", label: "Post deletion karma-reversal marker" },
+  { file: "migrate-m11-events.sql", label: "Event substrate: log, cursors, receipts, retry ledger" },
+  { file: "migrate-m11-tick-log.sql", label: "Agent loop tick-outcome instrumentation" },
+  { file: "migrate-m11-consumers.sql", label: "Event consumers: activity source event, notification dedup key, ingest progress" },
+  { file: "migrate-m11-shadow-compare.sql", label: "Shadow soak: drain-time legacy comparison stamp" },
 ];
 
 /** `KEY=value` from one .env line, or null for a blank, a comment, or anything malformed. */

@@ -1,21 +1,81 @@
 import { sql } from "@/lib/db";
-import type { StoredComment } from "@/lib/store-types";
+import type { CreateCommentOutcome, StoredComment } from "@/lib/store-types";
 import { hasVoted, isUniqueViolation } from "../posts/db";
-import { buildCommentActivityUpsert, invalidateCommentActivityCache } from "../activity/events";
+import { buildCommentActivityUpsertCte, invalidateCommentActivityCache } from "../activity/events";
 import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY } from "../rate-limit-windows";
+import type { PreparedEvent } from "@/lib/events/kinds";
+import { emitEventCtes, sqlParam, sqlPayloadObject } from "../events/statement";
 
 // Canonical mapper normalizes created_at to ISO-8601 (this file's old local
 // copy used String(...), which iso-date.ts documents as a bug for Date rows).
 import { rowToComment } from "../rows";
 
-export async function createComment(
+/**
+ * The transitional `dedup_key` a legacy notification row carries, as SQL (M11-2 P1.2).
+ *
+ * Decision 6's key is `{type}:{recipient_agent_id}:{event_id}`, and the recipient is derived inside
+ * the statement rather than in JavaScript — the same expression the row's `agent_id` takes — so the
+ * key can never address a different agent than the row it keys. The event id comes from this
+ * statement's own event arm, which is the only place it exists atomically with the comment.
+ *
+ * NULL when the caller emitted no event (fixtures, reconciliation): the column is nullable, Postgres
+ * admits any number of NULLs in a unique index, and a key naming no event would be a lie.
+ */
+function notificationDedupKeySql(
+    // The union, not `string`: this value is spliced into SQL text, and a closed set is what makes
+    // that safe by construction rather than by the caller's care.
+    type: "comment_on_my_post" | "reply_to_my_comment",
+    recipientSql: string,
+    eventCte: string | null
+): string {
+    return eventCte === null
+        ? "NULL::text"
+        : `('${type}:' || ${recipientSql} || ':' || (SELECT id FROM ${eventCte}))::text`;
+}
+
+/**
+ * The `comments.parent_id` foreign key, by name.
+ *
+ * **The name matters, and matching on `23503` alone was a real mislabel** (M11-2 P1.2, codex round
+ * 4): `comments` carries three foreign keys — `post_id`, `author_id` and `parent_id` — and the
+ * insert can violate any of them. A caller who withdrew mid-request trips `comments_author_id_fkey`
+ * on a TOP-LEVEL comment, which has no parent at all, and a bare code check reported that as
+ * "parent comment not found on this post". Only this constraint, and only when the caller actually
+ * supplied a parent, is the D3 refusal; every other FK violation is a genuine fault and propagates.
+ */
+const COMMENT_PARENT_FK = "comments_parent_id_fkey";
+
+function isParentForeignKeyViolation(error: unknown, parentId: string | undefined): boolean {
+    if (parentId === undefined) return false;
+    if (!error || typeof error !== "object") return false;
+    const failure = error as { code?: unknown; constraint?: unknown };
+    return failure.code === "23503" && failure.constraint === COMMENT_PARENT_FK;
+}
+
+/** The refusal shape, for every path that returns before or instead of a comment. */
+function refusedComment(
+    over: Partial<Omit<CreateCommentOutcome, "comment">> = {}
+): CreateCommentOutcome {
+    return { comment: null, postExists: true, parentValid: true, admitted: false, ...over };
+}
+
+/**
+ * `createComment`, plus **the classification its own statement made** (M11-2 P1.2).
+ *
+ * This is the writer; `createComment` below is a projection of it that drops the flags, kept because
+ * `StoredComment | null` is the contract a long tail of M11-1 gates pins. The action calls this one,
+ * because reconstructing the refusal from later reads reclassifies a rate limit as a missing post
+ * the moment the post is deleted in between — see `CreateCommentOutcome`.
+ */
+export async function createCommentWithOutcome(
     postId: string,
     authorId: string,
     content: string,
-    parentId?: string
-): Promise<StoredComment | null> {
+    parentId?: string,
+    events?: readonly PreparedEvent[]
+): Promise<CreateCommentOutcome> {
     const postRows = await sql!`SELECT id FROM posts WHERE id = ${postId} AND deleted_at IS NULL LIMIT 1`;
-    if (!postRows[0]) return null;
+    if (!postRows[0]) return refusedComment({ postExists: false });
     const id = `comment_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const notificationId = `notif_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
     const createdAt = new Date().toISOString();
@@ -54,12 +114,19 @@ export async function createComment(
     // quota — which is what lets the callers promise "invalid parent ⇒ validation error, never a
     // rate-limit shape".
     //
-    // The activity row is IN the batch (review round 2, B3), carried as a prepared query from the
-    // one writer (`buildCommentActivityUpsert`) rather than forked here. A post-commit upsert
-    // could land after a concurrent delete released the post lock and project a dead
-    // `/post/...` event; inside the batch it either commits with the comment or not at all. Its
-    // cache invalidation is the post-commit half — invalidating for a rolled-back transaction
-    // would be wrong.
+    // The activity row is IN the batch (review round 2, B3), carried from the one writer
+    // (`buildCommentActivityUpsertCte`) rather than forked here. A post-commit upsert could land
+    // after a concurrent delete released the post lock and project a dead `/post/...` event; inside
+    // the transaction it either commits with the comment or not at all. Its cache invalidation is
+    // the post-commit half — invalidating for a rolled-back transaction would be wrong.
+    //
+    // **M11-2 P1.2 pulls the notification and the activity projection out of their own batch
+    // elements and INTO the decisive statement.** Both now name the event this statement emits —
+    // the notification in Decision 6's `dedup_key`, the projection in `source_event_id` — and a
+    // batch element cannot read another element's `RETURNING` (Decision 4). Nothing about their
+    // gating changed: each still fires only when the comment row landed, and each still commits
+    // with it. The two counter elements below stay separate, because they gate on a re-read of
+    // `comments` that a later statement in the same transaction can legitimately make.
     //
     // `last_comment_at` is epoch milliseconds in a BIGINT: integer arithmetic, not a timestamp
     // interval, so the plan's `make_interval` rule does not apply here.
@@ -71,109 +138,214 @@ export async function createComment(
         // The parent can be hard-deleted between parent_ok's snapshot read and the insert's FK
         // check (the check blocks on the dying row and re-evaluates after commit). That is the
         // same refusal as an invalid parent, not a 500 — callers classify it (M11-1b D3).
-        if (error && typeof error === "object" && "code" in error && (error as { code: string }).code === "23503") {
-            return null;
+        if (isParentForeignKeyViolation(error, parentId)) {
+            // The parent died under the FK check: the same refusal an invalid parent gets, named as
+            // such rather than left for a caller to guess at.
+            return refusedComment({ parentValid: false });
         }
         throw error;
     }
 
     function runCreateCommentBatch() {
-        // `requireCommitted` gates the upsert on the comment row, like every other later element:
-        // batch elements always execute, so without it the activity row would be projected even
-        // for a comment the quota claim refused.
-        const preparedActivity = buildCommentActivityUpsert(
-            { id, postId, authorId, content, createdAt, parentId },
-            { requireCommitted: true }
-        );
-        return sql!.transaction((txn) => {
-            const activityUpsert = txn(preparedActivity.text, preparedActivity.params);
-            return [
+        // **The parameter order opens with the activity projection's own six, and that is not
+        // cosmetic**: `buildCommentActivityUpsertCte` splices a SELECT reading `$1..$6` as
+        // `(id, post_id, author_id, content, created_at, parent_id)`, so the one definition of that
+        // projection serves this statement, the consumer and the shadow soak alike.
+        const params: unknown[] = [
+            id,                              // $1
+            postId,                          // $2
+            authorId,                        // $3
+            content,                         // $4
+            createdAt,                       // $5
+            parentId ?? null,                // $6
+            now,                             // $7  last_comment_at, epoch ms
+            today,                           // $8
+            now - COMMENT_COOLDOWN_MS,       // $9  the cooldown floor
+            MAX_COMMENTS_PER_DAY,            // $10
+            notificationId,                  // $11
+            noParent,                        // $12
+            href,                            // $13
+        ];
+        const emitted = emitEventCtes(events, "inserted", {
+            firstParamIndex: params.length + 1,
+            // PER EVENT, by position: only the PRIMARY `comment.created` takes the minted id. `$1` is
+            // that id, still a bound parameter — only its number is interpolated. A derived event
+            // added here later (P6.1's `agent.mentioned` fan-out) carries its own subject.
+            overrides: events?.length
+                ? [
+                      {
+                          columnSql: { subject_id: sqlParam(1, "text") },
+                          payloadMergeSql: sqlPayloadObject({ comment_id: sqlParam(1, "text") }),
+                      },
+                  ]
+                : [],
+        });
+        const primary = emitted.names[0] ?? null;
+        // The recipient expression, derived IN the statement — the post's author for a top-level
+        // comment, the parent comment's author for a reply — so the dedup key and the row's
+        // `agent_id` cannot name different agents.
+        const recipientSql = noParent ? "p.author_id" : "pc.author_id";
+        const notificationType = noParent ? "comment_on_my_post" : "reply_to_my_comment";
+        const notificationSelect = noParent
+            ? `
+      SELECT $11::text, p.author_id, 'comment_on_my_post', 'normal', $5::timestamptz, NULL,
+        jsonb_build_object('id', $3::text, 'name', COALESCE(actor.name, $3::text), 'display_name', actor.display_name),
+        jsonb_build_object('type', 'post', 'id', $2::text, 'title', COALESCE(p.title, 'Post')),
+        $13::text, NULL, NULL,
+        jsonb_build_object('post_id', $2::text, 'comment_id', $1::text),
+        ${notificationDedupKeySql(notificationType, recipientSql, primary)}
+      FROM posts p
+      LEFT JOIN agents actor ON actor.id = $3::text
+      WHERE p.id = $2::text AND p.author_id IS NOT NULL AND p.author_id <> $3::text
+        AND EXISTS (SELECT 1 FROM inserted)`
+            : `
+      SELECT $11::text, pc.author_id, 'reply_to_my_comment', 'normal', $5::timestamptz, NULL,
+        jsonb_build_object('id', $3::text, 'name', COALESCE(actor.name, $3::text), 'display_name', actor.display_name),
+        jsonb_build_object('type', 'comment', 'id', $1::text, 'title', left($4::text, 80)),
+        $13::text, NULL, NULL,
+        jsonb_build_object('post_id', $2::text, 'comment_id', $1::text, 'parent_comment_id', $6::text),
+        ${notificationDedupKeySql(notificationType, recipientSql, primary)}
+      FROM comments pc
+      LEFT JOIN agents actor ON actor.id = $3::text
+      WHERE pc.id = $6::text AND pc.post_id = $2::text AND pc.author_id <> $3::text
+        AND EXISTS (SELECT 1 FROM inserted)`;
+
+        return sql!.transaction((txn) => [
         txn`
       SELECT id FROM posts /* d3:comment-post-lock */ WHERE id = ${postId} AND deleted_at IS NULL FOR NO KEY UPDATE
     `,
-        txn`
+        txn(
+            `
     WITH live AS (
-      SELECT id FROM posts WHERE id = ${postId} AND deleted_at IS NULL FOR SHARE
+      SELECT id FROM posts WHERE id = $2::text AND deleted_at IS NULL FOR SHARE
     ),
     parent_ok AS (
-      SELECT 1 AS ok WHERE ${noParent}::boolean
+      SELECT 1 AS ok WHERE $12::boolean
       UNION ALL
-      SELECT 1 FROM comments pc JOIN live ON pc.post_id = live.id WHERE pc.id = ${parentId ?? null}::text
+      SELECT 1 FROM comments pc JOIN live ON pc.post_id = live.id WHERE pc.id = $6::text
     ),
     claim AS (
       INSERT INTO agent_rate_limits (agent_id, last_comment_at, comment_count_date, comment_count)
-      SELECT ${authorId}, ${now}, ${today}, 1 FROM live
+      SELECT $3::text, $7::bigint, $8::date, 1 FROM live
       WHERE EXISTS (SELECT 1 FROM parent_ok)
       ON CONFLICT (agent_id) DO UPDATE
-      SET last_comment_at = ${now},
-          comment_count_date = ${today},
+      SET last_comment_at = $7::bigint,
+          comment_count_date = $8::date,
           comment_count = CASE
-            WHEN agent_rate_limits.comment_count_date = ${today} THEN agent_rate_limits.comment_count + 1
+            WHEN agent_rate_limits.comment_count_date = $8::date THEN agent_rate_limits.comment_count + 1
             ELSE 1
           END
       WHERE (agent_rate_limits.last_comment_at IS NULL
-             OR agent_rate_limits.last_comment_at <= ${now - COMMENT_COOLDOWN_MS})
-        AND (agent_rate_limits.comment_count_date IS DISTINCT FROM ${today}
-             OR agent_rate_limits.comment_count < ${MAX_COMMENTS_PER_DAY})
+             OR agent_rate_limits.last_comment_at <= $9::bigint)
+        AND (agent_rate_limits.comment_count_date IS DISTINCT FROM $8::date
+             OR agent_rate_limits.comment_count < $10::int)
       RETURNING agent_id
+    ),
+    inserted AS (
+      INSERT INTO comments (id, post_id, author_id, content, parent_id, upvotes, created_at)
+      SELECT $1::text, $2::text, $3::text, $4::text, $6::text, 0, $5::timestamptz
+      FROM claim
+      RETURNING *
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""},
+    -- The transitional notification, moved INTO the decisive statement (M11-2 P1.2). It used to be
+    -- its own batch element gated on a re-read of comments; it has to sit beside the event arm
+    -- now, because Decision 6's dedup_key names the event id and a batch element cannot read
+    -- another element's RETURNING. ON CONFLICT (dedup_key) DO NOTHING is what makes the
+    -- dual-write phase survivable: the consumer and this writer race for one key, and a bare insert
+    -- would 500 a comment that had already committed. Atomicity is preserved rather than traded —
+    -- the row still commits with the comment or not at all.
+    notified AS (
+      INSERT INTO notifications (id, agent_id, type, priority, created_at, read_at, actor, target,
+                                 href, web_url, deadline_at, metadata, dedup_key)
+      ${notificationSelect}
+      ON CONFLICT (dedup_key) DO NOTHING
+      RETURNING id
+    ),
+    -- The activity projection, likewise moved into this statement so it can stamp source_event_id
+    -- from the event arm. Its committed gate joins the inserted CTE rather than the comments
+    -- table: a CTE reads the statement snapshot, which predates the row beside it.
+    projected AS (
+      ${buildCommentActivityUpsertCte({ committedCte: "inserted", sourceEventCte: primary })}
     )
-    INSERT INTO comments (id, post_id, author_id, content, parent_id, upvotes, created_at)
-    SELECT ${id}, ${postId}, ${authorId}, ${content}, ${parentId ?? null}, 0, ${createdAt}
-    FROM claim
-    RETURNING *
+    -- **A scalar SELECT with no FROM, which is P1.2's own sketch and not a stylistic choice.**
+    -- \`FROM inserted\` returns ZERO rows on every refusal, so a caller learned only "something said
+    -- no" and had to reconstruct which limit refused from later reads — and a post deleted after a
+    -- cap refusal then reclassified a rate limit as a missing post, defeating the precedence this
+    -- statement exists to decide. With no FROM there is always exactly one row, and the three flags
+    -- are evaluated against this statement's own snapshot under its own post lock.
+    --
+    -- Both halves of the emit are projected, and created_at is projected even though this kind does
+    -- not consume it: the pair is only available atomically HERE, this comment's projections already
+    -- share the COMMENT's own clock (see buildCommentActivityUpsertCte), and surfacing it keeps one
+    -- shape for every producer — createPost does the same, and followAgent, whose kind has no other
+    -- clock, spends it.
+    SELECT (SELECT id FROM inserted) AS comment_id,
+           (SELECT count(*) FROM live)::int AS post_exists,
+           (SELECT count(*) FROM parent_ok)::int AS parent_valid,
+           (SELECT count(*) FROM claim)::int AS admitted${
+        primary
+            ? `,\n           (SELECT id FROM ${primary}) AS emitted_event_id,\n           (SELECT created_at FROM ${primary}) AS emitted_event_created_at`
+            : ""
+    }
   `,
+            [...params, ...emitted.params]
+        ),
         txn`
       UPDATE posts SET comment_count = comment_count + 1
       WHERE id = ${postId} AND deleted_at IS NULL
         AND EXISTS (SELECT 1 FROM comments WHERE id = ${id})
     `,
-        txn`
-      UPDATE agents SET last_active_at = ${createdAt}
-      WHERE id = ${authorId}
-        AND EXISTS (SELECT 1 FROM comments WHERE id = ${id})
-    `,
-        // The recipient is derived in-statement (the parent comment's author, or the post's),
-        // self-notification excluded by the <> predicate — zero rows, never a conditional in JS
-        // that a batch cannot express.
-        noParent
-            ? txn`
-      INSERT INTO notifications (id, agent_id, type, priority, created_at, read_at, actor, target, href, web_url, deadline_at, metadata)
-      SELECT ${notificationId}, p.author_id, 'comment_on_my_post', 'normal', ${createdAt}::timestamptz, NULL,
-        jsonb_build_object('id', ${authorId}::text, 'name', COALESCE(actor.name, ${authorId}::text), 'display_name', actor.display_name),
-        jsonb_build_object('type', 'post', 'id', ${postId}::text, 'title', COALESCE(p.title, 'Post')),
-        ${href}, NULL, NULL,
-        jsonb_build_object('post_id', ${postId}::text, 'comment_id', ${id}::text)
-      FROM posts p
-      LEFT JOIN agents actor ON actor.id = ${authorId}
-      WHERE p.id = ${postId} AND p.author_id IS NOT NULL AND p.author_id <> ${authorId}
-        AND EXISTS (SELECT 1 FROM comments WHERE id = ${id})
-    `
-            : txn`
-      INSERT INTO notifications (id, agent_id, type, priority, created_at, read_at, actor, target, href, web_url, deadline_at, metadata)
-      SELECT ${notificationId}, pc.author_id, 'reply_to_my_comment', 'normal', ${createdAt}::timestamptz, NULL,
-        jsonb_build_object('id', ${authorId}::text, 'name', COALESCE(actor.name, ${authorId}::text), 'display_name', actor.display_name),
-        jsonb_build_object('type', 'comment', 'id', ${id}::text, 'title', left(${content}::text, 80)),
-        ${href}, NULL, NULL,
-        jsonb_build_object('post_id', ${postId}::text, 'comment_id', ${id}::text, 'parent_comment_id', ${parentId ?? null}::text)
-      FROM comments pc
-      LEFT JOIN agents actor ON actor.id = ${authorId}
-      WHERE pc.id = ${parentId ?? null}::text AND pc.post_id = ${postId} AND pc.author_id <> ${authorId}
-        AND EXISTS (SELECT 1 FROM comments WHERE id = ${id})
-    `,
-                activityUpsert,
-            ];
-        });
+        // **`last_active_at` is deliberately NOT bumped here** (M11-2 P1.2, matching P1.1's post
+        // side). The per-request authentication touch in `auth.ts` already stamps it on every
+        // authenticated request and every comment rides one; a second writer makes P6.4's "the auth
+        // touch is the sole writer" discipline unenforceable and P1.4's pristine-registration
+        // predicate (`last_active_at IS NULL` means "never authenticated") ambiguous about what the
+        // column records.
+        ]);
     }
 
-    const inserted = results[1] as Record<string, unknown>[];
-    if (inserted.length === 0) return null;
+    // Exactly one row, always — the scalar projection has no FROM, which is what makes a refusal
+    // classifiable at all.
+    const classification = (results[1] as Array<{
+        comment_id: string | null;
+        post_exists: number;
+        parent_valid: number;
+        admitted: number;
+    }>)[0];
+    const outcome: Omit<CreateCommentOutcome, "comment"> = {
+        postExists: classification.post_exists > 0,
+        parentValid: classification.parent_valid > 0,
+        admitted: classification.admitted > 0,
+    };
+    if (!classification.comment_id) return { comment: null, ...outcome };
 
     // The row itself committed with the batch; only the cache invalidation is post-commit.
     await invalidateCommentActivityCache(id);
 
-    // The inserting statement's own `RETURNING`; a follow-up read is a second round trip that can
-    // only disagree with it.
-    return rowToComment(inserted[0] as Record<string, unknown>);
+    // Built from the values this statement inserted, not from a follow-up read: a second round trip
+    // can only disagree with the row we just wrote, and the scalar projection deliberately returns
+    // classification rather than the row.
+    return {
+        comment: { id, postId, authorId, content, parentId, upvotes: 0, createdAt },
+        ...outcome,
+    };
+}
+
+/**
+ * The `StoredComment | null` contract, unchanged — a projection of the outcome above.
+ *
+ * Kept because a long tail of M11-1 gates (C16's cap races, D3's parent cases, C25's tombstone
+ * cases) assert on exactly this shape, and because most callers genuinely only need the comment.
+ * The action takes the outcome form; everyone else takes this.
+ */
+export async function createComment(
+    postId: string,
+    authorId: string,
+    content: string,
+    parentId?: string,
+    events?: readonly PreparedEvent[]
+): Promise<StoredComment | null> {
+    return (await createCommentWithOutcome(postId, authorId, content, parentId, events)).comment;
 }
 
 export async function listComments(
@@ -228,7 +400,11 @@ export async function getCommentCountByAgentId(agentId: string): Promise<number>
     return Number((rows[0] as { count?: number } | undefined)?.count ?? 0);
 }
 
-export async function upvoteComment(commentId: string, agentId: string): Promise<boolean> {
+export async function upvoteComment(
+    commentId: string,
+    agentId: string,
+    events?: readonly PreparedEvent[]
+): Promise<boolean> {
     // Check if already voted. The friendly pre-check only; a lost race surfaces as 23505 inside the
     // statement below and maps to the same refusal.
     const alreadyVoted = await hasVoted(agentId, commentId, 'comment');
@@ -267,19 +443,25 @@ export async function upvoteComment(commentId: string, agentId: string): Promise
     // a post lock it already holds** — this statement never writes `posts`, so its `FOR SHARE` is
     // the strongest post lock it needs. See `createComment` for what an upgrade cost.
     const votedAt = new Date().toISOString();
+    // $1 comment, $2 voter, $3 votedAt. M11-2 P1.2 adds the `comment.voted` arm gated on `voted` —
+    // the vote row itself — and turns the final `UPDATE agents` into a named CTE so the statement
+    // can still end in a SELECT. Nothing about the karma arms, their order or the lock modes moves.
+    const params: unknown[] = [commentId, agentId, votedAt];
+    const emitted = emitEventCtes(events, "voted", { firstParamIndex: params.length + 1 });
     let rows: Record<string, unknown>[];
     try {
-        rows = (await sql!`
+        rows = (await sql!(
+            `
     /* race:m11-1c-comment-vote */
     WITH live_parent AS (
       SELECT p.id FROM posts p
       JOIN comments c ON c.post_id = p.id
-      WHERE c.id = ${commentId} AND p.deleted_at IS NULL
+      WHERE c.id = $1::text AND p.deleted_at IS NULL
       FOR SHARE OF p
     ),
     counted AS (
       UPDATE comments SET upvotes = upvotes + 1
-      WHERE id = ${commentId} AND EXISTS (SELECT 1 FROM live_parent)
+      WHERE id = $1::text AND EXISTS (SELECT 1 FROM live_parent)
       RETURNING id, author_id
     ),
     locked AS (
@@ -290,16 +472,21 @@ export async function upvoteComment(commentId: string, agentId: string): Promise
     ),
     voted AS (
       INSERT INTO comment_votes (agent_id, comment_id, vote_type, voted_at, points_delta)
-      SELECT ${agentId}::text, ${commentId}::text, 1, ${votedAt}::timestamptz, l.delta FROM locked l
+      SELECT $2::text, $1::text, 1, $3::timestamptz, l.delta FROM locked l
       RETURNING points_delta
-    )
-    UPDATE agents a
-    SET points      = l.points + l.delta,
-        vote_points = l.vote_points + l.delta
-    FROM locked l
-    WHERE a.id = l.id AND EXISTS (SELECT 1 FROM voted)
-    RETURNING a.id
-  `) as Record<string, unknown>[];
+    ),
+    awarded AS (
+      UPDATE agents a
+      SET points      = l.points + l.delta,
+          vote_points = l.vote_points + l.delta
+      FROM locked l
+      WHERE a.id = l.id AND EXISTS (SELECT 1 FROM voted)
+      RETURNING a.id
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT id FROM awarded
+  `,
+            [...params, ...emitted.params]
+        )) as Record<string, unknown>[];
     } catch (error) {
         if (isUniqueViolation(error)) return false;
         throw error;

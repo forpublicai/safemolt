@@ -12,11 +12,10 @@ import {
   getPlaygroundSession,
   getPlaygroundActions,
 } from "@/lib/store";
-import { joinSession, submitAction } from "@/lib/playground/session-manager";
+import { joinSession, submitAction } from "@/lib/actions/playground";
 import { getSchoolGameById, listGames } from "@/lib/playground/games";
-import { sessionSchoolAccessDenial } from "@/lib/school-context";
 import type { PlaygroundSession, SessionStatus } from "@/lib/playground/types";
-import type { StoredAgent } from "@/lib/store-types";
+import type { ActionErrorCode } from "@/lib/actions/types";
 import type { ToolCallResult, ToolDefinition, ToolExecutor } from "../types";
 
 export const definitions: ToolDefinition[] = [
@@ -154,25 +153,20 @@ async function formatJoinFailure(
 }
 
 /**
- * The session's own school decides who may take part — on the tool surface too.
+ * The session's own school decides who may take part — and since M11-2 P1.4 the DECISION lives in
+ * `actions/playground`, shared with the REST surface.
  *
- * The REST join route has carried this gate since C20 review round 5, but the tools call
- * `joinSession`/`submitAction` straight through, so the route's check never ran for them: a
- * Foundation-vetted, AO-unadmitted agent could name an AO session from the dashboard and both join
- * it and submit an action, and an action is what schedules billed GM inference. Reads stay open,
- * matching the REST surface; only the two mutating verbs gate.
+ * What stays here is the presentation: the tool answers `{ success, error, data.code }` with the
+ * playground-specific wording, where the route answers the platform-access envelope. One rule, two
+ * vocabularies — the characterization suite pins both, deliberately.
  *
- * Absence is not this helper's to report — the caller's own not-found branch already does that,
- * and answering "denied" for a nonexistent id would leak which ids exist.
+ * Absence is not this helper's business either: the action reports `not_found` and each caller's own
+ * branch renders it, because answering "denied" for a nonexistent id would leak which ids exist.
  */
-async function playgroundSessionDenial(
-  agent: StoredAgent,
-  sessionId: string
-): Promise<ToolCallResult | null> {
-  const session = await getPlaygroundSession(sessionId);
-  if (!session) return null;
-  const denial = sessionSchoolAccessDenial(agent, session);
-  return denial ? { success: false, error: denial.error, data: { code: denial.code } } : null;
+function schoolDenialResult(code: ActionErrorCode, message: string): ToolCallResult | null {
+  return code === "vetting_required" || code === "admission_required"
+    ? { success: false, error: message, data: { code } }
+    : null;
 }
 
 export const executors: Record<string, ToolExecutor> = {
@@ -218,15 +212,12 @@ export const executors: Record<string, ToolExecutor> = {
 
   join_playground_session: async (args, { agent }) => {
     const sessionId = String(args.session_id);
-    const denial = await playgroundSessionDenial(agent, sessionId);
-    if (denial) return denial;
-    try {
-      const session = await joinSession(sessionId, agent.id);
-      return summarizeJoinResult(sessionId, session, false);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to join session";
-      return formatJoinFailure(sessionId, agent.id, message);
-    }
+    const result = await joinSession({ agent, sessionId });
+    if (result.ok) return summarizeJoinResult(sessionId, result.data.session, false);
+    return (
+      schoolDenialResult(result.code, result.message) ??
+      formatJoinFailure(sessionId, agent.id, result.message)
+    );
   },
 
   get_playground_session: async (args, { agent }) => {
@@ -248,18 +239,17 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   submit_playground_action: async (args, { agent }) => {
-    // M11-1 C12: delegate to submitAction — the same path the route uses. The pre-C12 tool
-    // inserted the row directly, which let a NONPARTICIPANT submit actions and meant tool
-    // actions never ingested memory or advanced the round. Same response shape as before.
+    // M11-1 C12 made this delegate to the domain service rather than inserting the row itself (the
+    // pre-C12 tool let a NONPARTICIPANT submit, and tool actions never ingested memory or advanced
+    // the round). M11-2 P1.4 moves it one layer further, onto the action the route also uses, so
+    // the school rule and the event are shared rather than duplicated. Response shape unchanged —
+    // including the absence of a content-length bound, which this surface has never had.
     const sessionId = String(args.session_id);
-    const denial = await playgroundSessionDenial(agent, sessionId);
-    if (denial) return denial;
-    try {
-      const { action } = await submitAction(sessionId, agent.id, String(args.content));
-      return { success: true, data: { action_id: action.id, round: action.round } };
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : "Failed to submit action" };
+    const result = await submitAction({ agent, sessionId, content: String(args.content) });
+    if (result.ok) {
+      return { success: true, data: { action_id: result.data.action.id, round: result.data.action.round } };
     }
+    return schoolDenialResult(result.code, result.message) ?? { success: false, error: result.message };
   },
 
   get_playground_actions: async (args, { agent }) => {

@@ -5,12 +5,14 @@
  * `general` group, even though it has school_id IS NULL (created before
  * per-school scoping existed). Memory store exercises the same predicate as DB.
  */
-import { groups, agents } from "@/lib/store/_memory-state";
+import { groups, agents, resetGroupState } from "@/lib/store/_memory-state";
 import * as groupsMem from "@/lib/store/groups/memory";
 import type { StoredGroup, StoredAgent } from "@/lib/store-types";
 
 function clearMemory() {
-  groups.clear();
+  // Both halves of membership, through the one helper — see `resetGroupState`. This file re-creates
+  // `g1` in every test, so a snapshot surviving the reset would be read by the next one.
+  resetGroupState();
   agents.clear();
 }
 

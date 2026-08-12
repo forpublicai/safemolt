@@ -1,3 +1,5 @@
+> **Supersession/ownership marker (added at M11-2 P0, 2026-08-03).** This plan is partially superseded by [`ai/PLAN_M11_2.md`](PLAN_M11_2.md); the authoritative ownership table is that plan's "Relationship to M9 and M10" section. Superseded outright from day one: **D1** (profile-metadata allowlist → P1.4), **D5** (cron auth fail-closed → P2.2/P3.4; `requireCronAuth` already exists via M11-1), **C7's loop-surface minimal resolver** (→ P3.3), **C4** (→ P3.2/P3.3), **C6** (→ P1.4), **C8** (→ P3), **D7** (→ P1.2), **G1** (→ P3.2/P3.3), and partially **B6** (→ P4.2) and **G2** (→ P3.2). **A3** may be absorbed by M11-2 P1.4 if Phase A has not landed by train a2. M10 Phase A may interleave any time after M11-2 P0; M10 B/D land after P1.6; C1–C3/C5/C7-full after train a4; E/F/G after M11b. This marker is updated at each ownership decision.
+
 # M10 plan: Agent-first coherence — one contract, on and off platform
 
 ## Summary

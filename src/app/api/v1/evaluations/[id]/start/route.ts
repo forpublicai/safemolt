@@ -1,15 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
-import { authorizeEvaluationStart, evaluationAuthzResponse } from "@/lib/evaluation-authz";
-import {
-  startEvaluation,
-  createVettingChallenge,
-  createCertificationJob,
-  getLiveCertificationJobForRegistration,
-  getCertificationJobByRegistration,
-  expireStalePendingCertificationJob,
-} from "@/lib/store";
-import { generateNonce, getNonceExpiresAt, isNonceExpired } from "@/lib/evaluations/nonce";
+import { startEvaluationWithEffect } from "@/lib/actions/evaluations";
+import { evaluationAuthzResponse } from "@/lib/evaluation-authz";
 import type { CertificationConfig, CertificationJob } from "@/lib/evaluations/types";
 
 /**
@@ -46,37 +38,6 @@ function certificationStartBody(job: CertificationJob, certConfig: Certification
  * already exists. Only a registration with no live and no decided job gets a new attempt — and a
  * *failed* or *expired* job falls through to one, since a judge failure is not a verdict.
  */
-async function certificationStart(
-  registrationId: string,
-  agentId: string,
-  evaluationId: string,
-  certConfig: CertificationConfig
-): Promise<Response> {
-  const existing = await getLiveCertificationJobForRegistration(registrationId);
-  if (existing) {
-    // A pending job whose nonce lapsed would strand the registration behind the live-job index;
-    // expire it (conditionally — a concurrent submit wins) and fall through to a fresh attempt.
-    const staleNonce = existing.status === 'pending' && isNonceExpired(existing.nonceExpiresAt);
-    if (!staleNonce) {
-      return jsonResponse(certificationStartBody(existing, certConfig, evaluationId));
-    }
-    await expireStalePendingCertificationJob(existing.id);
-  } else {
-    const latest = await getCertificationJobByRegistration(registrationId);
-    if (latest?.status === 'completed') {
-      return jsonResponse(certificationStartBody(latest, certConfig, evaluationId));
-    }
-  }
-
-  // Generate signed nonce and create the job. A concurrent `start` races safely: the loser's
-  // insert trips the live-job index and the winner's job is returned instead.
-  const nonce = generateNonce(evaluationId, agentId);
-  const nonceExpiresAt = getNonceExpiresAt(certConfig.nonceValidityMinutes ?? 30);
-  const job = await createCertificationJob(registrationId, agentId, evaluationId, nonce, nonceExpiresAt);
-
-  return jsonResponse(certificationStartBody(job, certConfig, evaluationId));
-}
-
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -88,26 +49,21 @@ export async function POST(
 
     const { id } = await params;
 
-    // The definition comes from the **registration's** school, not the request's host (M11-1 C2,
-    // review round 6). This route used to load it from the host and then mutate a globally-fetched
-    // registration, so a vetted-but-unadmitted agent could start a non-Foundation registration
-    // through the Foundation surface. `authorizeEvaluationStart` also subsumes the "not registered"
-    // and terminal-status rejections this handler used to make by hand.
-    const authorized = await authorizeEvaluationStart({ agent, evaluationId: id });
-    if (!authorized.ok) return evaluationAuthzResponse(authorized.denial);
-    const { registration, definition: evaluation } = authorized.value;
-
-    // Start evaluation. The `registered` read is a friendly pre-check only; the transition
-    // itself is a CAS (M11-1b D4), so a submit that completed in the gap is not dragged back to
-    // `in_progress`. A refused CAS is not an error here — the registration is simply already
-    // started or already finished, and the response below reports its standing state either way.
-    if (registration.status === 'registered') {
-      await startEvaluation(registration.id);
-    }
+    // **The transition and its authorization are the ACTION's** (M11-2 P1.4): the definition comes
+    // from the registration's school rather than the host (M11-1 C2), the `registered` → `in_progress`
+    // move is a CAS (M11-1b D4) whose refusal is not an error, and `evaluation.started` rides that CAS.
+    //
+    // The two flow-specific branches below stay here on purpose, and it is recorded in the inventory:
+    // only this surface has ever minted a poaw challenge or a signed-nonce certification job, and
+    // folding them into the shared action would hand the tool surface a *paid* job it never created.
+    const started = await startEvaluationWithEffect({ agent, evaluationId: id });
+    if (!started.ok) return evaluationAuthzResponse(started.denial);
+    const { registration } = started.value.authorized;
+    const effect = started.value.effect;
 
     // For PoAW, create a vetting challenge
-    if (id === 'poaw') {
-      const challenge = await createVettingChallenge(agent.id);
+    if (effect.kind === 'poaw') {
+      const challenge = effect.challenge;
       const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 
       return jsonResponse({
@@ -124,16 +80,15 @@ export async function POST(
 
     // For agent_certification type, return the registration's live job or create one with a
     // signed nonce.
-    if (evaluation.type === 'agent_certification') {
-      const certConfig = evaluation.config as CertificationConfig | undefined;
-      if (!certConfig?.prompts || !certConfig?.rubric) {
-        return errorResponse(
-          "Invalid certification config",
-          "This certification is missing prompts or rubric configuration",
-          500
-        );
-      }
-      return await certificationStart(registration.id, agent.id, id, certConfig);
+    if (effect.kind === 'certification') {
+      return jsonResponse(certificationStartBody(effect.job, effect.config, id));
+    }
+    if (effect.kind === 'invalid_certification') {
+      return errorResponse(
+        "Invalid certification config",
+        "This certification is missing prompts or rubric configuration",
+        500
+      );
     }
 
     // For other evaluations, return success

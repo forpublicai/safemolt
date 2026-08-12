@@ -1,9 +1,9 @@
 import { NextRequest } from "next/server";
 import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
-import { authorizeProctorSubmission, evaluationAuthzResponse } from "@/lib/evaluation-authz";
-import { saveEvaluationResult, getEvaluationResultForRegistration } from "@/lib/store";
+import { submitProctorResult } from "@/lib/actions/evaluations";
+import { evaluationAuthzResponse } from "@/lib/evaluation-authz";
+import { getEvaluationResultForRegistration } from "@/lib/store";
 import { isReplayableDenial, existingResultBody, registrationNotActionableResponse } from "@/lib/evaluations/result-replay";
-import { getExecutor } from "@/lib/evaluations/executor-registry";
 import type { StoredRecentEvaluationResult } from "@/lib/store-types";
 
 /** The shared success shape plus the proctor attribution this surface always carries. */
@@ -67,53 +67,24 @@ export async function POST(
     if (parsed instanceof Response) return parsed;
     const { body, registrationId } = parsed;
 
-    // **The check this route never made**: that the caller is the proctor who *claimed* this
-    // registration. Everything it did check — registration, evaluation, status, "not the candidate"
-    // — is satisfied by any authenticated agent, so any authenticated agent could submit another
-    // candidate's proctored result. Authorization also now runs before `getExecutor` and before the
-    // handler, which the pre-C2 order did not: a rejected caller still triggered executor work.
-    const authorized = await authorizeProctorSubmission({
+    // **The action owns the whole decision** (M11-2 P1.4): that the caller is the proctor who
+    // *claimed* this registration (the check this route never made before C2), that authorization
+    // runs before the executor, that the verdict comes from the evaluation's own executor rather
+    // than the request, and that the proctor session ends in the SAME transaction as the result
+    // (M11-1b D4). The `submit_evaluation_result` tool now makes every one of those the same way.
+    const submitted = await submitProctorResult({
       agent: proctor,
       registrationId,
-      expected: { evaluationId },
+      evaluationId,
+      passed: body.passed,
+      ...(typeof body.proctor_feedback === "string" ? { feedback: body.proctor_feedback } : {}),
     });
-    if (!authorized.ok) {
-      const replay = await idempotentReplay(proctor.id, registrationId, authorized.denial.code);
+    if (!submitted.ok) {
+      const replay = await idempotentReplay(proctor.id, registrationId, submitted.denial.code);
       if (replay) return replay;
-      return evaluationAuthzResponse(authorized.denial);
+      return evaluationAuthzResponse(submitted.denial);
     }
-    const { registration, definition: evaluation, sessionId } = authorized.value;
-
-    const handler = getExecutor(evaluation.executable.handler);
-    const result = await handler({
-      agentId: registration.agentId,
-      evaluationId: registration.evaluationId,
-      registrationId,
-      input: body,
-      config: evaluation.config,
-    });
-
-    if (result.error) {
-      return errorResponse("Validation failed", result.error, 400);
-    }
-
-    // One gated statement (M11-1 C21): the loser of a concurrent completion writes nothing and
-    // gets the winner's result back.
-    const saved = await saveEvaluationResult({
-      registrationId,
-      agentId: registration.agentId,
-      evaluationId: registration.evaluationId,
-      passed: result.passed,
-      score: result.score,
-      maxScore: result.maxScore,
-      resultData: result.resultData,
-      proctorAgentId: proctor.id,
-      proctorFeedback: typeof body.proctor_feedback === "string" ? body.proctor_feedback : undefined,
-      // M11-1b D4: the session ends in the SAME transaction as the result. It used to be a
-      // separate call after this returned, so a failure between them stranded a completed
-      // registration with an active proctor session.
-      endProctorSessionId: sessionId,
-    });
+    const { saved, result } = submitted.value;
 
     if (saved.outcome === "already_complete") {
       return jsonResponse({ success: true, result: proctorResultBody(saved.existing) });

@@ -567,6 +567,10 @@ CREATE TABLE IF NOT EXISTS activity_events (
   search_text TEXT NOT NULL DEFAULT '',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- M11-2 P2.1: the monotonic guard's watermark. Nullable — the legacy inline writers leave it NULL
+  -- and `COALESCE(…, 0)` makes those rows yield to any event. `migrate-m11-consumers.sql` adds it to
+  -- databases that predate this line.
+  source_event_id BIGINT,
   UNIQUE (kind, entity_id)
 );
 
@@ -593,7 +597,10 @@ CREATE TABLE IF NOT EXISTS notifications (
   href TEXT NOT NULL DEFAULT '',
   web_url TEXT,
   deadline_at TIMESTAMPTZ,
-  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  -- M11-2 P2.1: `{type}:{recipient_agent_id}:{event_id}` — event-keyed, so a repeat comment notifies
+  -- and re-consuming one event does not. `migrate-m11-consumers.sql` adds it to older databases.
+  dedup_key TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_agent_created
@@ -601,3 +608,116 @@ CREATE INDEX IF NOT EXISTS idx_notifications_agent_created
 CREATE INDEX IF NOT EXISTS idx_notifications_agent_unread
   ON notifications(agent_id, created_at DESC)
   WHERE read_at IS NULL;
+-- FULL, not partial: `ON CONFLICT (dedup_key)` cannot infer a partial index without repeating its
+-- predicate, and Postgres admits multiple NULLs in a unique index anyway (Decision 6).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedup ON notifications(dedup_key);
+
+-- M11-2 P2.1: memory ingest's recipient-progress ledger. The event receipt is not the progress
+-- marker — one ingest event fans out to up to 2,000 recipients with awaited external vector work
+-- each, so an interrupted fan-out must resume rather than restart. See
+-- `scripts/migrate-m11-consumers.sql`, which creates it for databases that predate this line.
+-- A row is written at REGISTRATION and finished later: `completed_at IS NOT NULL` is the only "done".
+CREATE TABLE IF NOT EXISTS ingest_progress (
+  event_id BIGINT NOT NULL,
+  recipient_agent_id TEXT NOT NULL,
+  completed_at TIMESTAMPTZ,
+  PRIMARY KEY (event_id, recipient_agent_id)
+);
+
+-- Fan-out ownership is singular per EVENT: the deletion compensation makes a recipient's effects
+-- delete-then-rewrite, which does not commute, and a fan-out also has a shared audience recompute,
+-- registration and completeness decision. One owner per event removes the whole class — see
+-- `scripts/migrate-m11-consumers.sql`.
+CREATE TABLE IF NOT EXISTS ingest_event_claims (
+  event_id BIGINT PRIMARY KEY,
+  claim_token TEXT NOT NULL,
+  lease_expires_at TIMESTAMPTZ NOT NULL
+);
+
+-- ==========================================================================
+-- M11-2 u1 — the event substrate.
+--
+-- Mirrored from `scripts/migrate-m11-events.sql`, which is where the reasoning for each shape lives
+-- and which carries the postconditions that assert them. Both must stay field-for-field identical:
+-- `migrate.js` applies `schema.sql` first and then every migration, so a fresh database bootstrapped
+-- from this file has to reach exactly the shape a migrated one reaches — otherwise "it works on a
+-- new database" and "it works in production" stop meaning the same thing.
+-- ==========================================================================
+
+CREATE TABLE IF NOT EXISTS events (
+  id BIGSERIAL PRIMARY KEY,
+  kind TEXT NOT NULL,
+  actor_agent_id TEXT,          -- no FK: rows may outlive agents; consumers tolerate dangling actors
+  subject_type TEXT, subject_id TEXT, secondary_subject_id TEXT,
+  school_id TEXT,
+  idem_key TEXT,                -- deterministic domain key where stamped; usually NULL
+  payload JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_events_kind_id ON events(kind, id);
+CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor_agent_id, id);
+-- PARTIAL on purpose: without the predicate the overwhelmingly common NULL case would collapse into
+-- one row platform-wide. `activateEventConsumer` repeats the predicate in its `ON CONFLICT` target.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idem ON events(idem_key) WHERE idem_key IS NOT NULL;
+
+-- `last_event_id` is the fast path's low-water scan floor and carries NO correctness claim;
+-- `activation_cutoff` is the fence id from the consumer's activation event. `DEFAULT 0` is never an
+-- activation state — a consumer with no row is inactive and its drain is a no-op.
+CREATE TABLE IF NOT EXISTS event_consumers (
+  consumer TEXT PRIMARY KEY,
+  last_event_id BIGINT NOT NULL DEFAULT 0,
+  activation_cutoff BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Completion is per event, and this primary key is what serializes two drainers racing one event.
+CREATE TABLE IF NOT EXISTS event_receipts (
+  consumer TEXT NOT NULL,
+  event_id BIGINT NOT NULL,
+  PRIMARY KEY (consumer, event_id)
+);
+
+-- Attempts are leased (`claim_token` + `lease_expires_at`) and paced (`next_attempt_at`).
+CREATE TABLE IF NOT EXISTS event_consumer_failures (
+  consumer TEXT NOT NULL,
+  event_id BIGINT NOT NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  last_error TEXT,
+  next_attempt_at TIMESTAMPTZ,
+  claim_token TEXT,
+  lease_expires_at TIMESTAMPTZ,
+  PRIMARY KEY (consumer, event_id)
+);
+
+-- The terminal record. `UNIQUE (consumer, event_id)` so a replayed finalization no-ops.
+CREATE TABLE IF NOT EXISTS event_dead_letters (
+  id BIGSERIAL PRIMARY KEY,
+  event_id BIGINT,
+  consumer TEXT,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (consumer, event_id)
+);
+
+-- Shadow comparison rows, inserted `ON CONFLICT DO NOTHING` because drains are at-least-once.
+CREATE TABLE IF NOT EXISTS event_consumer_shadow (
+  id BIGSERIAL PRIMARY KEY,
+  consumer TEXT,
+  event_id BIGINT,
+  effect_key TEXT,
+  payload JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (consumer, event_id, effect_key)
+);
+
+-- **The primary key is (worker_id, contract_hash), and that is the barrier's correctness.** With
+-- `worker_id` alone the row is last-writer-wins, and a rolling deploy would hide an old contract
+-- that is still draining behind the new one's stamp.
+CREATE TABLE IF NOT EXISTS worker_heartbeats (
+  worker_id TEXT NOT NULL,
+  contract_hash TEXT NOT NULL DEFAULT '',
+  seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  active_until TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  PRIMARY KEY (worker_id, contract_hash)
+);

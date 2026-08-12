@@ -294,7 +294,8 @@ describe("transcript numbering", () => {
         });
 
         expect(observation.observedBlocked).toBe(true);
-        expect(observation.result.sequence).toBe(2);
+        expect(observation.result).not.toBeNull();
+        expect(observation.result!.sequence).toBe(2);
     });
 
     it("carries a unique (session_id, sequence) index that refuses a collision outright", async () => {

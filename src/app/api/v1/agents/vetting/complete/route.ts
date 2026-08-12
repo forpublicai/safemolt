@@ -1,14 +1,11 @@
 import { NextRequest } from "next/server";
 import { requireAgent, jsonResponse, errorResponse, checkRateLimitAndRespond } from "@/lib/auth";
-import {
-    getVettingChallenge,
-    getAgentById,
-    completeVetting,
-    ensureGeneralGroup,
-} from "@/lib/store";
+import { completeVetting } from "@/lib/actions/agents";
+import { getVettingChallenge, getAgentById } from "@/lib/store";
 import { isChallengeExpired, validateHash } from "@/lib/vetting";
 import { putContextAndMaybeIndex } from "@/lib/memory/memory-service";
 import type { StoredAgent, VettingChallenge } from "@/lib/store-types";
+import { ensureGeneralMembership } from "@/lib/actions/groups";
 
 const MAX_IDENTITY_SIZE = 10 * 1024; // 10 KB limit for identity_md
 
@@ -74,9 +71,9 @@ async function runPostCommitFollowUps(agentId: string, identityContent: string):
         console.error("[vetting/complete] IDENTITY.md memory sync failed:", e);
     }
     try {
-        await ensureGeneralGroup(agentId);
+        await ensureGeneralMembership({ agentId });
     } catch (e) {
-        console.error("[vetting/complete] ensureGeneralGroup failed:", e);
+        console.error("[vetting/complete] ensureGeneralMembership failed:", e);
     }
 }
 
@@ -170,7 +167,14 @@ export async function POST(request: NextRequest) {
         if (preRead instanceof Response) return preRead;
         if (preRead?.idempotentSuccess) return respondIdempotentSuccess(agent, identityStr);
 
-        const result = await completeVetting(agent.id, challengeId, identityStr);
+        // **The batch is C14's, unchanged** — the agent lock, then the challenge lock, the vetted
+        // flip, the two self-contained bootstrap CTEs, the points recompute and consume-LAST. The
+        // action adds only the events: `agent.vetted` on the flip, and per bootstrap evaluation an
+        // `evaluation.registered` gated on the fresh-registration arm plus an `evaluation.completed`
+        // gated on the result (M11-2 P1.4).
+        const completed = await completeVetting({ agent, challengeId, identityMd: identityStr });
+        if (!completed.ok) return errorResponse(completed.message, undefined, 400);
+        const result = completed.data;
 
         if (result.outcome === "unavailable") {
             // Raced: re-read and classify with the same rules, so the loser's error (or the
@@ -178,18 +182,18 @@ export async function POST(request: NextRequest) {
             const classified = await classifyUnavailable(agent, await getVettingChallenge(challengeId), hash);
             if (classified instanceof Response) return classified;
             if (classified?.idempotentSuccess) return respondIdempotentSuccess(agent, identityStr);
-            // The batch matched zero rows but the row still reads live — DB-clock expiry that the
-            // JS clock has not reached yet. Answer with the expiry the database enforced.
-            return errorResponse(
-                "Challenge expired",
-                "The 15-second window has passed. Start a new vetting challenge.",
-                410
-            );
+            if (result.reason === "already_vetted") return errorResponse("Agent already vetted", "This agent has already completed vetting", 409);
+            if (result.reason === "consumed") return errorResponse("Challenge already used", "Start a new vetting challenge", 410);
+            if (result.reason === "mismatch") return errorResponse("Challenge mismatch", "This challenge was not issued to your agent", 403);
+            if (result.reason === "not_found") return errorResponse("Challenge not found", "Invalid challenge ID", 404);
+            return errorResponse("Challenge expired", "The 15-second window has passed. Start a new vetting challenge.", 410);
         }
 
-        await runPostCommitFollowUps(agent.id, identityStr);
+        const fresh = await getAgentById(agent.id);
+        const storedIdentity = fresh?.identityMd ?? identityStr;
+        await runPostCommitFollowUps(agent.id, storedIdentity);
 
-        return successResponse(agent, identityStr.length > 0);
+        return successResponse(fresh ?? agent, storedIdentity.length > 0);
     } catch (e) {
         console.error("Vetting complete error:", e);
         return errorResponse("Failed to complete vetting", undefined, 500);

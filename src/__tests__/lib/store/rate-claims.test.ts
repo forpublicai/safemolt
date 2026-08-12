@@ -7,7 +7,7 @@
  *
  * @jest-environment node
  */
-import { agents, commentCountToday, comments, groups, lastCommentAt, lastPostAt, posts } from "@/lib/store/_memory-state";
+import { agents, commentCountToday, comments, lastCommentAt, lastPostAt, posts, resetGroupState } from "@/lib/store/_memory-state";
 import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY, POST_COOLDOWN_MS } from "@/lib/store/rate-limit-windows";
 import { createAgent, followAgent, getAgentById, unfollowAgent } from "@/lib/store/agents/memory";
 import { checkCommentRateLimit, checkPostRateLimit, createPost } from "@/lib/store/posts/memory";
@@ -18,7 +18,7 @@ const GROUP = "c16_group";
 beforeEach(() => {
   posts.clear();
   comments.clear();
-  groups.clear();
+  resetGroupState();
   agents.clear();
   lastPostAt.clear();
   lastCommentAt.clear();

@@ -4,26 +4,44 @@
  * asks them to through the dashboard chat.
  *
  * Tools are defined in OpenAI function-calling format and executed server-side
- * against the internal store (no HTTP round-trips).
+ * (no HTTP round-trips). **Both comment mutations go through `src/lib/actions/comments.ts`**
+ * (M11-2 P1.2) — the same functions the two REST routes call, so the school rule, the reply-parent
+ * validation, the cooldown, the refusal classification, the emitted event and the memory ingest
+ * cannot drift between the two surfaces again. Reads still call the store.
  */
 
-import { groupSchoolAccessDenial } from "@/lib/school-context";
-import {
-  createComment,
-  getComment,
-  getGroup,
-  getPost,
-  listComments,
-  upvoteComment,
-  getAgentById,
-  checkCommentRateLimit
-} from "@/lib/store";
-import type { ToolDefinition, ToolExecutor } from "../types";
+import { createComment, upvoteComment } from "@/lib/actions/comments";
+import type { ActionResult } from "@/lib/actions/types";
+import { listComments, getAgentById } from "@/lib/store";
+import type { ToolCallResult, ToolDefinition, ToolExecutor } from "../types";
 
-/** True when parentId names a live comment belonging to postId (M11-1b D3). */
-async function commentBelongsToPost(parentId: string, postId: string): Promise<boolean> {
-  const parent = await getComment(parentId);
-  return Boolean(parent && parent.postId === postId);
+/**
+ * The action's refusal, in this surface's vocabulary (M11-2 P1.2).
+ *
+ * Every string and every `data.code` here is the one this surface already published — including
+ * `post_not_found`, which is this tool's spelling of the action's `not_found` and differs from the
+ * REST route's on purpose. The school gate keeps its own code, which is what the executor contract
+ * has always been.
+ */
+function createCommentRefusal(result: Extract<ActionResult<never>, { ok: false }>): ToolCallResult {
+  switch (result.code) {
+    case "not_found":
+      return { success: false, error: "Post not found", data: { code: "post_not_found" } };
+    case "rate_limited":
+      return {
+        success: false,
+        error: "Comment cooldown",
+        data: {
+          code: "rate_limited",
+          retry_after_seconds: result.retryAfterSeconds,
+          daily_remaining: result.dailyRemaining,
+        },
+      };
+    // `invalid_parent`, `vetting_required` and `admission_required` all render as the action's own
+    // message beside its code, which is this surface's uniform refusal shape.
+    default:
+      return { success: false, error: result.message, data: { code: result.code } };
+  }
 }
 
 export const definitions: ToolDefinition[] = [
@@ -72,56 +90,19 @@ export const definitions: ToolDefinition[] = [
 ];
 
 export const executors: Record<string, ToolExecutor> = {
+  // A thin adapter over `actions/comments.createComment` (M11-2 P1.2). The post lookup, the school
+  // gate, the parent validation, the cooldown and the whole refusal classification moved there —
+  // and so did the memory ingest, which this surface never scheduled at all.
   create_comment: async (args, { agent }) => {
-    const postId = String(args.post_id);
-    const parentId = args.parent_id ? String(args.parent_id) : undefined;
-    const post = await getPost(postId);
-    if (!post) return { success: false, error: "Post not found", data: { code: "post_not_found" } };
-    const group = await getGroup(post.groupId);
-    if (group) {
-      const schoolDenial = groupSchoolAccessDenial(agent, group);
-      if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
-    }
-    // Parent validation BEFORE the rate-limit check (M11-1b D3), same precedence as the route:
-    // an invalid parent is a validation error, never a rate-limit shape.
-    if (parentId && !(await commentBelongsToPost(parentId, postId))) {
-      return { success: false, error: "parent comment not found on this post", data: { code: "invalid_parent" } };
-    }
-    const rate = await checkCommentRateLimit(agent.id);
-    if (!rate.allowed) {
-      return {
-        success: false,
-        error: "Comment cooldown",
-        data: {
-          code: "rate_limited",
-          retry_after_seconds: rate.retryAfterSeconds,
-          daily_remaining: rate.dailyRemaining,
-        },
-      };
-    }
-    const comment = await createComment(postId, agent.id, String(args.content), parentId);
-    if (!comment) {
-      // Three causes now, discriminated in order of what actually changed (M11-1 C16 / C25 /
-      // M11-1b D3): the post vanished, the parent vanished or moved out of scope, or the quota
-      // claim inside the insert refused.
-      if (!(await getPost(postId))) {
-        return { success: false, error: "Post not found", data: { code: "post_not_found" } };
-      }
-      if (parentId && !(await commentBelongsToPost(parentId, postId))) {
-        return { success: false, error: "parent comment not found on this post", data: { code: "invalid_parent" } };
-      }
-      const after = await checkCommentRateLimit(agent.id);
-      return {
-        success: false,
-        error: "Comment cooldown",
-        data: {
-          code: "rate_limited",
-          retry_after_seconds: after.retryAfterSeconds,
-          daily_remaining: after.dailyRemaining,
-        },
-      };
-    }
-    return { success: true, data: { comment_id: comment.id, post_id: postId } };
+    const result = await createComment({
+      agent,
+      postId: String(args.post_id),
+      content: String(args.content),
+      parentId: args.parent_id ? String(args.parent_id) : undefined,
+    });
+    return result.ok
+      ? { success: true, data: { comment_id: result.data.comment.id, post_id: result.data.comment.postId } }
+      : createCommentRefusal(result);
   },
 
   list_comments: async (args, { agent }) => {
@@ -142,17 +123,12 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   upvote_comment: async (args, { agent }) => {
-    // A comment inherits its school from the post it lives on (M11-1 C20, review round 5).
-    const comment = await getComment(String(args.comment_id));
-    const parent = comment ? await getPost(comment.postId) : null;
-    const group = parent ? await getGroup(parent.groupId) : null;
-    if (group) {
-      const schoolDenial = groupSchoolAccessDenial(agent, group);
-      if (schoolDenial) return { success: false, error: schoolDenial.error, data: { code: schoolDenial.code } };
-    }
-    const ok = await upvoteComment(String(args.comment_id), agent.id);
-    return ok
-      ? { success: true, data: { voted: true } }
+    const result = await upvoteComment({ agent, commentId: String(args.comment_id) });
+    if (result.ok) return { success: true, data: { voted: true } };
+    // The school gate keeps its own answer; a missing comment and a duplicate vote share the single
+    // refusal string this surface has always published for both.
+    return result.code === "vetting_required" || result.code === "admission_required"
+      ? { success: false, error: result.message, data: { code: result.code } }
       : { success: false, error: "Could not upvote comment" };
   },
 };

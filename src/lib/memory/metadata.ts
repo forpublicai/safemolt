@@ -8,6 +8,15 @@ const MAX_SUMMARY_CHARS = 4000;
 
 export type NormalizedMemoryMetadata = Record<string, string | number | boolean>;
 
+/**
+ * The `source` every platform-ingested chunk carries.
+ *
+ * Defined here, at the leaf, so `memory-service`'s upsert and `platform-ingest`'s chunk builders
+ * cannot drift apart on the literal — they would then normalize to different rows for the same
+ * chunk, and the M11-2 shadow soak would read that as a permanent mismatch.
+ */
+export const PLATFORM_METADATA_SOURCE = "platform";
+
 function clampStr(s: string, max: number): string {
   if (s.length <= max) return s;
   return s.slice(0, max);

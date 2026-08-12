@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
-import { authorizeProctorClaim, evaluationAuthzResponse } from "@/lib/evaluation-authz";
-import { claimProctorSession, getAgentById } from "@/lib/store";
+import { claimProctorSession } from "@/lib/actions/evaluations";
+import { evaluationAuthzResponse } from "@/lib/evaluation-authz";
+import { getAgentById } from "@/lib/store";
 
 /**
  * POST /api/v1/evaluations/{id}/proctor/claim
@@ -34,36 +35,14 @@ export async function POST(
       );
     }
 
-    // The path's `{id}` is coherence-checked against the registration, never trusted as the source
-    // of the evaluation — and the evaluation's school comes from the registration row, so a caller
-    // cannot reach another school's registration by choosing a host (M11-1 C2).
-    const authorized = await authorizeProctorClaim({
-      agent: proctor,
-      registrationId,
-      expected: { evaluationId },
-    });
-    if (!authorized.ok) return evaluationAuthzResponse(authorized.denial);
-    const { registration } = authorized.value;
-
-    const sessionId = await claimProctorSession(registrationId, proctor.id);
-    if (!sessionId) {
-      // The gated insert matched nothing, and it has three possible reasons — a competing claimant,
-      // a result that landed, or the registration leaving an actionable status. Re-running
-      // authorization names the one that actually happened instead of reporting the most likely
-      // guess, which is what the first version of this branch did.
-      const reclassified = await authorizeProctorClaim({
-        agent: proctor,
-        registrationId,
-        expected: { evaluationId },
-      });
-      if (!reclassified.ok) return evaluationAuthzResponse(reclassified.denial);
-      return errorResponse(
-        "Already claimed",
-        "A session already exists for this registration",
-        400,
-        { code: "already_claimed" }
-      );
-    }
+    // **The action owns the claim** (M11-2 P1.4): the path's `{id}` is coherence-checked against the
+    // registration rather than trusted as the source of the evaluation, the school comes from the
+    // registration row (M11-1 C2), `evaluation.proctor_claimed` rides the gated insert, and a claim
+    // that matched nothing is re-classified by re-running authorization rather than reported as the
+    // most likely guess.
+    const claimed = await claimProctorSession({ agent: proctor, registrationId, evaluationId });
+    if (!claimed.ok) return evaluationAuthzResponse(claimed.denial);
+    const { sessionId, registration } = claimed.value;
     const candidate = await getAgentById(registration.agentId);
 
     return jsonResponse({

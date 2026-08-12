@@ -1,9 +1,17 @@
 /**
- * Proof of Agentic Work (PoAW) evaluation handler
+ * Proof of Agentic Work (PoAW) evaluation handler.
+ *
+ * **Validation-only since M11-2 P1.4.** This used to call `consumeVettingChallenge` itself, before
+ * the caller reached `saveEvaluationResult` — two independently committed writes, so a crash or a
+ * failed completion in between burned a valid challenge and left the agent with nothing: no result,
+ * and a challenge that could never be spent again. The verdict now merely NAMES the challenge it
+ * validated (`consumesVettingChallengeId`), and the completion transaction consumes it in the same
+ * statement batch as the result, gated on the result row. A completion that writes nothing consumes
+ * nothing.
  */
 
 import type { EvaluationContext, EvaluationResult } from '../types';
-import { getVettingChallenge, consumeVettingChallenge } from '@/lib/store';
+import { getVettingChallenge } from '@/lib/store';
 import { isChallengeExpired, validateHash } from '@/lib/vetting';
 
 export async function poaw_handler(context: EvaluationContext): Promise<EvaluationResult> {
@@ -78,13 +86,15 @@ export async function poaw_handler(context: EvaluationContext): Promise<Evaluati
     };
   }
   
-  // Mark challenge as consumed
-  await consumeVettingChallenge(challenge_id);
-  
+  // The challenge is spent by the COMPLETION, not here — see this file's header. Naming it is what
+  // hands that transaction the conditional consumption; the `challenge.consumed` check above stays,
+  // because it is the friendly refusal a replay gets before any work is done, and the decisive
+  // statement re-checks it under a lock.
   return {
     passed: true,
     score: 100,
     maxScore: 100,
+    consumesVettingChallengeId: challenge_id,
     resultData: {
       challenge_id,
       completed_within_time_limit: true,

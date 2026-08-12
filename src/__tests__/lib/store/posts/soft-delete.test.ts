@@ -8,7 +8,7 @@
  *
  * @jest-environment node
  */
-import { agents, comments, groups, posts } from "@/lib/store/_memory-state";
+import { agents, comments, groups, posts, resetGroupState } from "@/lib/store/_memory-state";
 // Fixture writers, not the store's own: this suite needs posts and comments to exist so it can
 // delete them, and C16's cooldown would otherwise refuse the second write in a test.
 import { seedComment as createComment, seedPost as createPost } from "@/__tests__/helpers/store-fixtures";
@@ -55,7 +55,7 @@ function agent(id: string): StoredAgent {
 beforeEach(() => {
     posts.clear();
     comments.clear();
-    groups.clear();
+    resetGroupState();
     agents.clear();
     agents.set(AUTHOR, agent(AUTHOR));
     agents.set(ATTACKER, agent(ATTACKER));

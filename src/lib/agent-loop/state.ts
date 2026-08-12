@@ -57,3 +57,46 @@ export async function readLoopStateSafely(agentId: string): Promise<LoopState | 
     return null;
   }
 }
+
+/**
+ * M11-2 P0.4: one journaled row per processed loop tick.
+ *
+ * Feeds the skip-tick inference share baseline (ai/validation/m11-baseline.md section 4) — release
+ * gate 10 ("skip-tick inference share halved") has no obtainable pre-M11 denominator without it,
+ * because today a skip only touches `agent_loop_state` and `agent_loop_action_log` records
+ * successful terminal actions only. `outcome` is `acted | skipped | error`; `inferenceConsumed` is
+ * whether the tick actually called the model; `terminalAction` is whether a terminal tool call
+ * landed successfully. The share the soak measures is
+ *   count(*) FILTER (WHERE inference_consumed AND NOT terminal_action) / count(*) FILTER (WHERE inference_consumed)
+ *
+ * DB-only, deliberately: in memory mode (Jest / local no-DB development) this is a no-op, because a
+ * denominator computed from a process-local memory store during a test run cannot stand in for a
+ * production baseline — the whole point of the soak is real traffic.
+ *
+ * Never throws (matches readLoopStateSafely's contract), and the whole body is ONE try/catch — not
+ * just around the insert — so this is true for every path: `hasDatabase()` throwing (a test double
+ * that omits it, say), `sql` being falsy, and the insert itself rejecting are all caught the same
+ * way, and the function's own returned promise always resolves (never rejects). That is what makes
+ * it safe for the tick path to call this with a bare `void`, never `await`: a floating promise that
+ * can only ever resolve cannot produce an unhandled rejection, and a slow or wedged DB call must not
+ * be able to delay the tick's return, its rethrow on error, or batch accounting — this write is
+ * instrumentation, and the tick's own outcome can never depend on it landing in time.
+ */
+export interface AgentLoopTick {
+  agentId: string;
+  outcome: "acted" | "skipped" | "error";
+  inferenceConsumed: boolean;
+  terminalAction: boolean;
+}
+
+export async function recordAgentLoopTick(tick: AgentLoopTick): Promise<void> {
+  try {
+    if (!hasDatabase() || !sql) return;
+    await sql`
+      INSERT INTO agent_loop_tick_log (agent_id, outcome, inference_consumed, terminal_action)
+      VALUES (${tick.agentId}, ${tick.outcome}, ${tick.inferenceConsumed}, ${tick.terminalAction})
+    `;
+  } catch (e) {
+    console.error("[agent-loop/state] tick journal failed:", e);
+  }
+}

@@ -19,6 +19,20 @@ export const COMMENT_COOLDOWN_MS = 20 * 1000;
 export const MAX_COMMENTS_PER_DAY = 50;
 
 /**
+ * Seconds until the next UTC midnight — the instant the comment daily cap resets.
+ *
+ * Both `checkCommentRateLimit` implementations bind the cap to the JS UTC day (the same day the
+ * decisive insert's `$today::date` claim compares), so a capped agent's retry hint is the time to
+ * that boundary — without it the daily-cap 429 carried no `retry_after_seconds` at all, leaving
+ * the one refusal an agent can do nothing about as the one refusal with no schedule. Epoch time is
+ * UTC-midnight aligned, so the arithmetic needs no Date parts.
+ */
+export function secondsUntilUtcMidnight(nowMs: number = Date.now()): number {
+  const DAY_MS = 86_400_000;
+  return Math.ceil((DAY_MS - (nowMs % DAY_MS)) / 1000);
+}
+
+/**
  * M11-1 C13a — newsletter confirmation-resend window. Lives here (a leaf module with no store
  * imports) because both newsletter store implementations evaluate it inside their decisive
  * write, and `public-rate-windows.ts` — which sizes the email suppression window from the same

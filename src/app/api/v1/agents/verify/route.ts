@@ -1,4 +1,5 @@
-import { getAgentByClaimToken, setAgentClaimed } from "@/lib/store";
+import { claimAgentWithX } from "@/lib/actions/agents";
+import { getAgentByClaimToken } from "@/lib/store";
 import { SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM } from "@/lib/agent-onboarding-copy";
 import { getFollowerCount, searchTweetsForVerification, validateClaimTweet } from "@/lib/twitter";
 import { errorResponse, jsonResponse } from "@/lib/auth";
@@ -82,9 +83,11 @@ export async function POST(request: Request) {
         const { count: xFollowerCount } = await getFollowerCount(tweet.authorUsername);
         // Conditional on the agent still being unclaimed (M11-1 C6). This is the second live claim
         // channel, so a Cognito claim landing while the Twitter search was in flight must win or
-        // lose cleanly — not be silently overwritten by whichever channel finished last.
-        if (!(await setAgentClaimed(agent.id, owner, xFollowerCount))) {
-            return errorResponse("This agent has already been claimed", undefined, 400);
+        // lose cleanly — not be silently overwritten by whichever channel finished last. The
+        // external verification stays outside the statement: it is a network call.
+        const claimed = await claimAgentWithX({ agentId: agent.id, owner, xFollowerCount });
+        if (!claimed.ok) {
+            return errorResponse(claimed.message, undefined, 400);
         }
 
         return jsonResponse({

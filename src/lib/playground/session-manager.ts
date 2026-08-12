@@ -16,6 +16,12 @@ import {
     safeWaitUntil,
     type PlaygroundDeadlineRunResult,
 } from './lifecycle';
+import type { PreparedEvent } from '@/lib/events/kinds';
+import {
+    playgroundSessionCompletedEvent,
+    playgroundSessionCreatedEvent,
+    playgroundSessionExpiredEvent,
+} from '@/lib/actions/playground-events';
 import type { PlaygroundGame, PlaygroundSession, ResolutionMemory, SessionParticipant, SessionAction, SubmitActionRefusal, TranscriptRound, CreateSessionInput, MemoryImportance } from './types';
 import {
     sanitizeActingCompanyId,
@@ -127,7 +133,10 @@ export async function selectParticipants(
  * Create and start a new playground session.
  * Selects participants, generates round 1 prompt, stores everything in DB.
  */
-export async function createAndStartSession(gameId?: string): Promise<PlaygroundSession> {
+export async function createAndStartSession(
+    gameId?: string,
+    events?: readonly PreparedEvent[]
+): Promise<PlaygroundSession> {
     const store = await getStore();
 
     // Check: is there already an active session?
@@ -198,7 +207,7 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
         schoolId: 'foundation',
     };
 
-    await store.createPlaygroundSession(sessionInput);
+    await store.createPlaygroundSession(sessionInput, events);
 
     return {
         ...tempSession,
@@ -211,7 +220,11 @@ export async function createAndStartSession(gameId?: string): Promise<Playground
 /**
  * Create a new pending playground session that bots can join.
  */
-export async function createPendingSession(gameId?: string, schoolId = 'foundation'): Promise<PlaygroundSession> {
+export async function createPendingSession(
+    gameId?: string,
+    schoolId = 'foundation',
+    events?: readonly PreparedEvent[]
+): Promise<PlaygroundSession> {
     const store = await getStore();
 
     // Friendly pre-check only (M11-1 C23): the constraint is the partial unique index over live
@@ -240,7 +253,7 @@ export async function createPendingSession(gameId?: string, schoolId = 'foundati
     };
 
     try {
-        await store.createPlaygroundSession(sessionInput);
+        return await store.createPlaygroundSession(sessionInput, events);
     } catch (err) {
         // A concurrent trigger won the index. The loser receives the winner's session — the
         // caller's contract ("there is already a live session") just became true (M11-1 C23).
@@ -253,8 +266,6 @@ export async function createPendingSession(gameId?: string, schoolId = 'foundati
         }
         throw err;
     }
-
-    return (await store.getPlaygroundSession(sessionId))!;
 }
 
 /**
@@ -268,6 +279,17 @@ export async function joinSession(
         actingAsCompanyId?: string;
         actingAsLabel?: string;
         prefabId?: string;
+    },
+    /**
+     * The two branch events, decided by `actions/playground.joinSession` (M11-2 P1.4).
+     *
+     * Both are handed down together because only the store's single conditional statement knows
+     * which branch it will take, and deciding that here would mean a pre-read — the exact shape the
+     * restructure removed.
+     */
+    events?: {
+        joined?: readonly PreparedEvent[];
+        affiliationUpdated?: readonly PreparedEvent[];
     }
 ): Promise<PlaygroundSession> {
     const store = await getStore();
@@ -333,24 +355,24 @@ export async function joinSession(
         ...affiliationPayload,
     };
 
-    // 4. Atomic Join
-    // This ensures we don't exceed maxPlayers and handles concurrent joins safely.
-    const joinResult = await store.joinPlaygroundSession(sessionId, newParticipant, game.maxPlayers);
-
-    if (!joinResult.success) {
-        // If failed, it might be full or already joined or no longer pending
-        throw new Error(joinResult.reason || 'Failed to join session');
-    }
-
-    let updatedSession = joinResult.session!;
-    const patched = await store.mergePlaygroundParticipantAffiliationFields(
+    // 4. Atomic join — ONE statement for the append, the affiliation refresh and both events
+    // (M11-2 P1.4). It used to be `joinPlaygroundSession` followed by a separate
+    // `mergePlaygroundParticipantAffiliationFields`, which ran even when the append had no-opped:
+    // two whole-column rewrites of the mutable `participants` JSONB, so a concurrent join committing
+    // between them was erased even though it had returned success.
+    const outcome = await store.joinPlaygroundSessionWithOutcome(
         sessionId,
-        agent.id,
-        affiliationPayload
+        newParticipant,
+        game.maxPlayers,
+        events
     );
-    if (patched) {
-        updatedSession = patched;
+
+    if (outcome.result === 'refused' || !outcome.session) {
+        // Full, no longer pending, or gone since the read above.
+        throw new Error(outcome.reason || 'Failed to join session');
     }
+
+    const updatedSession = outcome.session;
 
     // 5. Check Start Condition: if we hit minPlayers, attempt to activate.
     if (updatedSession.participants.length >= game.minPlayers) {
@@ -428,7 +450,16 @@ const SUBMIT_REFUSAL_MESSAGES: Record<SubmitActionRefusal, string> = {
 export async function submitAction(
     sessionId: string,
     agentId: string,
-    content: string
+    content: string,
+    /**
+     * The event, as a function of the ROUND (M11-2 P1.4).
+     *
+     * A function rather than a value because the round is not knowable to the action: it comes from
+     * the session this service reads, and both the payload triple and the `idem_key` name it. An
+     * action that supplied a round from its own pre-read would stamp a key for a round that had
+     * already moved — and the idem key is precisely what must not be wrong.
+     */
+    events?: (round: number) => readonly PreparedEvent[]
 ): Promise<{ session: PlaygroundSession; action: SessionAction }> {
     const store = await getStore();
 
@@ -436,13 +467,16 @@ export async function submitAction(
     if (!session) throw new Error(SUBMIT_REFUSAL_MESSAGES.not_found);
     if (session.status !== 'active') throw new Error(SUBMIT_REFUSAL_MESSAGES.not_active);
 
-    const outcome = await store.submitPlaygroundActionGated({
-        id: generateId(),
-        sessionId,
-        agentId,
-        round: session.currentRound,
-        content,
-    });
+    const outcome = await store.submitPlaygroundActionGated(
+        {
+            id: generateId(),
+            sessionId,
+            agentId,
+            round: session.currentRound,
+            content,
+        },
+        events?.(session.currentRound)
+    );
     if (!outcome.ok) throw new Error(SUBMIT_REFUSAL_MESSAGES[outcome.reason]);
 
     const participantIds = session.participants.map((p) => p.agentId);
@@ -565,7 +599,17 @@ async function completeSession(input: {
             currentRoundPrompt: null,
             roundDeadline: null,
         },
-        input.memories
+        input.memories,
+        // Gated on the CAS: a resolver that lost its lease completes nothing and emits nothing.
+        // `advanceToNextRound` passes NO events at all — `playground.round_resolved` is not in this
+        // build's kind union, and a kind may not be emitted before every consumer knows it.
+        [
+            playgroundSessionCompletedEvent({
+                sessionId: input.session.id,
+                schoolId: input.session.schoolId ?? null,
+                reason: 'resolution',
+            }),
+        ]
     );
     if (!won) {
         // Token fence rejected the write: a reclaimer already resolved this round. Discard —
@@ -1007,7 +1051,12 @@ export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
     // carries the `status = 'pending'` predicate, so a session that activates mid-sweep is
     // untouched — the expiry-vs-activation race closes in the statement, not here.
     try {
-        const expired = await store.expireStalePendingSessions(PENDING_TIMEOUT_MS);
+        // ONE prepared event for the whole batch: the store fans it out, one event per expired row
+        // with that row's own id as `subject_id` (the `rowSource` shape). A sweep that matched
+        // nothing writes nothing and emits nothing.
+        const expired = await store.expireStalePendingSessions(PENDING_TIMEOUT_MS, [
+            playgroundSessionExpiredEvent(),
+        ]);
         for (const id of expired) {
             console.log(`[playground] Session ${id} expired in pending state. Cancelled (system).`);
         }
@@ -1045,8 +1094,11 @@ export async function triggerDaily(): Promise<PlaygroundSession | null> {
     }
 
     try {
-        // Create a pending session instead of starting one immediately
-        return await createPendingSession();
+        // Create a pending session instead of starting one immediately. The cron has no acting
+        // agent, so the event's actor column is NULL — the same shape the expiry sweep takes.
+        return await createPendingSession(undefined, 'foundation', [
+            playgroundSessionCreatedEvent({ actorAgentId: null, schoolId: 'foundation' }),
+        ]);
     } catch (err) {
         console.error('[playground] Daily trigger failed:', err);
         return null;

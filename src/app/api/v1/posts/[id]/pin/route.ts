@@ -1,8 +1,23 @@
+/**
+ * M11-2 P1.1 — thin adapters over `actions/posts.pinPost` / `.unpinPost`.
+ *
+ * Resolution, the post's-school gate (M11-1 C20 review round 5) and the tombstone-tolerant unpin
+ * read (M11-1b D2) all moved into the action, so the tool surface — which addresses a pin by group
+ * name — applies the same rules. What stays here is presentation.
+ */
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
-import { getPost, getPostIncludingDeleted, getGroup, pinPost, unpinPost } from "@/lib/store";
-import { requireGroupSchoolAccess } from "@/lib/school-context";
+import { pinPost, unpinPost } from "@/lib/actions/posts";
+import type { ActionResult } from "@/lib/actions/types";
+import { schoolAccessDenialResponse } from "@/lib/school-context";
 import { jsonResponse, errorResponse } from "@/lib/auth";
+
+/** The school gate's own envelope, or null when the refusal is something else. */
+function schoolRefusal(result: Extract<ActionResult<never>, { ok: false }>): Response | null {
+  return result.code === "vetting_required" || result.code === "admission_required"
+    ? schoolAccessDenialResponse(result.code)
+    : null;
+}
 
 export async function POST(
   _request: NextRequest,
@@ -10,26 +25,15 @@ export async function POST(
 ) {
   const access = await requireAgent(_request);
   if (!access.ok) return access.response;
-  const agent = access.agent;
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  const rateLimitResponse = checkRateLimitAndRespond(access.agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { id: postId } = await params;
-  const post = await getPost(postId);
-  if (!post) {
-    return errorResponse("Post not found", undefined, 404);
-  }
-  // The post's own school governs, not the request host (M11-1 C20, review round 5). The
-  // moderator check inside pinPost/unpinPost narrows *who*, never *which school*.
-  const group = await getGroup(post.groupId);
-  if (group) {
-    const schoolDenial = requireGroupSchoolAccess(agent, group);
-    if (schoolDenial) return schoolDenial;
-  }
-  const ok = await pinPost(post.groupId, postId, agent.id);
-  if (!ok) {
-    return errorResponse("Cannot pin", "Must be owner or moderator; max 3 pins per group", 403);
-  }
-  return jsonResponse({ success: true, message: "Post pinned" });
+  const result = await pinPost({ agent: access.agent, postId });
+  if (result.ok) return jsonResponse({ success: true, message: "Post pinned" });
+  const denial = schoolRefusal(result);
+  if (denial) return denial;
+  if (result.code === "not_found") return errorResponse("Post not found", undefined, 404);
+  return errorResponse("Cannot pin", "Must be owner or moderator; max 3 pins per group", 403);
 }
 
 export async function DELETE(
@@ -38,26 +42,18 @@ export async function DELETE(
 ) {
   const access = await requireAgent(_request);
   if (!access.ok) return access.response;
-  const agent = access.agent;
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  const rateLimitResponse = checkRateLimitAndRespond(access.agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { id: postId } = await params;
-  // Tombstones included, deliberately. M11-1b D2 keeps `unpinPost` working without a live post so
-  // a moderator can clear a stale id, and C25's soft delete means `getPost` would hide exactly the
-  // rows that need clearing — resolving through it here would 404 the moderator and let a deleted
-  // post hold one of the group's three pin slots permanently. Pinning (POST, above) still requires
-  // a live post; only removal is tombstone-tolerant.
-  const post = await getPostIncludingDeleted(postId);
-  if (!post) {
-    return errorResponse("Post not found", undefined, 404);
+  const result = await unpinPost({ agent: access.agent, postId });
+  // **A refused unpin still answers 200 here, and that is this surface's existing contract**: it has
+  // always discarded the store's boolean, so a non-moderator's unpin reports success. Only the
+  // not-found and school refusals have ever been visible. Pinned by
+  // `m11-2-u3-posts-characterization.test.ts`; changing it is a product decision, not a refactor.
+  if (!result.ok) {
+    const denial = schoolRefusal(result);
+    if (denial) return denial;
+    if (result.code === "not_found") return errorResponse("Post not found", undefined, 404);
   }
-  // The post's own school governs, not the request host (M11-1 C20, review round 5). The
-  // moderator check inside pinPost/unpinPost narrows *who*, never *which school*.
-  const group = await getGroup(post.groupId);
-  if (group) {
-    const schoolDenial = requireGroupSchoolAccess(agent, group);
-    if (schoolDenial) return schoolDenial;
-  }
-  await unpinPost(post.groupId, postId, agent.id);
   return jsonResponse({ success: true, message: "Post unpinned" });
 }

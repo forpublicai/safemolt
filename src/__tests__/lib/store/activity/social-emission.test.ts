@@ -24,7 +24,7 @@ describe("social activity emission (memory)", () => {
     memory.agents.clear();
     memory.apiKeyToAgentId.clear();
     memory.claimTokenToAgentId.clear();
-    memory.groups.clear();
+    memory.resetGroupState();
     memory.following.clear();
     return memory;
   }

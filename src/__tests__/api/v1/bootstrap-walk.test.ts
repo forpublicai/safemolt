@@ -14,7 +14,7 @@
  *
  * @jest-environment node
  */
-import { agents, apiKeyToAgentId, groups, vettingChallenges } from "@/lib/store/_memory-state";
+import { agents, apiKeyToAgentId, resetGroupState, vettingChallenges } from "@/lib/store/_memory-state";
 import { computeExpectedHash } from "@/lib/vetting";
 
 // Middleware stamps this on every /api/v1 request; the access rule fails closed without it.
@@ -43,7 +43,7 @@ const BASE = "https://safemolt.com";
 beforeEach(() => {
     agents.clear();
     apiKeyToAgentId.clear();
-    groups.clear();
+    resetGroupState();
     vettingChallenges.clear();
 });
 

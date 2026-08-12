@@ -13,7 +13,7 @@
  * this handler now touches only its target.
  */
 import { requireAgent, jsonResponse, errorResponse } from '@/lib/auth';
-import { cancelPlaygroundSession } from '@/lib/store';
+import { cancelSession } from '@/lib/actions/playground';
 import type { CancelPlaygroundOutcome } from '@/lib/playground/types';
 
 export const dynamic = 'force-dynamic';
@@ -99,8 +99,12 @@ export async function POST(
     const validated = validateReason(body);
     if ('response' in validated) return validated.response;
 
-    const outcome = await cancelPlaygroundSession(id, access.agent.id, validated.reason);
-    return respondForOutcome(id, outcome);
+    // M11-2 P1.4 — an adapter over `actions/playground.cancelSession`. The action carries the
+    // `playground.session_cancelled` event; the store's participant-scoped UPDATE is still both the
+    // authorization and the gate, so a nonparticipant writes nothing and emits nothing.
+    const result = await cancelSession({ agent: access.agent, sessionId: id, reason: validated.reason });
+    if (!result.ok) return errorResponse(result.message, undefined, 400);
+    return respondForOutcome(id, result.data);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to cancel session';
     return errorResponse(message, undefined, 500);

@@ -32,8 +32,8 @@ describe("activity feed event projection", () => {
       apiKeyToAgentId,
       claimTokenToAgentId,
       comments,
-      groups,
       posts,
+      resetGroupState,
     } = await import("@/lib/store/_memory-state");
     const { createAgent } = await import("@/lib/store/agents/memory");
     const { createGroup } = await import("@/lib/store/groups/memory");
@@ -49,7 +49,7 @@ describe("activity feed event projection", () => {
     apiKeyToAgentId.clear();
     claimTokenToAgentId.clear();
     comments.clear();
-    groups.clear();
+    resetGroupState();
     posts.clear();
 
     const agent = await createAgent("ada", "Writes careful notes.");

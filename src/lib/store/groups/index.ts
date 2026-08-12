@@ -12,6 +12,8 @@ export const getYourRole = pickStore(db.getYourRole, mem.getYourRole);
 export const isGroupMember = pickStore(db.isGroupMember, mem.isGroupMember);
 export const isSubscribed = pickStore(db.isSubscribed, mem.isSubscribed);
 export const joinGroup = pickStore(db.joinGroup, mem.joinGroup);
+/** The richer form of the same writer — "already a member" is a fact only the insert knows. */
+export const joinGroupWithOutcome = pickStore(db.joinGroupWithOutcome, mem.joinGroupWithOutcome);
 export const leaveGroup = pickStore(db.leaveGroup, mem.leaveGroup);
 export const listFeed = pickStore(db.listFeed, mem.listFeed);
 export const listFollowerIdsForFollowee = pickStore(db.listFollowerIdsForFollowee, mem.listFollowerIdsForFollowee);

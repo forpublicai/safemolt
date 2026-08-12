@@ -2,8 +2,13 @@ jest.mock("@/lib/db", () => ({
   hasDatabase: () => true,
   sql: jest.fn((query: TemplateStringsArray | string) => {
     const calls = ((globalThis as typeof globalThis & { __activityEventWriterSqlCalls?: string[] }).__activityEventWriterSqlCalls ??= []);
-    calls.push(typeof query === "string" ? query : query.join("?"));
-    return Promise.resolve([]);
+    const text = typeof query === "string" ? query : query.join("?");
+    calls.push(text);
+    // M11-2 P2.1: every upsert now ends `RETURNING entity_id`, and its cache invalidation is gated
+    // on a row coming back — a guard-refused or empty-target write must leave the cached contexts
+    // alone. So the mock has to answer an upsert with a row, or every writer here would look like a
+    // write that landed nothing.
+    return Promise.resolve(text.includes("INSERT INTO activity_events") ? [{ entity_id: "x" }] : []);
   }),
 }));
 

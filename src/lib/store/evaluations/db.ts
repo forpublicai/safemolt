@@ -1,6 +1,8 @@
 import { sql } from "@/lib/db";
 import type { NeonQueryFunctionInTransaction } from "@neondatabase/serverless";
 import type {
+    EvaluationStartEffectInput,
+    EvaluationStartOutcome,
     SaveEvaluationResultInput,
     SaveEvaluationResultOutcome,
     StoredRecentEvaluationResult,
@@ -10,10 +12,21 @@ import {
     buildEvaluationResultActivityUpsert,
     invalidateEvaluationResultActivityCache,
 } from "../activity/events";
+import type { PreparedEvent } from "@/lib/events/kinds";
+import { emitEventCtes, sqlParam, sqlPayloadObject } from "../events/statement";
 import { computeEvaluationResultFields } from "./result-fields";
 
 /** The query tag inside a `sql.transaction` batch, for helpers that build one of its elements. */
 type EvaluationsTxn = NeonQueryFunctionInTransaction<false, false>;
+
+function isExpectedResultUniquenessViolation(error: unknown): boolean {
+    if (typeof error !== "object" || error === null) return false;
+    const e = error as { code?: string; constraint?: string };
+    return e.code === "23505" && (
+        e.constraint === "idx_eval_results_registration_uniq" ||
+        e.constraint === "idx_eval_results_one_pass"
+    );
+}
 
 function isUniqueViolation(error: unknown): boolean {
     return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
@@ -52,21 +65,34 @@ function generateEvaluationId(prefix: string): string {
 export async function registerForEvaluation(
     agentId: string,
     evaluationId: string,
-    trustedSchoolId?: string
+    trustedSchoolId?: string,
+    events?: readonly PreparedEvent[]
 ): Promise<{ id: string; registeredAt: string } | null> {
     const id = generateEvaluationId('eval_reg');
     const registeredAt = new Date().toISOString();
-    const rows = await sql!`
-    INSERT INTO evaluation_registrations (id, agent_id, evaluation_id, registered_at, status, school_id, school_scope_trusted)
-    SELECT
-      ${id}, ${agentId}, ${evaluationId}, ${registeredAt}, 'registered',
-      ${trustedSchoolId ?? 'foundation'}, ${trustedSchoolId != null}
-    WHERE NOT EXISTS (
-      SELECT 1 FROM evaluation_results
-      WHERE agent_id = ${agentId} AND evaluation_id = ${evaluationId} AND passed = true
-    )
-    RETURNING id, registered_at
-  `;
+    const params: unknown[] = [id, agentId, evaluationId, registeredAt, trustedSchoolId ?? 'foundation', trustedSchoolId != null];
+    // `evaluation.registered` rides the insert's own `RETURNING`, so the pass-gated refusal above
+    // writes nothing and emits nothing. `subject_id` is store-assigned — the registration id is
+    // minted here (`$1`), after the action decided the event — and it stays a bound parameter.
+    const emitted = emitEventCtes(events, "registered", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [],
+    });
+    const rows = await sql!(
+        `
+    WITH registered AS (
+      INSERT INTO evaluation_registrations (id, agent_id, evaluation_id, registered_at, status, school_id, school_scope_trusted)
+      SELECT $1::text, $2::text, $3::text, $4::timestamptz, 'registered', $5::text, $6::boolean
+      WHERE NOT EXISTS (
+        SELECT 1 FROM evaluation_results
+        WHERE agent_id = $2::text AND evaluation_id = $3::text AND passed = true
+      )
+      RETURNING id, registered_at
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT id, registered_at FROM registered
+  `,
+        [...params, ...emitted.params]
+    );
     const r = (rows as Array<Record<string, unknown>>)[0];
     if (!r) return null;
     return { id: r.id as string, registeredAt: String(r.registered_at) };
@@ -238,26 +264,55 @@ export async function addSessionMessage(
     sessionId: string,
     senderAgentId: string,
     role: string,
-    content: string
-): Promise<{ id: string; sequence: number; createdAt: string }> {
+    content: string,
+    events?: readonly PreparedEvent[]
+): Promise<{ id: string; sequence: number; createdAt: string; role: string } | null> {
     const id = generateEvaluationId('eval_msg');
     const createdAt = new Date().toISOString();
-    const [, inserted] = await sql!.transaction((txn) => [
+    void role;
+    const params: unknown[] = [id, sessionId, senderAgentId, content, createdAt];
+    // `evaluation.session_message` rides ELEMENT 2 — the insert, which is the decisive mutation;
+    // element 1 is a lock that decides nothing. `message_id` is store-assigned (`$1`), and the
+    // CONTENT is deliberately not in the payload: a transcript is content, and a payload copy of it
+    // would outlive every deletion path the platform has.
+    const emitted = emitEventCtes(events, "inserted", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length
+            ? [{ payloadMergeSql: sqlPayloadObject({ message_id: sqlParam(1, "text") }) }]
+            : [],
+    });
+    const [, , inserted] = await sql!.transaction((txn) => [
+        // Match D4's agent-first order. The message INSERT has an agent FK, so taking this
+        // compatible lock before the session lock avoids agent -> session / session -> agent
+        // deadlocks with completion.
+        txn`/* race:c2-message-agent */ SELECT id FROM agents WHERE id = ${senderAgentId} FOR KEY SHARE`,
         // The marker names the statement that actually blocks, so an integration race can prove the
         // backend it observed waiting is this one (`helpers/concurrency.ts`).
         txn`/* race:c2-message-sequence */ SELECT id FROM evaluation_sessions WHERE id = ${sessionId} FOR UPDATE`,
-        txn`
-      INSERT INTO evaluation_messages (id, session_id, sender_agent_id, role, content, created_at, sequence)
-      SELECT ${id}, ${sessionId}, ${senderAgentId}, ${role}, ${content}, ${createdAt},
-        COALESCE((SELECT MAX(sequence) + 1 FROM evaluation_messages WHERE session_id = ${sessionId}), 1)
-      RETURNING sequence, created_at
+        txn(
+            `
+      WITH inserted AS (
+        INSERT INTO evaluation_messages (id, session_id, sender_agent_id, role, content, created_at, sequence)
+        SELECT $1::text, $2::text, $3::text, participant.role, $4::text, $5::timestamptz,
+          COALESCE((SELECT MAX(sequence) + 1 FROM evaluation_messages WHERE session_id = $2::text), 1)
+        FROM evaluation_sessions AS session
+        JOIN evaluation_session_participants AS participant
+          ON participant.session_id = session.id AND participant.agent_id = $3::text
+        WHERE session.id = $2::text AND session.status = 'active'
+        RETURNING sequence, created_at, role
+      )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+      SELECT sequence, created_at, role FROM inserted
     `,
+            [...params, ...emitted.params]
+        ),
     ]);
     const row = (inserted as Array<Record<string, unknown>>)[0];
+    if (!row) return null;
     return {
         id,
         sequence: Number(row?.sequence ?? 1),
         createdAt: row?.created_at ? String(row.created_at) : createdAt,
+        role: String(row.role),
     };
 }
 
@@ -314,44 +369,69 @@ export async function endSession(sessionId: string): Promise<void> {
  */
 export async function claimProctorSession(
     registrationId: string,
-    proctorAgentId: string
+    proctorAgentId: string,
+    events?: readonly PreparedEvent[]
 ): Promise<string | null> {
     const sessionId = generateEvaluationId('eval_sess');
+    const proctorParticipantId = generateEvaluationId('eval_part');
+    const candidateParticipantId = generateEvaluationId('eval_part');
     const now = new Date().toISOString();
-    const [, created] = await sql!.transaction((txn) => [
+    const params: unknown[] = [registrationId, sessionId, now, proctorAgentId, proctorParticipantId, candidateParticipantId];
+    // Gated on `created` — the same CTE the participants are gated on — so a competing claimant, a
+    // landed result and a registration that left an actionable status all emit nothing. The
+    // session id is store-assigned (`$2`); the subject is the registration, which the action knows.
+    const emitted = emitEventCtes(events, "created", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length
+            ? [{ payloadMergeSql: sqlPayloadObject({ session_id: sqlParam(2, "text") }) }]
+            : [],
+    });
+    const [, , created] = await sql!.transaction((txn) => [
+        // Global order: AGENTS, then registration, then session/participants. The candidate id
+        // comes from the registration, but the rows themselves are locked before the registration.
+        txn`
+          SELECT id FROM agents
+          WHERE id = ${proctorAgentId}
+             OR id = (SELECT agent_id FROM evaluation_registrations WHERE id = ${registrationId})
+          ORDER BY id
+          FOR UPDATE
+        `,
         txn`
       /* race:c2-proctor-claim */
       SELECT id FROM evaluation_registrations
       WHERE id = ${registrationId} AND status IN ('registered', 'in_progress')
       FOR UPDATE
     `,
-        txn`
+        txn(
+            `
       WITH reg AS (
         SELECT id, agent_id, evaluation_id FROM evaluation_registrations
-        WHERE id = ${registrationId} AND status IN ('registered', 'in_progress')
+        WHERE id = $1::text AND status IN ('registered', 'in_progress')
       ),
       created AS (
         INSERT INTO evaluation_sessions (id, evaluation_id, kind, registration_id, status, started_at)
-        SELECT ${sessionId}, reg.evaluation_id, 'proctored', reg.id, 'active', ${now}
+        SELECT $2::text, reg.evaluation_id, 'proctored', reg.id, 'active', $3::timestamptz
         FROM reg
-        WHERE NOT EXISTS (SELECT 1 FROM evaluation_sessions s WHERE s.registration_id = ${registrationId})
-          AND NOT EXISTS (SELECT 1 FROM evaluation_results r WHERE r.registration_id = ${registrationId})
+        WHERE NOT EXISTS (SELECT 1 FROM evaluation_sessions s WHERE s.registration_id = $1::text)
+          AND NOT EXISTS (SELECT 1 FROM evaluation_results r WHERE r.registration_id = $1::text)
         RETURNING id
       ),
       proctor_participant AS (
         INSERT INTO evaluation_session_participants (id, session_id, agent_id, role, joined_at)
-        SELECT ${generateEvaluationId('eval_part')}, created.id, ${proctorAgentId}, 'proctor', ${now}
+        SELECT $5::text, created.id, $4::text, 'proctor', $3::timestamptz
         FROM created
         ON CONFLICT (session_id, agent_id) DO NOTHING
       ),
       candidate_participant AS (
         INSERT INTO evaluation_session_participants (id, session_id, agent_id, role, joined_at)
-        SELECT ${generateEvaluationId('eval_part')}, created.id, reg.agent_id, 'candidate', ${now}
+        SELECT $6::text, created.id, reg.agent_id, 'candidate', $3::timestamptz
         FROM created CROSS JOIN reg
         ON CONFLICT (session_id, agent_id) DO NOTHING
-      )
+      )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
       SELECT id FROM created
     `,
+            [...params, ...emitted.params]
+        ),
     ]);
     // ON CONFLICT above is not defensive decoration: authorization rejects self-proctoring, but if
     // it ever failed to, proctor and candidate would be the same (session_id, agent_id) pair and the
@@ -373,14 +453,97 @@ export async function claimProctorSession(
  * @returns whether this call performed the transition. `false` means the registration was not
  *   `registered` — already started, already terminal, or gone.
  */
-export async function startEvaluation(registrationId: string): Promise<boolean> {
-    const rows = await sql!`
-    UPDATE evaluation_registrations
-    SET status = 'in_progress', started_at = NOW()
-    WHERE id = ${registrationId} AND status = 'registered'
-    RETURNING id
-  `;
+export async function startEvaluation(
+    registrationId: string,
+    events?: readonly PreparedEvent[]
+): Promise<boolean> {
+    const params: unknown[] = [registrationId];
+    // Gated on the CAS itself: a re-start, a terminal registration and a missing one all match zero
+    // rows, write nothing and emit nothing.
+    const emitted = emitEventCtes(events, "started", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [],
+    });
+    const rows = await sql!(
+        `
+    WITH started AS (
+      UPDATE evaluation_registrations
+      SET status = 'in_progress', started_at = NOW()
+      WHERE id = $1::text AND status = 'registered'
+      RETURNING id
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT id FROM started
+  `,
+        [...params, ...emitted.params]
+    );
     return rows.length > 0;
+}
+
+/** CAS plus the flow's durable row. The event is gated on the complete operation, not only the CAS. */
+export async function startEvaluationWithEffect(
+    registrationId: string,
+    effect: EvaluationStartEffectInput,
+    events?: readonly PreparedEvent[]
+): Promise<EvaluationStartOutcome> {
+    const isPoaw = effect.kind === "poaw";
+    const id = isPoaw ? effect.challengeId : generateEvaluationId("cert_job");
+    const params: unknown[] = isPoaw
+        ? [registrationId, effect.challengeId, JSON.stringify(effect.values), effect.nonce, effect.expectedHash, effect.createdAt, effect.expiresAt]
+        : [registrationId, id, effect.agentId, effect.evaluationId, effect.nonce, effect.nonceExpiresAt];
+    const emitted = emitEventCtes(events, "started", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [],
+    });
+    const query = isPoaw
+        ? `/* start-evaluation-with-effect */ WITH started AS (UPDATE evaluation_registrations SET status = 'in_progress', started_at = NOW() WHERE id = $1::text AND status = 'registered' RETURNING id, agent_id),
+            effect AS (INSERT INTO vetting_challenges (id, agent_id, "values", nonce, expected_hash, created_at, expires_at)
+              SELECT $2::text, r.agent_id, $3::jsonb, $4::text, $5::text, $6::timestamptz, $7::timestamptz FROM started JOIN evaluation_registrations r ON r.id = started.id RETURNING id)
+            ${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+            SELECT started.id, started.agent_id FROM started JOIN effect ON true`
+        : `/* start-evaluation-with-effect */ WITH locked AS (
+              SELECT id, agent_id, status FROM evaluation_registrations WHERE id = $1::text FOR UPDATE
+            ), live AS (
+              SELECT cj.* FROM certification_jobs cj JOIN locked l ON l.id = cj.registration_id
+              WHERE cj.status IN ('pending', 'submitted', 'judging', 'completed')
+              ORDER BY cj.created_at DESC LIMIT 1
+            ), effect AS (
+              INSERT INTO certification_jobs (id, registration_id, agent_id, evaluation_id, nonce, nonce_expires_at, status, created_at)
+              SELECT $2::text, l.id, $3::text, $4::text, $5::text, $6::timestamptz, 'pending', NOW()
+              FROM locked l
+              WHERE NOT EXISTS (SELECT 1 FROM live)
+                 OR (l.status = 'registered' AND EXISTS (SELECT 1 FROM live WHERE status = 'pending' AND nonce_expires_at <= NOW()))
+                 OR (l.status = 'in_progress' AND EXISTS (SELECT 1 FROM live WHERE status = 'pending' AND nonce_expires_at <= NOW()))
+              ON CONFLICT (registration_id) WHERE status = 'pending'
+              DO UPDATE SET nonce = EXCLUDED.nonce, nonce_expires_at = EXCLUDED.nonce_expires_at,
+                            created_at = EXCLUDED.created_at, status = 'pending'
+              WHERE certification_jobs.status = 'pending' AND certification_jobs.nonce_expires_at <= NOW()
+              RETURNING id
+            ), started AS (
+              UPDATE evaluation_registrations r SET status = 'in_progress', started_at = NOW()
+              WHERE r.id = $1::text AND r.status = 'registered' AND EXISTS (SELECT 1 FROM effect)
+              RETURNING r.id
+            )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+            SELECT started.id AS started_id, COALESCE(effect.id, live.id) AS job_id
+            FROM locked LEFT JOIN effect ON true LEFT JOIN live ON true`;
+    const transactionResults = await sql!.transaction((txn) => [
+        // D4 completion locks the acting/candidate agent before the registration. Keep this order
+        // for both PoAW and certification starts; ORDER BY prevents crossed two-agent starts.
+        txn`
+          /* start-evaluation-with-effect */
+          SELECT id FROM agents
+          WHERE id = (SELECT agent_id FROM evaluation_registrations WHERE id = ${registrationId})
+             OR id = ${isPoaw ? registrationId : effect.agentId}::text
+          ORDER BY id
+          FOR UPDATE
+        `,
+        txn`SELECT id FROM evaluation_registrations WHERE id = ${registrationId} FOR UPDATE`,
+        txn(query, [...params, ...emitted.params]),
+    ]);
+    const rows = transactionResults[2] as Array<Record<string, unknown>>;
+    if (rows.length === 0 || !rows[0]?.job_id) return { started: false };
+    if (isPoaw) return { started: true, challenge: { id: effect.challengeId, agentId: String((rows[0] as Record<string, unknown>).agent_id), values: effect.values, nonce: effect.nonce, expectedHash: effect.expectedHash, createdAt: effect.createdAt, expiresAt: effect.expiresAt, fetched: false, consumed: false } };
+    const job = await getCertificationJobByRegistration(registrationId);
+    return { started: Boolean(rows[0].started_id), certificationJob: job ?? undefined };
 }
 
 export async function saveEvaluationResult(input: SaveEvaluationResultInput): Promise<SaveEvaluationResultOutcome> {
@@ -397,6 +560,13 @@ export async function saveEvaluationResult(input: SaveEvaluationResultInput): Pr
     const inserted = await completeRegistrationAtomically({
         row: { ...input, resultId, completedAt, pointsEarned, version },
         endProctorSessionId: input.endProctorSessionId,
+        consumeChallengeId: input.consumeChallengeId,
+        certificationJobId: input.certificationJobId,
+        certificationJudgeToken: input.certificationJudgeToken,
+        certificationJudgeCompletedAt: input.certificationJudgeCompletedAt,
+        certificationJudgeModel: input.certificationJudgeModel,
+        certificationJudgeResponse: input.certificationJudgeResponse,
+        events: input.events,
     });
 
     if (!inserted) {
@@ -438,12 +608,35 @@ export async function saveEvaluationResult(input: SaveEvaluationResultInput): Pr
  * Every element after the decisive one re-gates on the result row, because fixed batch elements
  * execute even when the decisive element returned zero rows. Without that, a LOSING completion
  * would still end the proctor session and still project an activity row.
+ *
+ * **M11-2 P1.4 folds the PoAW challenge into this transaction, and the lock order is C14's.**
+ * The executor used to consume the challenge before the route ever reached this function, so a
+ * crash in between burned a valid challenge with no result to show for it. Now the executor only
+ * validates and the challenge travels here as `consumeChallengeId`: the challenge row is LOCKED as
+ * element 2 — `agents -> vetting_challenges`, the same global order the C14 vetting batch takes, so
+ * the two can never deadlock against each other — the decisive statement refuses outright unless
+ * the challenge is still unconsumed, and consumption is the LAST element, gated on the result row.
+ * A failure anywhere rolls consumption back with everything else, which is the whole point.
+ *
+ * The lock is filtered on `consumed_at IS NULL` deliberately: a consumed challenge takes no lock,
+ * the decisive statement's own `EXISTS` then refuses, and the caller reports the standing result
+ * (or `not_actionable`) exactly as it does for any other loser. Expiry is NOT re-checked here —
+ * `consumeVettingChallenge` never checked it either, and the executor owns that clock, so adding it
+ * would silently narrow a window the surfaces publish as 15 seconds from the JS side only.
  */
 async function completeRegistrationAtomically(input: {
     row: Parameters<typeof buildResultInsertGatedOnTransition>[0];
     endProctorSessionId?: string;
+    consumeChallengeId?: string;
+    certificationJobId?: string;
+    certificationJudgeToken?: string;
+    certificationJudgeCompletedAt?: string;
+    certificationJudgeModel?: string;
+    certificationJudgeResponse?: Record<string, unknown>;
+    events?: readonly PreparedEvent[];
 }): Promise<boolean> {
     const { row } = input;
+    const challengeId = input.consumeChallengeId ?? null;
     const recompute = buildAgentPointsRecompute(row.agentId, row.resultId);
     const activity = buildEvaluationResultActivityUpsert(
         {
@@ -461,10 +654,34 @@ async function completeRegistrationAtomically(input: {
         { requireCommitted: true }
     );
 
+    // The decisive element's position moves with the optional challenge lock, so it is computed
+    // rather than written as a literal `1`: a hard-coded index that silently pointed at the lock
+    // would report every completion as refused.
+    const decisiveIndex = challengeId === null ? 1 : 2;
+    const certificationJobId = input.certificationJobId ?? null;
+    const certificationJudgeToken = input.certificationJudgeToken ?? null;
+    const certificationParams = [
+        certificationJobId,
+        certificationJudgeToken,
+        input.certificationJudgeCompletedAt ?? null,
+        input.certificationJudgeModel ?? null,
+        input.certificationJudgeResponse ? JSON.stringify(input.certificationJudgeResponse) : null,
+    ];
+
     try {
         const results = await sql!.transaction((txn) => [
-            txn`/* d4:completion-agent-lock */ SELECT id FROM agents WHERE id = ${row.agentId} FOR UPDATE`,
-            buildResultInsertGatedOnTransition(row)(txn),
+            txn`/* d4:completion-agent-lock */
+              SELECT id FROM agents
+              WHERE id = ${row.agentId}
+                 OR (${row.proctorAgentId ?? null}::text IS NOT NULL AND id = ${row.proctorAgentId ?? null}::text)
+              ORDER BY id
+              FOR UPDATE`,
+            ...(challengeId === null
+                ? []
+                : [
+                      txn`/* d4:completion-challenge-lock */ SELECT id FROM vetting_challenges WHERE id = ${challengeId} AND consumed_at IS NULL FOR UPDATE`,
+                  ]),
+            buildResultInsertGatedOnTransition(row, challengeId, input.events, certificationParams)(txn),
             // The recompute is delta-based and floors at zero (M11-1C); running it for a failed
             // result is a no-op, so it is unconditional apart from the result-row gate.
             txn(recompute.text, recompute.params),
@@ -478,12 +695,23 @@ async function completeRegistrationAtomically(input: {
               WHERE id = ${input.endProctorSessionId ?? null}
                 AND EXISTS (SELECT 1 FROM evaluation_results WHERE id = ${row.resultId})
             `,
+            // LAST, and gated on the result row: a completion that wrote nothing consumes nothing,
+            // so a losing racer's challenge stays spendable.
+            ...(challengeId === null
+                ? []
+                : [
+                      txn`
+              UPDATE vetting_challenges SET consumed_at = NOW()
+              WHERE id = ${challengeId} AND consumed_at IS NULL
+                AND EXISTS (SELECT 1 FROM evaluation_results WHERE id = ${row.resultId})
+            `,
+                  ]),
         ]);
-        return (results[1] as unknown[]).length > 0;
+        return (results[decisiveIndex] as unknown[]).length > 0;
     } catch (error) {
         // A result row already present under a still-actionable registration: the whole transaction
         // rolls back, so the transition never commits without its insert (M11-1 C21).
-        if (!isUniqueViolation(error)) throw error;
+        if (!isExpectedResultUniquenessViolation(error)) throw error;
         return false;
     }
 }
@@ -501,41 +729,121 @@ async function completeRegistrationAtomically(input: {
  *
  * school_id defaults to 'foundation' to match the column DEFAULT on pre-existing rows;
  * getEvaluationResultCount treats NULL and 'foundation' as equivalent either way.
+ *
+ * **`evaluation.completed` is gated on the INSERT, not on the transition arm** (M11-2 P1.4). In
+ * committed state the two are the same gate — the insert reads `FROM transitioned`, and a 23505 on
+ * the insert rolls the transition back with it — but the payload names `result_id`, and an event
+ * gated on the transition alone could describe a result row that the same transaction then failed
+ * to write. `result_id` is store-assigned (`$4`): the id is minted inside `saveEvaluationResult`,
+ * after the action has already decided the event.
+ *
+ * **The challenge gate is part of the DECISION, not a follow-up check.** With a challenge supplied,
+ * the transition only fires while that challenge is unconsumed, so a replayed PoAW submit writes no
+ * result at all rather than writing one and failing to consume.
  */
-function buildResultInsertGatedOnTransition(row: {
-    resultId: string;
-    registrationId: string;
-    agentId: string;
-    evaluationId: string;
-    passed: boolean;
-    score?: number;
-    maxScore?: number;
-    resultData?: Record<string, unknown>;
-    completedAt: string;
-    proctorAgentId?: string;
-    proctorFeedback?: string;
-    pointsEarned: number | null;
-    version: string;
-    schoolId?: string;
-}) {
-    return (txn: EvaluationsTxn) => txn`
-    WITH transitioned AS (
+function buildResultInsertGatedOnTransition(
+    row: {
+        resultId: string;
+        registrationId: string;
+        agentId: string;
+        evaluationId: string;
+        passed: boolean;
+        score?: number;
+        maxScore?: number;
+        resultData?: Record<string, unknown>;
+        completedAt: string;
+        proctorAgentId?: string;
+        proctorFeedback?: string;
+        pointsEarned: number | null;
+        version: string;
+        schoolId?: string;
+    },
+    consumeChallengeId: string | null = null,
+    events?: readonly PreparedEvent[],
+    certificationParams: unknown[] = []
+) {
+    const params: unknown[] = [
+        row.passed ? 'completed' : 'failed',
+        row.completedAt,
+        row.registrationId,
+        row.resultId,
+        row.agentId,
+        row.evaluationId,
+        row.passed,
+        row.score ?? null,
+        row.maxScore ?? null,
+        row.resultData ? JSON.stringify(row.resultData) : null,
+        row.proctorAgentId ?? null,
+        row.proctorFeedback ?? null,
+        row.pointsEarned,
+        row.version,
+        row.schoolId ?? 'foundation',
+        consumeChallengeId,
+        ...certificationParams,
+    ];
+    const emitted = emitEventCtes(events, "inserted", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length
+            ? [{ payloadMergeSql: sqlPayloadObject({ result_id: sqlParam(4, "text") }) }]
+            : [],
+    });
+    return (txn: EvaluationsTxn) =>
+        txn(
+            `
+    WITH certification_gate AS ( /* race:certification-gate */
+      -- D4 lock order is agents -> vetting_challenges -> certification_jobs -> registration.
+      -- Reclaim takes the certification job lock, so this fence must be locked before the
+      -- registration transition can commit.
+      SELECT id FROM certification_jobs
+      WHERE $17::text IS NOT NULL AND id = $17::text AND status = 'judging' AND judge_token = $18::text
+      FOR UPDATE
+    ),
+    transitioned AS (
       UPDATE evaluation_registrations
-      SET status = ${row.passed ? 'completed' : 'failed'}, completed_at = ${row.completedAt}
-      WHERE id = ${row.registrationId} AND status IN ('registered', 'in_progress')
+      SET status = $1, completed_at = $2
+      WHERE id = $3 AND status IN ('registered', 'in_progress')
+        AND (
+          $16::text IS NULL
+          OR EXISTS (SELECT 1 FROM vetting_challenges WHERE id = $16::text AND consumed_at IS NULL)
+        )
+        AND (
+          $17::text IS NULL
+          OR EXISTS (SELECT 1 FROM certification_gate WHERE id = $17::text)
+        )
       RETURNING id
-    )
-    INSERT INTO evaluation_results (
-      id, registration_id, agent_id, evaluation_id, passed, score, max_score,
-      result_data, completed_at, proctor_agent_id, proctor_feedback, points_earned, evaluation_version, school_id
-    )
-    SELECT
-      ${row.resultId}, ${row.registrationId}, ${row.agentId}, ${row.evaluationId}, ${row.passed},
-      ${row.score ?? null}, ${row.maxScore ?? null}, ${row.resultData ? JSON.stringify(row.resultData) : null},
-      ${row.completedAt}, ${row.proctorAgentId ?? null}, ${row.proctorFeedback ?? null}, ${row.pointsEarned}, ${row.version}, ${row.schoolId ?? 'foundation'}
-    FROM transitioned
-    RETURNING id
-  `;
+    ),
+    inserted AS (
+      INSERT INTO evaluation_results (
+        id, registration_id, agent_id, evaluation_id, passed, score, max_score,
+        result_data, completed_at, proctor_agent_id, proctor_feedback, points_earned, evaluation_version, school_id
+      )
+      SELECT
+        $4, $3, $5, $6, $7, $8, $9, $10, $2, $11, $12, $13, $14, $15
+      FROM transitioned
+      RETURNING id
+    ),
+    certification AS (
+      UPDATE certification_jobs
+      SET status = 'completed', judge_completed_at = $19::timestamptz,
+          judge_model = $20::text, judge_response = $21::jsonb
+      WHERE id IN (SELECT id FROM certification_gate)
+        AND status = 'judging' AND judge_token = $18::text
+        AND EXISTS (SELECT 1 FROM inserted)
+      RETURNING id
+    ),
+    superseded AS ( /* a valid judge lease lost to an existing result: finish, do not reclaim */
+      UPDATE certification_jobs
+      SET status = 'completed', error_message = 'superseded_by_existing_result'
+      WHERE id IN (SELECT id FROM certification_gate)
+        AND status = 'judging' AND judge_token = $18::text
+        AND EXISTS (SELECT 1 FROM evaluation_results WHERE registration_id = $3::text)
+        AND NOT EXISTS (SELECT 1 FROM inserted)
+      RETURNING id
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT id FROM inserted
+  `,
+            [...params, ...emitted.params]
+        );
 }
 
 export async function hasEvaluationResultForRegistration(registrationId: string): Promise<boolean> {

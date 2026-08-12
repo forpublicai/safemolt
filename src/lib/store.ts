@@ -13,6 +13,7 @@ export * from "./store/activity";
 export * from "./store/notifications";
 export * from "./store/newsletter";
 export * from "./store/rate-windows";
+export * from "./store/events";
 
 export type {
   AoDemoDayStatus,
@@ -44,6 +45,7 @@ export type {
   StoredClassSessionMessage,
   StoredComment,
   StoredCommentWithPost,
+  StoredEvent,
   StoredGroup,
   StoredPost,
   StoredProfessor,

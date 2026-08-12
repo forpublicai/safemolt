@@ -1,5 +1,5 @@
 import { sql } from "@/lib/db";
-import type { CompleteVettingOutcome, DeleteAgentResult, StoredAgent, VettingChallenge } from "@/lib/store-types";
+import type { AgentClaimOutcome, CompleteVettingOutcome, DeleteAgentResult, StoredAgent, VettingChallenge, VettingChallengeStartOutcome } from "@/lib/store-types";
 import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
 import {
     generateChallengeValues,
@@ -8,7 +8,10 @@ import {
     getChallengeExpiry,
 } from "@/lib/vetting";
 import { recordEvaluationResultActivityEvent, recordFollowActivityEvent } from "../activity/events";
-import { createNotification } from "../notifications/db";
+import { createFollowNotificationIdempotent } from "../notifications/db";
+import type { PreparedEvent } from "@/lib/events/kinds";
+import { emitEventCtes, sqlColumn, sqlParam, sqlPayloadObject } from "../events/statement";
+import { toIsoOrEmpty } from "@/lib/iso-date";
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 
@@ -45,9 +48,37 @@ function nameReleaseHours(): number {
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_NAME_RELEASE_HOURS;
 }
 
+/**
+ * The two events a registration may emit, and the stale-name release it may perform (M11-2 P1.4).
+ *
+ * Kept as one options object rather than two positional parameters because they belong together:
+ * `releaseStaleName` is what makes statement 1 exist, and `registrationExpired` is the event that
+ * rides it. Supplying the event without the release would silently emit nothing.
+ */
+export interface CreateAgentEvents {
+    /** `agent.registered`, gated on the insert's own `RETURNING`. */
+    registered?: readonly PreparedEvent[];
+    /** `agent.registration_expired` — ONE per row the release actually deleted. */
+    registrationExpired?: readonly PreparedEvent[];
+}
+
+export interface CreateAgentOptions {
+    /**
+     * Release a *pristine* unclaimed registration holding this name, in the SAME transaction as the
+     * insert (M11-1 C4's predicate, M11-2 P1.4's batching).
+     *
+     * **Delete and insert are separate batch STATEMENTS, not one CTE.** Data-modifying CTEs share
+     * one snapshot, so an insert in the same statement would collide with the not-yet-deleted unique
+     * name; two statements in one transaction take two snapshots and the second sees the delete.
+     */
+    releaseStaleName?: boolean;
+    events?: CreateAgentEvents;
+}
+
 export async function createAgent(
     name: string,
-    description: string
+    description: string,
+    options?: CreateAgentOptions
 ): Promise<StoredAgent & { claimUrl: string; verificationCode: string }> {
     const id = generateId("agent");
     const apiKey = generateAgentApiKey();
@@ -55,15 +86,43 @@ export async function createAgent(
     const verificationCode = generateVerificationCode();
     const createdAt = new Date().toISOString();
     const metadata = { emoji: pickRandomAgentEmoji() };
+    const insertParams: unknown[] = [id, name, description, apiKey, createdAt, claimToken, verificationCode, JSON.stringify(metadata)];
+    // Store-assigned subject: the agent id is minted here (`$1`). The actor column stays NULL —
+    // registration is unauthenticated, so no agent is acting (see `EventPayloadMap`).
+    const registeredEmit = emitEventCtes(options?.events?.registered, "created", {
+        firstParamIndex: insertParams.length + 1,
+        overrides: options?.events?.registered?.length
+            ? [{ columnSql: { subject_id: sqlParam(1, "text") } }]
+            : [],
+    });
     // The three karma components are named explicitly rather than left to the column defaults
     // (M11-1C). The defaults would cover this INSERT, but naming them keeps this site inside the
     // writer-ownership inventory and keeps the db and memory stores literally parallel — the memory
     // store has no defaults to fall back on, and an omitted field there is `undefined`, which makes
     // the first `+ 1` produce `NaN`.
-    await sql!`
-    INSERT INTO agents (id, name, description, api_key, points, vote_points, evaluation_points, legacy_unattributed_points, follower_count, is_claimed, created_at, claim_token, verification_code, metadata)
-    VALUES (${id}, ${name}, ${description}, ${apiKey}, 0, 0, 0, 0, 0, false, ${createdAt}, ${claimToken}, ${verificationCode}, ${JSON.stringify(metadata)}::jsonb)
-  `;
+    const insert = {
+        text: `
+    WITH created AS (
+      INSERT INTO agents (id, name, description, api_key, points, vote_points, evaluation_points, legacy_unattributed_points, follower_count, is_claimed, created_at, claim_token, verification_code, metadata)
+      VALUES ($1::text, $2::text, $3::text, $4::text, 0, 0, 0, 0, 0, false, $5::timestamptz, $6::text, $7::text, $8::jsonb)
+      RETURNING id
+    )${registeredEmit.ctes.length > 0 ? `, ${registeredEmit.ctes.join(", ")}` : ""}
+    SELECT id FROM created
+  `,
+        params: [...insertParams, ...registeredEmit.params],
+    };
+
+    if (options?.releaseStaleName) {
+        const release = buildStaleNameRelease(name, options.events?.registrationExpired);
+        // **One transaction, and the cleanup's swallow is gone with it.** The standalone helper
+        // logged and continued, because a registration must not fail for a cleanup it did not ask
+        // for; inside the batch that is no longer the choice available — a delete that failed after
+        // its event was rendered would leave a released name with no record, so the whole
+        // registration rolls back and the caller retries. Recorded behavior change (M11-2 P1.4).
+        await sql!.transaction((txn) => [txn(release.text, release.params), txn(insert.text, insert.params)]);
+    } else {
+        await sql!(insert.text, insert.params);
+    }
     const agent: StoredAgent = {
         id,
         name,
@@ -143,23 +202,57 @@ export async function getAgentByClaimToken(claimToken: string): Promise<StoredAg
  *    Fixing the interval is what *activates* the primitive — which is why the predicate ships in
  *    the same commit and the two are gated together.
  *
- * The swallow stays: registration must not fail because cleanup did. M11-2 P1.4 batches this
- * delete with the insert, and a loud failure becomes correct there.
+ * The swallow stays **on this standalone export**, whose one remaining caller is the dashboard
+ * provisioning path (`provision-public-ai-agent.ts`, outside the Surface bound): there the cleanup
+ * is still its own auto-committed statement and a failure must not fail provisioning. The agent
+ * REGISTRATION path no longer calls it — M11-2 P1.4 batches the same delete with the insert through
+ * `createAgent({ releaseStaleName: true })`, where a loud failure is the correct one. The predicate
+ * lives in one place (`staleNameReleasePredicate`) so the two callers cannot drift.
  */
 export async function cleanupStaleUnclaimedAgent(name: string): Promise<void> {
     try {
-        await sql!`
+        const release = buildStaleNameRelease(name);
+        await sql!(release.text, release.params);
+    } catch (e) {
+        // Log but don't fail provisioning if cleanup fails
+        console.error(`[cleanupStaleUnclaimedAgent] Failed to cleanup ${name}:`, e);
+    }
+}
+
+/**
+ * The stale-name release as one statement, with its events rendered per DELETED ROW.
+ *
+ * `rowSource` is what makes that per-row shape possible: the fragment selects `FROM released`, so a
+ * release that removed two rows (it cannot today — the name is unique — but the shape is the
+ * statement's, not the index's) emits two events, each carrying its own subject. A release that
+ * matched nothing emits none, because every event is still gated on the same CTE.
+ */
+function buildStaleNameRelease(
+    name: string,
+    events?: readonly PreparedEvent[]
+): { text: string; params: unknown[] } {
+    const params: unknown[] = [name, nameReleaseHours()];
+    const emitted = emitEventCtes(events, "released", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length
+            ? [{ rowSource: "released", columnSql: { subject_id: sqlColumn("released.id") } }]
+            : [],
+    });
+    return {
+        text: `
+    WITH released AS (
       DELETE FROM agents
-      WHERE LOWER(name) = LOWER(${name})
+      WHERE LOWER(name) = LOWER($1::text)
         AND is_claimed = false
         AND is_vetted = false
         AND last_active_at IS NULL
-        AND created_at < NOW() - make_interval(hours => ${nameReleaseHours()})
-    `;
-    } catch (e) {
-        // Log but don't fail registration if cleanup fails
-        console.error(`[cleanupStaleUnclaimedAgent] Failed to cleanup ${name}:`, e);
-    }
+        AND created_at < NOW() - make_interval(hours => $2::int)
+      RETURNING id
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT id FROM released
+  `,
+        params: [...params, ...emitted.params],
+    };
 }
 
 /**
@@ -224,16 +317,62 @@ export async function authenticateAndTouchByApiKey(
  * not run" — a swallow that would have hidden any failure of a *claim*, on a column
  * `scripts/schema.sql` has declared for as long as the table has existed.
  */
-export async function setAgentClaimed(id: string, owner?: string, xFollowerCount?: number): Promise<boolean> {
-    const rows = await sql!`
-    UPDATE agents
-    SET is_claimed = true,
-        owner = COALESCE(${owner ?? null}, owner),
-        x_follower_count = COALESCE(${xFollowerCount ?? null}, x_follower_count)
-    WHERE id = ${id} AND is_claimed = false
-    RETURNING id
-  `;
+export async function setAgentClaimed(
+    id: string,
+    owner?: string,
+    xFollowerCount?: number,
+    events?: readonly PreparedEvent[]
+): Promise<boolean> {
+    const params: unknown[] = [id, owner ?? null, xFollowerCount ?? null];
+    // Gated on the conditional claim: a second claimant matches zero rows, writes nothing, emits
+    // nothing. The subject is the agent, which the caller resolved from the claim token — no
+    // substitution is needed, unlike the Cognito path, whose statement resolves the token itself.
+    const emitted = emitEventCtes(events, "claimed", { firstParamIndex: params.length + 1 });
+    const rows = await sql!(
+        `
+    WITH claimed AS (
+      UPDATE agents
+      SET is_claimed = true,
+          owner = COALESCE($2::text, owner),
+          x_follower_count = COALESCE($3::int, x_follower_count)
+      WHERE id = $1::text AND is_claimed = false
+      RETURNING id
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT id FROM claimed
+  `,
+        [...params, ...emitted.params]
+    );
     return rows.length > 0;
+}
+
+export async function setAgentClaimedWithOutcome(
+    id: string,
+    owner?: string,
+    xFollowerCount?: number,
+    events?: readonly PreparedEvent[]
+): Promise<AgentClaimOutcome<StoredAgent>> {
+    const params: unknown[] = [id, owner ?? null, xFollowerCount ?? null];
+    const emitted = emitEventCtes(events, "claimed", { firstParamIndex: params.length + 1 });
+    const rows = await sql!(
+        `WITH target AS (SELECT * FROM agents WHERE id = $1::text FOR UPDATE),
+         claimed AS (
+           UPDATE agents AS a SET is_claimed = true,
+             owner = COALESCE($2::text, a.owner),
+             x_follower_count = COALESCE($3::int, a.x_follower_count)
+           FROM target WHERE a.id = target.id AND target.is_claimed = false
+           RETURNING a.*
+         )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+         SELECT target.id AS target_id, target.is_claimed AS target_claimed,
+                claimed.* FROM target LEFT JOIN claimed ON true`,
+        [...params, ...emitted.params]
+    );
+    const row = rows[0] as Record<string, unknown> | undefined;
+    const claimed = Boolean(row?.id && row?.target_id);
+    return {
+        agentExists: Boolean(row?.target_id),
+        claimed,
+        ...(claimed ? { agent: rowToAgent(row!) } : {}),
+    };
 }
 
 /**
@@ -259,26 +398,72 @@ export async function setAgentClaimed(id: string, owner?: string, xFollowerCount
 export async function claimAgentForHumanUser(
     claimToken: string,
     humanUserId: string,
-    owner?: string
+    owner?: string,
+    events?: readonly PreparedEvent[]
 ): Promise<StoredAgent | null> {
     if (claimToken.startsWith(DISABLED_CREDENTIAL_PREFIX)) return null;
-    const rows = await sql!`
+    const params: unknown[] = [claimToken, owner ?? null, humanUserId];
+    // **`subject_id` is STORE-ASSIGNED here, and that is a correctness rule.** This statement
+    // resolves the claim TOKEN, and its resolution is the one that claimed the row; the caller's
+    // pre-read exists only for the 404. Taking the id from that read would let a token re-issued in
+    // the window name an agent this statement never touched — the rule `followAgent` follows.
+    const emitted = emitEventCtes(events, "claimed", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length
+            ? [{ rowSource: "claimed", columnSql: { subject_id: sqlColumn("claimed.id") } }]
+            : [],
+    });
+    const rows = await sql!(
+        `
     WITH claimed AS (
       UPDATE agents
-      SET is_claimed = true, owner = COALESCE(${owner ?? null}, owner)
-      WHERE claim_token = ${claimToken} AND is_claimed = false
+      SET is_claimed = true, owner = COALESCE($2::text, owner)
+      WHERE claim_token = $1::text AND is_claimed = false
       RETURNING *
     ),
     linked AS (
       INSERT INTO user_agents (user_id, agent_id, role)
-      SELECT ${humanUserId}, id, 'owner' FROM claimed
+      SELECT $3::text, id, 'owner' FROM claimed
       ON CONFLICT (user_id, agent_id) DO UPDATE SET role = EXCLUDED.role
       RETURNING agent_id
-    )
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
     SELECT * FROM claimed
-  `;
+  `,
+        [...params, ...emitted.params]
+    );
     const r = rows[0] as Record<string, unknown> | undefined;
     return r ? rowToAgent(r) : null;
+}
+
+export async function claimAgentForHumanUserWithOutcome(
+    claimToken: string,
+    humanUserId: string,
+    owner?: string,
+    events?: readonly PreparedEvent[]
+): Promise<AgentClaimOutcome<StoredAgent>> {
+    if (claimToken.startsWith(DISABLED_CREDENTIAL_PREFIX)) return { agentExists: false, claimed: false };
+    const params: unknown[] = [claimToken, owner ?? null, humanUserId];
+    const emitted = emitEventCtes(events, "claimed", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length ? [{ rowSource: "claimed", columnSql: { subject_id: sqlColumn("claimed.id") } }] : [],
+    });
+    const rows = await sql!(
+        `WITH target AS (SELECT * FROM agents WHERE claim_token = $1::text FOR UPDATE),
+         claimed AS (
+           UPDATE agents AS a SET is_claimed = true, owner = COALESCE($2::text, a.owner)
+           FROM target WHERE a.id = target.id AND target.is_claimed = false RETURNING a.*
+         ),
+         linked AS (
+           INSERT INTO user_agents (user_id, agent_id, role)
+           SELECT $3::text, id, 'owner' FROM claimed
+           ON CONFLICT (user_id, agent_id) DO UPDATE SET role = EXCLUDED.role
+         )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+         SELECT target.id AS target_id, claimed.* FROM target LEFT JOIN claimed ON true`,
+        [...params, ...emitted.params]
+    );
+    const row = rows[0] as Record<string, unknown> | undefined;
+    const claimed = Boolean(row?.id);
+    return { agentExists: Boolean(row?.target_id), claimed, ...(claimed ? { agent: rowToAgent(row!) } : {}) };
 }
 
 export async function setAgentUnclaimed(id: string): Promise<void> {
@@ -307,42 +492,126 @@ export async function countAgents(): Promise<number> {
     return Number((rows[0] as Record<string, unknown> | undefined)?.count ?? 0);
 }
 
-export async function followAgent(followerId: string, followeeName: string): Promise<boolean> {
+/**
+ * Follow an agent — **one statement** for the row, the counter and the event (M11-2 P1.2).
+ *
+ * It used to be a SELECT, then an INSERT, then a separate counter bump, each auto-committed on this
+ * driver: two concurrent follows of one agent could both read "not following" and one of them lost
+ * its counter increment, and a crash between the insert and the bump left the count permanently
+ * short. `ON CONFLICT DO NOTHING RETURNING` makes the insert itself the decision, and everything
+ * else — the counter, the event, and the two transitional projections below — hangs off it.
+ *
+ * **The followee is a LOCKED target, and that is what turns an error into a refusal.**
+ * `following.followee_id` is an FK, so a bare insert against an agent who withdrew mid-flight raises
+ * `23503`; `INSERT … SELECT FROM followee` against a `FOR KEY SHARE` row yields zero rows instead.
+ * `FOR KEY SHARE` and not a stronger mode: it conflicts with the `FOR UPDATE` a withdrawal's
+ * `DELETE FROM agents` takes — the liveness fact that matters — while leaving the `FOR NO KEY
+ * UPDATE` the counter bump and every karma write take alone, so two agents following each other at
+ * the same moment cannot deadlock on their own FK checks.
+ *
+ * **Both transitional projections are now gated on FIRST INSERTION, and the activity one is a
+ * recorded behavior change** (P1.2's follow-alignment paragraph). The inline writer used to refresh
+ * the trail on every re-follow while notifying only on the first, but the consumer's effect is keyed
+ * to the decisive insert and a re-follow emits no event at all — so without this every duplicate
+ * follow would log a false payload mismatch in the shadow soak. A re-follow no longer bumps the
+ * trail timestamp. The memory store makes the same change.
+ */
+export async function followAgent(
+    followerId: string,
+    followeeName: string,
+    events?: readonly PreparedEvent[]
+): Promise<boolean> {
+    // **The one authoritative resolution.** Everything below — the locked target, the `following`
+    // row, the counter, both projections and the event's `subject_id` — uses THIS id. The action
+    // resolves the name too, but only to choose between its two refusal strings; an event built
+    // from that read would name a different agent the moment a rename (or a withdrawal and a
+    // re-registration of the freed name) landed between the two.
     const followee = await getAgentByName(followeeName);
     if (!followee || followee.id === followerId) return false;
-    const existing = await sql!`SELECT 1 FROM following WHERE follower_id = ${followerId} AND followee_id = ${followee.id} LIMIT 1`;
-    const alreadyFollowing = existing.length > 0;
-    if (!alreadyFollowing) {
-        await sql!`INSERT INTO following (follower_id, followee_id) VALUES (${followerId}, ${followee.id})`;
-        await sql!`UPDATE agents SET follower_count = follower_count + 1 WHERE id = ${followee.id}`;
-    }
-    const createdAt = new Date().toISOString();
-    await recordFollowActivityEvent({
-        followerId,
-        followeeId: followee.id,
-        followeeName: followee.name,
-        followeeDisplayName: followee.displayName,
+    const params: unknown[] = [followerId, followee.id];
+    const emitted = emitEventCtes(events, "followed", {
+        firstParamIndex: params.length + 1,
+        // Store-assigned, positionally on the PRIMARY event: `$2` is the id resolved above, still a
+        // bound parameter — only its number is interpolated.
+        overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(2, "text") } }] : [],
+    });
+    const primary = emitted.names[0] ?? null;
+    const rows = await sql!(
+        `
+    WITH target AS (
+      SELECT id FROM agents WHERE id = $2::text FOR KEY SHARE
+    ),
+    followed AS (
+      INSERT INTO following (follower_id, followee_id)
+      SELECT $1::text, t.id FROM target t
+      ON CONFLICT DO NOTHING
+      RETURNING followee_id
+    ),
+    bumped AS (
+      UPDATE agents SET follower_count = follower_count + 1
+      WHERE id IN (SELECT followee_id FROM followed)
+      RETURNING id
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT (SELECT count(*) FROM target)::int AS target_exists,
+           (SELECT count(*) FROM followed)::int AS inserted${
+               primary
+                   ? `,\n           (SELECT id FROM ${primary}) AS emitted_event_id,\n           (SELECT created_at FROM ${primary}) AS emitted_event_created_at`
+                   : ""
+           }
+  `,
+        [...params, ...emitted.params]
+    );
+    const row = (rows[0] ?? {}) as {
+        target_exists?: number;
+        inserted?: number;
+        emitted_event_id?: number | string | null;
+        emitted_event_created_at?: Date | string | null;
+    };
+    // The followee withdrew between the name lookup and the statement: nothing written, nothing
+    // emitted, and the same refusal the caller gets for a name that never existed.
+    if (!row.target_exists) return false;
+    if (!row.inserted) return true;
+
+    await stampTransitionalFollowProjections(followerId, followee, row);
+    return true;
+}
+
+/**
+ * The two transitional projections a first follow writes, stamped from the event its own statement
+ * emitted. **P2.1 deletes both calls.**
+ *
+ * Extracted because it is one job — "correlate the legacy projections with the event" — done twice,
+ * and because both halves need the same two values decoded from the same row. `followAgent` keeps
+ * the decision; this keeps the stamping.
+ */
+async function stampTransitionalFollowProjections(
+    followerId: string,
+    followee: StoredAgent,
+    row: { emitted_event_id?: number | string | null; emitted_event_created_at?: Date | string | null }
+): Promise<void> {
+    const sourceEventId = row.emitted_event_id == null ? undefined : Number(row.emitted_event_id);
+    // The event's own `created_at`, which is what the activity consumer projects into `occurred_at`
+    // for this kind — a follow carries no timestamp anywhere else. Falling back to a local clock
+    // only for the callers that emitted no event at all.
+    const createdAt = toIsoOrEmpty(row.emitted_event_created_at) || new Date().toISOString();
+    await recordFollowActivityEvent(
+        {
+            followerId,
+            followeeId: followee.id,
+            followeeName: followee.name,
+            followeeDisplayName: followee.displayName,
+            createdAt,
+        },
+        { sourceEventId }
+    );
+    // Through the consumer's own conflict-tolerant writer, so the two race for Decision 6's one key
+    // instead of producing a duplicate.
+    await createFollowNotificationIdempotent({
+        dedupKey: sourceEventId === undefined ? null : `new_follower:${followee.id}:${sourceEventId}`,
+        recipientAgentId: followee.id,
+        actorAgentId: followerId,
         createdAt,
     });
-    if (!alreadyFollowing) {
-        const followerRows = await sql!`SELECT id, name, display_name FROM agents WHERE id = ${followerId} LIMIT 1`;
-        const followerRow = followerRows[0] as { id?: string; name?: string; display_name?: string | null } | undefined;
-        await createNotification({
-            agentId: followee.id,
-            type: "new_follower",
-            priority: "normal",
-            actor: {
-                id: followerId,
-                name: followerRow?.name ?? followerId,
-                display_name: followerRow?.display_name ?? null,
-            },
-            target: { type: "agent", id: followee.id, name: followee.name },
-            href: `/u/${followerRow?.name ?? followerId}`,
-            metadata: {},
-            createdAt,
-        });
-    }
-    return true;
 }
 
 /**
@@ -355,20 +624,41 @@ export async function followAgent(followerId: string, followeeName: string): Pro
  *
  * The CTE deletes from `following` and updates `agents`: two different tables, which is what makes
  * the shape legal. A data-modifying CTE cannot touch the same *row* twice.
+ *
+ * M11-2 P1.2 adds `agent.unfollowed`, gated on the same `removed` row the decrement is gated on, so
+ * an unfollow that removed nothing emits nothing. The kind is history-only: no consumer has an
+ * effect for it, in any manifest.
  */
-export async function unfollowAgent(followerId: string, followeeName: string): Promise<boolean> {
+export async function unfollowAgent(
+    followerId: string,
+    followeeName: string,
+    events?: readonly PreparedEvent[]
+): Promise<boolean> {
+    // The one authoritative resolution — see `followAgent`. The event's `subject_id` is filled from
+    // it rather than from any read the caller made.
     const followee = await getAgentByName(followeeName);
     if (!followee) return false;
-    const rows = await sql!`
+    const params: unknown[] = [followerId, followee.id];
+    const emitted = emitEventCtes(events, "removed", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(2, "text") } }] : [],
+    });
+    const rows = await sql!(
+        `
     WITH removed AS (
       DELETE FROM following
-      WHERE follower_id = ${followerId} AND followee_id = ${followee.id}
+      WHERE follower_id = $1::text AND followee_id = $2::text
       RETURNING followee_id
-    )
-    UPDATE agents SET follower_count = GREATEST(0, follower_count - 1)
-    WHERE id IN (SELECT followee_id FROM removed)
-    RETURNING id
-  `;
+    ),
+    decremented AS (
+      UPDATE agents SET follower_count = GREATEST(0, follower_count - 1)
+      WHERE id IN (SELECT followee_id FROM removed)
+      RETURNING id
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT id FROM decremented
+  `,
+        [...params, ...emitted.params]
+    );
     return rows.length > 0;
 }
 
@@ -524,20 +814,69 @@ function rowToVettingChallenge(r: Record<string, unknown>): VettingChallenge {
     };
 }
 
-export async function createVettingChallenge(agentId: string): Promise<VettingChallenge> {
+export async function createVettingChallenge(
+    agentId: string,
+    events?: readonly PreparedEvent[]
+): Promise<VettingChallenge> {
     const id = generateChallengeId();
     const values = generateChallengeValues();
     const nonce = generateNonce();
     const expectedHash = computeExpectedHash(values, nonce);
     const createdAt = new Date().toISOString();
     const expiresAt = getChallengeExpiry();
+    const params: unknown[] = [id, agentId, JSON.stringify(values), nonce, expectedHash, createdAt, expiresAt];
+    // Gated on the insert. The subject is the AGENT (the caller's own id), not the challenge: a
+    // challenge is a 15-second credential that the retention sweep deletes, and an event whose
+    // subject is a row nothing keeps names nothing afterwards.
+    const emitted = emitEventCtes(events, "created", { firstParamIndex: params.length + 1 });
 
-    await sql!`
-    INSERT INTO vetting_challenges (id, agent_id, "values", nonce, expected_hash, created_at, expires_at)
-    VALUES (${id}, ${agentId}, ${JSON.stringify(values)}::jsonb, ${nonce}, ${expectedHash}, ${createdAt}, ${expiresAt})
-  `;
+    await sql!(
+        `
+    WITH created AS (
+      INSERT INTO vetting_challenges (id, agent_id, "values", nonce, expected_hash, created_at, expires_at)
+      VALUES ($1::text, $2::text, $3::jsonb, $4::text, $5::text, $6::timestamptz, $7::timestamptz)
+      RETURNING id
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT id FROM created
+  `,
+        [...params, ...emitted.params]
+    );
 
     return { id, agentId, values, nonce, expectedHash, createdAt, expiresAt, fetched: false, consumed: false };
+}
+
+export async function createVettingChallengeIfNotVetted(
+    agentId: string,
+    events?: readonly PreparedEvent[]
+): Promise<VettingChallengeStartOutcome> {
+    const id = generateChallengeId();
+    const values = generateChallengeValues();
+    const nonce = generateNonce();
+    const expectedHash = computeExpectedHash(values, nonce);
+    const createdAt = new Date().toISOString();
+    const expiresAt = getChallengeExpiry();
+    const params: unknown[] = [id, agentId, JSON.stringify(values), nonce, expectedHash, createdAt, expiresAt];
+    const emitted = emitEventCtes(events, "created", { firstParamIndex: params.length + 1 });
+    const rows = await sql!(
+        `WITH target AS (SELECT id, is_vetted FROM agents WHERE id = $2::text FOR UPDATE),
+          created AS (
+            INSERT INTO vetting_challenges (id, agent_id, "values", nonce, expected_hash, created_at, expires_at)
+            SELECT $1::text, $2::text, $3::jsonb, $4::text, $5::text, $6::timestamptz, $7::timestamptz
+            FROM target WHERE target.is_vetted = false RETURNING id
+          )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+          SELECT EXISTS (SELECT 1 FROM target) AS agent_exists,
+                 EXISTS (SELECT 1 FROM created) AS created,
+                 COALESCE((SELECT is_vetted FROM target), false) AS already_vetted`,
+        [...params, ...emitted.params]
+    );
+    const result = rows[0] as Record<string, unknown>;
+    const created = result.created === true;
+    return {
+        agentExists: result.agent_exists === true,
+        created,
+        alreadyVetted: result.already_vetted === true,
+        ...(created ? { challenge: { id, agentId, values, nonce, expectedHash, createdAt, expiresAt, fetched: false, consumed: false } } : {}),
+    };
 }
 
 export async function getVettingChallenge(id: string): Promise<VettingChallenge | null> {
@@ -616,10 +955,28 @@ export const VETTING_BOOTSTRAP_EVALUATIONS = ["poaw", "identity-check"] as const
  * the same post-decisive-statement placement `saveEvaluationResult` has today. Making activity a
  * batch element is M11-1b D4's "batchable dependencies" work, not this chunk's.
  */
+/**
+ * The events a vetting completion may emit, grouped by the batch element that gates each one.
+ *
+ * Keyed by evaluation id rather than positionally, because the caller names the bootstrap
+ * evaluations by id (`VETTING_BOOTSTRAP_EVALUATIONS`) and a positional list would silently pair the
+ * wrong event with the wrong evaluation if that constant were ever reordered.
+ */
+export interface CompleteVettingEvents {
+    /** `agent.vetted`, gated on the vetted flip. */
+    vetted?: readonly PreparedEvent[];
+    /** Per bootstrap evaluation: the registration arm's event and the result arm's. */
+    bootstrap?: Record<
+        string,
+        { registered?: readonly PreparedEvent[]; completed?: readonly PreparedEvent[] }
+    >;
+}
+
 export async function completeVetting(
     agentId: string,
     challengeId: string,
-    identityMd: string
+    identityMd: string,
+    events?: CompleteVettingEvents
 ): Promise<CompleteVettingOutcome> {
     // Throwing/derivation work first: the field computation reads the definition loader and may
     // throw; nothing that follows may run without it.
@@ -642,7 +999,7 @@ export async function completeVetting(
         };
     });
 
-    const attempt = () => runCompleteVettingBatch(agentId, challengeId, identityMd, bootstrap);
+    const attempt = () => runCompleteVettingBatch(agentId, challengeId, identityMd, bootstrap, events);
 
     let results: Array<Array<Record<string, unknown>>>;
     try {
@@ -653,7 +1010,16 @@ export async function completeVetting(
     }
 
     const consumed = results[results.length - 1];
-    if (!Array.isArray(consumed) || consumed.length === 0) return { outcome: "unavailable" };
+    if (!Array.isArray(consumed) || consumed.length === 0) {
+        const agentRow = (results[0]?.[0] ?? {}) as Record<string, unknown>;
+        const challengeRow = (results[1]?.[0] ?? {}) as Record<string, unknown>;
+        const reason = !agentRow.id || !challengeRow.id ? "not_found"
+            : challengeRow.agent_id !== agentId ? "mismatch"
+                : challengeRow.consumed_at != null ? "consumed"
+                    : challengeRow.expires_at && new Date(String(challengeRow.expires_at)).getTime() <= Date.now() ? "expired"
+                        : Boolean(agentRow.is_vetted) ? "already_vetted" : "expired";
+        return { outcome: "unavailable", reason };
+    }
 
     const completedAt = new Date().toISOString();
     const created: Array<{ evaluationId: string; resultId: string }> = [];
@@ -696,74 +1062,145 @@ function runCompleteVettingBatch(
         registrationId: string;
         resultId: string;
         resultData: Record<string, unknown>;
-    }>
+    }>,
+    events?: CompleteVettingEvents
 ): Promise<Array<Array<Record<string, unknown>>>> {
     const now = new Date().toISOString();
+    const vettedParams: unknown[] = [agentId, identityMd, challengeId];
+    // The decision token is stamped in the locked transition and remains transaction-local for
+    // every later statement in this batch. A second challenge can be live, but it cannot inherit
+    // the winning call's effects.
+    const vettedEmit = emitEventCtes(events?.vetted, "decision", {
+        firstParamIndex: vettedParams.length + 1,
+    });
     return sql!.transaction((txn) => [
-        txn`
-      SELECT id FROM agents WHERE id = ${agentId} FOR UPDATE
+            txn`
+      SELECT id, is_vetted FROM agents WHERE id = ${agentId} FOR UPDATE
     `,
         txn`
       SELECT id FROM vetting_challenges
-      WHERE id = ${challengeId} AND agent_id = ${agentId} AND consumed_at IS NULL AND expires_at > NOW()
+      WHERE id = ${challengeId}
       FOR UPDATE
     `,
-        txn`
-      UPDATE agents SET is_vetted = true, identity_md = ${identityMd}
-      WHERE id = ${agentId}
-        AND EXISTS (
-          SELECT 1 FROM vetting_challenges
-          WHERE id = ${challengeId} AND agent_id = ${agentId} AND consumed_at IS NULL AND expires_at > NOW()
-        )
+        txn(
+            `
+      WITH vetted AS (
+        UPDATE agents SET is_vetted = true, identity_md = $2::text
+        WHERE id = $1::text
+          AND is_vetted = false
+          AND EXISTS (
+            SELECT 1 FROM vetting_challenges
+            WHERE id = $3::text AND agent_id = $1::text AND consumed_at IS NULL AND expires_at > NOW()
+          )
+        RETURNING id
+      ),
+      decision AS (
+        SELECT id, set_config('safemolt.vetting_decision', $3::text, true) AS token
+        FROM vetted
+      )${vettedEmit.ctes.length > 0 ? `, ${vettedEmit.ctes.join(", ")}` : ""}
+      SELECT id FROM decision
     `,
-        ...bootstrap.map(
-            (spec) => txn`
+            [...vettedParams, ...vettedEmit.params]
+        ),
+        ...bootstrap.map((spec) => {
+            const specEvents = events?.bootstrap?.[spec.evaluationId];
+            const params: unknown[] = [
+                challengeId,
+                agentId,
+                spec.evaluationId,
+                now,
+                spec.registrationId,
+                spec.resultId,
+                JSON.stringify(spec.resultData),
+                spec.pointsEarned,
+                spec.evaluationVersion,
+            ];
+            // **Two renders, one statement, two DIFFERENT gates** — the composition `emitEventCtes`
+            // documents. `evaluation.registered` rides the fresh-registration arm only, so an agent
+            // that pre-registered reuses its row and emits no registration event; the completion
+            // event rides the result insert. Distinct prefixes so the two blocks do not both define
+            // `ev_0`, and the SECOND render is told the caller's boundary explicitly: its own
+            // `firstParamIndex` sits above the first render's placeholders, and left to the default
+            // a `sqlParam` there could reach into the first event's bound values.
+            const boundary = params.length + 1;
+            const registeredEmit = emitEventCtes(specEvents?.registered, "inserted_reg", {
+                firstParamIndex: boundary,
+                callerParamBoundary: boundary,
+                namePrefix: "evreg",
+                overrides: specEvents?.registered?.length
+                    ? [{ columnSql: { subject_id: sqlParam(5, "text") } }]
+                    : [],
+            });
+            const completedEmit = emitEventCtes(specEvents?.completed, "inserted_result", {
+                firstParamIndex: boundary + registeredEmit.params.length,
+                callerParamBoundary: boundary,
+                namePrefix: "evres",
+                // The subject is the EFFECTIVE registration — freshly inserted or reused — and only
+                // the statement knows which, so it comes from that CTE's own column rather than
+                // from either candidate id. One row of `effective`, one event.
+                overrides: specEvents?.completed?.length
+                    ? [
+                          {
+                              rowSource: "effective",
+                              columnSql: { subject_id: sqlColumn("effective.id") },
+                              payloadMergeSql: sqlPayloadObject({ result_id: sqlParam(6, "text") }),
+                          },
+                      ]
+                    : [],
+            });
+            const emittedCtes = [...registeredEmit.ctes, ...completedEmit.ctes];
+            return txn(
+                `
       WITH gate AS (
         SELECT 1 AS ok FROM vetting_challenges
-        WHERE id = ${challengeId} AND agent_id = ${agentId} AND consumed_at IS NULL AND expires_at > NOW()
+        WHERE id = $1::text AND agent_id = $2::text AND consumed_at IS NULL AND expires_at > NOW()
       ),
       active_reg AS (
         SELECT id FROM evaluation_registrations
-        WHERE agent_id = ${agentId} AND evaluation_id = ${spec.evaluationId}
+        WHERE agent_id = $2::text AND evaluation_id = $3::text
           AND status IN ('registered', 'in_progress')
           AND EXISTS (SELECT 1 FROM gate)
           AND NOT EXISTS (
             SELECT 1 FROM evaluation_results
-            WHERE agent_id = ${agentId} AND evaluation_id = ${spec.evaluationId} AND passed = true
+            WHERE agent_id = $2::text AND evaluation_id = $3::text AND passed = true
           )
         ORDER BY registered_at DESC
         LIMIT 1
       ),
       transitioned AS (
-        UPDATE evaluation_registrations SET status = 'completed', completed_at = ${now}
+        UPDATE evaluation_registrations SET status = 'completed', completed_at = $4::timestamptz
         WHERE id IN (SELECT id FROM active_reg)
         RETURNING id
       ),
       inserted_reg AS (
         INSERT INTO evaluation_registrations (id, agent_id, evaluation_id, registered_at, status, completed_at, school_id, school_scope_trusted)
-        SELECT ${spec.registrationId}, ${agentId}, ${spec.evaluationId}, ${now}, 'completed', ${now}, 'foundation', true
+        SELECT $5::text, $2::text, $3::text, $4::timestamptz, 'completed', $4::timestamptz, 'foundation', true
         WHERE EXISTS (SELECT 1 FROM gate)
           AND NOT EXISTS (
             SELECT 1 FROM evaluation_results
-            WHERE agent_id = ${agentId} AND evaluation_id = ${spec.evaluationId} AND passed = true
+            WHERE agent_id = $2::text AND evaluation_id = $3::text AND passed = true
           )
           AND NOT EXISTS (SELECT 1 FROM active_reg)
         RETURNING id
       ),
       effective AS (
         SELECT id FROM transitioned UNION ALL SELECT id FROM inserted_reg
-      )
-      INSERT INTO evaluation_results (
-        id, registration_id, agent_id, evaluation_id, passed, result_data, completed_at,
-        points_earned, evaluation_version, school_id
-      )
-      SELECT ${spec.resultId}, effective.id, ${agentId}, ${spec.evaluationId}, true,
-        ${JSON.stringify(spec.resultData)}::jsonb, ${now}, ${spec.pointsEarned},
-        ${spec.evaluationVersion}, 'foundation'
-      FROM effective
-      RETURNING id
-    `
-        ),
+      ),
+      inserted_result AS (
+        INSERT INTO evaluation_results (
+          id, registration_id, agent_id, evaluation_id, passed, result_data, completed_at,
+          points_earned, evaluation_version, school_id
+        )
+        SELECT $6::text, effective.id, $2::text, $3::text, true,
+          $7::jsonb, $4::timestamptz, $8, $9::text, 'foundation'
+        FROM effective
+        RETURNING id
+      )${emittedCtes.length > 0 ? `, ${emittedCtes.join(", ")}` : ""}
+      SELECT id FROM inserted_result
+    `,
+                [...params, ...registeredEmit.params, ...completedEmit.params]
+            );
+        }),
         // Same element, same position in the fixed array, same live-challenge gate verbatim — only
         // the arithmetic changes (M11-1C). It is the delta form for the reason
         // `updateAgentPointsFromEvaluations` explains: an absolute `points = SUM(points_earned)`
@@ -781,10 +1218,11 @@ function runCompleteVettingBatch(
             FROM evaluation_results
             WHERE agent_id = ${agentId} AND passed = true
           ) - evaluation_points))
-      WHERE id = ${agentId}
+        WHERE id = ${agentId}
         AND EXISTS (
           SELECT 1 FROM vetting_challenges
-          WHERE id = ${challengeId} AND agent_id = ${agentId} AND consumed_at IS NULL AND expires_at > NOW()
+          WHERE id = ${challengeId} AND agent_id = ${agentId}
+            AND consumed_at IS NULL AND expires_at > NOW()
         )
     `,
         txn`
@@ -853,6 +1291,33 @@ export async function deleteAgent(agentId: string): Promise<DeleteAgentResult> {
     `,
             txn`SELECT id FROM comments WHERE author_id = ${agentId} ORDER BY id FOR UPDATE`,
             txn`DELETE FROM agents WHERE id = ${agentId}`,
+            // The withdrawn agent's FOLLOW projections, cleaned in the same transaction as the
+            // agent row — the same projection-cleanup philosophy `deletePost`'s batch applies
+            // (M11-1b D1), applied to the one leak withdrawal still had.
+            //
+            // A `follow:{follower}:{followee}` trail row survived its followee's withdrawal
+            // forever: nothing here removed it, and its title, `/u/{name}` href and
+            // `metadata.followee_name` all describe an agent that no longer exists. M11-2 made it
+            // visible rather than creating it — the activity consumer locks the FOLLOWEE and skips
+            // when it is gone, so the legacy row and the consumer disagreed permanently and the
+            // shadow soak would have read that as a consumer defect.
+            //
+            // Contexts FIRST: they are found through the event rows' `entity_id`, so deleting the
+            // events first would leave nothing to join. Only the FOLLOWEE side is cleaned — a
+            // withdrawn FOLLOWER's row stays, deliberately, because the consumer still writes that
+            // row (it falls back to the raw id, as the inline notification writer always has).
+            txn`
+      DELETE FROM activity_contexts
+      WHERE activity_kind = 'follow'
+        AND activity_id IN (
+          SELECT entity_id FROM activity_events
+          WHERE kind = 'follow' AND metadata->>'followee_id' = ${agentId}
+        )
+    `,
+            txn`
+      DELETE FROM activity_events
+      WHERE kind = 'follow' AND metadata->>'followee_id' = ${agentId}
+    `,
         ]);
         return { ok: true };
     } catch (e: unknown) {

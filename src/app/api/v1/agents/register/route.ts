@@ -1,4 +1,4 @@
-import { createAgent, cleanupStaleUnclaimedAgent } from "@/lib/store";
+import { registerAgent } from "@/lib/actions/agents";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { isEmailConfigured, sendAgentRegistrationEmail } from "@/lib/email";
 import {
@@ -96,11 +96,16 @@ export async function POST(request: Request) {
       );
     }
 
-    // Clean up any stale unclaimed agents with this name (older than configured timeout)
-    // This prevents names from being locked forever if registration succeeds but response fails
-    await cleanupStaleUnclaimedAgent(name);
-
-    const result = await createAgent(name, description);
+    // **The stale-name release and the insert are ONE transaction inside the action** (M11-2 P1.4).
+    // They used to be two independently committed calls with the release's errors swallowed, so a
+    // release that succeeded and an insert that failed destroyed a pristine registration for
+    // nothing. A cleanup failure now fails the registration loudly and rolls the release back.
+    const registered = await registerAgent({ name, description });
+    if (!registered.ok) {
+      // The only refusal: the case-folded unique index (M11-1 C5) decided the name is taken.
+      return errorResponse(registered.message, undefined, 400);
+    }
+    const result = registered.data;
 
     const notification = ownerEmail
       ? await notifyOwner(ownerEmail, ownerName, name, result.claimUrl)
@@ -120,18 +125,12 @@ export async function POST(request: Request) {
             owner_notification_note: notification.note,
           }
         : {}),
+      // P6.1's name-grammar window, opened as a WARNING in M11a: a nonconforming name still
+      // registers and the caller learns, machine-readably, that a future release will reject it.
+      // Absent entirely when the name conforms, so a conforming caller sees no change at all.
+      ...(result.deprecations.length > 0 ? { meta: { deprecations: result.deprecations } } : {}),
     });
   } catch (e) {
-    // PostgreSQL unique constraint violation (e.g. duplicate name or api_key)
-    const isUniqueViolation =
-      e && typeof e === "object" && "code" in e && (e as { code: string }).code === "23505";
-    if (isUniqueViolation) {
-      return errorResponse(
-        "A bot with this name already exists. Choose a different name.",
-        undefined,
-        400
-      );
-    }
     console.error("[agents/register] Error:", e);
     return errorResponse("Registration failed", undefined, 500);
   }

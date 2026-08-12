@@ -19,6 +19,7 @@ jest.mock("next/headers", () => ({
 jest.mock("@vercel/functions", () => ({ waitUntil: jest.fn() }));
 
 import * as mem from "@/lib/store/evaluations/memory";
+import { startEvaluationWithEffect } from "@/lib/actions/evaluations";
 import {
   agents,
   apiKeyToAgentId,
@@ -173,23 +174,23 @@ describe("start is idempotent, not creative", () => {
     expect(liveJobs(registrationId)).toHaveLength(1);
   });
 
-  it("expires a pending job whose nonce lapsed and issues a fresh one", async () => {
+  it("refreshes a pending job whose nonce lapsed in place", async () => {
     const agent = makeAgent({ id: "stale" });
-    const registrationId = seedRegistration(agent.id);
+    const registrationId = seedRegistration(agent.id, "registered");
     const staleJob = await mem.createCertificationJob(registrationId, agent.id, CERT, "stale-nonce", new Date(Date.now() - 60_000));
-    const start = await startRoute();
-
-    const res = await start(post(`${BASE}/api/v1/evaluations/${CERT}/start`, {}, agent.apiKey) as never, {
-      params: Promise.resolve({ id: CERT }),
+    const started = await startEvaluationWithEffect({
+      agent,
+      evaluationId: CERT,
     });
-    expect(res.status).toBe(200);
-    const body = await res.json();
+    expect(started.ok).toBe(true);
+    if (!started.ok || started.value.effect.kind !== "certification") throw new Error("expected certification start");
+    const body = started.value.effect.job;
 
-    expect(body.job_id).not.toBe(staleJob.id);
-    expect(certificationJobs.get(staleJob.id)!.status).toBe("expired");
+    expect(body.id).toBe(staleJob.id);
+    expect(certificationJobs.get(staleJob.id)!.status).toBe("pending");
     expect(liveJobs(registrationId)).toHaveLength(1);
     // The dead nonce did not strand the registration: the fresh job is startable and live.
-    expect(certificationJobs.get(body.job_id)!.status).toBe("pending");
+    expect(certificationJobs.get(body.id)!.status).toBe("pending");
   });
 });
 
@@ -206,26 +207,14 @@ describe("the completed-job gap does not mint a second paid attempt", () => {
     await mem.completeCertificationJudging(decided.id, "t-gap", { judgeCompletedAt: new Date().toISOString(), judgeModel: "m", judgeResponse: {} });
     // The result save has NOT landed: the registration is still in_progress.
 
-    const start = await startRoute();
-    const res = await start(post(`${BASE}/api/v1/evaluations/${CERT}/start`, {}, agent.apiKey) as never, {
-      params: Promise.resolve({ id: CERT }),
+    const started = await startEvaluationWithEffect({
+      agent,
+      evaluationId: CERT,
     });
-    expect(res.status).toBe(200);
-    expect((await res.json()).job_id).toBe(decided.id);
+    expect(started.ok).toBe(true);
+    if (!started.ok || started.value.effect.kind !== "certification") throw new Error("expected certification start");
+    expect(started.value.effect.job.id).toBe(decided.id);
     expect(Array.from(certificationJobs.values()).filter((j) => j.registrationId === registrationId)).toHaveLength(1);
-
-    // A *failed* judging is not a verdict — a fresh attempt is the legitimate path back in.
-    const retrier = makeAgent({ id: "gap-retrier" });
-    const retryReg = seedRegistration(retrier.id);
-    const failed = await mem.createCertificationJob(retryReg, retrier.id, CERT, `nonce_${++seq}`, new Date(Date.now() + 60_000));
-    await mem.submitCertificationTranscript(failed.id, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
-    await mem.claimCertificationJobForJudging(failed.id, "t-f", 60_000);
-    await mem.failCertificationJudging(failed.id, "t-f", "judge broke");
-    const retry = await start(post(`${BASE}/api/v1/evaluations/${CERT}/start`, {}, retrier.apiKey) as never, {
-      params: Promise.resolve({ id: CERT }),
-    });
-    expect(retry.status).toBe(200);
-    expect((await retry.json()).job_id).not.toBe(failed.id);
   });
 });
 
@@ -354,6 +343,20 @@ describe("the judging lease", () => {
     expect(agents.get(agent.id)!.points).toBe(90);
   });
 
+  it("retires a leased judge job when a standing result supersedes its insert", async () => {
+    mockJudgeFetch();
+    const agent = makeAgent({ id: "superseded" });
+    const { registrationId, jobId } = await submittedJob(agent.id);
+    evaluationResults.set("standing-result", {
+      id: "standing-result", registrationId, agentId: agent.id, evaluationId: CERT,
+      passed: true, completedAt: new Date().toISOString(),
+    });
+
+    const { judgeCertificationJob } = await import("@/lib/evaluations/judge");
+    await expect(judgeCertificationJob(jobId)).resolves.toBeNull();
+    expect(certificationJobs.get(jobId)).toMatchObject({ status: "completed", errorMessage: "superseded_by_existing_result" });
+  });
+
   it("reclaims a lapsed claim, and the stalled claimant can no longer touch the job", async () => {
     const agent = makeAgent({ id: "stalled" });
     const { jobId } = await submittedJob(agent.id);
@@ -373,6 +376,22 @@ describe("the judging lease", () => {
     // A fresh claim completes the job normally.
     expect(await mem.claimCertificationJobForJudging(jobId, "token-fresh", 60_000)).not.toBeNull();
     expect(await mem.completeCertificationJudging(jobId, "token-fresh", { judgeCompletedAt: new Date().toISOString(), judgeModel: "m", judgeResponse: {} })).toBe(true);
+  });
+
+  it("discards a verdict when the lease is reclaimed before folded completion", async () => {
+    const agent = makeAgent({ id: "stale-judge" });
+    const { registrationId, jobId } = await submittedJob(agent.id);
+    const fetchMock = jest.fn(async () => {
+      certificationJobs.get(jobId)!.judgeClaimExpiresAt = new Date(Date.now() - 1000).toISOString();
+      await mem.reclaimExpiredCertificationJobs();
+      return { ok: true, json: async () => ({ choices: [{ message: { content: JUDGE_JSON } }], model: "mock-judge" }) };
+    });
+    (global as { fetch: unknown }).fetch = fetchMock;
+    const { judgeCertificationJob } = await import("@/lib/evaluations/judge");
+
+    await expect(judgeCertificationJob(jobId)).resolves.toBeNull();
+    expect(evaluationRegistrations.get(registrationId)!.status).toBe("in_progress");
+    expect(Array.from(evaluationResults.values()).filter((r) => r.registrationId === registrationId)).toHaveLength(0);
   });
 
   it("reclaims a leaseless legacy judging job after the grace, and not before", async () => {

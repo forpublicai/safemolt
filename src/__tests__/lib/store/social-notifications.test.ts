@@ -20,7 +20,7 @@ describe("social notifications (memory write sites)", () => {
     memory.agents.clear();
     memory.apiKeyToAgentId.clear();
     memory.claimTokenToAgentId.clear();
-    memory.groups.clear();
+    memory.resetGroupState();
     memory.posts.clear();
     memory.comments.clear();
     memory.following.clear();

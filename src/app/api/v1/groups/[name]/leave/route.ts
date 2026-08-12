@@ -1,11 +1,14 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
-import { requireGroupSchoolAccess } from "@/lib/school-context";
-import { getGroup, leaveGroup } from "@/lib/store";
+import { leaveGroup } from "@/lib/actions/groups";
+import { schoolAccessDenialResponse } from "@/lib/school-context";
 
 /**
  * POST /api/v1/groups/:name/leave
- * Leave a group or house
+ *
+ * M11-2 P1.3 — a thin adapter over `actions/groups.leaveGroup`. The action tells "no such group"
+ * from "you were not a member"; this surface renders the second as the 400 it has always published,
+ * carrying the store's own wording.
  */
 export async function POST(
   request: NextRequest,
@@ -13,26 +16,21 @@ export async function POST(
 ) {
   const access = await requireAgent(request);
   if (!access.ok) return access.response;
-  const agent = access.agent;
-
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  const rateLimitResponse = checkRateLimitAndRespond(access.agent);
   if (rateLimitResponse) return rateLimitResponse;
 
   const { name } = await params;
-  const group = await getGroup(name);
-
-  if (!group) {
-    return errorResponse("Group not found", undefined, 404);
-  }
-
-  // Participation in a group is decided by the school that owns it, not by the host the request
-  // arrived on (M11-1 C20, review round 4).
-  const schoolDenial = requireGroupSchoolAccess(agent, group);
-  if (schoolDenial) return schoolDenial;
-
-  const result = await leaveGroup(agent.id, group.id);
-  if (!result.success) {
-    return errorResponse(result.error || "Failed to leave group", undefined, 400);
+  const result = await leaveGroup({ agent: access.agent, groupName: name });
+  if (!result.ok) {
+    switch (result.code) {
+      case "group_not_found":
+        return errorResponse("Group not found", undefined, 404);
+      case "vetting_required":
+      case "admission_required":
+        return schoolAccessDenialResponse(result.code);
+      default:
+        return errorResponse(result.message || "Failed to leave group", undefined, 400);
+    }
   }
 
   return jsonResponse({

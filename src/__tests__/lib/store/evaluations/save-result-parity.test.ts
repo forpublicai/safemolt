@@ -91,14 +91,16 @@ describe("computeEvaluationResultFields", () => {
 describe("memory saveEvaluationResult (unified behavior)", () => {
   it("is score-aware and school-scoped", async () => {
     const mem = await import("@/lib/store/evaluations/memory");
+    const { createAgent } = await import("@/lib/store/agents/memory");
+    const agent = await createAgent("save-result-agent", "fixture");
 
     // C21: the save is gated on an actionable registration, so one must exist first.
-    const reg = await mem.registerForEvaluation("agent-1", "sip-known");
+    const reg = await mem.registerForEvaluation(agent.id, "sip-known");
     if (!reg) throw new Error("registration refused — no prior pass exists, so this cannot happen here");
     const before = await mem.getEvaluationResultCount("school-x");
     const saved = await mem.saveEvaluationResult({
       registrationId: reg.id,
-      agentId: "agent-1",
+      agentId: agent.id,
       evaluationId: "sip-known",
       passed: true,
       score: 42,

@@ -386,13 +386,13 @@ describe("the C25 migration refuses a wrong-shaped schema", () => {
         await pgPool().query(`ALTER TABLE posts DROP CONSTRAINT ${original}`);
         await pgPool().query(
             `ALTER TABLE posts ADD CONSTRAINT posts_c25_wrong_shape_fkey
-             FOREIGN KEY (deleted_by_agent_id, author_id) REFERENCES agents(id, id)`
+             FOREIGN KEY (deleted_by_agent_id, author_id) REFERENCES agents(id, id) NOT VALID`
         ).catch(async () => {
             // `agents(id, id)` needs a matching unique constraint; fall back to a wrong *target*,
             // which exercises the same predicate.
             await pgPool().query(
                 `ALTER TABLE posts ADD CONSTRAINT posts_c25_wrong_shape_fkey
-                 FOREIGN KEY (deleted_by_agent_id) REFERENCES groups(id)`
+                 FOREIGN KEY (deleted_by_agent_id) REFERENCES groups(id) NOT VALID`
             );
         });
         try {

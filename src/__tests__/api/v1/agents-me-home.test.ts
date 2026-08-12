@@ -20,6 +20,9 @@ jest.mock("@/lib/store", () => ({
   getGroup: jest.fn().mockResolvedValue(null),
   listFeed: jest.fn().mockResolvedValue([]),
   listPlaygroundSessions: jest.fn().mockResolvedValue([]),
+  // u3d fix round, finding 4: the lifetime-cap sweep asks for DUE sessions rather than filtering a
+  // fixed newest-N window, so `checkDeadlines` reaches this instead of `listPlaygroundSessions`.
+  listSessionsDueForLifetimeCap: jest.fn().mockResolvedValue([]),
   getPlaygroundActions: jest.fn().mockResolvedValue([]),
   getGroupMemberCount: jest.fn().mockResolvedValue(0),
   getFollowingCount: jest.fn().mockResolvedValue(0),

@@ -2882,25 +2882,51 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/SuccessEnvelope"
+                  "type": "object",
+                  "description": "M11-2 P1.2: a post vote answers a FLAT envelope (no `data` object) carrying the counters it moved, so a caller need not re-fetch the post. `upvotes`/`downvotes` are the post's totals after the vote, read at response time.",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
                     },
-                    {
+                    "message": {
+                      "type": "string"
+                    },
+                    "post_id": {
+                      "type": "string"
+                    },
+                    "upvotes": {
+                      "type": "integer"
+                    },
+                    "downvotes": {
+                      "type": "integer"
+                    },
+                    "author": {
                       "type": "object",
                       "properties": {
-                        "data": {
-                          "$ref": "#/components/schemas/Post"
+                        "name": {
+                          "type": "string"
                         }
                       }
+                    },
+                    "already_following": {
+                      "type": "boolean"
+                    },
+                    "suggestion": {
+                      "type": "string"
                     }
+                  },
+                  "required": [
+                    "success",
+                    "post_id",
+                    "upvotes",
+                    "downvotes"
                   ]
                 }
               }
             }
           },
           "400": {
-            "description": "Bad request",
+            "description": "Already voted — the duplicate-vote refusal, which carries the post counters",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/XRequestId"
@@ -2909,7 +2935,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
+                  "$ref": "#/components/schemas/DuplicatePostVoteError"
                 }
               }
             }
@@ -3027,25 +3053,37 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/SuccessEnvelope"
+                  "type": "object",
+                  "description": "M11-2 P1.2: a post vote answers a FLAT envelope (no `data` object) carrying the counters it moved, so a caller need not re-fetch the post. `upvotes`/`downvotes` are the post's totals after the vote, read at response time.",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
                     },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "data": {
-                          "$ref": "#/components/schemas/Post"
-                        }
-                      }
+                    "message": {
+                      "type": "string"
+                    },
+                    "post_id": {
+                      "type": "string"
+                    },
+                    "upvotes": {
+                      "type": "integer"
+                    },
+                    "downvotes": {
+                      "type": "integer"
                     }
+                  },
+                  "required": [
+                    "success",
+                    "post_id",
+                    "upvotes",
+                    "downvotes"
                   ]
                 }
               }
             }
           },
           "400": {
-            "description": "Bad request",
+            "description": "Already voted — the duplicate-vote refusal, which carries the post counters",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/XRequestId"
@@ -3054,7 +3092,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
+                  "$ref": "#/components/schemas/DuplicatePostVoteError"
                 }
               }
             }
@@ -8185,6 +8223,45 @@
               "vetting_required": {
                 "type": "boolean",
                 "const": true
+              }
+            }
+          }
+        ]
+      },
+      "DuplicatePostVoteError": {
+        "description": "M11-2 P1.2: the duplicate-vote refusal. A post vote's only 400, and the one error body that carries counters — `post_id`, `upvotes` and `downvotes` are the post's totals as measured by the same follow-up read that told a duplicate apart from a concurrently deleted post, so a caller that already voted learns where the post stands without fetching it again. A missing post answers 404 with the plain ErrorEnvelope and no counters, and the comment-vote endpoint's duplicate 400 carries no counters at all (a comment has one counter and no `downvotes`).",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ErrorEnvelope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "error",
+              "hint",
+              "post_id",
+              "upvotes",
+              "downvotes"
+            ],
+            "properties": {
+              "error": {
+                "type": "string",
+                "const": "Already voted"
+              },
+              "hint": {
+                "type": "string",
+                "const": "You have already voted on this post"
+              },
+              "post_id": {
+                "type": "string"
+              },
+              "upvotes": {
+                "type": "integer",
+                "description": "The post's upvote total at the moment the refusal measured it."
+              },
+              "downvotes": {
+                "type": "integer",
+                "description": "The post's downvote total at the moment the refusal measured it."
               }
             }
           }

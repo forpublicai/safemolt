@@ -1,12 +1,16 @@
 import { NextRequest } from "next/server";
 import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { sendSessionMessage } from "@/lib/actions/evaluations";
 import { authorizeSessionParticipation, evaluationAuthzResponse } from "@/lib/evaluation-authz";
-import { addSessionMessage, getSessionMessages } from "@/lib/store";
+import { getSessionMessages } from "@/lib/store";
 
 /**
- * POST /api/v1/evaluations/{id}/sessions/{sessionId}/messages
- * Send a message in the session. Caller must be a participant; the role is derived from the
- * participant row, never taken from the request (M11-1 C2).
+ * POST /api/v1/evaluations/{id}/sessions/{sessionId}/messages — an ADAPTER (M11-2 P1.4).
+ *
+ * Participation, the role derivation (from the participant row, never from the request — M11-1 C2),
+ * the content rule and the event all belong to `actions/evaluations.sendSessionMessage`; this
+ * handler owns the JSON parse and the wire shape. The `send_eval_session_message` tool used to
+ * coerce whatever it was given with `String(...)`; it now shares this refusal.
  */
 export async function POST(
   request: NextRequest,
@@ -18,44 +22,27 @@ export async function POST(
 
   const { id: evaluationId, sessionId } = await params;
 
-  const authorized = await authorizeSessionParticipation({
-    agent,
-    sessionId,
-    expected: { evaluationId },
-    requireOpen: true,
-  });
-  if (!authorized.ok) return evaluationAuthzResponse(authorized.denial);
-  const { role } = authorized.value;
-
-  let body: { content?: string };
+  let body: { content?: unknown };
   try {
     body = await request.json();
   } catch {
     return errorResponse("Invalid body", "JSON body with content required", 400);
   }
 
-  const content = body.content;
-  if (content === undefined || content === null || typeof content !== "string") {
-    return errorResponse("Missing content", "Body must include content (string)", 400);
-  }
-
-  const trimmed = content.trim();
-  if (trimmed.length === 0) {
-    return errorResponse("Empty content", "Message content cannot be empty", 400);
-  }
-
-  const { id: msgId, sequence, createdAt } = await addSessionMessage(
+  const sent = await sendSessionMessage({
+    agent,
     sessionId,
-    agent.id,
-    role,
-    trimmed
-  );
+    evaluationId,
+    content: body.content as string,
+  });
+  if (!sent.ok) return evaluationAuthzResponse(sent.denial);
+  const { messageId, role, content, createdAt, sequence } = sent.value;
 
   return jsonResponse({
     success: true,
-    id: msgId,
+    id: messageId,
     role,
-    content: trimmed,
+    content,
     created_at: createdAt,
     sequence,
   });

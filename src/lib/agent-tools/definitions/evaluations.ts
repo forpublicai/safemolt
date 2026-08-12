@@ -9,26 +9,22 @@
 
 import {
   getPassedEvaluations,
-  registerForEvaluation,
-  startEvaluation,
-  getEvaluationRegistration,
   getAllEvaluationResultsForAgent,
+  getEvaluationRegistration,
   getEvaluationVersions,
   getPendingProctorRegistrations,
-  claimProctorSession,
   getSessionMessages,
-  addSessionMessage,
-  endSession,
-  saveEvaluationResult
 } from "@/lib/store";
-import { listEvaluations } from "@/lib/evaluations/loader";
-import { getExecutor } from "@/lib/evaluations/executor-registry";
 import {
-  authorizeEvaluationRegistration,
-  authorizeEvaluationStart,
+  claimProctorSession,
+  registerForEvaluation,
+  sendSessionMessage,
+  startEvaluation,
+  submitProctorResult,
+} from "@/lib/actions/evaluations";
+import { listEvaluations } from "@/lib/evaluations/loader";
+import {
   authorizePendingProctorListing,
-  authorizeProctorClaim,
-  authorizeProctorSubmission,
   authorizeSessionParticipation,
   evaluationAuthzToolError,
   pendingProctorRegistrationsForSchool,
@@ -241,47 +237,41 @@ export const executors: Record<string, ToolExecutor> = {
     return { success: true, data: { passed_evaluation_ids: passed } };
   },
 
+  // An ADAPTER over `actions/evaluations.registerForEvaluation` (M11-2 P1.4). The action owns C2's
+  // authorization, the standing-registration answer and — new to this surface — the PREREQUISITE
+  // rule the REST route has always applied and this executor never did.
   register_for_evaluation: async (args, { agent }) => {
-    const evalId = String(args.evaluation_id);
-    // Unvalidated before C2: any id string became a Foundation-stamped registration, including one
-    // only another school defines.
-    const authorized = await authorizeEvaluationRegistration({ agent, evaluationId: evalId, schoolId: TOOL_SCHOOL_ID });
-    if (!authorized.ok) return evaluationAuthzToolError(authorized.denial);
-
-    // Only an **active** registration is "already registered". Treating a terminal one that way —
-    // which this did — refused the retry the REST route allows, so the two surfaces disagreed about
-    // whether an agent could attempt an evaluation again after failing it (review round 6).
-    const existing = await getEvaluationRegistration(agent.id, evalId);
-    if (existing && (existing.status === "registered" || existing.status === "in_progress")) {
-      return { success: true, data: { registration_id: existing.id, status: existing.status, note: "Already registered" } };
-    }
-    const reg = await registerForEvaluation(agent.id, evalId, TOOL_SCHOOL_ID);
-    if (!reg) {
-      // The store's insert is gated on no prior pass; a completion can land between the
-      // authorization check above and the write (M11-1 review round 8).
-      return { success: false, error: "evaluation_already_passed: this evaluation has already been passed; its result stands and cannot be earned again" };
-    }
-    return { success: true, data: { registration_id: reg.id, registered_at: reg.registeredAt } };
+    const result = await registerForEvaluation({
+      agent,
+      evaluationId: String(args.evaluation_id),
+      schoolId: TOOL_SCHOOL_ID,
+    });
+    if (!result.ok) return evaluationAuthzToolError(result.denial);
+    const { registrationId, registeredAt, status, alreadyRegistered } = result.value;
+    // Two shapes, both pre-C2 and both kept: the standing registration reports its status and a
+    // note, a fresh one reports when it was made.
+    return alreadyRegistered
+      ? { success: true, data: { registration_id: registrationId, status, note: "Already registered" } }
+      : { success: true, data: { registration_id: registrationId, registered_at: registeredAt } };
   },
 
   start_evaluation: async (args, { agent }) => {
-    // Ungated before review round 6, and wider open than the route: no school check at all, so a
-    // vetted-but-unadmitted agent could start a legacy non-Foundation registration from here.
-    const authorized = await authorizeEvaluationStart({ agent, evaluationId: String(args.evaluation_id) });
-    if (!authorized.ok) return evaluationAuthzToolError(authorized.denial);
-
-    const reg = authorized.value.registration;
-    if (reg.status === "in_progress") {
-      return { success: true, data: { registration_id: reg.id, status: "in_progress", note: "Already in progress" } };
-    }
+    const result = await startEvaluation({ agent, evaluationId: String(args.evaluation_id) });
+    if (!result.ok) return evaluationAuthzToolError(result.denial);
+    const { authorized, started } = result.value;
     // A CAS since M11-1b D4: it refuses anything that is not `registered`, so a concurrent submit
-    // cannot be undone by a stale start. Refusal is reported as the already-in-progress shape
-    // rather than an error, matching the pre-check branch above.
-    const started = await startEvaluation(reg.id);
-    if (!started) {
-      return { success: true, data: { registration_id: reg.id, status: "in_progress", note: "Already in progress" } };
-    }
-    return { success: true, data: { registration_id: reg.id, status: "in_progress", note: "Evaluation started. Follow the evaluation-specific flow to complete it." } };
+    // cannot be undone by a stale start. A refusal is reported as the already-in-progress shape
+    // rather than an error, which is what this surface has always published.
+    return {
+      success: true,
+      data: {
+        registration_id: authorized.registration.id,
+        status: "in_progress",
+        note: started
+          ? "Evaluation started. Follow the evaluation-specific flow to complete it."
+          : "Already in progress",
+      },
+    };
   },
 
   get_my_evaluation_results: async (args, { agent }) => {
@@ -330,20 +320,12 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   claim_proctor_session: async (args, { agent }) => {
-    const registrationId = String(args.registration_id);
     // Unchecked before C2: this claimed *any* registration, including one for an evaluation with no
-    // proctoring, in a school the caller has no access to, or the caller's own.
-    const authorized = await authorizeProctorClaim({ agent, registrationId });
-    if (!authorized.ok) return evaluationAuthzToolError(authorized.denial);
-
-    const sessionId = await claimProctorSession(registrationId, agent.id);
-    if (!sessionId) {
-      // Same three-way classification the route does, for the same reason.
-      const reclassified = await authorizeProctorClaim({ agent, registrationId });
-      if (!reclassified.ok) return evaluationAuthzToolError(reclassified.denial);
-      return { success: false, error: "already_claimed: a session already exists for this registration" };
-    }
-    return { success: true, data: { session_id: sessionId } };
+    // proctoring, in a school the caller has no access to, or the caller's own. The action owns all
+    // of it now, including the three-way re-classification of a claim that matched nothing.
+    const result = await claimProctorSession({ agent, registrationId: String(args.registration_id) });
+    if (!result.ok) return evaluationAuthzToolError(result.denial);
+    return { success: true, data: { session_id: result.value.sessionId } };
   },
 
   get_eval_session: async (args, { agent }) => {
@@ -373,22 +355,17 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   send_eval_session_message: async (args, { agent }) => {
-    const authorized = await authorizeSessionParticipation({
+    // The content rule is the ACTION's, so this surface stops coercing with `String(args.content)`
+    // and shares the route's refusal for a missing or whitespace-only message (M11-2 P1.4).
+    const result = await sendSessionMessage({
       agent,
       sessionId: String(args.session_id),
-      requireOpen: true,
+      content: args.content as string,
     });
-    if (!authorized.ok) return evaluationAuthzToolError(authorized.denial);
-
-    const msg = await addSessionMessage(
-      authorized.value.session.id,
-      agent.id,
-      authorized.value.role,
-      String(args.content)
-    );
+    if (!result.ok) return evaluationAuthzToolError(result.denial);
     // The payload keeps its pre-C2 shape. Adding the derived `role` to it was a success-shape
     // change, which Locked decision 2 forbids outright — the role is enforced, not reported.
-    return { success: true, data: { message_id: msg.id, sequence: msg.sequence } };
+    return { success: true, data: { message_id: result.value.messageId, sequence: result.value.sequence } };
   },
 
   /**
@@ -402,41 +379,22 @@ export const executors: Record<string, ToolExecutor> = {
    * REST proctor route does, and self-serve completion is not reachable from here at all.
    */
   submit_evaluation_result: async (args, { agent }) => {
-    const registrationId = String(args.registration_id);
-    const authorized = await authorizeProctorSubmission({
+    // **The proctor session now ends inside the completion transaction** (M11-1b D4), which this
+    // surface never did: it called `endSession` *after* the save returned, so a failure between
+    // them left a completed registration with an active proctor session. There is no `endSession`
+    // call left here — the action passes the session to the batch.
+    const result = await submitProctorResult({
       agent,
-      registrationId,
-      expected: {
-        evaluationId: args.evaluation_id != null ? String(args.evaluation_id) : undefined,
-        agentId: args.agent_id != null ? String(args.agent_id) : undefined,
-      },
+      registrationId: String(args.registration_id),
+      ...(args.evaluation_id != null ? { evaluationId: String(args.evaluation_id) } : {}),
+      ...(args.agent_id != null ? { expectedAgentId: String(args.agent_id) } : {}),
+      // Uncoerced: the evaluation's own executor decides whether a verdict is a boolean, and this
+      // surface used to silently turn anything else into `false`.
+      passed: args.passed,
+      ...(args.feedback != null ? { feedback: String(args.feedback) } : {}),
     });
-    if (!authorized.ok) return evaluationAuthzToolError(authorized.denial);
-    const { registration, definition, sessionId } = authorized.value;
-
-    const feedback = args.feedback != null ? String(args.feedback) : undefined;
-    const result = await getExecutor(definition.executable.handler)({
-      agentId: registration.agentId,
-      evaluationId: registration.evaluationId,
-      registrationId,
-      input: { registration_id: registrationId, passed: Boolean(args.passed), proctor_feedback: feedback },
-      config: definition.config,
-    });
-    if (result.error) return { success: false, error: result.error };
-
-    // One gated statement (M11-1 C21): the loser of a concurrent completion writes nothing, mints
-    // nothing, and does not end the winner's session.
-    const saved = await saveEvaluationResult({
-      registrationId,
-      agentId: registration.agentId,
-      evaluationId: registration.evaluationId,
-      passed: result.passed,
-      score: result.score,
-      maxScore: result.maxScore,
-      resultData: result.resultData,
-      proctorAgentId: agent.id,
-      proctorFeedback: feedback,
-    });
+    if (!result.ok) return evaluationAuthzToolError(result.denial);
+    const { saved, result: verdict } = result.value;
     if (saved.outcome !== 'created') {
       return {
         success: false,
@@ -445,8 +403,6 @@ export const executors: Record<string, ToolExecutor> = {
           : 'registration_not_actionable: this registration can no longer accept a result',
       };
     }
-    await endSession(sessionId);
-
-    return { success: true, data: { submitted: true, passed: result.passed } };
+    return { success: true, data: { submitted: true, passed: verdict.passed } };
   },
 };

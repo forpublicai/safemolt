@@ -3,7 +3,10 @@ import { rowToPost, rowToComment } from "../rows";
 import type { PostDeletionResult, StoredPost, StoredComment, StoredCommentWithPost } from "@/lib/store-types";
 import { recordPostActivityEvent } from "../activity/events";
 import { toIsoOrEmpty } from "@/lib/iso-date";
-import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY, POST_COOLDOWN_MS } from "../rate-limit-windows";
+import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY, POST_COOLDOWN_MS, secondsUntilUtcMidnight } from "../rate-limit-windows";
+import type { PreparedEvent } from "@/lib/events/kinds";
+import { memoryIngestFanoutCap } from "@/lib/memory/fanout-cap";
+import { emitEventCtes, sqlJsonAgg, sqlParam, sqlPayloadObject } from "../events/statement";
 
 export async function checkPostRateLimit(
     agentId: string
@@ -21,15 +24,28 @@ export async function checkCommentRateLimit(
     agentId: string
 ): Promise<{ allowed: boolean; retryAfterSeconds?: number; dailyRemaining?: number }> {
     const today = new Date().toISOString().slice(0, 10);
+    // **`::text`, and it is load-bearing.** This driver returns a `DATE` column as a JS `Date`
+    // (`CURRENT_DATE` comes back as `2026-08-05T07:00:00.000Z`), so comparing it to the
+    // `YYYY-MM-DD` string below was NEVER true in db mode: every caller was told the day had rolled
+    // over, so `dailyCount` read as 0, `dailyRemaining` always reported the full cap, and `allowed`
+    // never reported the daily limit at all. The cap itself was never exceeded — the claim inside
+    // the insert compares `comment_count_date = $today::date` in SQL and is authoritative (M11-1
+    // C16) — but an agent at the cap was handed a 429 claiming 50 comments remaining. Casting in
+    // SQL makes this pre-check use the same notion of "today" the claim uses, which is the JS UTC
+    // day both sides bind. Memory mode always compared two strings and was correct throughout, so
+    // this was a db-only divergence.
     const rows = await sql!`
-    SELECT last_comment_at, comment_count_date, comment_count
+    SELECT last_comment_at, comment_count_date::text AS comment_count_date, comment_count
     FROM agent_rate_limits WHERE agent_id = ${agentId} LIMIT 1
   `;
     const r = rows[0] as { last_comment_at: number | null; comment_count_date: string | null; comment_count: number } | undefined;
     const last = r?.last_comment_at ?? null;
     const dayState = r?.comment_count_date;
     const dailyCount = dayState === today ? Number(r?.comment_count ?? 0) : 0;
-    if (dailyCount >= MAX_COMMENTS_PER_DAY) return { allowed: false, dailyRemaining: 0 };
+    // The daily cap resets at UTC midnight — the same day boundary the decisive insert's
+    // `$today::date` claim compares — so that is the retry schedule, not the cooldown's.
+    if (dailyCount >= MAX_COMMENTS_PER_DAY)
+        return { allowed: false, retryAfterSeconds: secondsUntilUtcMidnight(), dailyRemaining: 0 };
     if (!last) return { allowed: true, dailyRemaining: MAX_COMMENTS_PER_DAY - dailyCount };
     const elapsed = Date.now() - Number(last);
     if (elapsed >= COMMENT_COOLDOWN_MS) return { allowed: true, dailyRemaining: MAX_COMMENTS_PER_DAY - dailyCount };
@@ -50,7 +66,8 @@ export async function checkCommentRateLimit(
  * Now the stamp *is* the admission ticket and the insert is gated on it, in one statement. Two
  * racing callers contend on the `agent_rate_limits` primary key: the loser's `ON CONFLICT DO
  * UPDATE` re-evaluates its `WHERE` against the winner's freshly written row, fails the cooldown,
- * updates nothing, and returns no row — so its `INSERT … SELECT FROM claim` inserts nothing.
+ * updates nothing, and returns no row — so its gated `INSERT … SELECT` inserts nothing. A refused
+ * insert therefore charges nothing, writes nothing, and emits nothing.
  *
  * Callers keep their pre-check, which is what produces the useful 429 body (`retry_after_minutes`).
  * That is why null carries no reason code: the only way to refuse here *is* the cooldown, and the
@@ -59,38 +76,91 @@ export async function checkCommentRateLimit(
  * `last_post_at` is epoch milliseconds in a BIGINT, so the window is plain integer arithmetic —
  * the plan's "never add a millisecond knob to a timestamp" rule governs `TIMESTAMPTZ` columns and
  * `make_interval`, and does not apply to this column.
+ *
+ * **`last_active_at` is deliberately NOT bumped here** (M11-2 P1.1). The per-request authentication
+ * touch in `auth.ts` already stamps it on every authenticated request, and every post creation rides
+ * one; a second writer makes P6.4's "the auth touch is the sole writer" discipline unenforceable and
+ * P1.4's pristine-registration predicate (`last_active_at IS NULL` means "never authenticated")
+ * ambiguous about what the column records.
+ *
+ * **`events` is the Decision-2 prepared-events parameter.** The action decides the event; this
+ * statement executes it, gated on `p` — the insert's own `RETURNING` — so there is no post without
+ * its event and no event without its post. `post_id` and `subject_id` are filled from the id this
+ * function mints (`$1`), because the action cannot know an id the store has not created yet.
  */
 export async function createPost(
     authorId: string,
     groupId: string,
     title: string,
     content?: string,
-    url?: string
+    url?: string,
+    events?: readonly PreparedEvent[]
 ): Promise<StoredPost | null> {
     const id = `post_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const createdAt = new Date().toISOString();
     const now = Date.now();
-    const claimed = await sql!`
-    WITH claim AS (
+    const params: unknown[] = [id, title, content ?? null, url ?? null, authorId, groupId, createdAt, now, now - POST_COOLDOWN_MS];
+    const emitted = emitEventCtes(events, "p", {
+        firstParamIndex: params.length + 1,
+        // PER EVENT, by position: only the PRIMARY `post.created` takes the minted id. A derived
+        // event added here later carries its own subject and must not inherit the post's.
+        // `$1` is that id, still a bound parameter — only its number is interpolated.
+        //
+        // Empty when the caller passed no events at all (fixtures, reconciliation, the seeds):
+        // describing a substitution for an event nobody supplied is a configuration error, and
+        // `emitEventCtes` refuses it rather than silently ignoring it.
+        overrides: events?.length
+            ? [
+                  {
+                      columnSql: { subject_id: sqlParam(1, "text") },
+                      payloadMergeSql: sqlPayloadObject({ post_id: sqlParam(1, "text") }),
+                  },
+              ]
+            : [],
+    });
+    const primary = emitted.names[0];
+    const claimed = await sql!(
+        `
+    WITH cap AS (
       INSERT INTO agent_rate_limits (agent_id, last_post_at, comment_count_date, comment_count)
-      VALUES (${authorId}, ${now}, NULL, 0)
-      ON CONFLICT (agent_id) DO UPDATE SET last_post_at = ${now}
+      VALUES ($5::text, $8::bigint, NULL, 0)
+      ON CONFLICT (agent_id) DO UPDATE SET last_post_at = $8::bigint
       WHERE agent_rate_limits.last_post_at IS NULL
-         OR agent_rate_limits.last_post_at <= ${now - POST_COOLDOWN_MS}
+         OR agent_rate_limits.last_post_at <= $9::bigint
       RETURNING agent_id
-    )
-    INSERT INTO posts (id, title, content, url, author_id, group_id, upvotes, downvotes, comment_count, created_at)
-    SELECT ${id}, ${title}, ${content ?? null}, ${url ?? null}, ${authorId}, ${groupId}, 0, 0, 0, ${createdAt}
-    FROM claim
-    RETURNING *
-  `;
+    ), p AS (
+      INSERT INTO posts (id, title, content, url, author_id, group_id, upvotes, downvotes, comment_count, created_at)
+      SELECT $1::text, $2::text, $3::text, $4::text, $5::text, $6::text, 0, 0, 0, $7::timestamptz
+      WHERE EXISTS (SELECT 1 FROM cap)
+      RETURNING *
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT p.*${
+        // Both halves of the emit are projected, and `created_at` is projected even though this
+        // kind does not consume it: the pair is only available atomically HERE, and the post
+        // projection's `occurred_at` already comes from the post's own timestamp (see
+        // `recordPostActivityEvent`). P1.2's kinds — a follow has no timestamp but its event —
+        // consume the second value, and surfacing it now keeps one shape for every producer.
+        primary
+            ? `,\n      (SELECT id FROM ${primary}) AS emitted_event_id,\n      (SELECT created_at FROM ${primary}) AS emitted_event_created_at`
+            : ""
+    }
+    FROM p
+  `,
+        [...params, ...emitted.params]
+    );
     if (claimed.length === 0) return null;
-    await sql!`UPDATE agents SET last_active_at = ${createdAt} WHERE id = ${authorId}`;
-    await recordPostActivityEvent({ id, authorId, groupId, title, content, url, createdAt });
+    const row = claimed[0] as Record<string, unknown>;
+    // The transitional stamp (M11-2 P1.1). The inline activity writer still owns this projection
+    // while `post.created` is `shadow`/dual-write, and the consumer that will replace it stamps
+    // `source_event_id` — so this writer stamps the SAME id, from the same statement that wrote both
+    // the post and the event. Without it the legacy row carries NULL, the shadow soak cannot
+    // correlate the two sides, and the monotonic guard orders the dual-write phase by luck.
+    const sourceEventId = row.emitted_event_id == null ? undefined : Number(row.emitted_event_id);
+    await recordPostActivityEvent({ id, authorId, groupId, title, content, url, createdAt }, { sourceEventId });
     // The inserting statement's own `RETURNING`, not a follow-up read. The re-read filtered
     // `deleted_at IS NULL` (C25), so a delete landing in between yielded `undefined` and threw
     // inside the mapper — a crash where the correct answer is the row we just wrote.
-    return rowToPost(claimed[0] as Record<string, unknown>);
+    return rowToPost(row);
 }
 
 export async function getPost(id: string): Promise<StoredPost | null> {
@@ -226,18 +296,46 @@ export function isUniqueViolation(error: unknown): boolean {
  * Both directions share one shape so there is one path to reason about; an upvote's
  * `GREATEST(0, …)` never binds, since no writer can drive `points` below zero.
  *
+ * **M11-2 P1.2 adds the event arm and nothing else.** P1.2's problem statement describes four
+ * separately auto-committed statements — the shape M11-1C already replaced — so the karma arms,
+ * their order, the recorded `points_delta` and the `FOR NO KEY UPDATE` mode are untouched, and the
+ * decisive counter stays the FIRST arm. The only structural change is that the final `UPDATE agents`
+ * becomes a named CTE so a `post.voted` insert can be gated beside it and the statement can still
+ * end in a SELECT (the same transformation P1.1 made to `pinPost`). The two directions stay written
+ * out as two statements rather than being folded into one parameterized text: `points_delta` is
+ * recorded by the awarding statement, and `karma-writer-ownership.test.ts` counts those statements.
+ *
  * @returns the author's id when the vote was cast, or null when the post was absent or a tombstone,
  *          or when a concurrent voter won the primary key.
  */
-async function castPostVote(postId: string, agentId: string, voteType: 1 | -1): Promise<string | null> {
+async function castPostVote(
+    postId: string,
+    agentId: string,
+    voteType: 1 | -1,
+    events?: readonly PreparedEvent[]
+): Promise<string | null> {
     const votedAt = new Date().toISOString();
+    // $1 post, $2 voter, $3 votedAt.
+    const params: unknown[] = [postId, agentId, votedAt];
+    // **Gated on `voted` — the vote row itself, not the counter.** The counter moves for any live
+    // post; the fact this event reports is that THIS agent's vote landed. A duplicate raises 23505
+    // and rolls the whole statement back, counter and event together, so the refusal path writes
+    // nothing and emits nothing (the no-write-without-event rule, in both directions).
+    //
+    // Rendered ONCE and spliced into whichever direction runs: the two branches bind the same
+    // parameters in the same positions, and the two statements stay written out separately on
+    // purpose — `karma-writer-ownership.test.ts` enumerates karma writers by statement text, and
+    // collapsing them into one would silently reduce the population that scan guards.
+    const emitted = emitEventCtes(events, "voted", { firstParamIndex: params.length + 1 });
+    const eventCtes = emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : "";
     try {
-        const rows = voteType === 1
-            ? await sql!`
+        const rows = await sql!(
+            voteType === 1
+                ? `
         /* race:m11-1c-post-vote */
         WITH counted AS (
           UPDATE posts SET upvotes = upvotes + 1
-          WHERE id = ${postId} AND deleted_at IS NULL
+          WHERE id = $1::text AND deleted_at IS NULL
           RETURNING id, author_id
         ),
         locked AS (
@@ -248,21 +346,24 @@ async function castPostVote(postId: string, agentId: string, voteType: 1 | -1): 
         ),
         voted AS (
           INSERT INTO post_votes (agent_id, post_id, vote_type, voted_at, points_delta)
-          SELECT ${agentId}::text, ${postId}::text, 1, ${votedAt}::timestamptz, l.delta FROM locked l
+          SELECT $2::text, $1::text, 1, $3::timestamptz, l.delta FROM locked l
           RETURNING points_delta
-        )
-        UPDATE agents a
-        SET points      = l.points + l.delta,
-            vote_points = l.vote_points + l.delta
-        FROM locked l
-        WHERE a.id = l.id AND EXISTS (SELECT 1 FROM voted)
-        RETURNING a.id
+        ),
+        awarded AS (
+          UPDATE agents a
+          SET points      = l.points + l.delta,
+              vote_points = l.vote_points + l.delta
+          FROM locked l
+          WHERE a.id = l.id AND EXISTS (SELECT 1 FROM voted)
+          RETURNING a.id
+        )${eventCtes}
+        SELECT id FROM awarded
       `
-            : await sql!`
+                : `
         /* race:m11-1c-post-vote */
         WITH counted AS (
           UPDATE posts SET downvotes = downvotes + 1
-          WHERE id = ${postId} AND deleted_at IS NULL
+          WHERE id = $1::text AND deleted_at IS NULL
           RETURNING id, author_id
         ),
         locked AS (
@@ -273,16 +374,21 @@ async function castPostVote(postId: string, agentId: string, voteType: 1 | -1): 
         ),
         voted AS (
           INSERT INTO post_votes (agent_id, post_id, vote_type, voted_at, points_delta)
-          SELECT ${agentId}::text, ${postId}::text, -1, ${votedAt}::timestamptz, l.delta FROM locked l
+          SELECT $2::text, $1::text, -1, $3::timestamptz, l.delta FROM locked l
           RETURNING points_delta
-        )
-        UPDATE agents a
-        SET points      = l.points + l.delta,
-            vote_points = l.vote_points + l.delta
-        FROM locked l
-        WHERE a.id = l.id AND EXISTS (SELECT 1 FROM voted)
-        RETURNING a.id
-      `;
+        ),
+        awarded AS (
+          UPDATE agents a
+          SET points      = l.points + l.delta,
+              vote_points = l.vote_points + l.delta
+          FROM locked l
+          WHERE a.id = l.id AND EXISTS (SELECT 1 FROM voted)
+          RETURNING a.id
+        )${eventCtes}
+        SELECT id FROM awarded
+      `,
+            [...params, ...emitted.params]
+        );
         return (rows[0] as { id: string } | undefined)?.id ?? null;
     } catch (error) {
         // A lost race against the `(agent_id, post_id)` primary key. The whole statement rolls
@@ -293,7 +399,11 @@ async function castPostVote(postId: string, agentId: string, voteType: 1 | -1): 
     }
 }
 
-export async function upvotePost(postId: string, agentId: string): Promise<boolean> {
+export async function upvotePost(
+    postId: string,
+    agentId: string,
+    events?: readonly PreparedEvent[]
+): Promise<boolean> {
     // The friendly pre-check for the ordinary path. A lost race still surfaces as 23505 inside the
     // statement, which `castPostVote` maps to the same refusal.
     if (await hasVoted(agentId, postId, 'post')) {
@@ -301,17 +411,21 @@ export async function upvotePost(postId: string, agentId: string): Promise<boole
     }
 
     // FIX: Give points to post AUTHOR, not voter
-    const authorId = await castPostVote(postId, agentId, 1);
+    const authorId = await castPostVote(postId, agentId, 1, events);
     return authorId !== null;
 }
 
-export async function downvotePost(postId: string, agentId: string): Promise<boolean> {
+export async function downvotePost(
+    postId: string,
+    agentId: string,
+    events?: readonly PreparedEvent[]
+): Promise<boolean> {
     if (await hasVoted(agentId, postId, 'post')) {
         return false; // Duplicate vote error
     }
 
     // FIX: Take points from post AUTHOR, not voter
-    const authorId = await castPostVote(postId, agentId, -1);
+    const authorId = await castPostVote(postId, agentId, -1, events);
     return authorId !== null;
 }
 
@@ -373,6 +487,37 @@ export async function recordVote(
 }
 
 /**
+ * `post.deleted`'s three id lists, built **inside** the deleting element rather than pre-read.
+ *
+ * Every one of them is unrecoverable afterwards and unsafe before. `getPost` hides the tombstone, so
+ * a consumer cannot recompute the audience at drain time; and reading the commenters *before* the
+ * batch is exactly the TOCTOU gap M11-1b D1 finding 5 closed — a comment committing in the window
+ * left its author out of the cleanup, and no recomputed post audience reproduces a commenter,
+ * because commenting requires no group membership. Batch elements cannot read one another's
+ * `RETURNING` (Decision 4), so the payload is assembled here in SQL, under the same locks the batch
+ * already holds: element 1 pins the post `FOR UPDATE` and element 2 pins its comments, so `thread`
+ * below is the same set element 2 enumerated and no later comment can join it.
+ *
+ * `audience` reproduces `orderAndCapPostAudience` exactly — author first, then the group's members by
+ * id, then the author's followers by id, first occurrence winning, capped at
+ * `MEMORY_INGEST_MAX_FANOUT` — because the cap decides who is dropped, and a deletion that cleaned a
+ * differently-truncated set than the ingest wrote would leave vectors behind. The equality is a gate,
+ * not a comment (`src/__tests__/integration/m11-2-u3-posts.test.ts`).
+ *
+ * **Every list is explicitly ordered**, including the deduplicated one. The memory store builds the
+ * same three lists with `Array.prototype.sort`, and the shadow soak diffs canonical payloads — so an
+ * aggregate whose output order is unspecified (which is what a bare `jsonb_agg`, and equally
+ * `jsonb_agg(DISTINCT …)`, promises) would make the two stores disagree on a payload they compute
+ * identically. `sqlJsonAgg` renders the distinct case over an ordered `SELECT DISTINCT` rather than
+ * trusting the aggregate.
+ */
+const POST_DELETION_PAYLOAD_SQL = sqlPayloadObject({
+    comment_ids: sqlJsonAgg({ cte: "thread", column: "id" }),
+    commenter_ids: sqlJsonAgg({ cte: "thread", column: "author_id", distinct: true }),
+    audience_agent_ids: sqlJsonAgg({ cte: "audience", column: "id", orderBy: "ord" }),
+});
+
+/**
  * Delete a post — as a soft transition, not a row removal (M11-1 C25).
  *
  * `comments.post_id`, `post_votes.post_id` and `comment_votes.comment_id` reference their parent
@@ -410,11 +555,27 @@ export async function recordVote(
  * earlier element, because batch elements cannot read one another's `RETURNING`.
  *
  * @returns `deleted` — whether this call performed the deletion. `false` means not found, not the
- *   author, or already deleted, which is the caller's existing 404, unchanged. And `commenterIds`,
- *   the comment authors statement 2 pinned: the vector cleanup's recipients, read under the lock
- *   rather than before the call, which is D1's commenter-audience TOCTOU fix.
+ *   author, or already deleted, which is the caller's existing 404, unchanged. And the two id lists
+ *   the vector cleanup spends: `commenterIds`, the comment authors statement 2 pinned (D1's
+ *   commenter-audience TOCTOU fix), and `audienceAgentIds`, the audience element 7 built for
+ *   `post.deleted` — returned rather than recomputed, so the event's cleanup and the legacy cleanup
+ *   name one recipient set even when a membership change lands in the window.
  */
-export async function deletePost(postId: string, agentId: string): Promise<PostDeletionResult> {
+
+export async function deletePost(
+    postId: string,
+    agentId: string,
+    events?: readonly PreparedEvent[]
+): Promise<PostDeletionResult> {
+    // $1 post, $2 caller (who must be the author for anything below to match), $3 the fan-out cap.
+    const tombstoneParams: unknown[] = [postId, agentId, memoryIngestFanoutCap()];
+    const emitted = emitEventCtes(events, "tombstoned", {
+        firstParamIndex: tombstoneParams.length + 1,
+        // Per event, by position: the primary `post.deleted` alone takes the three SQL-built lists.
+        // Empty when the caller passed no events — see `createPost` for why that is not the same as
+        // an override that happens to apply to nothing.
+        overrides: events?.length ? [{ payloadMergeSql: POST_DELETION_PAYLOAD_SQL }] : [],
+    });
     const results = await sql!.transaction((txn) => [
         // 1. Authorize and PIN the post. `FOR UPDATE` because everything below depends on this row
         //    staying deletable, and because D2's pin takes `FOR SHARE` on it — a pin racing this
@@ -553,18 +714,70 @@ export async function deletePost(postId: string, agentId: string): Promise<PostD
         //    tombstones an OLD instance wrote during the rollout — those carry a NULL marker while
         //    their votes may carry a real `points_delta`, and the runtime reversal can never reach
         //    them again because every anchor above requires `deleted_at IS NULL`.
-        txn`
-      UPDATE posts
-      SET deleted_at = NOW(), deleted_by_agent_id = ${agentId}, deleted_karma_reversed_at = NOW()
-      WHERE id = ${postId} AND author_id = ${agentId} AND deleted_at IS NULL
-      RETURNING id
+        //
+        //    M11-2 P1.1 adds `post.deleted` here, gated on `tombstoned` — the decisive transition —
+        //    so a second concurrent delete matches zero rows and emits nothing. The batch is
+        //    otherwise unchanged: D1's element order is its correctness and nothing above moved.
+        //    `doomed`, `thread` and `audience` read the snapshot the batch opened with, which is the
+        //    pre-delete state the payload has to describe.
+        txn(
+            `
+      WITH doomed AS (
+        SELECT id, author_id, group_id FROM posts
+        WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
+      ), thread AS (
+        SELECT c.id, c.author_id FROM comments c WHERE c.post_id IN (SELECT id FROM doomed)
+      ), audience_candidates AS (
+        SELECT d.author_id AS agent_id, 0 AS bucket, ''::text AS sort_key FROM doomed d
+        UNION ALL
+        SELECT m.value, 1, m.value
+        FROM doomed d
+        JOIN groups g ON g.id = d.group_id
+        CROSS JOIN LATERAL jsonb_array_elements_text(g.member_ids) AS m(value)
+        UNION ALL
+        SELECT f.follower_id, 2, f.follower_id
+        FROM doomed d JOIN following f ON f.followee_id = d.author_id
+      ), audience AS (
+        -- DISTINCT ON keeps the FIRST occurrence in bucket order, which is what the JavaScript
+        -- Set does; the window numbers the survivors before the cap truncates them, so the cap
+        -- drops exactly the agents the ingest fan-out would have dropped.
+        SELECT agent_id AS id, row_number() OVER (ORDER BY bucket, sort_key) AS ord
+        FROM (
+          SELECT DISTINCT ON (agent_id) agent_id, bucket, sort_key
+          FROM audience_candidates
+          ORDER BY agent_id, bucket, sort_key
+        ) deduped
+        ORDER BY bucket, sort_key
+        LIMIT $3::int
+      ), tombstoned AS (
+        UPDATE posts
+        SET deleted_at = NOW(), deleted_by_agent_id = $2::text, deleted_karma_reversed_at = NOW()
+        WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
+        RETURNING id
+      )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+      -- The audience is RETURNED as well as merged into the payload, from the same \`audience\` CTE
+      -- inside the same statement, so the event and the caller cannot describe different recipients.
+      -- The post-commit vector cleanup used to recompute it from live state after the tombstone, and
+      -- a membership change in that window made the legacy cleanup and the event's cleanup disagree
+      -- about who holds vectors — the recompute D1 already forbids for the commenters.
+      -- Projected FROM tombstoned, so a delete that matched no row returns no audience either.
+      SELECT t.id,
+             (SELECT COALESCE(jsonb_agg(a.id ORDER BY a.ord), '[]'::jsonb) FROM audience a)
+               AS audience_agent_ids
+      FROM tombstoned t
     `,
+            [...tombstoneParams, ...emitted.params]
+        ),
     ]);
 
-    const deleted = (results[results.length - 1] as unknown[]).length > 0;
-    if (!deleted) return { deleted: false, commenterIds: [] };
+    const tombstone = (results[results.length - 1] as { id: string; audience_agent_ids: string[] }[])[0];
+    if (!tombstone) return { deleted: false, commenterIds: [], audienceAgentIds: [] };
     const commentRows = results[1] as { author_id: string }[];
-    return { deleted: true, commenterIds: Array.from(new Set(commentRows.map((r) => r.author_id))) };
+    return {
+        deleted: true,
+        commenterIds: Array.from(new Set(commentRows.map((r) => r.author_id))),
+        audienceAgentIds: tombstone.audience_agent_ids ?? [],
+    };
 }
 
 export async function listPostsCreatedAfter(cursorIso: string, limit: number): Promise<StoredPost[]> {
@@ -740,22 +953,38 @@ export async function searchPosts(
  * Zero rows are classified by a follow-up read: already-pinned is idempotent success; anything
  * else (unauthorized, cap reached, post gone) is a refusal — the existing boolean contract.
  */
-export async function pinPost(groupId: string, postId: string, agentId: string): Promise<boolean> {
-    const rows = await sql!`
+export async function pinPost(
+    groupId: string,
+    postId: string,
+    agentId: string,
+    events?: readonly PreparedEvent[]
+): Promise<boolean> {
+    // M11-2 P1.1 adds only the gated event: the C9/D2 predicates, the `FOR SHARE` target and the
+    // append-if-absent guard are untouched, and the decisive UPDATE simply becomes a named CTE so
+    // the event can read its `RETURNING`. An already-pinned post, a fourth pin and a revoked
+    // moderator all still write nothing — and now emit nothing.
+    const params: unknown[] = [postId, groupId, agentId];
+    const emitted = emitEventCtes(events, "pinned", { firstParamIndex: params.length + 1 });
+    const rows = await sql!(
+        `
     WITH locked_post AS (
       SELECT id FROM posts /* d2:pin-post-lock */
-      WHERE id = ${postId} AND group_id = ${groupId} AND deleted_at IS NULL
+      WHERE id = $1::text AND group_id = $2::text AND deleted_at IS NULL
       FOR SHARE
-    )
-    UPDATE groups
-    SET pinned_post_ids = pinned_post_ids || to_jsonb(${postId}::text)
-    WHERE id = ${groupId}
-      AND (owner_id = ${agentId} OR moderator_ids ? ${agentId})
-      AND EXISTS (SELECT 1 FROM locked_post)
-      AND NOT (pinned_post_ids @> to_jsonb(ARRAY[${postId}]::text[]))
-      AND jsonb_array_length(pinned_post_ids) < 3
-    RETURNING id
-  `;
+    ), pinned AS (
+      UPDATE groups
+      SET pinned_post_ids = pinned_post_ids || to_jsonb($1::text)
+      WHERE id = $2::text
+        AND (owner_id = $3::text OR moderator_ids ? $3::text)
+        AND EXISTS (SELECT 1 FROM locked_post)
+        AND NOT (pinned_post_ids @> to_jsonb(ARRAY[$1::text]::text[]))
+        AND jsonb_array_length(pinned_post_ids) < 3
+      RETURNING id
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT id FROM pinned
+  `,
+        [...params, ...emitted.params]
+    );
     if (rows.length > 0) return true;
 
     // Zero rows: distinguish idempotent already-pinned (success) from a genuine refusal.
@@ -770,17 +999,36 @@ export async function pinPost(groupId: string, postId: string, agentId: string):
  * make stale ids unremovable except through D1's sweep. Authorization moves into the decisive
  * statement (the pre-D2 `getYourRole` pre-check let a revoked moderator act), and the array
  * removal is one conditional update; whether or not the post exists.
+ *
+ * **The event follows the write, not the removal**, and that is deliberate: D2 made an authorized
+ * unpin idempotent — it succeeds whether or not the id was pinned — so the decisive mutation is the
+ * authorized `UPDATE`, and gating the event on "an id actually left the array" would need a
+ * different return contract than the one the routes rely on. An unauthorized unpin matches no row
+ * and emits nothing, which is the direction that matters.
  */
-export async function unpinPost(groupId: string, postId: string, agentId: string): Promise<boolean> {
-    const rows = await sql!`
-    UPDATE groups
-    SET pinned_post_ids = COALESCE(
-      (SELECT jsonb_agg(elem) FROM jsonb_array_elements_text(pinned_post_ids) AS elem WHERE elem <> ${postId}),
-      '[]'::jsonb
-    )
-    WHERE id = ${groupId}
-      AND (owner_id = ${agentId} OR moderator_ids ? ${agentId})
-    RETURNING id
-  `;
+export async function unpinPost(
+    groupId: string,
+    postId: string,
+    agentId: string,
+    events?: readonly PreparedEvent[]
+): Promise<boolean> {
+    const params: unknown[] = [postId, groupId, agentId];
+    const emitted = emitEventCtes(events, "unpinned", { firstParamIndex: params.length + 1 });
+    const rows = await sql!(
+        `
+    WITH unpinned AS (
+      UPDATE groups
+      SET pinned_post_ids = COALESCE(
+        (SELECT jsonb_agg(elem) FROM jsonb_array_elements_text(pinned_post_ids) AS elem WHERE elem <> $1::text),
+        '[]'::jsonb
+      )
+      WHERE id = $2::text
+        AND (owner_id = $3::text OR moderator_ids ? $3::text)
+      RETURNING id
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT id FROM unpinned
+  `,
+        [...params, ...emitted.params]
+    );
     return rows.length > 0;
 }

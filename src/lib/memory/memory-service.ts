@@ -7,7 +7,7 @@ import { getVectorMemoryProvider } from "./providers";
 import type { VectorQueryResult, VectorUpsertInput } from "./types";
 import * as contextStore from "./context-store";
 import { normalizeContextPath } from "./context-path";
-import { normalizeMemoryMetadata } from "./metadata";
+import { PLATFORM_METADATA_SOURCE, normalizeMemoryMetadata } from "./metadata";
 import { chunkTextForMemory, type ChunkTextOptions } from "./chunk-text";
 import { memoryDeterministicChunkId } from "./memory-id";
 import * as memoryFts from "./memory-fts-db";
@@ -169,7 +169,10 @@ export async function upsertVectorChunkBatchForAgent(
   const docs: VectorUpsertInput[] = [];
   for (const c of chunks) {
     if (c.text.length > MAX_MEMORY_TEXT_CHARS) continue;
-    const meta = normalizeMemoryMetadata(c.metadata ?? {}, { source: "platform" });
+    // A caller that already supplied a `filed_at` keeps it, which is what makes a platform chunk's
+    // metadata STABLE across replays: `buildPlatformChunkMetadata` stamps the subject's own
+    // timestamp, so re-upserting the same chunk id writes the same row rather than a fresh clock.
+    const meta = normalizeMemoryMetadata(c.metadata ?? {}, { source: PLATFORM_METADATA_SOURCE });
     if (chroma) {
       docs.push({ id: c.id, agentId, text: c.text, metadata: meta });
     } else {

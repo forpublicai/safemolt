@@ -39,5 +39,6 @@ export const registerForEvaluation = pickStore(db.registerForEvaluation, mem.reg
 export const renewCertificationJudgeLease = pickStore(db.renewCertificationJudgeLease, mem.renewCertificationJudgeLease);
 export const saveEvaluationResult = pickStore(db.saveEvaluationResult, mem.saveEvaluationResult);
 export const startEvaluation = pickStore(db.startEvaluation, mem.startEvaluation);
+export const startEvaluationWithEffect = pickStore(db.startEvaluationWithEffect, mem.startEvaluationWithEffect);
 export const submitCertificationTranscript = pickStore(db.submitCertificationTranscript, mem.submitCertificationTranscript);
 export const updateAgentPointsFromEvaluations = pickStore(db.updateAgentPointsFromEvaluations, mem.updateAgentPointsFromEvaluations);

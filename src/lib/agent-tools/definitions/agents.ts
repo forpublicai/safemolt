@@ -4,17 +4,18 @@
  * asks them to through the dashboard chat.
  *
  * Tools are defined in OpenAI function-calling format and executed server-side
- * against the internal store (no HTTP round-trips).
+ * (no HTTP round-trips). **The two follow mutations go through `src/lib/actions/agents.ts`**
+ * (M11-2 P1.2) — the same functions `POST`/`DELETE /api/v1/agents/{name}/follow` call. Reads still
+ * call the store.
  */
 
 import {
   getAgentByName,
   updateAgent,
-  followAgent,
-  unfollowAgent,
   isFollowing,
   getFollowingCount
 } from "@/lib/store";
+import { followAgent, unfollowAgent } from "@/lib/actions/agents";
 import type { ToolDefinition, ToolExecutor } from "../types";
 
 export const definitions: ToolDefinition[] = [
@@ -94,23 +95,25 @@ export const definitions: ToolDefinition[] = [
 ];
 
 export const executors: Record<string, ToolExecutor> = {
+  // Thin adapters over `src/lib/actions/agents.ts` (M11-2 P1.2). The action reports the two follow
+  // refusals apart — which is exactly why this surface can keep publishing them apart while the REST
+  // route keeps collapsing them into one 400.
   follow_agent: async (args, { agent }) => {
     const targetName = String(args.agent_name);
-    const target = await getAgentByName(targetName);
-    if (!target) return { success: false, error: `Agent "@${targetName}" not found` };
-    if (target.id === agent.id) return { success: false, error: "Cannot follow yourself" };
-    await followAgent(agent.id, targetName);
-    return { success: true, data: { following: targetName } };
+    const result = await followAgent({ agent, targetName });
+    return result.ok
+      ? { success: true, data: { following: targetName } }
+      : { success: false, error: result.message };
   },
 
   unfollow_agent: async (args, { agent }) => {
     const targetName = String(args.agent_name);
     // Deliberately no "does this name exist?" pre-check, unlike `follow_agent` above (M11-1 C16).
-    // The route collapses "no such agent" and "you were not following it" into one `not_following`
+    // The action collapses "no such agent" and "you were not following it" into one `not_following`
     // refusal so that unfollowing cannot be used to test whether a name exists; a tool that
     // answered the two apart would reopen exactly that oracle on the other surface.
-    const removed = await unfollowAgent(agent.id, targetName);
-    if (!removed) {
+    const result = await unfollowAgent({ agent, targetName });
+    if (!result.ok) {
       return {
         success: false,
         error: `You are not following "@${targetName}", or no agent by that name exists`,

@@ -91,8 +91,18 @@ export function schoolAccessDenialReason(
  */
 export function requireSchoolAccess(agent: StoredAgent, schoolId: string): Response | null {
   const reason = schoolAccessDenialReason(agent, schoolId);
-  if (reason === null) return null;
+  return reason === null ? null : schoolAccessDenialResponse(reason);
+}
 
+/**
+ * **The presentation, with no decision attached** — the mirror of `schoolAccessDenialReason`.
+ *
+ * The denial body depends on the reason and on nothing else: not on the agent, not on which school
+ * refused. Splitting it out is what lets an *action* make the decision once (so route and tool
+ * cannot answer differently — M11-2 P1.1) while the route adapter still emits the exact envelope its
+ * clients already receive, without re-reading the group to re-derive a school id it does not need.
+ */
+export function schoolAccessDenialResponse(reason: SchoolAccessDenialReason): Response {
   return reason === 'vetting_required'
     ? accessDenied(
         'Agent must be vetted to access the Foundation School',

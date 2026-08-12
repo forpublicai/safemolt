@@ -89,6 +89,15 @@ describe("the Cognito claim admits one winner", () => {
     expect(await userOwnsAgent(real, agent.id)).toBe(true);
   });
 
+  it("does not expose a claimed-but-unlinked observation", async () => {
+    const agent = await createAgent(uniqueName("c6_agent"), "claimable");
+    const human = await humanUser("atomic-observer");
+    const claimed = await claimAgentForHumanUser(agent.claimToken!, human, "Owner");
+
+    expect(claimed?.isClaimed).toBe(true);
+    expect(await userOwnsAgent(human, agent.id)).toBe(true);
+  });
+
   it("refuses an unknown claim token without touching anything", async () => {
     const before = agents.size;
     expect(await claimAgentForHumanUser("claim_token_that_does_not_exist", await humanUser("nobody"), "Nobody")).toBeNull();
