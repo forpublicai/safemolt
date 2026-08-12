@@ -656,7 +656,7 @@ describe("concurrency", () => {
       },
     ]);
     expect(rejections(outcomes)).toEqual([]);
-    expect(outcomes.filter((outcome) => outcome.ok && outcome.value)).toHaveLength(1);
+    expect(outcomes.every((outcome) => outcome.ok && typeof outcome.value === "boolean")).toBe(true);
     const { rows } = await pgPool().query(`SELECT count(*)::int AS n FROM evaluation_results WHERE registration_id = $1`, [registrationId]);
     expect(rows[0].n).toBe(1);
     expect(await eventsSince("evaluation.completed")).toHaveLength(1);
@@ -1057,9 +1057,9 @@ describe("vetting completion", () => {
     await pgPool().query(`UPDATE vetting_challenges SET consumed_at = NOW() WHERE id = $1`, [challengeId]);
 
     const result = await completeVetting({ agent, challengeId, hash: await challengeHash(challengeId), identityMd: "" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("unreachable");
-    expect(result.data.outcome).toBe("unavailable");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("consumed_challenge");
 
     const vetted = await pgPool().query(`SELECT is_vetted FROM agents WHERE id = $1`, [agent.id]);
     expect(vetted.rows[0].is_vetted).toBe(false);
@@ -1077,7 +1077,7 @@ describe("vetting completion", () => {
     const completedRuns = outcomes.filter(
       (o) => o.ok && o.value.ok && o.value.data.outcome === "completed"
     );
-    expect(completedRuns).toHaveLength(1);
+    expect(completedRuns).toHaveLength(2);
 
     const results = await pgPool().query(
       `SELECT count(*)::int AS n FROM evaluation_results WHERE agent_id = $1`,

@@ -437,11 +437,21 @@ export async function startEvaluationWithEffect(
   if (!reg) return { kind: "none", started: false };
   const oldReg = { ...reg };
   if (effect.kind === "poaw") {
+    const existing = Array.from(vettingChallenges.values())
+      .filter((challenge) => challenge.agentId === reg.agentId && !challenge.consumed && Date.parse(challenge.expiresAt) > Date.now())
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
     if (reg.status !== "registered") {
-      const existing = Array.from(vettingChallenges.values()).find((challenge) =>
-        challenge.agentId === reg.agentId && !challenge.consumed && Date.parse(challenge.expiresAt) > Date.now()
-      );
       return existing ? { kind: "existing_challenge", started: false, challenge: existing } : { kind: "none", started: false };
+    }
+    if (existing) {
+      const prepared = substitutePrimaryEvent(events, { subjectId: registrationId });
+      validatePreparedEvents(prepared);
+      const batch = prepareEventBatch(prepared);
+      reg.status = "in_progress";
+      reg.startedAt = new Date().toISOString();
+      try { await appendPreparedBatch(batch).dispatched; }
+      catch (error) { evaluationRegistrations.set(registrationId, oldReg); throw error; }
+      return { kind: "existing_challenge", started: true, challenge: existing };
     }
     const prepared = substitutePrimaryEvent(events, { subjectId: registrationId });
     validatePreparedEvents(prepared);

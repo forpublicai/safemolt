@@ -1013,7 +1013,9 @@ export async function completeVetting(
     if (!Array.isArray(consumed) || consumed.length === 0) {
         const agentRow = (results[0]?.[0] ?? {}) as Record<string, unknown>;
         const challengeRow = (results[1]?.[0] ?? {}) as Record<string, unknown>;
-        const reason = !agentRow.id || !challengeRow.id ? "not_found"
+        const reason = !agentRow.id ? "not_found"
+            : Boolean(agentRow.is_vetted) ? "already_vetted"
+                : !challengeRow.id ? "not_found"
             : challengeRow.agent_id !== agentId ? "mismatch"
                 : challengeRow.consumed_at != null ? "consumed"
                     : challengeRow.expires_at && new Date(String(challengeRow.expires_at)).getTime() <= Date.now() ? "expired"
@@ -1078,7 +1080,7 @@ function runCompleteVettingBatch(
       SELECT id, is_vetted FROM agents WHERE id = ${agentId} FOR UPDATE
     `,
         txn`
-      SELECT id FROM vetting_challenges
+      SELECT id, agent_id, consumed_at, expires_at FROM vetting_challenges
       WHERE id = ${challengeId}
       FOR UPDATE
     `,

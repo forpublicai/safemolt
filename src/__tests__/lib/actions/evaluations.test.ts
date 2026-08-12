@@ -257,6 +257,46 @@ describe("startEvaluationWithEffect", () => {
     expect(started.certificationJob).toBeDefined();
     expect(certificationJobs.get(started.certificationJob!.id)!.status).toBe("pending");
   });
+
+  it("refreshes a lapsed pending certification row in place", async () => {
+    const agent = makeAgent({ id: "cert-refresh" });
+    const registrationId = seedRegistration({ agentId: agent.id, evaluationId: "cert-refresh", status: "registered" });
+    const oldJob = {
+      id: "cert-refresh-job", registrationId, agentId: agent.id, evaluationId: "cert-refresh",
+      nonce: "old", nonceExpiresAt: new Date(Date.now() - 1000).toISOString(), status: "pending" as const,
+      createdAt: new Date(Date.now() - 2000).toISOString(),
+    };
+    certificationJobs.set(oldJob.id, oldJob);
+    const result = await startEvaluationWithEffectStore(registrationId, {
+      kind: "certification", agentId: agent.id, evaluationId: oldJob.evaluationId, nonce: "new",
+      nonceExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }, [startedEvent(registrationId)]);
+    expect(result.kind).toBe("refreshed");
+    expect(result.certificationJob?.id).toBe(oldJob.id);
+    expect(result.certificationJob?.nonce).toBe("new");
+    expect(certificationJobs.get(oldJob.id)).toBeDefined();
+    expect(Array.from(certificationJobs.values()).filter((job) => job.registrationId === registrationId)).toHaveLength(1);
+    expect(events("evaluation.started")).toHaveLength(1);
+  });
+
+  it.each(["submitted", "judging", "completed"] as const)("does not replace a %s certification job", async (status) => {
+    const agent = makeAgent({ id: `cert-${status}` });
+    const registrationId = seedRegistration({ agentId: agent.id, evaluationId: `cert-${status}`, status: "in_progress" });
+    const job = {
+      id: `cert-${status}-job`, registrationId, agentId: agent.id, evaluationId: `cert-${status}`,
+      nonce: `old-${status}`, nonceExpiresAt: new Date(Date.now() + 60_000).toISOString(), status,
+      createdAt: new Date().toISOString(),
+    };
+    certificationJobs.set(job.id, job);
+    const result = await startEvaluationWithEffectStore(registrationId, {
+      kind: "certification", agentId: agent.id, evaluationId: job.evaluationId, nonce: `new-${status}`,
+      nonceExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+    }, [startedEvent(registrationId)]);
+    expect(result.kind).toBe("existing_job");
+    expect(result.certificationJob).toEqual(job);
+    expect(Array.from(certificationJobs.values()).filter((item) => item.registrationId === registrationId)).toHaveLength(1);
+    expect(events("evaluation.started")).toHaveLength(0);
+  });
 });
 
 describe("sendSessionMessage", () => {
@@ -717,9 +757,9 @@ describe("completeVetting", () => {
     const { agent, challengeId } = await vettableAgent();
     vettingChallenges.set(challengeId, { ...vettingChallenges.get(challengeId)!, consumed: true });
     const result = await completeVetting({ agent, challengeId, hash: vettingChallenges.get(challengeId)!.expectedHash, identityMd: "" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("unreachable");
-    expect(result.data.outcome).toBe("unavailable");
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("consumed_challenge");
     expect(agents.get(agent.id)!.isVetted).toBeFalsy();
     expect(events()).toHaveLength(0);
   });

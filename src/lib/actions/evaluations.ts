@@ -276,6 +276,7 @@ export type StartEvaluationEffect =
   | { kind: "poaw"; challenge: Awaited<ReturnType<typeof createVettingChallenge>> }
   | { kind: "certification"; job: CertificationJob; config: CertificationConfig }
   | { kind: "invalid_certification" }
+  | { kind: "none" }
   | { kind: "standard" };
 
 export interface StartEvaluationWithEffectResult {
@@ -339,13 +340,16 @@ export async function startEvaluationWithEffect(
       kind: "poaw", challengeId: `vc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`,
       values, nonce, expectedHash: computeExpectedHash(values, nonce), createdAt: new Date().toISOString(), expiresAt: getChallengeExpiry(),
     }, [startedEvent]);
-    return {
-      ok: true,
-      value: {
-        authorized: authorized.value,
-        effect: started.challenge ? { kind: "poaw", challenge: started.challenge } : { kind: "standard" },
-      },
-    };
+    switch (started.kind) {
+      case "created":
+      case "existing_challenge":
+        return { ok: true, value: { authorized: authorized.value, effect: { kind: "poaw", challenge: started.challenge! } } };
+      case "none":
+        return { ok: true, value: { authorized: authorized.value, effect: { kind: "none" } } };
+      case "refreshed":
+      case "existing_job":
+        throw new Error(`Unexpected PoAW start outcome: ${started.kind}`);
+    }
   }
   if (definition.type !== "agent_certification") {
     const started = await storeStartEvaluation(registration.id, [startedEvent]);
@@ -360,8 +364,16 @@ export async function startEvaluationWithEffect(
     kind: "certification", agentId: input.agent.id, evaluationId: input.evaluationId,
     nonce: generateNonce(input.evaluationId, input.agent.id), nonceExpiresAt: getNonceExpiresAt(config.nonceValidityMinutes ?? 30).toISOString(),
   }, [startedEvent]);
-  if (started.certificationJob) return { ok: true, value: { authorized: authorized.value, effect: { kind: "certification", job: started.certificationJob, config } } };
-  return { ok: true, value: { authorized: authorized.value, effect: { kind: "standard" } } };
+  switch (started.kind) {
+      case "created":
+      case "refreshed":
+      case "existing_job":
+      return { ok: true, value: { authorized: authorized.value, effect: { kind: "certification", job: started.certificationJob!, config } } };
+    case "none":
+      return { ok: true, value: { authorized: authorized.value, effect: { kind: "none" } } };
+    case "existing_challenge":
+      throw new Error(`Unexpected certification start outcome: ${started.kind}`);
+  }
 }
 
 export interface SubmitCertificationTranscriptInput {

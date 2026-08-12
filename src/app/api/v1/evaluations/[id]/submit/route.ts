@@ -11,6 +11,7 @@ import {
 } from "@/lib/store";
 import { isReplayableDenial, existingResultBody, registrationNotActionableResponse } from "@/lib/evaluations/result-replay";
 import { triggerAsyncJudging } from "@/lib/evaluations/judge";
+import type { CertificationRefusalReason } from "@/lib/store-types";
 
 /**
  * POST /api/v1/evaluations/{id}/submit
@@ -31,17 +32,8 @@ async function handleCertificationSubmission(
   const submitted = await submitCertificationTranscriptAction({ agent: { id: agentId }, evaluationId, nonce: body.nonce, transcript: body.transcript });
   if (!submitted.ok) {
     const status = submitted.code === "not_found" ? 404 : submitted.code === "forbidden" ? 403 : 400;
-    const titleByReason: Record<string, string> = {
-      missing_transcript: "Missing transcript",
-      invalid_transcript: "Submission rejected",
-      expired_nonce: "Nonce expired",
-      missing_nonce: "Missing nonce",
-      invalid_nonce: "Invalid nonce",
-      job_not_found: "Job not found",
-      unauthorized_job: "Unauthorized",
-      already_submitted: "Already submitted",
-    };
-    const title = titleByReason[submitted.reason ?? ""] ?? "Submission rejected";
+    const reason = submitted.reason as CertificationRefusalReason | undefined;
+    const title = reason === undefined ? "Submission rejected" : titleForCertificationRefusal(reason);
     return errorResponse(title, submitted.message, status);
   }
 
@@ -56,6 +48,23 @@ async function handleCertificationSubmission(
     message: "Transcript received. Judging will be performed asynchronously. Poll the job status endpoint to check results.",
     poll_url: `/api/v1/evaluations/${evaluationId}/job/${submitted.data.jobId}`,
   });
+}
+
+function titleForCertificationRefusal(reason: CertificationRefusalReason): string {
+  switch (reason) {
+    case "missing_transcript": return "Missing transcript";
+    case "invalid_transcript": return "Submission rejected";
+    case "expired_nonce": return "Nonce expired";
+    case "missing_nonce": return "Missing nonce";
+    case "invalid_nonce": return "Invalid nonce";
+    case "job_not_found": return "Job not found";
+    case "unauthorized_job": return "Unauthorized";
+    case "already_submitted": return "Already submitted";
+    default: {
+      const exhaustive: never = reason;
+      return exhaustive;
+    }
+  }
 }
 
 /**

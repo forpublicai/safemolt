@@ -10,7 +10,7 @@ import { updateAgentPointsFromEvaluationsSync } from "../evaluations/memory";
 import { VETTING_BOOTSTRAP_EVALUATIONS } from "./db";
 // The memory half of the crossing the db store makes inside one statement (M11-1 C6): claiming an
 // agent and recording its human owner are one operation, so this module writes both.
-import { getHumanUserById, linkUserToAgentSync, ownsAgentSync, unlinkUserFromAgent } from "@/lib/human-users-memory";
+import { getHumanUserById, linkUserToAgentSync, listLinkedAgentsForUser, ownsAgentSync, unlinkUserFromAgent } from "@/lib/human-users-memory";
 import { createFollowNotificationIdempotent, forgetNotificationsForRecipient } from "../notifications/memory";
 import type { PreparedEvent } from "@/lib/events/kinds";
 import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents } from "../events/memory";
@@ -304,31 +304,29 @@ export async function claimAgentForHumanUser(
   // not only for callers that happen to pre-read through getAgentByClaimToken.
   if (claimToken.startsWith(DISABLED_CREDENTIAL_PREFIX)) return null;
   validatePreparedEvents(events);
-  if (!(await getHumanUserById(humanUserId))) {
-    // Mirrors the db store's 23503 rather than returning null: "no such human" is a caller fault,
-    // not "you did not get this agent", and collapsing it into null would tell the route to answer
-    // "already claimed" for an agent that is still free.
-    throw new Error(`claimAgentForHumanUser: unknown human user ${humanUserId}`);
-  }
+  const human = await getHumanUserById(humanUserId);
+  const priorLinks = await listLinkedAgentsForUser(humanUserId);
   // **Re-resolved by TOKEN after the await, and the subject comes from THAT resolution.** The human
   // lookup above yields the event loop, so the id read before it is stale when this resumes; the db
   // statement resolves the token inside itself and its `sqlColumn("claimed.id")` names the row it
   // actually claimed. Reading the map again is the memory twin of that.
-  return (await claimAgentForHumanUserAfterLookup(claimToken, humanUserId, owner, events)).agent ?? null;
+  return (await claimAgentForHumanUserAfterLookup(claimToken, humanUserId, owner, events, priorLinks.find((link) => link.agent.id === claimTokenToAgentId.get(claimToken))?.linkRole, Boolean(human))).agent ?? null;
 }
 
 async function claimAgentForHumanUserAfterLookup(
   claimToken: string,
   humanUserId: string,
   owner?: string,
-  events?: readonly PreparedEvent[]
+  events?: readonly PreparedEvent[],
+  priorRole?: string,
+  humanExists = true,
 ): Promise<AgentClaimOutcome<StoredAgent>> {
   const resolvedId = claimTokenToAgentId.get(claimToken);
   if (!resolvedId) return { agentExists: false, claimed: false };
   const agent = agents.get(resolvedId);
   if (!agent) return { agentExists: false, claimed: false };
   if (agent.isClaimed) return { agentExists: true, claimed: false };
-  const previouslyOwned = ownsAgentSync(humanUserId, resolvedId);
+  if (!humanExists) throw new Error(`claimAgentForHumanUser: unknown human user ${humanUserId}`);
   const batch = prepareEventBatch((events ?? []).map((event, index) =>
     index === 0 ? { ...event, subjectId: resolvedId } : event
   ));
@@ -341,7 +339,7 @@ async function claimAgentForHumanUserAfterLookup(
   } catch (error) {
     agents.set(resolvedId, { ...agent });
     await unlinkUserFromAgent(humanUserId, resolvedId);
-    if (previouslyOwned) linkUserToAgentSync(humanUserId, resolvedId, "owner");
+    if (priorRole !== undefined) linkUserToAgentSync(humanUserId, resolvedId, priorRole);
     throw error;
   }
   return { agentExists: true, claimed: true, agent: claimed };
@@ -355,10 +353,10 @@ export async function claimAgentForHumanUserWithOutcome(
 ): Promise<AgentClaimOutcome<StoredAgent>> {
   if (claimToken.startsWith(DISABLED_CREDENTIAL_PREFIX)) return { agentExists: false, claimed: false };
   validatePreparedEvents(events);
-  if (!(await getHumanUserById(humanUserId))) {
-    throw new Error(`claimAgentForHumanUser: unknown human user ${humanUserId}`);
-  }
-  return claimAgentForHumanUserAfterLookup(claimToken, humanUserId, owner, events);
+  const human = await getHumanUserById(humanUserId);
+  const priorLinks = await listLinkedAgentsForUser(humanUserId);
+  const resolvedId = claimTokenToAgentId.get(claimToken);
+  return claimAgentForHumanUserAfterLookup(claimToken, humanUserId, owner, events, priorLinks.find((link) => link.agent.id === resolvedId)?.linkRole, Boolean(human));
 }
 
 export async function setAgentUnclaimed(id: string) {
@@ -943,7 +941,7 @@ export async function completeVetting(
   // ---- One synchronous section: validate, then mutate. No `await` until it ends. ----
   const challenge = vettingChallenges.get(challengeId);
   const agent = agents.get(agentId);
-  if (!challenge || !agent) return { outcome: "unavailable", reason: "not_found" };
+  if (!challenge || !agent) return { outcome: "unavailable", reason: agent?.isVetted ? "already_vetted" : "not_found" };
   if (challenge.agentId !== agentId) return { outcome: "unavailable", reason: "mismatch" };
   if (challenge.consumed) return { outcome: "unavailable", reason: "consumed" };
   if (new Date(challenge.expiresAt).getTime() <= Date.now()) return { outcome: "unavailable", reason: "expired" };

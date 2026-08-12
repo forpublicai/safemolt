@@ -91,6 +91,10 @@ export async function POST(
       );
     }
 
+    if (effect.kind === 'none') {
+      return errorResponse("Evaluation already started", "No new evaluation effect was created", 409);
+    }
+
     // For other evaluations, return success
     return jsonResponse({
       success: true,

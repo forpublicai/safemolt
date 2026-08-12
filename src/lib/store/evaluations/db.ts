@@ -79,9 +79,14 @@ export async function registerForEvaluation(
         firstParamIndex: params.length + 1,
         overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [],
     });
-    const rows = await sql!(
-        `
-    WITH existing AS (
+    const query = `
+    WITH passed AS (
+      SELECT r.id, r.registered_at, r.status
+      FROM evaluation_results er
+      JOIN evaluation_registrations r ON r.id = er.registration_id
+      WHERE er.agent_id = $2::text AND er.evaluation_id = $3::text AND er.passed = true
+      ORDER BY er.completed_at DESC LIMIT 1
+    ), existing AS (
       SELECT id, registered_at, status FROM evaluation_registrations
       WHERE agent_id = $2::text AND evaluation_id = $3::text
         AND status IN ('registered', 'in_progress')
@@ -89,23 +94,26 @@ export async function registerForEvaluation(
     ), registered AS (
       INSERT INTO evaluation_registrations (id, agent_id, evaluation_id, registered_at, status, school_id, school_scope_trusted)
       SELECT $1::text, $2::text, $3::text, $4::timestamptz, 'registered', $5::text, $6::boolean
-      WHERE NOT EXISTS (
-        SELECT 1 FROM evaluation_results
-        WHERE agent_id = $2::text AND evaluation_id = $3::text AND passed = true
-      ) AND NOT EXISTS (SELECT 1 FROM existing)
+      WHERE NOT EXISTS (SELECT 1 FROM passed) AND NOT EXISTS (SELECT 1 FROM existing)
       RETURNING id, registered_at, status
     )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
-    SELECT id, registered_at, status, true AS created, false AS already_passed FROM registered
+    SELECT id, registered_at, status, false AS created, true AS already_passed FROM passed
     UNION ALL
-    SELECT id, registered_at, status, false AS created, false AS already_passed FROM existing
+    SELECT id, registered_at, status, false, false FROM existing
+    WHERE NOT EXISTS (SELECT 1 FROM passed)
     UNION ALL
-    SELECT NULL::text, NULL::timestamptz, NULL::text, false, true
-    WHERE NOT EXISTS (SELECT 1 FROM registered) AND NOT EXISTS (SELECT 1 FROM existing)
-  `,
-        [...params, ...emitted.params]
-    );
+    SELECT id, registered_at, status, true, false FROM registered
+    WHERE NOT EXISTS (SELECT 1 FROM passed) AND NOT EXISTS (SELECT 1 FROM existing)
+  `;
+    const transactionResults = await sql!.transaction((txn) => [
+        txn`SELECT id FROM agents WHERE id = ${agentId} FOR UPDATE`,
+        txn(query, [...params, ...emitted.params]),
+    ]);
+    const rows = transactionResults[1] as Array<Record<string, unknown>>;
     const r = (rows as Array<Record<string, unknown>>)[0];
-    if (r?.already_passed === true) return { kind: "already_passed", id: "", registeredAt: "" };
+    if (r?.already_passed === true) {
+        return { kind: "already_passed", id: String(r.id), registeredAt: String(r.registered_at) };
+    }
     if (r?.created === true) { const id = r.id as string; const registeredAt = String(r.registered_at); return { kind: "created", id, registeredAt, registration: { id, registeredAt, status: "registered" } }; }
     if (r?.id) { const id = String(r.id); const registeredAt = String(r.registered_at); const status = r.status as "registered" | "in_progress"; return { kind: "existing", id, registeredAt, registration: { id, registeredAt, status } }; }
     return { kind: "already_passed", id: "", registeredAt: "" };
@@ -539,25 +547,34 @@ export async function startEvaluationWithEffect(
               SELECT cj.* FROM certification_jobs cj JOIN locked l ON l.id = cj.registration_id
               WHERE cj.status IN ('pending', 'submitted', 'judging', 'completed')
               ORDER BY cj.created_at DESC LIMIT 1
-            ), effect AS (
+            ), refreshed AS (
+              UPDATE certification_jobs cj
+              SET nonce = $5::text, nonce_expires_at = $6::timestamptz, created_at = NOW(), status = 'pending'
+              FROM live
+              WHERE cj.id = live.id AND live.status = 'pending' AND live.nonce_expires_at <= NOW()
+              RETURNING cj.*
+            ), created AS (
               INSERT INTO certification_jobs (id, registration_id, agent_id, evaluation_id, nonce, nonce_expires_at, status, created_at)
               SELECT $2::text, l.id, $3::text, $4::text, $5::text, $6::timestamptz, 'pending', NOW()
               FROM locked l
-              WHERE l.status IN ('registered', 'in_progress')
-                AND (NOT EXISTS (SELECT 1 FROM live)
-                     OR EXISTS (SELECT 1 FROM live WHERE status = 'pending' AND nonce_expires_at <= NOW()))
-              ON CONFLICT (registration_id) WHERE status = 'pending'
-              DO UPDATE SET nonce = EXCLUDED.nonce, nonce_expires_at = EXCLUDED.nonce_expires_at,
-                            created_at = EXCLUDED.created_at, status = 'pending'
-              WHERE certification_jobs.status = 'pending' AND certification_jobs.nonce_expires_at <= NOW()
-              RETURNING id
+              WHERE l.status IN ('registered', 'in_progress') AND NOT EXISTS (SELECT 1 FROM live)
+              RETURNING *
+            ), selected AS (
+              SELECT 'refreshed'::text AS arm, r.* FROM refreshed r
+              UNION ALL
+              SELECT 'created'::text, c.* FROM created c
+              UNION ALL
+              SELECT 'existing_job'::text, l.* FROM live l
+              WHERE NOT EXISTS (SELECT 1 FROM refreshed) AND NOT EXISTS (SELECT 1 FROM created)
             ), started AS (
               UPDATE evaluation_registrations r SET status = 'in_progress', started_at = NOW()
-              WHERE r.id = $1::text AND r.status = 'registered' AND EXISTS (SELECT 1 FROM effect)
+              WHERE r.id = $1::text AND r.status = 'registered' AND EXISTS (SELECT 1 FROM selected)
               RETURNING r.id
             )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
-            SELECT started.id AS started_id, COALESCE(effect.id, live.id) AS job_id
-            FROM locked LEFT JOIN effect ON true LEFT JOIN live ON true LEFT JOIN started ON true`;
+            SELECT started.id AS started_id, selected.arm, selected.id AS job_id, selected.registration_id,
+                   selected.agent_id, selected.evaluation_id, selected.nonce, selected.nonce_expires_at,
+                   selected.status, selected.created_at
+            FROM selected LEFT JOIN started ON true`;
     const transactionResults = await sql!.transaction((txn) => [
         // D4 completion locks the acting/candidate agent before the registration. Keep this order
         // for both PoAW and certification starts; ORDER BY prevents crossed two-agent starts.
@@ -580,9 +597,14 @@ export async function startEvaluationWithEffect(
         const challenge = { id: String(row.challenge_id), agentId: String(row.agent_id), values: row.values as number[], nonce: String(row.nonce), expectedHash: String(row.expected_hash), createdAt: new Date(String(row.created_at)).toISOString(), expiresAt: new Date(String(row.expires_at)).toISOString(), fetched: false, consumed: false };
         return row.created === true ? { kind: "created", started: true, challenge } : { kind: "existing_challenge", started: Boolean(row.started_id), challenge };
     }
-    const job = await getCertificationJobByRegistration(registrationId);
-    if (!job) return { kind: "none", started: false };
-    return rows[0].started_id ? { kind: "created", started: true, certificationJob: job } : { kind: "existing_job", started: false, certificationJob: job };
+    const row = rows[0] as Record<string, unknown>;
+    const job: CertificationJob = {
+        id: String(row.job_id), registrationId: String(row.registration_id), agentId: String(row.agent_id),
+        evaluationId: String(row.evaluation_id), nonce: String(row.nonce), nonceExpiresAt: new Date(String(row.nonce_expires_at)).toISOString(),
+        status: row.status as CertificationJobStatus, createdAt: new Date(String(row.created_at)).toISOString(),
+    };
+    const arm = String(row.arm) as "created" | "refreshed" | "existing_job";
+    return { kind: arm, started: Boolean(row.started_id), certificationJob: job };
 }
 
 export async function saveEvaluationResult(input: SaveEvaluationResultInput): Promise<SaveEvaluationResultOutcome> {

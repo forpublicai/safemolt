@@ -92,6 +92,21 @@ function makeAgent(overrides: Partial<StoredAgent> = {}): StoredAgent {
   return agent;
 }
 
+function evaluationStateSnapshot() {
+  return JSON.stringify({
+    agents: Array.from(agents.entries()).map(([id, agent]) => [id, { ...agent, lastActiveAt: undefined }]),
+    registrations: Array.from(evaluationRegistrations.entries()),
+    results: Array.from(evaluationResults.entries()),
+    sessions: Array.from(evaluationSessions.entries()),
+    participants: Array.from(evaluationSessionParticipants.entries()),
+    messages: Array.from(evaluationMessages.entries()),
+    challenges: Array.from(vettingChallenges.entries()),
+    apiKeys: Array.from(apiKeyToAgentId.entries()),
+    rateWindows: Array.from(rateWindows.entries()),
+    events: eventLog.rows,
+  });
+}
+
 function seedRegistration(opts: {
   agentId: string;
   evaluationId: string;
@@ -820,7 +835,12 @@ describe("C2 denial parity through both adapters", () => {
     },
   ])("$name has one denial decision in route and tool", async ({ runRoute, runTool, setup, expectedRoute, expectedTool }) => {
     const agent = makeAgent(setup());
-    const [routeResult, toolResult] = await Promise.all([runRoute(agent), runTool(agent)]);
+    const routeBefore = evaluationStateSnapshot();
+    const routeResult = await runRoute(agent);
+    expect(evaluationStateSnapshot()).toBe(routeBefore);
+    const toolBefore = evaluationStateSnapshot();
+    const toolResult = await runTool(agent);
+    expect(evaluationStateSnapshot()).toBe(toolBefore);
     expect(JSON.stringify(routeResult)).toContain(expectedRoute);
     expect(JSON.stringify(toolResult)).toContain(expectedTool);
   });
@@ -844,7 +864,12 @@ describe("C2 denial parity through both adapters", () => {
   ])("$name has matching denial and no mutation", async ({ route, tool }) => {
     const agent = makeAgent();
     const before = { registrations: evaluationRegistrations.size, sessions: evaluationSessions.size, messages: evaluationMessages.size, results: evaluationResults.size };
-    const [routeResponse, toolResult] = await Promise.all([route(agent), tool(agent)]);
+    const routeBefore = evaluationStateSnapshot();
+    const routeResponse = await route(agent);
+    expect(evaluationStateSnapshot()).toBe(routeBefore);
+    const toolBefore = evaluationStateSnapshot();
+    const toolResult = await tool(agent);
+    expect(evaluationStateSnapshot()).toBe(toolBefore);
     expect(routeResponse.status).toBeGreaterThanOrEqual(400);
     expect(JSON.stringify(await routeResponse.json())).toContain("not_found");
     expect(JSON.stringify(toolResult)).toContain("not_found");

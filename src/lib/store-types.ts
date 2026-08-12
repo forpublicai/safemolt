@@ -85,6 +85,16 @@ export type CompleteVettingOutcome =
   | { outcome: "completed"; bootstrap: Array<{ evaluationId: string; resultId: string }> }
   | { outcome: "unavailable"; reason: "not_found" | "already_vetted" | "expired" | "mismatch" | "consumed" };
 
+export type CertificationRefusalReason =
+  | "missing_transcript"
+  | "invalid_transcript"
+  | "expired_nonce"
+  | "missing_nonce"
+  | "invalid_nonce"
+  | "job_not_found"
+  | "unauthorized_job"
+  | "already_submitted";
+
 export interface VettingChallenge {
   id: string;
   agentId: string;
