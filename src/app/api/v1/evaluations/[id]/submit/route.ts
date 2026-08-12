@@ -32,8 +32,7 @@ async function handleCertificationSubmission(
   const submitted = await submitCertificationTranscriptAction({ agent: { id: agentId }, evaluationId, nonce: body.nonce, transcript: body.transcript });
   if (!submitted.ok) {
     const status = submitted.code === "not_found" ? 404 : submitted.code === "forbidden" ? 403 : 400;
-    const reason = submitted.reason as CertificationRefusalReason | undefined;
-    const title = reason === undefined ? "Submission rejected" : titleForCertificationRefusal(reason);
+    const title = titleForCertificationRefusal(submitted.reason);
     return errorResponse(title, submitted.message, status);
   }
 

@@ -33,6 +33,39 @@ function isUniqueViolation(error: unknown): boolean {
     return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
 }
 
+function isActiveRegistrationViolation(error: unknown): boolean {
+    if (typeof error !== "object" || error === null) return false;
+    const e = error as { code?: string; constraint?: string };
+    return e.code === "23505" && e.constraint === "idx_eval_reg_active";
+}
+
+async function classifyRegistrationAfterActiveConflict(agentId: string, evaluationId: string): Promise<EvaluationRegistrationOutcome> {
+    const rows = await sql!`
+      SELECT r.id, r.registered_at, r.status, true AS already_passed
+      FROM evaluation_results er
+      JOIN evaluation_registrations r ON r.id = er.registration_id
+      WHERE er.agent_id = ${agentId} AND er.evaluation_id = ${evaluationId} AND er.passed = true
+      ORDER BY er.completed_at DESC LIMIT 1
+    `;
+    const passed = rows[0] as Record<string, unknown> | undefined;
+    if (passed) return { kind: "already_passed", id: String(passed.id), registeredAt: String(passed.registered_at) };
+    const active = await sql!`
+      SELECT id, registered_at, status
+      FROM evaluation_registrations
+      WHERE agent_id = ${agentId} AND evaluation_id = ${evaluationId}
+        AND status IN ('registered', 'in_progress')
+      ORDER BY registered_at DESC LIMIT 1
+    `;
+    const existing = active[0] as Record<string, unknown> | undefined;
+    if (existing) {
+        const id = String(existing.id);
+        const registeredAt = String(existing.registered_at);
+        const status = existing.status as "registered" | "in_progress";
+        return { kind: "existing", id, registeredAt, registration: { id, registeredAt, status } };
+    }
+    throw new Error("Active registration conflict disappeared before classification");
+}
+
 export async function listRecentEvaluationResults(limit = 25): Promise<StoredRecentEvaluationResult[]> {
     const rows = await sql!`
     SELECT id, registration_id, evaluation_id, agent_id, passed, completed_at, evaluation_version,
@@ -105,10 +138,16 @@ export async function registerForEvaluation(
     SELECT id, registered_at, status, true, false FROM registered
     WHERE NOT EXISTS (SELECT 1 FROM passed) AND NOT EXISTS (SELECT 1 FROM existing)
   `;
-    const transactionResults = await sql!.transaction((txn) => [
-        txn`SELECT id FROM agents WHERE id = ${agentId} FOR UPDATE`,
-        txn(query, [...params, ...emitted.params]),
-    ]);
+    let transactionResults: Awaited<ReturnType<NonNullable<typeof sql>["transaction"]>>;
+    try {
+        transactionResults = await sql!.transaction((txn) => [
+            txn`SELECT id FROM agents WHERE id = ${agentId} FOR UPDATE`,
+            txn(query, [...params, ...emitted.params]),
+        ]);
+    } catch (error) {
+        if (isActiveRegistrationViolation(error)) return classifyRegistrationAfterActiveConflict(agentId, evaluationId);
+        throw error;
+    }
     const rows = transactionResults[1] as Array<Record<string, unknown>>;
     const r = (rows as Array<Record<string, unknown>>)[0];
     if (r?.already_passed === true) {
@@ -546,7 +585,7 @@ export async function startEvaluationWithEffect(
             ), live AS (
               SELECT cj.* FROM certification_jobs cj JOIN locked l ON l.id = cj.registration_id
               WHERE cj.status IN ('pending', 'submitted', 'judging', 'completed')
-              ORDER BY cj.created_at DESC LIMIT 1
+              ORDER BY cj.created_at DESC LIMIT 1 FOR UPDATE OF cj
             ), refreshed AS (
               UPDATE certification_jobs cj
               SET nonce = $5::text, nonce_expires_at = $6::timestamptz, created_at = NOW(), status = 'pending'
@@ -1356,13 +1395,14 @@ export async function expireStalePendingCertificationJob(jobId: string): Promise
  */
 export async function submitCertificationTranscript(
     jobId: string,
+    expectedNonce: string,
     transcript: TranscriptEntry[],
     submittedAt: string
 ): Promise<boolean> {
     const rows = await sql!`
     UPDATE certification_jobs
     SET transcript = ${JSON.stringify(transcript)}::jsonb, status = 'submitted', submitted_at = ${submittedAt}
-    WHERE id = ${jobId} AND status = 'pending' AND nonce_expires_at > NOW()
+    WHERE id = ${jobId} AND nonce = ${expectedNonce} AND status = 'pending' AND nonce_expires_at > NOW()
     RETURNING id
   `;
     return rows.length > 0;

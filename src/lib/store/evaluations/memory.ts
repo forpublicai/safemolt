@@ -433,6 +433,8 @@ export async function startEvaluationWithEffect(
   effect: EvaluationStartEffectInput,
   events?: readonly PreparedEvent[]
 ): Promise<EvaluationStartOutcome> {
+  const prepared = substitutePrimaryEvent(events, { subjectId: registrationId });
+  validatePreparedEvents(prepared);
   const reg = evaluationRegistrations.get(registrationId);
   if (!reg) return { kind: "none", started: false };
   const oldReg = { ...reg };
@@ -444,8 +446,6 @@ export async function startEvaluationWithEffect(
       return existing ? { kind: "existing_challenge", started: false, challenge: existing } : { kind: "none", started: false };
     }
     if (existing) {
-      const prepared = substitutePrimaryEvent(events, { subjectId: registrationId });
-      validatePreparedEvents(prepared);
       const batch = prepareEventBatch(prepared);
       reg.status = "in_progress";
       reg.startedAt = new Date().toISOString();
@@ -453,8 +453,6 @@ export async function startEvaluationWithEffect(
       catch (error) { evaluationRegistrations.set(registrationId, oldReg); throw error; }
       return { kind: "existing_challenge", started: true, challenge: existing };
     }
-    const prepared = substitutePrimaryEvent(events, { subjectId: registrationId });
-    validatePreparedEvents(prepared);
     const batch = prepareEventBatch(prepared);
     const challenge = {
       id: effect.challengeId, agentId: reg.agentId, values: effect.values, nonce: effect.nonce,
@@ -477,8 +475,6 @@ export async function startEvaluationWithEffect(
   const oldJob = live ? { ...live } : undefined;
   const expiredPending = live?.status === 'pending' && Date.parse(live.nonceExpiresAt) <= Date.now();
   if (live && !expiredPending && reg.status === "registered") {
-    const prepared = substitutePrimaryEvent(events, { subjectId: registrationId });
-    validatePreparedEvents(prepared);
     const batch = prepareEventBatch(prepared);
     reg.status = "in_progress";
     reg.startedAt = new Date().toISOString();
@@ -494,8 +490,6 @@ export async function startEvaluationWithEffect(
   if (live && !expiredPending) return { kind: "existing_job", started: false, certificationJob: live };
   if (reg.status !== "registered" && reg.status !== "in_progress") return { kind: "none", started: false };
   const shouldEmitStart = reg.status === "registered";
-  const prepared = shouldEmitStart ? substitutePrimaryEvent(events, { subjectId: registrationId }) : [];
-  if (shouldEmitStart) validatePreparedEvents(prepared);
   const batch = shouldEmitStart ? prepareEventBatch(prepared) : undefined;
   const job = live && expiredPending
     ? { ...live, nonce: effect.nonce, nonceExpiresAt: effect.nonceExpiresAt, status: 'pending' as const, createdAt: new Date().toISOString() }
@@ -945,12 +939,13 @@ export async function expireStalePendingCertificationJob(jobId: string) {
 
 export async function submitCertificationTranscript(
   jobId: string,
+  expectedNonce: string,
   transcript: NonNullable<CertificationJob['transcript']>,
   submittedAt: string) {
   const job = certificationJobs.get(jobId);
   // Expiry is part of the decisive check, mirroring the db predicate — a request that read an
   // unexpired nonce may not land its transcript after the deadline.
-  if (!job || job.status !== 'pending' || Date.parse(job.nonceExpiresAt) <= Date.now()) return false;
+  if (!job || job.nonce !== expectedNonce || job.status !== 'pending' || Date.parse(job.nonceExpiresAt) <= Date.now()) return false;
   job.transcript = transcript;
   job.status = 'submitted';
   job.submittedAt = submittedAt;

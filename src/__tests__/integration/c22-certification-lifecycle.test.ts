@@ -246,7 +246,7 @@ describe("the judging lease on the Neon driver", () => {
         const agent = await seedAgent("lease");
         const registrationId = await seedRegistration(agent);
         const job = await createCertificationJob(registrationId, agent, EVALUATION, `${PREFIX}nonce_${(seq += 1)}`, new Date(Date.now() + 60_000));
-        const accepted = await submitCertificationTranscript(job.id, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
+        const accepted = await submitCertificationTranscript(job.id, job.nonce, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
         expect(accepted).toBe(true);
         return { registrationId, jobId: job.id };
     }

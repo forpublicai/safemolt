@@ -941,10 +941,15 @@ export async function completeVetting(
   // ---- One synchronous section: validate, then mutate. No `await` until it ends. ----
   const challenge = vettingChallenges.get(challengeId);
   const agent = agents.get(agentId);
-  if (!challenge || !agent) return { outcome: "unavailable", reason: agent?.isVetted ? "already_vetted" : "not_found" };
-  if (challenge.agentId !== agentId) return { outcome: "unavailable", reason: "mismatch" };
-  if (challenge.consumed) return { outcome: "unavailable", reason: "consumed" };
-  if (new Date(challenge.expiresAt).getTime() <= Date.now()) return { outcome: "unavailable", reason: "expired" };
+  if (!agent) return { outcome: "unavailable", reason: "not_found" };
+  // Same precedence as the db classifier: mismatch outranks the vetted fallback, and a vetted
+  // agent's own dead-or-absent challenge is the idempotent already_vetted retry (C14).
+  if (challenge && challenge.agentId !== agentId) return { outcome: "unavailable", reason: "mismatch" };
+  if (!challenge) return { outcome: "unavailable", reason: agent.isVetted ? "already_vetted" : "not_found" };
+  if (challenge.consumed) return { outcome: "unavailable", reason: agent.isVetted ? "already_vetted" : "consumed" };
+  if (new Date(challenge.expiresAt).getTime() <= Date.now()) {
+    return { outcome: "unavailable", reason: agent.isVetted ? "already_vetted" : "expired" };
+  }
   const winningVetting = !agent.isVetted;
   if (winningVetting) agents.set(agentId, { ...agent, isVetted: true, identityMd });
 

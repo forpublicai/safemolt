@@ -202,7 +202,7 @@ describe("the completed-job gap does not mint a second paid attempt", () => {
     const agent = makeAgent({ id: "gap" });
     const registrationId = seedRegistration(agent.id);
     const decided = await mem.createCertificationJob(registrationId, agent.id, CERT, `nonce_${++seq}`, new Date(Date.now() + 60_000));
-    await mem.submitCertificationTranscript(decided.id, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
+    await mem.submitCertificationTranscript(decided.id, decided.nonce, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
     await mem.claimCertificationJobForJudging(decided.id, "t-gap", 60_000);
     await mem.completeCertificationJudging(decided.id, "t-gap", { judgeCompletedAt: new Date().toISOString(), judgeModel: "m", judgeResponse: {} });
     // The result save has NOT landed: the registration is still in_progress.
@@ -226,7 +226,7 @@ describe("transcript intake is a CAS", () => {
     const registrationId = seedRegistration(agent.id);
     const job = await mem.createCertificationJob(registrationId, agent.id, CERT, `nonce_${++seq}`, new Date(Date.now() - 1));
 
-    const accepted = await mem.submitCertificationTranscript(job.id, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
+    const accepted = await mem.submitCertificationTranscript(job.id, job.nonce, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
 
     expect(accepted).toBe(false);
     expect(certificationJobs.get(job.id)!.status).toBe("pending");
@@ -238,12 +238,30 @@ describe("transcript intake is a CAS", () => {
     const registrationId = seedRegistration(agent.id);
     const job = await mem.createCertificationJob(registrationId, agent.id, CERT, "nonce-1", new Date(Date.now() + 60_000));
 
-    const first = await mem.submitCertificationTranscript(job.id, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
-    const second = await mem.submitCertificationTranscript(job.id, [{ promptId: "p1", prompt: "q", response: "OVERWRITE" }], new Date().toISOString());
+    const first = await mem.submitCertificationTranscript(job.id, job.nonce, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
+    const second = await mem.submitCertificationTranscript(job.id, job.nonce, [{ promptId: "p1", prompt: "q", response: "OVERWRITE" }], new Date().toISOString());
 
     expect(first).toBe(true);
     expect(second).toBe(false);
     expect(certificationJobs.get(job.id)!.transcript![0].response).toBe("a");
+  });
+
+  it("rejects a stale validated nonce after an in-place refresh", async () => {
+    const agent = makeAgent({ id: "stale-nonce" });
+    const registrationId = seedRegistration(agent.id);
+    const oldNonce = "old-nonce";
+    const job = await mem.createCertificationJob(registrationId, agent.id, CERT, oldNonce, new Date(Date.now() + 60_000));
+    const validatedNonce = job.nonce;
+
+    job.nonce = "refreshed-nonce";
+    job.nonceExpiresAt = new Date(Date.now() + 60_000).toISOString();
+    certificationJobs.set(job.id, job);
+
+    const accepted = await mem.submitCertificationTranscript(job.id, validatedNonce, [{ promptId: "p1", prompt: "q", response: "stale" }], new Date().toISOString());
+
+    expect(accepted).toBe(false);
+    expect(certificationJobs.get(job.id)).toMatchObject({ status: "pending", nonce: "refreshed-nonce" });
+    expect(certificationJobs.get(job.id)!.transcript).toBeUndefined();
   });
 
   it("route: an expired nonce expires the job conditionally — a raced-in submission is not clobbered", async () => {
@@ -270,7 +288,7 @@ describe("transcript intake is a CAS", () => {
     const racer = makeAgent({ id: "race-winner" });
     const racedReg = seedRegistration(racer.id);
     const racedJob = await mem.createCertificationJob(racedReg, racer.id, CERT, "n-raced", new Date(Date.now() + 60_000));
-    await mem.submitCertificationTranscript(racedJob.id, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
+    await mem.submitCertificationTranscript(racedJob.id, racedJob.nonce, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
     certificationJobs.get(racedJob.id)!.nonceExpiresAt = new Date(Date.now() - 1).toISOString();
     expect(await mem.expireStalePendingCertificationJob(racedJob.id)).toBe(false);
     expect(certificationJobs.get(racedJob.id)!.status).toBe("submitted");
@@ -306,7 +324,7 @@ describe("the judging lease", () => {
   async function submittedJob(agentId: string) {
     const registrationId = seedRegistration(agentId);
     const job = await mem.createCertificationJob(registrationId, agentId, CERT, `nonce_${++seq}`, new Date(Date.now() + 60_000));
-    await mem.submitCertificationTranscript(job.id, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
+    await mem.submitCertificationTranscript(job.id, job.nonce, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
     return { registrationId, jobId: job.id };
   }
 
@@ -437,7 +455,7 @@ describe("the judging lease", () => {
     const agent = makeAgent({ id: "unjudgeable" });
     const registrationId = seedRegistration(agent.id);
     const job = await mem.createCertificationJob(registrationId, agent.id, "no-such-evaluation", `nonce_${++seq}`, new Date(Date.now() + 60_000));
-    await mem.submitCertificationTranscript(job.id, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
+    await mem.submitCertificationTranscript(job.id, job.nonce, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
     const { judgeCertificationJob } = await import("@/lib/evaluations/judge");
 
     const verdict = await judgeCertificationJob(job.id);
@@ -453,7 +471,7 @@ describe("the judging lease", () => {
     const agent = makeAgent({ id: "retrier" });
     const registrationId = seedRegistration(agent.id);
     const done = await mem.createCertificationJob(registrationId, agent.id, CERT, `nonce_${++seq}`, new Date(Date.now() + 60_000));
-    await mem.submitCertificationTranscript(done.id, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
+    await mem.submitCertificationTranscript(done.id, done.nonce, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
     await mem.claimCertificationJobForJudging(done.id, "t", 60_000);
     await mem.completeCertificationJudging(done.id, "t", { judgeCompletedAt: new Date().toISOString(), judgeModel: "m", judgeResponse: {} });
 
@@ -480,7 +498,7 @@ describe("the reclaim-and-dispatch cron", () => {
     const agent = makeAgent({ id: "cron-agent" });
     const registrationId = seedRegistration(agent.id);
     const job = await mem.createCertificationJob(registrationId, agent.id, CERT, `nonce_${++seq}`, new Date(Date.now() + 60_000));
-    await mem.submitCertificationTranscript(job.id, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
+    await mem.submitCertificationTranscript(job.id, job.nonce, [{ promptId: "p1", prompt: "q", response: "a" }], new Date().toISOString());
     await mem.claimCertificationJobForJudging(job.id, "token-crashed", 60_000);
     certificationJobs.get(job.id)!.judgeClaimExpiresAt = new Date(Date.now() - 1000).toISOString();
 

@@ -100,9 +100,7 @@ export async function POST(request: NextRequest) {
         if (!parsed.ok) return parsed.response;
         const { challengeId, hash, identityStr } = parsed;
 
-        // Friendly classification on the current row. The batch's own predicates stay
-        // authoritative — this read exists for accurate errors and the cheap idempotent path,
-        // never as the decision.
+        // The action classifies the decisive batch outcome. This adapter only renders it.
         // **The batch is C14's, unchanged** — the agent lock, then the challenge lock, the vetted
         // flip, the two self-contained bootstrap CTEs, the points recompute and consume-LAST. The
         // action adds only the events: `agent.vetted` on the flip, and per bootstrap evaluation an
@@ -114,18 +112,6 @@ export async function POST(request: NextRequest) {
             const title = completed.reason === "challenge_not_found" ? "Challenge not found" : completed.reason === "challenge_mismatch" ? "Challenge mismatch" : completed.reason === "expired_challenge" ? "Challenge expired" : completed.reason === "consumed_challenge" ? "Challenge already used" : completed.reason === "invalid_hash" ? "Invalid hash" : completed.message;
             return errorResponse(title, completed.message, status);
         }
-        const result = completed.data;
-
-        if (result.outcome === "unavailable") {
-            // Raced: re-read and classify with the same rules, so the loser's error (or the
-            // lost-response success) is indistinguishable from the sequential case.
-            if (result.reason === "already_vetted") return errorResponse("Agent already vetted", "This agent has already completed vetting", 409);
-            if (result.reason === "consumed") return errorResponse("Challenge already used", "Start a new vetting challenge", 410);
-            if (result.reason === "mismatch") return errorResponse("Challenge mismatch", "This challenge was not issued to your agent", 403);
-            if (result.reason === "not_found") return errorResponse("Challenge not found", "Invalid challenge ID", 404);
-            return errorResponse("Challenge expired", "The 15-second window has passed. Start a new vetting challenge.", 410);
-        }
-
         const fresh = await getAgentById(agent.id);
         const storedIdentity = fresh?.identityMd ?? identityStr;
         await runPostCommitFollowUps(agent.id, storedIdentity);

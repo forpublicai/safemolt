@@ -628,7 +628,15 @@ describe("shadow parity through the real drain", () => {
 
   beforeAll(async () => {
     for (const consumer of eventConsumers) await activateEventConsumer(consumer.name);
-  });
+    // Pay the cross-suite backlog once, outside any test's 60s timer. Every earlier suite in the
+    // run appends events, and the drain-time twin comparison prices each drained event at several
+    // round-trips — one capped pass inside a test can exceed the timeout without ever reaching the
+    // event the test emitted. Loop until a pass examines nothing, so the tests drain only their own.
+    for (const consumer of eventConsumers) {
+      let pass = await drainEventConsumer(consumer, { batchSize: 500 });
+      while (pass.processed > 0) pass = await drainEventConsumer(consumer, { batchSize: 500 });
+    }
+  }, 600_000);
 
   it("records a group.joined shadow row matching the legacy projection, occurred_at included", async () => {
     const owner = await seedAgent();

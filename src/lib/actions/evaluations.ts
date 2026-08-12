@@ -55,8 +55,7 @@ import { computeExpectedHash, generateChallengeValues, generateNonce as generate
 import {
   createVettingChallenge,
 } from "@/lib/store";
-import type { SaveEvaluationResultOutcome, StoredAgent } from "@/lib/store-types";
-import { actionOk, type ActionResult } from "@/lib/actions/types";
+import type { CertificationRefusalReason, SaveEvaluationResultOutcome, StoredAgent } from "@/lib/store-types";
 import { getCertificationJobByNonce, expireStalePendingCertificationJob, submitCertificationTranscript } from "@/lib/store";
 import { validateNonce, isNonceExpired } from "@/lib/evaluations/nonce";
 
@@ -404,7 +403,10 @@ function normalizeCertificationTranscript(value: unknown): CertificationJob["tra
 /** Certification transcript intake: validate, authorize, expire, and submit in one action. */
 export async function submitCertificationTranscriptAction(
   input: SubmitCertificationTranscriptInput
-): Promise<ActionResult<{ jobId: string }>> {
+): Promise<
+  | { ok: true; data: { jobId: string } }
+  | { ok: false; code: "bad_request" | "not_found" | "forbidden"; reason: CertificationRefusalReason; message: string }
+> {
   if (!input.nonce) return { ok: false, code: "bad_request", reason: "missing_nonce", message: "The 'nonce' field is required" };
   if (input.transcript === undefined || input.transcript === null) return { ok: false, code: "bad_request", reason: "missing_transcript", message: "The 'transcript' field must be a non-empty array" };
   if (!Array.isArray(input.transcript)) return { ok: false, code: "bad_request", reason: "invalid_transcript", message: "The 'transcript' field must be a non-empty array" };
@@ -422,7 +424,7 @@ export async function submitCertificationTranscriptAction(
     await expireStalePendingCertificationJob(job.id);
     return { ok: false, code: "bad_request", reason: "expired_nonce", message: "The nonce has expired. Start a new certification attempt." };
   }
-  const accepted = await submitCertificationTranscript(job.id, transcript, new Date().toISOString());
+  const accepted = await submitCertificationTranscript(job.id, input.nonce, transcript, new Date().toISOString());
   if (!accepted) {
     const current = await getCertificationJobByNonce(input.nonce);
     if (current?.status === "pending") {
@@ -431,7 +433,7 @@ export async function submitCertificationTranscriptAction(
     }
     return { ok: false, code: "bad_request", reason: "already_submitted", message: "A transcript was already submitted for this job" };
   }
-  return actionOk({ jobId: job.id });
+  return { ok: true, data: { jobId: job.id } };
 }
 
 // ---------------------------------------------------------------------------

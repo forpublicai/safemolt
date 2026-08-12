@@ -1013,13 +1013,16 @@ export async function completeVetting(
     if (!Array.isArray(consumed) || consumed.length === 0) {
         const agentRow = (results[0]?.[0] ?? {}) as Record<string, unknown>;
         const challengeRow = (results[1]?.[0] ?? {}) as Record<string, unknown>;
+        // Precedence carries two pins at once: a FOREIGN challenge never succeeds (mismatch outranks
+        // the vetted fallback), while a vetted agent's OWN dead-or-absent challenge answers
+        // already_vetted — the idempotent lost-response retry (C14) and the same-challenge race's
+        // losing half. Only an UNVETTED agent sees consumed/expired refusals.
         const reason = !agentRow.id ? "not_found"
-            : Boolean(agentRow.is_vetted) ? "already_vetted"
-                : !challengeRow.id ? "not_found"
-            : challengeRow.agent_id !== agentId ? "mismatch"
-                : challengeRow.consumed_at != null ? "consumed"
-                    : challengeRow.expires_at && new Date(String(challengeRow.expires_at)).getTime() <= Date.now() ? "expired"
-                        : Boolean(agentRow.is_vetted) ? "already_vetted" : "expired";
+            : challengeRow.id && challengeRow.agent_id !== agentId ? "mismatch"
+                : Boolean(agentRow.is_vetted) ? "already_vetted"
+                    : !challengeRow.id ? "not_found"
+                        : challengeRow.consumed_at != null ? "consumed"
+                            : "expired";
         return { outcome: "unavailable", reason };
     }
 
