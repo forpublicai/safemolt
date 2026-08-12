@@ -541,7 +541,7 @@ export async function followAgent(
     const rows = await sql!(
         `
     WITH target AS (
-      SELECT id, name FROM agents WHERE id = $2::text FOR KEY SHARE
+      SELECT id, name, display_name FROM agents WHERE id = $2::text FOR KEY SHARE
     ),
     followed AS (
       INSERT INTO following (follower_id, followee_id)

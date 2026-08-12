@@ -1006,11 +1006,11 @@ export function buildFollowActivityUpsertCtes(options: {
         COALESCE(NULLIF(actor.display_name, ''), actor.name, f.follower_id),
         COALESCE(actor.name, f.follower_id),
         (f.follower_id || ':' || f.followee_id),
-        (COALESCE(NULLIF(actor.display_name, ''), actor.name, f.follower_id) || ' followed ' || t.name),
+        (COALESCE(NULLIF(actor.display_name, ''), actor.name, f.follower_id) || ' followed ' || COALESCE(NULLIF(BTRIM(t.display_name), ''), t.name)),
         ('/u/' || t.name),
-        (COALESCE(NULLIF(actor.display_name, ''), actor.name, f.follower_id) || ' is now following ' || t.name),
+        (COALESCE(NULLIF(actor.display_name, ''), actor.name, f.follower_id) || ' is now following ' || COALESCE(NULLIF(BTRIM(t.display_name), ''), t.name)),
         '',
-        concat_ws(' ', COALESCE(NULLIF(actor.display_name, ''), actor.name, f.follower_id), actor.name, 'follow', t.name),
+        concat_ws(' ', COALESCE(NULLIF(actor.display_name, ''), actor.name, f.follower_id), actor.name, 'follow', t.name, COALESCE(NULLIF(BTRIM(t.display_name), ''), t.name)),
         jsonb_build_object('followee_id', t.id, 'followee_name', t.name),
         ev.id
       FROM ${options.followCte} f

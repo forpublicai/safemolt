@@ -517,8 +517,10 @@ export async function followAgent(
     {
       followerId,
       followeeId: followee.id,
-      followeeName: followee.name,
-      followeeDisplayName: followee.displayName,
+      // The LIVE row's names, not the pre-await resolution: the db statement labels from the row
+      // it locked, so a rename landing in the resolve window must read the same on both sides.
+      followeeName: (a ?? followee).name,
+      followeeDisplayName: (a ?? followee).displayName,
       createdAt,
     },
     { sourceEventId }
