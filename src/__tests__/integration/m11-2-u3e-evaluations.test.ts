@@ -68,6 +68,8 @@ jest.mock("next/headers", () => ({
 /** A Foundation evaluation that really is proctored (`schools/foundation/evaluations/SIP-5.md`). */
 const PROCTORED = "non-spamminess";
 const SELF_SERVE = "poaw";
+/** Every field a proctor-submit success body may carry (`proctorResultBody`). */
+const LEGAL_RESULT_KEYS = ["completed_at", "id", "max_score", "passed", "proctor_agent_id", "score"];
 
 async function seedAgent(options: { vetted?: boolean; claimToken?: string } = {}): Promise<StoredAgent> {
   const id = nextId("agent");
@@ -629,37 +631,99 @@ describe("concurrency", () => {
     expect(messages.rows[0].n).toBeLessThanOrEqual(1);
   });
 
+  /**
+   * **Both adapters' answers are kept whole.**
+   *
+   * Reducing each side to a boolean is what let this gate pass against a route that never reached
+   * the completion at all: `response.status === 200` is a boolean whether the route wrote a result
+   * or answered 403 for a missing `x-school-id` — which is exactly what it was doing, so only the
+   * tool ever raced, and "one result, one event" held trivially. The header is supplied now (as the
+   * other route-driving cases in this file already do), and each side's full answer is asserted.
+   *
+   * The route answers **200 in either ordering**: it wins and publishes the row it wrote, or it
+   * loses and C21's idempotent replay hands the recorded proctor the standing result. That is a
+   * property of D4's atomic completion — the loser's authorization reads the registration before it
+   * reads the session, so it refuses with the REPLAYABLE `invalid_registration_status` rather than
+   * the non-replayable `session_ended` a non-atomic completion would expose.
+   *
+   * The tool has no replay, so its two legal answers are the win and the exact `already_complete`
+   * refusal it renders for a completion that wrote nothing.
+   */
   it("admits exactly one when the REAL proctor route and REAL tool race", async () => {
     const candidate = await seedAgent();
     const proctor = await seedAgent();
     const registrationId = await seedRegistration(candidate.id, PROCTORED);
     const claimed = await claimProctorSession({ agent: proctor, registrationId, evaluationId: PROCTORED });
     expect(claimed.ok).toBe(true);
-    const outcomes = await runConcurrently<boolean>([
+    if (!claimed.ok) throw new Error("claim refused");
+
+    type RouteAnswer = { status: number; body: Record<string, unknown> };
+    type ToolAnswer = Awaited<ReturnType<typeof evaluationExecutors.submit_evaluation_result>>;
+    const outcomes = await runConcurrently<RouteAnswer | ToolAnswer>([
       async () => {
         const response = await PROCTOR_SUBMIT_ROUTE(
           new Request(`http://localhost/api/v1/evaluations/${PROCTORED}/proctor/submit`, {
             method: "POST",
-            headers: { authorization: `Bearer ${proctor.apiKey}`, "content-type": "application/json" },
+            headers: {
+              authorization: `Bearer ${proctor.apiKey}`,
+              "content-type": "application/json",
+              "x-school-id": "foundation",
+            },
             body: JSON.stringify({ registration_id: registrationId, passed: true }),
           }) as never,
           { params: Promise.resolve({ id: PROCTORED }) }
         );
-        return response.status === 200;
+        return { status: response.status, body: (await response.json()) as Record<string, unknown> };
       },
-      async () => {
-        const result = await evaluationExecutors.submit_evaluation_result(
-          { registration_id: registrationId, passed: true },
-          { agent: proctor }
-        );
-        return result.success;
-      },
+      () => evaluationExecutors.submit_evaluation_result(
+        { registration_id: registrationId, passed: true },
+        { agent: proctor }
+      ),
     ]);
     expect(rejections(outcomes)).toEqual([]);
-    expect(outcomes.every((outcome) => outcome.ok && typeof outcome.value === "boolean")).toBe(true);
-    const { rows } = await pgPool().query(`SELECT count(*)::int AS n FROM evaluation_results WHERE registration_id = $1`, [registrationId]);
-    expect(rows[0].n).toBe(1);
+    const [routeOutcome, toolOutcome] = outcomes;
+    if (!routeOutcome.ok || !toolOutcome.ok) throw new Error("unreachable");
+
+    const { rows } = await pgPool().query(
+      `SELECT id, passed, proctor_agent_id FROM evaluation_results WHERE registration_id = $1`,
+      [registrationId]
+    );
+    expect(rows).toHaveLength(1);
     expect(await eventsSince("evaluation.completed")).toHaveLength(1);
+
+    const route = routeOutcome.value as RouteAnswer;
+    expect(route.status).toBe(200);
+    expect(route.body.success).toBe(true);
+    const routeResult = route.body.result as Record<string, unknown>;
+    // `score`/`max_score` are the two fields whose PRESENCE is not fixed here: the proctored
+    // executor supplies neither, `Response.json` drops an undefined value, and the replay branch
+    // reads the same NULL columns back as undefined. So the legal set is asserted as a bound plus
+    // the four fields every completion body carries — never as one ordering's exact key list.
+    expect(Object.keys(routeResult).filter((key) => !LEGAL_RESULT_KEYS.includes(key))).toEqual([]);
+    expect(Object.keys(routeResult).sort()).toEqual(
+      expect.arrayContaining(["completed_at", "id", "passed", "proctor_agent_id"])
+    );
+    // The body describes the ROW that exists, whether this call wrote it or replayed it.
+    expect(routeResult.id).toBe(rows[0].id);
+    expect(routeResult.passed).toBe(true);
+    expect(routeResult.proctor_agent_id).toBe(proctor.id);
+    expect(rows[0].proctor_agent_id).toBe(proctor.id);
+
+    // The tool either wrote the result or reached the decisive statement and lost. A third answer
+    // is possible in principle — an authorization refusal — and is deliberately NOT accepted here:
+    // it would mean the tool's reads all happened after the route had committed, so the two never
+    // overlapped and this gate observed no race at all.
+    expect([
+      { success: true, data: { submitted: true, passed: true } },
+      {
+        success: false,
+        error: "registration_already_complete: a result is already recorded for this registration",
+      },
+    ]).toContainEqual(toolOutcome.value as ToolAnswer);
+
+    // D4's completion ends the session inside the same transaction, so the one that wrote ended it.
+    const session = await pgPool().query(`SELECT status FROM evaluation_sessions WHERE id = $1`, [claimed.value.sessionId]);
+    expect(session.rows[0].status).toBe("ended");
   });
 
   it("admits exactly one of two concurrent completions, with exactly one event", async () => {

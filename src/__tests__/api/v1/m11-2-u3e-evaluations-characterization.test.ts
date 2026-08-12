@@ -36,6 +36,22 @@ jest.mock("next/headers", () => ({
 }));
 jest.mock("@/auth", () => ({ auth: jest.fn(async () => null) }));
 
+/**
+ * The X claim channel's only external dependency. Every reference is deferred behind an arrow so
+ * the factory — which runs while the route module is being imported — never touches the const
+ * before it is initialized.
+ */
+const mockTwitter = {
+  search: jest.fn(),
+  validate: jest.fn(),
+  followers: jest.fn(),
+};
+jest.mock("@/lib/twitter", () => ({
+  searchTweetsForVerification: (...args: unknown[]) => mockTwitter.search(...args),
+  validateClaimTweet: (...args: unknown[]) => mockTwitter.validate(...args),
+  getFollowerCount: (...args: unknown[]) => mockTwitter.followers(...args),
+}));
+
 import { POST as REGISTER_AGENT } from "@/app/api/v1/agents/register/route";
 import { POST as COGNITO_CLAIM } from "@/app/api/v1/agents/claim/route";
 import { POST as X_VERIFY } from "@/app/api/v1/agents/verify/route";
@@ -49,9 +65,13 @@ import { POST as PROCTOR_SUBMIT } from "@/app/api/v1/evaluations/[id]/proctor/su
 import { POST as SESSION_MESSAGE } from "@/app/api/v1/evaluations/[id]/sessions/[sessionId]/messages/route";
 import { executors as evaluationTools } from "@/lib/agent-tools/definitions/evaluations";
 import { registerForEvaluation as actionRegisterForEvaluation } from "@/lib/actions/evaluations";
+import { auth } from "@/auth";
+import { SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM } from "@/lib/agent-onboarding-copy";
+import { upsertHumanUserByCognitoSub } from "@/lib/human-users-memory";
 import {
   agents,
   apiKeyToAgentId,
+  claimTokenToAgentId,
   evaluationMessages,
   evaluationRegistrations,
   evaluationResults,
@@ -93,6 +113,9 @@ function makeAgent(overrides: Partial<StoredAgent> = {}): StoredAgent {
   };
   agents.set(agent.id, agent);
   apiKeyToAgentId.set(agent.apiKey, agent.id);
+  // A claim token is a credential the claim surfaces resolve THROUGH; a fixture that sets one on
+  // the row without registering it here is unreachable by either claim route.
+  if (agent.claimToken) claimTokenToAgentId.set(agent.claimToken, agent.id);
   return agent;
 }
 
@@ -151,6 +174,7 @@ async function body(response: Response): Promise<Record<string, unknown>> {
 beforeEach(() => {
   agents.clear();
   apiKeyToAgentId.clear();
+  claimTokenToAgentId.clear();
   evaluationRegistrations.clear();
   evaluationResults.clear();
   evaluationSessions.clear();
@@ -166,6 +190,9 @@ beforeEach(() => {
   clearRateWindows();
   rateWindows.clear();
   handler.mockClear();
+  mockTwitter.search.mockReset();
+  mockTwitter.validate.mockReset();
+  mockTwitter.followers.mockReset();
   executorResult.value = { passed: true, score: 5, maxScore: 10, resultData: { ok: true } };
 });
 
@@ -219,6 +246,65 @@ describe("agent lifecycle route characterization", () => {
     expect(claim.status).toBe(401);
     const verify = await X_VERIFY(post("/api/v1/agents/verify", { claim_id: "missing" }) as never);
     expect(verify.status).toBe(404);
+  });
+
+  /**
+   * **The Cognito claim's success body, with the owner it publishes.**
+   *
+   * The owner is the one field this response can get wrong without failing anything else: the
+   * route renders `claimed.data.agent`, which is the row the claim STATEMENT resolved from the
+   * token and mutated (M11-1 C6). An adapter that answered from a pre-read instead would publish
+   * `owner: null` for a claim that really did record one, and every other field would still match.
+   */
+  it("answers the Cognito-claimed agent with the owner the action's row carries", async () => {
+    const claimToken = nextId("claimtok");
+    const agent = makeAgent({ claimToken });
+    const human = await upsertHumanUserByCognitoSub({ cognitoSub: nextId("sub"), name: "Ada Lovelace" });
+    (auth as unknown as jest.Mock).mockResolvedValueOnce({ user: { id: human.id, name: "Ada Lovelace" } });
+
+    const response = await COGNITO_CLAIM(post("/api/v1/agents/claim", { claim_id: claimToken }) as never);
+    const parsed = await body(response);
+    expect(response.status).toBe(200);
+    expect(parsed).toEqual({
+      success: true,
+      message: "Agent successfully claimed!",
+      suggested_message_for_agent: SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM,
+      agent: { id: agent.id, name: agent.name, owner: "Ada Lovelace" },
+    });
+    // The published owner is the stored one, and the claim really landed.
+    expect(agents.get(agent.id)!.owner).toBe("Ada Lovelace");
+    expect(agents.get(agent.id)!.isClaimed).toBe(true);
+  });
+
+  /**
+   * The X channel's success body. The external check is mocked because it is a network call; the
+   * claim itself is the real conditional store write (M11-1 C6), so the follower count and the
+   * owner handle below are what the row actually holds afterwards.
+   */
+  it("answers the X-verified agent, its owner handle and the tweet", async () => {
+    const claimToken = nextId("xtok");
+    const agent = makeAgent({ claimToken, verificationCode: "SAFEMOLT-VERIFY-42" });
+    mockTwitter.search.mockResolvedValue({
+      found: true,
+      tweet: { id: "tweet_1", text: "claiming SAFEMOLT-VERIFY-42", authorUsername: "ada" },
+    });
+    mockTwitter.validate.mockReturnValue({ valid: true });
+    mockTwitter.followers.mockResolvedValue({ count: 42 });
+
+    const response = await X_VERIFY(post("/api/v1/agents/verify", { claim_id: claimToken }) as never);
+    const parsed = await body(response);
+    expect(response.status).toBe(200);
+    expect(parsed).toEqual({
+      success: true,
+      message: "Agent successfully claimed!",
+      suggested_message_for_agent: SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM,
+      agent: { id: agent.id, name: agent.name, owner: "@ada" },
+      tweet: { id: "tweet_1", author: "@ada" },
+    });
+    expect(mockTwitter.search).toHaveBeenCalledWith("SAFEMOLT-VERIFY-42");
+    expect(agents.get(agent.id)!.isClaimed).toBe(true);
+    expect(agents.get(agent.id)!.owner).toBe("@ada");
+    expect(agents.get(agent.id)!.xFollowerCount).toBe(42);
   });
 });
 
@@ -285,6 +371,163 @@ describe("POST /api/v1/agents/vetting/start", () => {
     expect(response.status).toBe(200);
     expect((await body(response)).success).toBe(true);
     expect(agents.get(agent.id)!.isVetted).toBe(true);
+  });
+});
+
+/**
+ * **Every refusal the vetting-completion route can publish, through the REAL route.**
+ *
+ * The action reports a `reason`; this handler alone turns each one into a status and a title, and
+ * the mapping is a chain of ternaries over five values. Nothing else pins it: a `consumed_challenge`
+ * that regressed from 410 to 400, or a title that drifted from the legacy wording, is invisible to
+ * the action tests and to the success case above.
+ *
+ * **The fixtures are all UNVETTED on purpose.** A vetted agent presenting its own dead or absent
+ * challenge is the C14 lost-response replay, and its answer is idempotent SUCCESS whenever the proof
+ * is valid — or absent-yet-verbatim — so a vetted fixture here would pin a 200 where a refusal is
+ * meant. Only a WRONG hash refuses in that state, and it refuses as `consumed_challenge` ⇒ 410.
+ */
+describe("POST /api/v1/agents/vetting/complete refusals", () => {
+  async function startedChallenge(agent: StoredAgent): Promise<{ challengeId: string; expectedHash: string }> {
+    const started = await VETTING_START(post("/api/v1/agents/vetting/start", {}, agent.apiKey) as never);
+    const challengeId = String((await body(started)).challenge_id);
+    return { challengeId, expectedHash: vettingChallenges.get(challengeId)!.expectedHash };
+  }
+
+  it.each([
+    {
+      reason: "challenge_not_found",
+      when: "a challenge id that was never issued",
+      build: async () => ({
+        agent: makeAgent({ isVetted: false }),
+        challengeId: "vc_never_issued",
+        hash: "0".repeat(64),
+      }),
+      status: 404,
+      code: "not_found",
+      title: "Challenge not found",
+      hint: "Invalid challenge ID",
+    },
+    {
+      reason: "challenge_mismatch",
+      when: "another agent's live challenge",
+      build: async () => {
+        const owner = makeAgent({ isVetted: false });
+        const stranger = makeAgent({ isVetted: false });
+        const { challengeId, expectedHash } = await startedChallenge(owner);
+        return { agent: stranger, challengeId, hash: expectedHash };
+      },
+      status: 403,
+      code: "forbidden",
+      title: "Challenge mismatch",
+      hint: "This challenge was not issued to your agent",
+    },
+    {
+      reason: "expired_challenge",
+      when: "its own expired challenge, answered correctly",
+      build: async () => {
+        const agent = makeAgent({ isVetted: false });
+        const { challengeId, expectedHash } = await startedChallenge(agent);
+        vettingChallenges.set(challengeId, {
+          ...vettingChallenges.get(challengeId)!,
+          expiresAt: new Date(0).toISOString(),
+        });
+        return { agent, challengeId, hash: expectedHash };
+      },
+      status: 410,
+      code: "gone",
+      title: "Challenge expired",
+      hint: "The 15-second window has passed. Start a new vetting challenge.",
+    },
+    {
+      reason: "consumed_challenge",
+      when: "its own consumed challenge, answered correctly",
+      build: async () => {
+        const agent = makeAgent({ isVetted: false });
+        const { challengeId, expectedHash } = await startedChallenge(agent);
+        vettingChallenges.set(challengeId, { ...vettingChallenges.get(challengeId)!, consumed: true });
+        return { agent, challengeId, hash: expectedHash };
+      },
+      status: 410,
+      code: "gone",
+      title: "Challenge already used",
+      hint: "Start a new vetting challenge",
+    },
+    {
+      reason: "invalid_hash",
+      when: "its own live challenge, answered wrongly",
+      build: async () => {
+        const agent = makeAgent({ isVetted: false });
+        const { challengeId } = await startedChallenge(agent);
+        return { agent, challengeId, hash: "not-the-expected-hash" };
+      },
+      status: 400,
+      code: "bad_request",
+      title: "Invalid hash",
+      hint: "The submitted hash does not match.",
+    },
+  ])("renders $reason for $when as $status $title", async ({ build, status, code, title, hint }) => {
+    const { agent, challengeId, hash } = await build();
+    const eventsBefore = eventLog.rows.length;
+
+    const response = await VETTING_COMPLETE(
+      post("/api/v1/agents/vetting/complete", { challenge_id: challengeId, hash, identity_md: "" }, agent.apiKey) as never
+    );
+
+    expect(response.status).toBe(status);
+    expect(await body(response)).toEqual({
+      success: false,
+      error: title,
+      hint,
+      error_detail: { code, message: title, hint },
+    });
+    // A refusal writes nothing: no vetting flip, no bootstrap results, no events.
+    expect(agents.get(agent.id)!.isVetted).toBe(false);
+    expect(evaluationResults.size).toBe(0);
+    expect(eventLog.rows).toHaveLength(eventsBefore);
+  });
+
+  /**
+   * The C14 retry pair, at the route. One consumed challenge answers **two different statuses**
+   * depending only on the hash presented with it, and both answers come out of the same ternary the
+   * table above pins — so they are pinned here together, where a collapse of one into the other is
+   * visible.
+   */
+  it("answers a vetted agent's VERBATIM retry of its consumed challenge with 200", async () => {
+    const agent = makeAgent({ isVetted: false });
+    const { challengeId, expectedHash } = await startedChallenge(agent);
+    const complete = () => VETTING_COMPLETE(
+      post("/api/v1/agents/vetting/complete", { challenge_id: challengeId, hash: expectedHash, identity_md: "" }, agent.apiKey) as never
+    );
+
+    expect((await complete()).status).toBe(200);
+    const resultsAfterFirst = evaluationResults.size;
+    const retry = await complete();
+
+    expect(retry.status).toBe(200);
+    expect((await body(retry)).success).toBe(true);
+    // Idempotent, not repeated: the replay writes no second bootstrap result.
+    expect(evaluationResults.size).toBe(resultsAfterFirst);
+  });
+
+  it("answers a vetted agent's WRONG-hash retry of its consumed challenge with 410", async () => {
+    const agent = makeAgent({ isVetted: false });
+    const { challengeId, expectedHash } = await startedChallenge(agent);
+    const first = await VETTING_COMPLETE(
+      post("/api/v1/agents/vetting/complete", { challenge_id: challengeId, hash: expectedHash, identity_md: "" }, agent.apiKey) as never
+    );
+    expect(first.status).toBe(200);
+
+    const retry = await VETTING_COMPLETE(
+      post("/api/v1/agents/vetting/complete", { challenge_id: challengeId, hash: "not-the-expected-hash", identity_md: "" }, agent.apiKey) as never
+    );
+    expect(retry.status).toBe(410);
+    expect(await body(retry)).toEqual({
+      success: false,
+      error: "Challenge already used",
+      hint: "Start a new vetting challenge",
+      error_detail: { code: "gone", message: "Challenge already used", hint: "Start a new vetting challenge" },
+    });
   });
 });
 

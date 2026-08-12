@@ -48,10 +48,13 @@ import {
 } from "@/lib/store/_memory-state";
 import { deleteAgent } from "@/lib/store/agents/memory";
 import { startEvaluationWithEffect as startEvaluationWithEffectStore } from "@/lib/store/evaluations/memory";
+import type { CertificationJob } from "@/lib/evaluations/types";
 import type { StoredAgent, StoredEvent } from "@/lib/store-types";
 
 const PROCTORED = "non-spamminess";
 const SELF_SERVE = "poaw";
+/** A real Foundation `agent_certification` with both `prompts` and `rubric` (SIP-6). */
+const CERTIFICATION = "jailbreak-safety";
 
 let seq = 0;
 const nextId = (label: string) => `u3ea_${label}_${Date.now().toString(36)}_${(seq += 1)}`;
@@ -260,25 +263,40 @@ describe("startEvaluationWithEffect", () => {
     expect(certificationJobs.get(started.certificationJob!.id)!.status).toBe("pending");
   });
 
-  it("refreshes a lapsed pending certification row in place", async () => {
+  /**
+   * **A lapsed nonce is refreshed for an attempt that has ALREADY started**, which is why this
+   * fixture is `in_progress` rather than `registered`.
+   *
+   * The registration reaches `in_progress` when the job is first minted, and that first start is
+   * what emitted `evaluation.started`. The refresh transitions nothing, so it must emit nothing —
+   * a second `evaluation.started` for one attempt would be permanent history claiming a CAS that
+   * never ran. A `registered` fixture is an inconsistent hybrid: it pairs a job that only a start
+   * can create with a registration no start has moved, and it makes the refresh arm look like it
+   * legitimately emits.
+   */
+  it("refreshes a lapsed pending certification row in place, emitting nothing", async () => {
     const agent = makeAgent({ id: "cert-refresh" });
-    const registrationId = seedRegistration({ agentId: agent.id, evaluationId: "cert-refresh", status: "registered" });
+    const registrationId = seedRegistration({ agentId: agent.id, evaluationId: "cert-refresh", status: "in_progress" });
     const oldJob = {
       id: "cert-refresh-job", registrationId, agentId: agent.id, evaluationId: "cert-refresh",
       nonce: "old", nonceExpiresAt: new Date(Date.now() - 1000).toISOString(), status: "pending" as const,
       createdAt: new Date(Date.now() - 2000).toISOString(),
     };
-    certificationJobs.set(oldJob.id, oldJob);
+    certificationJobs.set(oldJob.id, { ...oldJob });
     const result = await startEvaluationWithEffectStore(registrationId, {
       kind: "certification", agentId: agent.id, evaluationId: oldJob.evaluationId, nonce: "new",
       nonceExpiresAt: new Date(Date.now() + 60_000).toISOString(),
     }, [startedEvent(registrationId)]);
     expect(result.kind).toBe("refreshed");
+    // Nothing transitioned, so nothing started.
+    expect(result.started).toBe(false);
+    // The SAME row, carrying the new nonce — never a second job for one registration.
     expect(result.certificationJob?.id).toBe(oldJob.id);
     expect(result.certificationJob?.nonce).toBe("new");
-    expect(certificationJobs.get(oldJob.id)).toBeDefined();
+    expect(certificationJobs.get(oldJob.id)!.nonce).toBe("new");
+    expect(evaluationRegistrations.get(registrationId)!.status).toBe("in_progress");
     expect(Array.from(certificationJobs.values()).filter((job) => job.registrationId === registrationId)).toHaveLength(1);
-    expect(events("evaluation.started")).toHaveLength(1);
+    expect(events()).toHaveLength(0);
   });
 
   it.each(["submitted", "judging", "completed"] as const)("does not replace a %s certification job", async (status) => {
@@ -289,13 +307,16 @@ describe("startEvaluationWithEffect", () => {
       nonce: `old-${status}`, nonceExpiresAt: new Date(Date.now() + 60_000).toISOString(), status,
       createdAt: new Date().toISOString(),
     };
-    certificationJobs.set(job.id, job);
+    // A COPY goes into the map, so comparing the outcome against `job` really does prove the row
+    // was left alone rather than comparing an object with itself.
+    certificationJobs.set(job.id, { ...job });
     const result = await startEvaluationWithEffectStore(registrationId, {
       kind: "certification", agentId: agent.id, evaluationId: job.evaluationId, nonce: `new-${status}`,
       nonceExpiresAt: new Date(Date.now() + 120_000).toISOString(),
     }, [startedEvent(registrationId)]);
     expect(result.kind).toBe("existing_job");
     expect(result.certificationJob).toEqual(job);
+    expect(certificationJobs.get(job.id)).toEqual(job);
     expect(Array.from(certificationJobs.values()).filter((item) => item.registrationId === registrationId)).toHaveLength(1);
     expect(events("evaluation.started")).toHaveLength(0);
   });
@@ -308,6 +329,84 @@ describe("startEvaluationWithEffect", () => {
     if (!result.ok) throw new Error("unreachable");
     expect(result.value.effect.kind).toBe("poaw");
     expect(vettingChallenges.size).toBe(1);
+  });
+
+  /**
+   * **The two C22 outcomes, driven through the PUBLIC action.**
+   *
+   * The store cases above prove the row-level decision. They cannot see the half the caller
+   * actually receives: the action maps five store outcomes onto one effect, and mapping
+   * `refreshed` or `existing_job` to `none` — or answering with a newly generated job instead of
+   * the one the store kept — is invisible to every store-level assertion. So the job named in the
+   * returned certification effect is asserted to be the AUTHORITATIVE row, the one the store holds.
+   */
+  describe("through the public action", () => {
+    function seedCertificationJob(
+      registrationId: string,
+      agentId: string,
+      overrides: { nonce: string; nonceExpiresAt: string; status: CertificationJob["status"] }
+    ): CertificationJob {
+      const job: CertificationJob = {
+        id: nextId("certjob"),
+        registrationId,
+        agentId,
+        evaluationId: CERTIFICATION,
+        createdAt: new Date(Date.now() - 2000).toISOString(),
+        ...overrides,
+      };
+      // A copy is stored, so every comparison below is against an independent snapshot.
+      certificationJobs.set(job.id, { ...job });
+      return job;
+    }
+
+    it("returns the REFRESHED job as the certification effect and emits nothing", async () => {
+      const agent = makeAgent();
+      const registrationId = seedRegistration({ agentId: agent.id, evaluationId: CERTIFICATION, status: "in_progress" });
+      const lapsed = seedCertificationJob(registrationId, agent.id, {
+        nonce: "lapsed-nonce",
+        nonceExpiresAt: new Date(Date.now() - 1000).toISOString(),
+        status: "pending",
+      });
+
+      const result = await startEvaluationWithEffect({ agent, evaluationId: CERTIFICATION });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("unreachable");
+      const effect = result.value.effect;
+      expect(effect.kind).toBe("certification");
+      if (effect.kind !== "certification") throw new Error("unreachable");
+      // The caller receives the row the store refreshed, carrying the nonce the store stored — a
+      // freshly generated job here would hand the agent a nonce no row will ever match.
+      expect(effect.job.id).toBe(lapsed.id);
+      expect(effect.job.nonce).not.toBe(lapsed.nonce);
+      expect(certificationJobs.get(lapsed.id)!.nonce).toBe(effect.job.nonce);
+      expect(Array.from(certificationJobs.values()).filter((job) => job.registrationId === registrationId)).toHaveLength(1);
+      expect(events()).toHaveLength(0);
+    });
+
+    it.each(["submitted", "judging", "completed"] as const)(
+      "returns the standing %s job as the certification effect and emits nothing",
+      async (status) => {
+        const agent = makeAgent();
+        const registrationId = seedRegistration({ agentId: agent.id, evaluationId: CERTIFICATION, status: "in_progress" });
+        const decided = seedCertificationJob(registrationId, agent.id, {
+          nonce: `decided-${status}`,
+          nonceExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          status,
+        });
+
+        const result = await startEvaluationWithEffect({ agent, evaluationId: CERTIFICATION });
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error("unreachable");
+        const effect = result.value.effect;
+        expect(effect.kind).toBe("certification");
+        if (effect.kind !== "certification") throw new Error("unreachable");
+        // A decided job is never replaced and never re-nonced: the caller is handed it verbatim.
+        expect(effect.job).toEqual(decided);
+        expect(certificationJobs.get(decided.id)).toEqual(decided);
+        expect(Array.from(certificationJobs.values()).filter((job) => job.registrationId === registrationId)).toHaveLength(1);
+        expect(events()).toHaveLength(0);
+      }
+    );
   });
 });
 
