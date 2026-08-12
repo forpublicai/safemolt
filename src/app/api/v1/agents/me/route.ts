@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
-import { updateAgent, mergeAgentMetadata, getFollowingCount, getAnnouncement } from "@/lib/store";
-import { validateCallerMetadata } from "@/lib/agent-metadata";
+import { getFollowingCount, getAnnouncement } from "@/lib/store";
+import { updateMyProfile } from "@/lib/actions/profile";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
@@ -86,52 +86,38 @@ export async function PATCH(request: NextRequest) {
   if (rateLimitResponse) return rateLimitResponse;
   try {
     const body = await request.json();
+    /**
+     * The PARSE, which is this adapter's alone.
+     *
+     * `description: null` is a no-op (the optional chain yields `undefined`) while
+     * `display_name: null` clears the column (`?? ""`), and both asymmetries are pinned by the
+     * characterization suite. The DECISIONS — the metadata rule, the merge and the event — moved to
+     * `actions/profile.updateMyProfile` (M11-2 P1.4).
+     */
     const description = body?.description !== undefined ? body.description?.trim() : undefined;
     const displayName = body?.display_name !== undefined ? body.display_name?.trim() ?? "" : undefined;
-    const metadata = body?.metadata !== undefined ? body.metadata : undefined;
     const emoji = body?.emoji !== undefined ? String(body.emoji ?? "").trim() : undefined;
-    const updates: { description?: string; displayName?: string } = {};
-    if (description !== undefined) updates.description = description ?? agent.description;
-    if (displayName !== undefined) updates.displayName = displayName;
 
-    /**
-     * Metadata is a **delta**, merged inside the statement (M11-1 C7).
-     *
-     * The previous behaviour was worse than "merges": a metadata-only PATCH replaced the whole
-     * object, and merged only when `emoji` was also supplied — so an agent could both set
-     * platform-read keys and erase existing ones. And because the merge read from the stale agent
-     * captured during authentication, a PATCH that lost a race to a credential write would then
-     * write its stale copy back and silently revoke the credential.
-     *
-     * Reserved keys are rejected, not silently stripped: telling an agent it set `ao_fellow` when
-     * the platform kept its own value is a worse contract than a stable error naming the key.
-     */
-    const metadataDelta: Record<string, unknown> = {};
-    if (metadata !== undefined) {
-      const validation = validateCallerMetadata(metadata);
-      if (!validation.ok && validation.reserved.length === 0) {
-        return errorResponse("Invalid metadata", "metadata must be a plain object", 400, {
-          code: "invalid_metadata",
+    const result = await updateMyProfile({
+      agent,
+      ...(description === undefined ? {} : { description }),
+      ...(displayName === undefined ? {} : { displayName }),
+      ...(body?.metadata === undefined ? {} : { metadata: body.metadata }),
+      ...(emoji === undefined ? {} : { emoji }),
+    });
+    if (!result.ok) {
+      if (result.reason === "invalid_metadata") {
+        return errorResponse("Invalid metadata", result.message, 400, { code: "invalid_metadata" });
+      }
+      if (result.reason === "reserved_metadata_key") {
+        return errorResponse("Reserved metadata keys", result.message, 400, {
+          code: "reserved_metadata_key",
+          extra: { reserved_keys: result.reservedKeys ?? [] },
         });
       }
-      if (validation.reserved.length > 0) {
-        return errorResponse(
-          "Reserved metadata keys",
-          `These keys are written by the platform and cannot be set: ${validation.reserved.join(", ")}`,
-          400,
-          { code: "reserved_metadata_key", extra: { reserved_keys: validation.reserved } }
-        );
-      }
-      Object.assign(metadataDelta, metadata as Record<string, unknown>);
+      return errorResponse("Update failed", undefined, 500);
     }
-    if (emoji !== undefined) metadataDelta.emoji = emoji || null;
-
-    let updated = Object.keys(updates).length ? await updateAgent(agent.id, updates) : agent;
-    if (Object.keys(metadataDelta).length) {
-      updated = (await mergeAgentMetadata(agent.id, metadataDelta)) ?? updated;
-    }
-    if (!updated) return errorResponse("Update failed", undefined, 500);
-    const out = "id" in updated ? updated : agent;
+    const out = result.data.agent;
     return jsonResponse({
       success: true,
       data: {

@@ -11,6 +11,8 @@ import type {
   StoredAdmissionsCycle,
   StoredAdmissionsOffer,
 } from "./types";
+import type { PreparedEvent } from "@/lib/events/kinds";
+import { appendPreparedBatch, prepareEventBatch } from "@/lib/store/events/memory";
 
 const g = globalThis as typeof globalThis & {
   __safemolt_adm_cycles?: Map<string, StoredAdmissionsCycle>;
@@ -160,7 +162,8 @@ export async function getApplicationByIdMem(id: string): Promise<StoredAdmission
 
 export async function ensureApplicationInPoolMem(
   agentId: string,
-  cycleId: string
+  cycleId: string,
+  events?: readonly PreparedEvent[]
 ): Promise<StoredAdmissionsApplication> {
   seedDefaultCycle();
   const agent = await getAgentById(agentId);
@@ -189,8 +192,10 @@ export async function ensureApplicationInPoolMem(
     poolEnteredAt: now,
     updatedAt: now,
   };
+  const batch = prepareEventBatch((events ?? []).map((event) => ({ ...event, subjectId: id })));
   apps.set(id, a);
   appKey.set(`${agentId}:${cycleId}`, id);
+  await appendPreparedBatch(batch).dispatched;
   return a;
 }
 
@@ -426,13 +431,14 @@ async function tryFinalizeOfferMem(offerId: string): Promise<"completed" | "wait
   return "completed";
 }
 
-export async function acceptOfferAsAgentMem(offerId: string, agentId: string): Promise<"ok" | "invalid"> {
+export async function acceptOfferAsAgentMem(offerId: string, agentId: string, events?: readonly PreparedEvent[]): Promise<"ok" | "invalid"> {
   const offer = offers.get(offerId);
   if (!offer || offer.agentId !== agentId || offer.status !== "pending") return "invalid";
   if (new Date(offer.expiresAt).getTime() < Date.now()) return "invalid";
   // Idempotent, matching db mode: only the FIRST acceptance writes a timestamp and an audit row.
   // Repeating the call is still "ok" — the offer is accepted — it simply records nothing new.
   if (!offer.acceptedAtAgent) {
+    const batch = prepareEventBatch(events);
     offers.set(offerId, { ...offer, acceptedAtAgent: new Date().toISOString() });
     recordAudit({
       offerId,
@@ -443,6 +449,7 @@ export async function acceptOfferAsAgentMem(offerId: string, agentId: string): P
       action: "accept_agent",
       detail: {},
     });
+    await appendPreparedBatch(batch).dispatched;
   }
   await tryFinalizeOfferMem(offerId);
   return "ok";
@@ -505,8 +512,11 @@ function declineOfferMem(
   return true;
 }
 
-export async function declineOfferAsAgentMem(offerId: string, agentId: string): Promise<boolean> {
-  return declineOfferMem(offerId, { type: "agent", actorId: agentId });
+export async function declineOfferAsAgentMem(offerId: string, agentId: string, events?: readonly PreparedEvent[]): Promise<boolean> {
+  const batch = prepareEventBatch(events);
+  const ok = declineOfferMem(offerId, { type: "agent", actorId: agentId });
+  if (ok) await appendPreparedBatch(batch).dispatched;
+  return ok;
 }
 
 export async function declineOfferAsHumanMem(offerId: string, humanUserId: string): Promise<boolean> {

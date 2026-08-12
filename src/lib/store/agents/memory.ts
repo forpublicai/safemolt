@@ -619,6 +619,93 @@ export async function mergeAgentMetadata(agentId: string, delta: Record<string, 
   return next;
 }
 
+/**
+ * Canonical JSON, so a metadata comparison agrees with `jsonb`'s.
+ *
+ * Postgres compares `jsonb` structurally and key-order-independently, so `{"a":1,"b":2}` and
+ * `{"b":2,"a":1}` are the SAME value there. A bare `JSON.stringify` disagrees, and the disagreement
+ * shows up exactly where it matters: a delta that reorders a nested object would be "no change" in
+ * the db store and "changed" here — one store emitting an event the other does not.
+ */
+function canonicalJson(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+    if (value && typeof value === "object") {
+        const entries = Object.entries(value as Record<string, unknown>)
+            .filter(([, v]) => v !== undefined)
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+        return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+    }
+    return JSON.stringify(value ?? null);
+}
+
+/**
+ * The before/after diff the db twin makes in SQL — the `moved` CTE, field for field.
+ *
+ * `display_name` is trimmed and an empty result clears the column, mirroring
+ * `NULLIF(BTRIM($5), '')`; `metadata` is MERGED and compared canonically, mirroring
+ * `p.metadata IS DISTINCT FROM (COALESCE(p.metadata,'{}') || $7)`. Sorted, because the db side
+ * aggregates `ORDER BY field`.
+ */
+function diffAgentProfile(
+  prior: StoredAgent,
+  updates: import("./db").AgentProfileUpdate
+): { next: StoredAgent; changedFields: string[] } {
+  const next = { ...prior };
+  const changedFields: string[] = [];
+  if (updates.description !== undefined && prior.description !== updates.description) {
+    next.description = updates.description;
+    changedFields.push("description");
+  }
+  const displayName = updates.displayName?.trim() || undefined;
+  if (updates.displayName !== undefined && prior.displayName !== displayName) {
+    next.displayName = displayName;
+    changedFields.push("display_name");
+  }
+  const merged = { ...(prior.metadata ?? {}), ...(updates.metadataDelta ?? {}) };
+  if (updates.metadataDelta !== undefined && canonicalJson(prior.metadata ?? null) !== canonicalJson(merged)) {
+    next.metadata = merged;
+    changedFields.push("metadata");
+  }
+  return { next, changedFields: changedFields.sort() };
+}
+
+/**
+ * The memory twin of `updateAgentProfile` — one conditional edit, the same diff, the same event.
+ *
+ * `validatePreparedEvents` runs FIRST because the db twin renders its events before it executes
+ * anything, so a bad kind is refused there whether or not the agent exists. The idempotency
+ * preflight (`prepareEventBatch`) runs only on the path that writes, because the db side's event
+ * CTE is gated on `updated` and therefore inserts nothing — and collides with nothing — when the
+ * edit is a no-op.
+ *
+ * No `await` between the diff and the write, so no eligibility re-check is owed here.
+ */
+export async function updateAgentProfile(
+  agentId: string,
+  updates: import("./db").AgentProfileUpdate,
+  events?: readonly PreparedEvent[]
+): Promise<import("./db").AgentProfileUpdateResult> {
+  validatePreparedEvents(events);
+  const prior = agents.get(agentId);
+  if (!prior) return { agent: null, changedFields: [] };
+
+  const { next, changedFields } = diffAgentProfile(prior, updates);
+  if (changedFields.length === 0) return { agent: prior, changedFields: [] };
+
+  // The PRIMARY event carries the statement's diff, substituted positionally — the db side merges
+  // the same list over the same event (index 0), and a kind-keyed rule would diverge for a batch.
+  const batch = prepareEventBatch(
+    (events ?? []).map((event, position) =>
+      position === 0
+        ? ({ ...event, payload: { ...(event.payload as object), fields: changedFields } } as PreparedEvent)
+        : event
+    )
+  );
+  agents.set(agentId, next);
+  await appendPreparedBatch(batch).dispatched;
+  return { agent: next, changedFields };
+}
+
 export async function touchAgentLastActiveAtIfStale(agentId: string, staleAfterMs = 5 * 60 * 1000) {
   const agent = agents.get(agentId);
   if (!agent) return;
@@ -628,19 +715,32 @@ export async function touchAgentLastActiveAtIfStale(agentId: string, staleAfterM
   }
 }
 
-export async function setAgentAvatar(agentId: string, avatarUrl: string) {
+/**
+ * The memory twin of the two avatar writes: conditional on the value actually moving, so an
+ * identical re-upload and a clear of an absent avatar write nothing and emit nothing — which is
+ * what the db twin's `IS DISTINCT FROM` predicate decides there.
+ */
+async function writeAgentAvatar(
+  agentId: string,
+  avatarUrl: string | undefined,
+  events?: readonly PreparedEvent[]
+) {
+  validatePreparedEvents(events);
   const a = agents.get(agentId);
   if (!a) return null;
+  if ((a.avatarUrl ?? undefined) === avatarUrl) return a;
+  const batch = prepareEventBatch(events);
   agents.set(agentId, { ...a, avatarUrl });
+  await appendPreparedBatch(batch).dispatched;
   return agents.get(agentId) ?? null;
 }
 
-export async function clearAgentAvatar(agentId: string) {
-  const a = agents.get(agentId);
-  if (!a) return null;
-  const { avatarUrl: _, ...rest } = a;
-  agents.set(agentId, { ...rest, avatarUrl: undefined });
-  return agents.get(agentId) ?? null;
+export async function setAgentAvatar(agentId: string, avatarUrl: string, events?: readonly PreparedEvent[]) {
+  return writeAgentAvatar(agentId, avatarUrl, events);
+}
+
+export async function clearAgentAvatar(agentId: string, events?: readonly PreparedEvent[]) {
+  return writeAgentAvatar(agentId, undefined, events);
 }
 
 export async function createVettingChallenge(agentId: string, events?: readonly PreparedEvent[]) {

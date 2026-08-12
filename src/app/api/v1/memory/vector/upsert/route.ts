@@ -1,6 +1,7 @@
 import { jsonResponse, errorResponse } from "@/lib/auth";
+import { upsertMemoryVector } from "@/lib/actions/memory";
 import { resolveAgentMemoryAuth } from "@/lib/memory/authorize";
-import { upsertVectorForAgent, type UpsertMemoryOptions } from "@/lib/memory/memory-service";
+import type { UpsertMemoryOptions } from "@/lib/memory/memory-service";
 import { memoryAuthError } from "@/lib/memory/route-helpers";
 
 export async function POST(request: Request) {
@@ -25,7 +26,6 @@ export async function POST(request: Request) {
   }
   const auth = await resolveAgentMemoryAuth(request, body.agent_id);
   if (!auth.ok) return memoryAuthError(auth.reason);
-  const ctx = { sessionUserId: auth.sessionUserId };
   const opts: UpsertMemoryOptions | undefined =
     body.chunk || body.parent_id || body.dedup_mode
       ? {
@@ -34,18 +34,21 @@ export async function POST(request: Request) {
           ...(body.dedup_mode ? { dedup_mode: body.dedup_mode } : {}),
         }
       : undefined;
-  try {
-    await upsertVectorForAgent(auth.agentId, id, text, body.metadata, ctx, opts);
-  } catch (e) {
-    console.error("[memory] upsert", e);
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("exceeds max length")) {
-      return errorResponse("Bad Request", msg, 400);
-    }
-    if (msg.startsWith("PUBLIC_AI_SPONSORED_DAILY_LIMIT")) {
-      return errorResponse("Too many requests", msg.split(": ").slice(1).join(": ") || msg, 429);
-    }
-    return errorResponse("Service unavailable", "embedding or vector store failed", 503);
+  // Parse → action → render (M11-2 P1.4, Tier B: the external vector store only, so no event).
+  // The three refusals keep this surface's own statuses; the classification is the action's.
+  const result = await upsertMemoryVector({
+    agentId: auth.agentId,
+    id,
+    text,
+    ...(body.metadata === undefined ? {} : { metadata: body.metadata }),
+    ctx: { sessionUserId: auth.sessionUserId },
+    ...(opts === undefined ? {} : { options: opts }),
+  });
+  if (!result.ok) {
+    if (result.code === "rate_limited") return errorResponse("Too many requests", result.message, 429);
+    return result.reason === "vector_unavailable"
+      ? errorResponse("Service unavailable", result.message, 503)
+      : errorResponse("Bad Request", result.message, 400);
   }
-  return jsonResponse({ success: true, data: { id }, meta: { agent_id: auth.agentId } });
+  return jsonResponse({ success: true, data: { id: result.data.id }, meta: { agent_id: auth.agentId } });
 }

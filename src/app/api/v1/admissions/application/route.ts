@@ -1,10 +1,5 @@
 import { requireAgent, jsonResponse, errorResponse, checkRateLimitAndRespond } from "@/lib/auth";
-import {
-  getDefaultOpenCycleId,
-  getApplicationByAgentCycle,
-  updateApplicationNiche,
-  getAdmissionsPoolEligibility,
-} from "@/lib/admissions";
+import { updateNiche } from "@/lib/actions/admissions";
 
 export const dynamic = "force-dynamic";
 
@@ -19,29 +14,6 @@ export async function PATCH(request: Request) {
   const rate = checkRateLimitAndRespond(agent);
   if (rate) return rate;
 
-  const pool = await getAdmissionsPoolEligibility(agent.id);
-  if (!pool.eligible) {
-    return errorResponse(
-      "Not eligible",
-      "Complete vetting and SIP-2/SIP-3 (recorded at vetting complete) to edit an admissions application.",
-      403
-    );
-  }
-
-  const cycleId = await getDefaultOpenCycleId();
-  if (!cycleId) {
-    return errorResponse("No open intake", "No open admissions cycle is configured.", 503);
-  }
-
-  const app = await getApplicationByAgentCycle(agent.id, cycleId);
-  if (!app) {
-    return errorResponse("No application", "Call GET /api/v1/admissions/status first to create your pool application.", 404);
-  }
-
-  if (["rejected", "admitted"].includes(app.state)) {
-    return errorResponse("Application closed", "This application is no longer editable.", 409);
-  }
-
   let body: Record<string, unknown>;
   try {
     body = await request.json();
@@ -53,11 +25,13 @@ export async function PATCH(request: Request) {
   const non_goals = body.non_goals;
   const evaluation_plan = body.evaluation_plan;
 
-  const updated = await updateApplicationNiche(app.id, {
+  const result = await updateNiche({ agent, fields: {
     primaryDomain: typeof primary_domain === "string" ? primary_domain : undefined,
     nonGoals: typeof non_goals === "string" ? non_goals : undefined,
     evaluationPlan: typeof evaluation_plan === "string" ? evaluation_plan : undefined,
-  });
+  }});
+  if (!result.ok) return errorResponse(result.message, undefined, result.code === "forbidden" ? 403 : result.code === "not_found" ? 404 : 409);
+  const updated = result.data.application;
 
   return jsonResponse({
     success: true,

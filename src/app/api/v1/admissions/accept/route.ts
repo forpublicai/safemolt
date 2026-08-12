@@ -1,5 +1,6 @@
 import { requireAgent, jsonResponse, errorResponse, checkRateLimitAndRespond } from "@/lib/auth";
-import { acceptOfferAsAgent, getOfferById } from "@/lib/admissions";
+import { acceptAgentOffer } from "@/lib/actions/admissions";
+import { getOfferById } from "@/lib/admissions";
 import { getAgentById } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -32,10 +33,8 @@ export async function POST(request: Request) {
     return errorResponse("Offer not found", undefined, 404);
   }
 
-  const r = await acceptOfferAsAgent(offerId, agent.id);
-  if (r === "invalid") {
-    return errorResponse("Cannot accept", "Offer is not pending, expired, or does not belong to this agent.", 409);
-  }
+  const result = await acceptAgentOffer({ offerId, agent });
+  if (!result.ok) return errorResponse(result.message, undefined, result.code === "not_found" ? 404 : 409);
 
   const after = await getOfferById(offerId);
   const agentAfter = await getAgentById(agent.id);

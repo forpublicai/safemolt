@@ -46,9 +46,44 @@ async function loadRoute(stored: StoredAgent = AGENT) {
         state.agent = { ...state.agent, metadata: { ...(state.agent.metadata ?? {}), ...delta } };
         return state.agent;
     });
+    /**
+     * Since M11-2 P1.4 the route is an adapter over `actions/profile.updateMyProfile`, which writes
+     * through ONE conditional statement — so the double there is `updateAgentProfile`, merging the
+     * delta exactly as the statement does. `mergeAgentMetadata` stays mocked and is now asserted
+     * *never* to be called: the route no longer merges outside the write's own statement.
+     */
+    const updateAgentProfile = jest.fn(
+        async (
+            _id: string,
+            updates: { description?: string; displayName?: string; metadataDelta?: Record<string, unknown> }
+        ) => {
+            const next = { ...state.agent };
+            const changedFields: string[] = [];
+            if (updates.description !== undefined && next.description !== updates.description) {
+                next.description = updates.description;
+                changedFields.push("description");
+            }
+            if (updates.displayName !== undefined) {
+                const displayName = updates.displayName.trim() || undefined;
+                if (next.displayName !== displayName) {
+                    next.displayName = displayName;
+                    changedFields.push("display_name");
+                }
+            }
+            if (updates.metadataDelta !== undefined) {
+                next.metadata = { ...(next.metadata ?? {}), ...updates.metadataDelta };
+                changedFields.push("metadata");
+            }
+            state.agent = next;
+            return { agent: next, changedFields: changedFields.sort() };
+        }
+    );
     jest.doMock("@/lib/store", () => ({
         authenticateAndTouchByApiKey: jest.fn(async () => state.agent),
         updateAgent: jest.fn(async () => state.agent),
+        updateAgentProfile,
+        setAgentAvatar: jest.fn(async () => state.agent),
+        clearAgentAvatar: jest.fn(async () => state.agent),
         mergeAgentMetadata,
         getFollowingCount: jest.fn(async () => 0),
         getAnnouncement: jest.fn(async () => null),
@@ -56,7 +91,7 @@ async function loadRoute(stored: StoredAgent = AGENT) {
     jest.doMock("@/lib/human-users", () => ({ listUserIdsLinkedToAgent: jest.fn(async () => []) }));
     jest.doMock("@/lib/agent-loop/state", () => ({ readLoopStateSafely: jest.fn(async () => null) }));
     const route = await import("@/app/api/v1/agents/me/route");
-    return { route, state, mergeAgentMetadata };
+    return { route, state, mergeAgentMetadata, updateAgentProfile };
 }
 
 describe("PATCH /agents/me refuses reserved keys", () => {
@@ -71,7 +106,7 @@ describe("PATCH /agents/me refuses reserved keys", () => {
         ["source", { source: "forged" }],
         ["public_ai_handle_style", { public_ai_handle_style: "v2" }],
     ])("rejects %s and writes nothing", async (_label, metadata) => {
-        const { route, mergeAgentMetadata } = await loadRoute();
+        const { route, mergeAgentMetadata, updateAgentProfile } = await loadRoute();
         const res = await route.PATCH(patch({ metadata }) as never);
 
         expect(res.status).toBe(400);
@@ -79,6 +114,8 @@ describe("PATCH /agents/me refuses reserved keys", () => {
         expect(body.error_detail.code).toBe("reserved_metadata_key");
         expect(body.reserved_keys).toEqual(Object.keys(metadata));
         expect(mergeAgentMetadata).not.toHaveBeenCalled();
+        // The refusal is decided BEFORE the write, so the statement is never reached at all.
+        expect(updateAgentProfile).not.toHaveBeenCalled();
     });
 
     it("names every offending key, not just the first", async () => {

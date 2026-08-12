@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { errorResponse } from "@/lib/auth";
+import { runAdmissionsExpiryDuty } from "@/lib/admissions";
 import { requireCronAuth } from "@/lib/auth-cron";
 import { computeConsumerContractHash } from "@/lib/events/consumer-contract";
 import { eventConsumers } from "@/lib/events/consumers/registry";
@@ -89,6 +90,7 @@ export async function GET(request: Request) {
     // old invocation was still running.
     await beginEventDrainHeartbeat(contractHash);
     await activateAll();
+    await runAdmissionsExpiryDuty();
 
     // **The hourly duties run BEFORE the fast-path drains, and the order is the point.** Every
     // phase here is bounded by a row count, and a row count is not a time bound: a consumer with a

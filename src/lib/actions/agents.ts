@@ -26,6 +26,7 @@ import {
   followAgent as storeFollowAgent,
   getAgentByName,
   getVettingChallenge,
+  markChallengeFetched as storeMarkChallengeFetched,
   setAgentClaimedWithOutcome as storeSetAgentClaimedWithOutcome,
   unfollowAgent as storeUnfollowAgent,
 } from "@/lib/store";
@@ -326,6 +327,26 @@ export async function startVetting(input: {
   if (outcome.alreadyVetted) return actionOk({ alreadyVetted: true, challenge: undefined as never });
   if (!outcome.challenge) return actionError("bad_request", "Failed to create vetting challenge");
   return actionOk({ challenge: outcome.challenge, alreadyVetted: false });
+}
+
+/**
+ * Mark a vetting challenge fetched — **Tier B**, and the one mutation two GETs perform (u3f).
+ *
+ * `vetting_challenges.fetched_at` is an audit stamp on a 15-second credential the retention sweep
+ * deletes. Nothing reacts to it, nothing projects it, and it is `COALESCE(fetched_at, NOW())` — so
+ * it carries no event, the same call the inventory's §4 rows already tier B.
+ *
+ * The two callers are `GET /agents/vetting/challenge/{id}` (unauthenticated, the challenge id IS
+ * the credential) and `GET /evaluations/poaw/challenge/{challengeId}` (authenticated and
+ * ownership-checked). **Neither authorization moves here**: they are different rules over different
+ * principals, decided by the two handlers before they read anything, and this action is the write
+ * they share — not the gate.
+ *
+ * @returns whether a row was stamped. Both handlers have always ignored it, and still do: they have
+ * already read the challenge and answered from that read.
+ */
+export async function markVettingChallengeFetched(input: { challengeId: string }): Promise<ActionResult<{ marked: boolean }>> {
+  return actionOk({ marked: await storeMarkChallengeFetched(input.challengeId) });
 }
 
 export interface CompleteVettingInput {

@@ -98,7 +98,12 @@ describe("UX6 memory contract", () => {
   });
 
   it("falls back and backfills IDENTITY.md from agent identity cache", async () => {
+    // **The backfill goes through the WRITE ACTION since M11-2 P1.4** (u3f), not through the
+    // context store directly: a state-changing GET with its own writer would be a second producer
+    // of `agent_context_files` with no event. So the double is the domain service the action
+    // delegates to, and the assertion below is on the `lazy: true` event it hands down.
     const putContextFile = jest.fn(async () => undefined);
+    const putContextAndMaybeIndex = jest.fn(async () => ({ path: "IDENTITY.md" }));
     jest.doMock("@/auth", () => ({ auth: jest.fn(async () => null) }));
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent({ identityMd: "# Agent\n" })),
@@ -121,7 +126,7 @@ describe("UX6 memory contract", () => {
       deleteContextFile: jest.fn(),
     }));
     jest.doMock("@/lib/memory/memory-service", () => ({
-      putContextAndMaybeIndex: jest.fn(),
+      putContextAndMaybeIndex,
       deleteContextAndIndex: jest.fn(),
     }));
     jest.doMock("@/lib/store", () => ({ getAgentById: jest.fn(async () => agent({ identityMd: "# Agent\n" })) }));
@@ -133,7 +138,20 @@ describe("UX6 memory contract", () => {
     expect(res.status).toBe(200);
     expect(body.data).toMatchObject({ path: "IDENTITY.md", content: "# Agent\n", source: "agent_identity_cache" });
     expect(body.meta.agent_id).toBe("agent-1");
-    expect(putContextFile).toHaveBeenCalledWith("agent-1", "IDENTITY.md", "# Agent\n");
+    expect(putContextAndMaybeIndex).toHaveBeenCalledWith(
+      "agent-1",
+      "IDENTITY.md",
+      "# Agent\n",
+      { sessionUserId: null },
+      [
+        expect.objectContaining({
+          kind: "memory.context_written",
+          payload: { file_path: "IDENTITY.md", lazy: true },
+        }),
+      ]
+    );
+    // And nothing writes the row behind the action's back.
+    expect(putContextFile).not.toHaveBeenCalled();
   });
 });
 
@@ -329,7 +347,20 @@ describe("UX6 class evaluation contract", () => {
     const body = await res.json();
 
     expect(res.status).toBe(201);
-    expect(saveClassEvaluationResult).toHaveBeenCalledWith("eval-1", "agent-1", "My answer", undefined, 10);
+    // Re-anchored for u3f: the store call now carries the prepared class.evaluation_submitted
+    // event, with the result id and subject store-assigned (the Decision-2 shape).
+    expect(saveClassEvaluationResult).toHaveBeenCalledWith(
+      "eval-1", "agent-1", "My answer", undefined, 10, undefined, undefined,
+      [
+        expect.objectContaining({
+          kind: "class.evaluation_submitted",
+          actorAgentId: "agent-1",
+          subjectType: "class_evaluation_result",
+          schoolId: "foundation",
+          payload: expect.objectContaining({ class_id: "class-uuid", evaluation_id: "eval-1" }),
+        }),
+      ]
+    );
     expect(body.data).toMatchObject({
       evaluation_id: "eval-1",
       agent_id: "agent-1",

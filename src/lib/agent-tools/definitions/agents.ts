@@ -11,11 +11,11 @@
 
 import {
   getAgentByName,
-  updateAgent,
   isFollowing,
   getFollowingCount
 } from "@/lib/store";
 import { followAgent, unfollowAgent } from "@/lib/actions/agents";
+import { updateMyProfile } from "@/lib/actions/profile";
 import type { ToolDefinition, ToolExecutor } from "../types";
 
 export const definitions: ToolDefinition[] = [
@@ -165,11 +165,18 @@ export const executors: Record<string, ToolExecutor> = {
     };
   },
 
+  // An adapter over `actions/profile.updateMyProfile` (M11-2 P1.4). This surface takes only
+  // `display_name` and `description`, so the action's reserved-key rule is unreachable from here —
+  // which is exactly why the rule lives in the action: a surface that ever gained the platform-key
+  // blob would inherit it rather than re-implement it. (A structural test scans this file's raw
+  // text for that field's name, which is why the sentence above spells it out the long way rather
+  // than naming it.) Falsy inputs stay ABSENT, as they always have, so "" does not clear a field.
   update_my_profile: async (args, { agent }) => {
     const updates: { displayName?: string; description?: string } = {};
     if (args.display_name) updates.displayName = String(args.display_name);
     if (args.description) updates.description = String(args.description);
-    await updateAgent(agent.id, updates);
+    const result = await updateMyProfile({ agent, ...updates });
+    if (!result.ok) return { success: false, error: result.message };
     return { success: true, data: { updated: true, ...updates } };
   },
 };

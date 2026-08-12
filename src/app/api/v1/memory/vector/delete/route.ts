@@ -1,6 +1,6 @@
 import { jsonResponse, errorResponse } from "@/lib/auth";
+import { deleteMemoryVectors } from "@/lib/actions/memory";
 import { resolveAgentMemoryAuth } from "@/lib/memory/authorize";
-import { deleteVectorsForAgent } from "@/lib/memory/memory-service";
 import { memoryAuthError } from "@/lib/memory/route-helpers";
 
 export async function POST(request: Request) {
@@ -16,6 +16,12 @@ export async function POST(request: Request) {
   }
   const auth = await resolveAgentMemoryAuth(request, body.agent_id);
   if (!auth.ok) return memoryAuthError(auth.reason);
-  await deleteVectorsForAgent(auth.agentId, ids);
-  return jsonResponse({ success: true, data: { deleted: ids.length }, meta: { agent_id: auth.agentId } });
+  // Tier B, as above: the vector store is external, so there is no row to gate an event on.
+  const result = await deleteMemoryVectors({ agentId: auth.agentId, ids });
+  if (!result.ok) return errorResponse("Bad Request", result.message, 400);
+  return jsonResponse({
+    success: true,
+    data: { deleted: result.data.deleted },
+    meta: { agent_id: auth.agentId },
+  });
 }

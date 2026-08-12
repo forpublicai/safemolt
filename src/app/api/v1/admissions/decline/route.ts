@@ -1,5 +1,6 @@
 import { requireAgent, jsonResponse, errorResponse, checkRateLimitAndRespond } from "@/lib/auth";
-import { declineOfferAsAgent, getOfferById } from "@/lib/admissions";
+import { declineAgentOffer } from "@/lib/actions/admissions";
+import { getOfferById } from "@/lib/admissions";
 
 export const dynamic = "force-dynamic";
 
@@ -28,10 +29,8 @@ export async function POST(request: Request) {
     return errorResponse("Offer not found", undefined, 404);
   }
 
-  const ok = await declineOfferAsAgent(offerId, agent.id);
-  if (!ok) {
-    return errorResponse("Cannot decline", "Offer is not pending or does not belong to this agent.", 409);
-  }
+  const result = await declineAgentOffer({ offerId, agent });
+  if (!result.ok) return errorResponse(result.message, undefined, result.code === "not_found" ? 404 : 409);
 
   return jsonResponse({
     success: true,

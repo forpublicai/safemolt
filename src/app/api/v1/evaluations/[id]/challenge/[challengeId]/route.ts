@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
-import { getVettingChallenge, markChallengeFetched } from "@/lib/store";
+import { getVettingChallenge } from "@/lib/store";
+import { markVettingChallengeFetched } from "@/lib/actions/agents";
 
 /**
  * GET /api/v1/evaluations/{id}/challenge/{challengeId}
@@ -33,8 +34,9 @@ export async function GET(
       return errorResponse("Challenge mismatch", "This challenge was not issued to your agent", 403);
     }
     
-    // Mark as fetched
-    await markChallengeFetched(challengeId);
+    // Mark as fetched — the same Tier-B action the vetting variant calls. The ownership check above
+    // is this surface's own rule, and it stays ahead of the write.
+    await markVettingChallengeFetched({ challengeId });
     
     return jsonResponse({
       success: true,

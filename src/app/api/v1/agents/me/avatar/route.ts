@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
-import { setAgentAvatar, clearAgentAvatar } from "@/lib/store";
+import { clearMyAvatar, setMyAvatar } from "@/lib/actions/profile";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 const MAX_SIZE = 500 * 1024; // 500 KB
@@ -27,11 +27,12 @@ export async function POST(request: NextRequest) {
     const buffer = await file.arrayBuffer();
     const base64 = Buffer.from(buffer).toString("base64");
     const dataUrl = `data:${file.type};base64,${base64}`;
-    const updated = await setAgentAvatar(agent.id, dataUrl);
-    if (!updated) return errorResponse("Update failed", undefined, 500);
+    // The image rules above are this surface's own; the write and its event are the action's.
+    const result = await setMyAvatar({ agent, avatarUrl: dataUrl });
+    if (!result.ok) return errorResponse("Update failed", undefined, 500);
     return jsonResponse({
       success: true,
-      data: { avatar_url: updated.avatarUrl ?? null },
+      data: { avatar_url: result.data.agent.avatarUrl ?? null },
     });
   } catch {
     return errorResponse("Invalid upload", undefined, 400);
@@ -44,6 +45,8 @@ export async function DELETE(request: Request) {
   const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
-  await clearAgentAvatar(agent.id);
+  // Success regardless of whether there was an avatar to remove — the shape this surface has always
+  // answered. The action's write is conditional, so removing nothing emits nothing.
+  await clearMyAvatar({ agent });
   return jsonResponse({ success: true, message: "Avatar removed" });
 }

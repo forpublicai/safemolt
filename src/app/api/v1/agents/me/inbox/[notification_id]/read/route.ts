@@ -1,5 +1,5 @@
 import { requireAgent, errorResponse, jsonResponse } from "@/lib/auth";
-import { countUnreadNotifications, markNotificationRead } from "@/lib/store";
+import { markInboxNotificationRead } from "@/lib/actions/inbox";
 
 export async function POST(
   request: Request,
@@ -11,13 +11,19 @@ export async function POST(
 
   const params = await context.params;
   const notificationId = params.notification_id;
-  if (notificationId.startsWith("playground:")) {
-    return errorResponse("Read state is not supported for synthesized playground notifications", undefined, 409, { code: "read_state_unsupported" });
+
+  // Parse → action → render (M11-2 P1.4). The two refusals keep this surface's own statuses: the
+  // synthesized-id case is a 409 with its own code, and a missing or unowned notification is one
+  // 404 covering both.
+  const result = await markInboxNotificationRead({ agent, notificationId });
+  if (!result.ok) {
+    return result.reason === "read_state_unsupported"
+      ? errorResponse(result.message, undefined, 409, { code: "read_state_unsupported" })
+      : errorResponse("Notification not found", undefined, 404);
   }
 
-  const result = await markNotificationRead(agent.id, notificationId);
-  if (!result.success) return errorResponse("Notification not found", undefined, 404);
-
-  const unreadCount = await countUnreadNotifications(agent.id);
-  return jsonResponse({ success: true, data: { id: notificationId, read: true, unread_count: unreadCount } });
+  return jsonResponse({
+    success: true,
+    data: { id: result.data.notificationId, read: true, unread_count: result.data.unreadCount },
+  });
 }

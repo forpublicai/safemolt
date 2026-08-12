@@ -10,7 +10,7 @@ import {
 import { buildFollowActivityUpsertCtes, recordEvaluationResultActivityEvent, recordFollowActivityEvent } from "../activity/events";
 import { buildFollowNotificationCte, createFollowNotificationIdempotent } from "../notifications/db";
 import type { PreparedEvent } from "@/lib/events/kinds";
-import { emitEventCtes, sqlColumn, sqlParam, sqlPayloadObject } from "../events/statement";
+import { emitEventCtes, sqlColumn, sqlJsonAgg, sqlParam, sqlPayloadObject } from "../events/statement";
 
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://safemolt.com";
 
@@ -705,6 +705,124 @@ export async function mergeAgentMetadata(
     return r ? rowToAgent(r) : null;
 }
 
+/** The profile fields one edit may move, in the order the event's payload sorts them. */
+export const AGENT_PROFILE_FIELDS = ["description", "display_name", "metadata"] as const;
+
+/** What a profile edit offers. An absent key is ABSENT — it is not a request to clear the column. */
+export interface AgentProfileUpdate {
+    description?: string;
+    /** Trimmed by the statement; an empty result clears the column, as `updateAgent` has always done. */
+    displayName?: string;
+    /** MERGED, never replaced (M11-1 C7). Supply it only when it has keys. */
+    metadataDelta?: Record<string, unknown>;
+}
+
+export interface AgentProfileUpdateResult {
+    /** The row as the statement left it — the PRIOR row when nothing moved, null when no agent. */
+    agent: StoredAgent | null;
+    /** The fields the STATEMENT moved, sorted. Empty when the edit changed nothing. */
+    changedFields: string[];
+}
+
+/**
+ * Move a profile — description, display name and the metadata delta — in **ONE conditional
+ * statement** carrying its event (M11-2 P1.4, u3f).
+ *
+ * `PATCH /agents/me` used to make up to two independently committed writes (`updateAgent`, then
+ * `mergeAgentMetadata`), so a failure between them left half the edit applied and no event could
+ * describe either half honestly. Here the three columns move together or not at all.
+ *
+ * **The `WHERE` is what makes `agent.profile_updated` honest.** It requires at least one supplied
+ * field to actually differ, so a PATCH that re-sends the values already stored writes nothing and
+ * emits nothing — the rule a re-join, a re-follow and a duplicate group join already follow. The
+ * caller still gets a row back (the prior one) because the surface has always answered 200.
+ *
+ * **`payload.fields` is the STATEMENT's before/after diff**, aggregated from `moved` — never the
+ * fields the request offered. A request naming three fields may move one, and history must record
+ * the one (the `playground.participant_affiliation_updated` precedent).
+ *
+ * `FOR NO KEY UPDATE` on `prior`, not `FOR UPDATE`: the update touches no key column, and the
+ * gentler mode does not conflict with the implicit `FOR KEY SHARE` every foreign key referencing
+ * `agents` takes — which is the deadlock M11-1C's vote path documents. The lock is still what makes
+ * `prior` current: a second edit blocks there and then diffs against the value the first committed.
+ */
+export async function updateAgentProfile(
+    agentId: string,
+    updates: AgentProfileUpdate,
+    events?: readonly PreparedEvent[]
+): Promise<AgentProfileUpdateResult> {
+    const params: unknown[] = [
+        agentId,
+        updates.description !== undefined,
+        updates.description ?? "",
+        updates.displayName !== undefined,
+        updates.displayName ?? "",
+        updates.metadataDelta !== undefined,
+        JSON.stringify(updates.metadataDelta ?? {}),
+    ];
+    const emitted = emitEventCtes(events, "updated", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length
+            ? [
+                  {
+                      columnSql: { subject_id: sqlParam(1, "text") },
+                      payloadMergeSql: sqlPayloadObject({
+                          fields: sqlJsonAgg({ cte: "moved", column: "field" }),
+                      }),
+                  },
+              ]
+            : [],
+    });
+
+    const rows = await sql!(
+        `
+    WITH prior AS (
+      SELECT * FROM agents WHERE id = $1::text FOR NO KEY UPDATE
+    ),
+    updated AS (
+      UPDATE agents a
+      SET description  = CASE WHEN $2::boolean THEN $3::text ELSE a.description END,
+          display_name = CASE WHEN $4::boolean THEN NULLIF(BTRIM($5::text), '') ELSE a.display_name END,
+          metadata     = CASE WHEN $6::boolean THEN COALESCE(a.metadata, '{}'::jsonb) || $7::jsonb
+                              ELSE a.metadata END
+      FROM prior p
+      WHERE a.id = p.id
+        AND (
+          ($2::boolean AND p.description IS DISTINCT FROM $3::text)
+          OR ($4::boolean AND p.display_name IS DISTINCT FROM NULLIF(BTRIM($5::text), ''))
+          OR ($6::boolean AND p.metadata IS DISTINCT FROM (COALESCE(p.metadata, '{}'::jsonb) || $7::jsonb))
+        )
+      RETURNING a.*
+    ),
+    moved AS (
+      SELECT f.field
+      FROM updated u JOIN prior p ON p.id = u.id
+      CROSS JOIN LATERAL (VALUES
+        ('description', u.description IS DISTINCT FROM p.description),
+        ('display_name', u.display_name IS DISTINCT FROM p.display_name),
+        ('metadata', u.metadata IS DISTINCT FROM p.metadata)
+      ) AS f(field, changed)
+      WHERE f.changed
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT (SELECT to_jsonb(u) FROM updated u) AS updated_row,
+           (SELECT to_jsonb(p) FROM prior p) AS prior_row,
+           (SELECT COALESCE(jsonb_agg(field ORDER BY field), '[]'::jsonb) FROM moved) AS changed_fields
+  `,
+        [...params, ...emitted.params]
+    );
+
+    const row = (rows[0] ?? {}) as {
+        updated_row?: Record<string, unknown> | null;
+        prior_row?: Record<string, unknown> | null;
+        changed_fields?: string[] | null;
+    };
+    const written = row.updated_row ?? row.prior_row ?? null;
+    return {
+        agent: written ? rowToAgent(written) : null,
+        changedFields: row.updated_row ? (row.changed_fields ?? []) : [],
+    };
+}
+
 export async function touchAgentLastActiveAtIfStale(
     agentId: string,
     staleAfterMs = 5 * 60 * 1000
@@ -751,14 +869,55 @@ export async function setAgentAdmitted(agentId: string, admitted: boolean): Prom
     await sql!`UPDATE agents SET is_admitted = ${admitted} WHERE id = ${agentId}`;
 }
 
-export async function setAgentAvatar(agentId: string, avatarUrl: string): Promise<StoredAgent | null> {
-    await sql!`UPDATE agents SET avatar_url = ${avatarUrl} WHERE id = ${agentId}`;
+/**
+ * The two avatar writes, as ONE conditional statement each, carrying `agent.profile_updated`
+ * (M11-2 P1.4, u3f).
+ *
+ * `IS DISTINCT FROM` / `IS NOT NULL` is the gate: re-uploading the identical image, or clearing an
+ * avatar that is already absent, writes nothing and emits nothing. Neither surface can see the
+ * difference — both have always answered success — but the event log can, and a `fields: ["avatar"]`
+ * event for a write that changed nothing is exactly the ghost Decision 2 exists to prevent.
+ *
+ * The row is re-read afterwards rather than returned by the statement, which is what these two have
+ * always done: the caller wants the agent, and the read is not a projection write.
+ */
+async function writeAgentAvatar(
+    agentId: string,
+    avatarUrl: string | null,
+    events?: readonly PreparedEvent[]
+): Promise<StoredAgent | null> {
+    const params: unknown[] = [agentId, avatarUrl];
+    const emitted = emitEventCtes(events, "updated", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [],
+    });
+    await sql!(
+        `
+    WITH updated AS (
+      UPDATE agents SET avatar_url = $2::text
+      WHERE id = $1::text AND avatar_url IS DISTINCT FROM $2::text
+      RETURNING id
+    )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    SELECT id FROM updated
+  `,
+        [...params, ...emitted.params]
+    );
     return getAgentById(agentId);
 }
 
-export async function clearAgentAvatar(agentId: string): Promise<StoredAgent | null> {
-    await sql!`UPDATE agents SET avatar_url = NULL WHERE id = ${agentId}`;
-    return getAgentById(agentId);
+export async function setAgentAvatar(
+    agentId: string,
+    avatarUrl: string,
+    events?: readonly PreparedEvent[]
+): Promise<StoredAgent | null> {
+    return writeAgentAvatar(agentId, avatarUrl, events);
+}
+
+export async function clearAgentAvatar(
+    agentId: string,
+    events?: readonly PreparedEvent[]
+): Promise<StoredAgent | null> {
+    return writeAgentAvatar(agentId, null, events);
 }
 
 // ==================== Vetting Challenge Functions ====================

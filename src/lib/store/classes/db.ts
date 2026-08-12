@@ -2,6 +2,8 @@ import { sql } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { generateProfessorApiKey } from "@/lib/credentials";
 import type { StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult } from "@/lib/store-types";
+import type { PreparedEvent } from "@/lib/events/kinds";
+import { emitEventCtes, sqlColumn, sqlParam, sqlPayloadObject } from "../events/statement";
 
 // ==================== Classes System ====================
 
@@ -332,26 +334,25 @@ export async function isClassAssistant(classId: string, agentId: string): Promis
 
 // --- Class Enrollments ---
 
-export async function enrollInClass(classId: string, agentId: string): Promise<StoredClassEnrollment> {
+export async function enrollInClass(classId: string, agentId: string, events?: readonly PreparedEvent[]): Promise<StoredClassEnrollment> {
     const resolvedClassId = await resolveClassId(classId);
     if (!resolvedClassId) throw new Error("Class not found");
     const id = generateClassId('enrl');
     const enrolledAt = new Date().toISOString();
-    await sql!`
-        INSERT INTO class_enrollments (id, class_id, agent_id, status, enrolled_at)
-        VALUES (${id}, ${resolvedClassId}, ${agentId}, 'enrolled', ${enrolledAt})
-    `;
+    const params = [id, resolvedClassId, agentId, enrolledAt];
+    const emitted = emitEventCtes(events, "enrolled", { firstParamIndex: params.length + 1, overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [] });
+    await sql!(`WITH inserted AS (INSERT INTO class_enrollments (id, class_id, agent_id, status, enrolled_at)
+        VALUES ($1, $2, $3, 'enrolled', $4) RETURNING *)${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""} SELECT * FROM inserted`, [...params, ...emitted.params]);
     return { id, classId: resolvedClassId, agentId, status: 'enrolled', enrolledAt };
 }
 
-export async function dropClass(classId: string, agentId: string): Promise<boolean> {
+export async function dropClass(classId: string, agentId: string, events?: readonly PreparedEvent[]): Promise<boolean> {
     const resolvedClassId = await resolveClassId(classId);
     if (!resolvedClassId) return false;
-    const result = await sql!`
-        UPDATE class_enrollments SET status = 'dropped'
-        WHERE class_id = ${resolvedClassId} AND agent_id = ${agentId} AND status IN ('enrolled', 'active')
-    `;
-    return (result as unknown as { count: number }).count > 0;
+    const emitted = emitEventCtes(events, "dropped", { firstParamIndex: 3, overrides: events?.length ? [{ rowSource: "dropped", columnSql: { subject_id: sqlColumn("dropped.id", "text") } }] : [] });
+    const rows = await sql!(`WITH dropped AS (UPDATE class_enrollments SET status = 'dropped'
+        WHERE class_id = $1 AND agent_id = $2 AND status IN ('enrolled', 'active') RETURNING id)${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""} SELECT id FROM dropped`, [resolvedClassId, agentId, ...emitted.params]);
+    return rows.length > 0;
 }
 
 export async function getClassEnrollment(classId: string, agentId: string): Promise<StoredClassEnrollment | null> {
@@ -491,19 +492,22 @@ export async function addClassSessionMessage(
     sessionId: string,
     senderId: string,
     senderRole: StoredClassSessionMessage['senderRole'],
-    content: string
+    content: string,
+    events?: readonly PreparedEvent[]
 ): Promise<StoredClassSessionMessage> {
     const id = generateClassId('cmsg');
     const createdAt = new Date().toISOString();
-    const seqResult = await sql!`
+    const params = [id, sessionId, senderId, senderRole, content, createdAt];
+    const emitted = emitEventCtes(events, "inserted", { firstParamIndex: params.length + 1, overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(2, "text") }, payloadMergeSql: sqlPayloadObject({ message_id: sqlParam(1, "text") }) }] : [] });
+    const seqResult = await sql!(`WITH inserted AS (
         INSERT INTO class_session_messages (id, session_id, sender_id, sender_role, content, created_at, sequence)
-        SELECT ${id}, ${sessionId}, ${senderId}, ${senderRole}, ${content}, ${createdAt},
-            COALESCE((SELECT MAX(sequence) + 1 FROM class_session_messages WHERE session_id = ${sessionId}), 1)
-        RETURNING sequence, created_at
-    `;
+        SELECT $1, $2, $3, $4, $5, $6,
+            COALESCE((SELECT MAX(sequence) + 1 FROM class_session_messages WHERE session_id = $2), 1)
+        RETURNING id, sequence, created_at
+    )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""} SELECT id, sequence, created_at FROM inserted`, [...params, ...emitted.params]);
     const row = (seqResult as Array<Record<string, unknown>>)[0];
     return {
-        id,
+        id: row?.id as string ?? id,
         sessionId,
         senderId,
         senderRole,
@@ -628,16 +632,16 @@ export async function saveClassEvaluationResult(
     score?: number,
     maxScore?: number,
     resultData?: Record<string, unknown>,
-    feedback?: string
+    feedback?: string,
+    events?: readonly PreparedEvent[]
 ): Promise<StoredClassEvaluationResult> {
     const id = generateClassId('cres');
     const completedAt = new Date().toISOString();
-    await sql!`
+    const params = [id, evaluationId, agentId, response ?? null, score ?? null, maxScore ?? null, resultData ? JSON.stringify(resultData) : null, feedback ?? null, completedAt];
+    const emitted = emitEventCtes(events, "result", { firstParamIndex: params.length + 1, overrides: events?.length ? [{ rowSource: "result", columnSql: { subject_id: sqlColumn("result.id", "text") }, payloadMergeSql: sqlPayloadObject({ result_id: sqlColumn("result.id", "text") }) }] : [] });
+    const resultRows = await sql!(`WITH result AS (
         INSERT INTO class_evaluation_results (id, evaluation_id, agent_id, response, score, max_score, result_data, feedback, completed_at)
-        VALUES (${id}, ${evaluationId}, ${agentId}, ${response ?? null},
-                ${score ?? null}, ${maxScore ?? null},
-                ${resultData ? JSON.stringify(resultData) : null},
-                ${feedback ?? null}, ${completedAt})
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (evaluation_id, agent_id) DO UPDATE SET
             response = EXCLUDED.response,
             score = EXCLUDED.score,
@@ -645,8 +649,10 @@ export async function saveClassEvaluationResult(
             result_data = EXCLUDED.result_data,
             feedback = EXCLUDED.feedback,
             completed_at = EXCLUDED.completed_at
-    `;
-    return { id, evaluationId, agentId, response, score, maxScore, resultData, feedback, completedAt };
+        RETURNING id, evaluation_id, agent_id, response, score, max_score, result_data, feedback, completed_at
+    )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""} SELECT id, evaluation_id, agent_id, response, score, max_score, result_data, feedback, completed_at FROM result`, [...params, ...emitted.params]);
+    const actual = resultRows[0] as Record<string, unknown>;
+    return { id: actual.id as string, evaluationId, agentId, response, score, maxScore, resultData, feedback, completedAt };
 }
 
 export async function getClassEvaluationResults(evaluationId: string): Promise<StoredClassEvaluationResult[]> {

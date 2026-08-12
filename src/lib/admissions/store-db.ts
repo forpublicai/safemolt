@@ -12,6 +12,8 @@ import type {
   StoredAdmissionsOffer,
 } from "./types";
 import { getAgentById } from "@/lib/store";
+import type { PreparedEvent } from "@/lib/events/kinds";
+import { emitEventCtes, sqlColumn, sqlParam } from "@/lib/store/events/statement";
 
 function genId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -88,25 +90,35 @@ export async function refreshExpiredOffersDb(): Promise<void> {
   // standalone sql`` call its own connection, so the previous
   // BEGIN / read / loop-of-UPDATEs / COMMIT sequence shared no session and
   // protected nothing (the same non-pattern C1/C11 removed elsewhere).
-  await sql!`
+  const event: PreparedEvent<"admissions.offer_expired"> = {
+    kind: "admissions.offer_expired", actorAgentId: null, subjectType: "admissions_offer",
+    subjectId: "__STORE_ASSIGNED__", secondarySubjectId: "__STORE_ASSIGNED__", payload: {},
+  };
+  const emitted = emitEventCtes([event], "expired", {
+    firstParamIndex: 1, namePrefix: "offer_expired",
+    overrides: [{ rowSource: "expired", columnSql: {
+      subject_id: sqlColumn("expired.id", "text"), secondary_subject_id: sqlColumn("expired.application_id", "text"),
+    } }],
+  });
+  await sql!(`
     WITH expired AS (
       UPDATE admissions_offers
       SET status = 'expired'
       WHERE status = 'pending' AND expires_at < NOW()
-      RETURNING application_id
+      RETURNING id, application_id
+    ), ${emitted.ctes.join(", ")}, released AS (
+      UPDATE admissions_applications a
+      SET state = 'in_pool', updated_at = NOW()
+      FROM expired e
+      WHERE a.id = e.application_id AND a.state = 'offered'
+        AND NOT EXISTS (
+          SELECT 1 FROM admissions_offers o2
+          WHERE o2.application_id = a.id AND o2.status = 'pending' AND o2.expires_at >= NOW()
+        )
+      RETURNING a.id
     )
-    UPDATE admissions_applications a
-    SET state = 'in_pool', updated_at = NOW()
-    FROM expired e
-    WHERE a.id = e.application_id AND a.state = 'offered'
-      -- M11-1b D6: only release an application with NO OTHER live offer. Pre-D6 data can carry two
-      -- pending offers on one application; expiring the lapsed one and releasing the application
-      -- anyway would leave it in_pool while a live offer still stands.
-      AND NOT EXISTS (
-        SELECT 1 FROM admissions_offers o2
-        WHERE o2.application_id = a.id AND o2.status = 'pending' AND o2.expires_at >= NOW()
-      )
-  `;
+    SELECT count(*)::int AS expired_count FROM expired
+  `, emitted.params);
 }
 
 export async function getDefaultOpenCycleIdDb(): Promise<string | null> {
@@ -169,7 +181,7 @@ export async function getApplicationByIdDb(id: string): Promise<StoredAdmissions
   return r ? rowApp(r) : null;
 }
 
-export async function ensureApplicationInPoolDb(agentId: string, cycleId: string): Promise<StoredAdmissionsApplication> {
+export async function ensureApplicationInPoolDb(agentId: string, cycleId: string, events?: readonly PreparedEvent[]): Promise<StoredAdmissionsApplication> {
   const agent = await getAgentById(agentId);
   if (!agent) throw new Error("agent_not_found");
   if (agent.isAdmitted) throw new Error("already_admitted");
@@ -178,13 +190,13 @@ export async function ensureApplicationInPoolDb(agentId: string, cycleId: string
   if (existing) return existing;
 
   const id = genId("admapp");
-  await sql!`
-    INSERT INTO admissions_applications (id, agent_id, cycle_id, state, pool_entered_at, updated_at)
-    VALUES (${id}, ${agentId}, ${cycleId}, 'in_pool', NOW(), NOW())
-  `;
-  const created = await getApplicationByIdDb(id);
+  const params = [id, agentId, cycleId];
+  const emitted = emitEventCtes(events, "inserted", { firstParamIndex: 4, overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [] });
+  const rows = await sql!(`WITH inserted AS (INSERT INTO admissions_applications (id, agent_id, cycle_id, state, pool_entered_at, updated_at)
+    VALUES ($1, $2, $3, 'in_pool', NOW(), NOW()) RETURNING *)${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""} SELECT * FROM inserted`, [...params, ...emitted.params]);
+  const created = rows[0] as Record<string, unknown> | undefined;
   if (!created) throw new Error("application_create_failed");
-  return created;
+  return rowApp(created);
 }
 
 export async function listApplicationsForStaffDb(
@@ -541,27 +553,47 @@ function finalizeOfferStatement(txn: AdmissionsTxn, offerId: string) {
  * `finalizeOfferStatement`). It needs to observe this element's write, which a later statement in
  * the same transaction does — each takes a fresh snapshot.
  */
-export async function acceptOfferAsAgentDb(offerId: string, agentId: string): Promise<"ok" | "invalid"> {
+export async function acceptOfferAsAgentDb(offerId: string, agentId: string, events?: readonly PreparedEvent[]): Promise<"ok" | "invalid"> {
   const offer = await getOfferByIdDb(offerId);
   if (!offer || offer.agentId !== agentId || offer.status !== "pending") return "invalid";
   if (new Date(offer.expiresAt).getTime() < Date.now()) return "invalid";
 
-  await sql!.transaction((txn) => [
-    txn`SELECT id FROM agents WHERE id = ${agentId} FOR KEY SHARE`,
-    txn`
+  const emitted = emitEventCtes(events, "accepted", { firstParamIndex: 3, overrides: events?.length ? [{ rowSource: "accepted", columnSql: { secondary_subject_id: sqlColumn("accepted.application_id", "text") } }] : [] });
+  if (!events?.length) {
+    await sql!.transaction((txn) => [
+      txn`SELECT id FROM agents WHERE id = ${agentId} FOR KEY SHARE`,
+      txn`
+        WITH accepted AS (
+          UPDATE admissions_offers
+          SET accepted_at_agent = NOW()
+          WHERE id = ${offerId} AND agent_id = ${agentId} AND status = 'pending' AND expires_at > NOW()
+            AND accepted_at_agent IS NULL
+          RETURNING id, agent_id, application_id
+        )
+        INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
+        SELECT a.id, a.application_id, a.agent_id, 'agent', ${agentId}, 'accept_agent', '{}'::jsonb
+        FROM accepted a
+      `,
+      finalizeOfferStatement(txn, offerId),
+    ]);
+  } else {
+    await sql!.transaction((txn) => [
+      txn`SELECT id FROM agents WHERE id = ${agentId} FOR KEY SHARE`,
+      txn(`
       WITH accepted AS (
         UPDATE admissions_offers
         SET accepted_at_agent = NOW()
-        WHERE id = ${offerId} AND agent_id = ${agentId} AND status = 'pending' AND expires_at > NOW()
+        WHERE id = $1 AND agent_id = $2 AND status = 'pending' AND expires_at > NOW()
           AND accepted_at_agent IS NULL
         RETURNING id, agent_id, application_id
-      )
+      )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""}
       INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
-      SELECT a.id, a.application_id, a.agent_id, 'agent', ${agentId}, 'accept_agent', '{}'::jsonb
+      SELECT a.id, a.application_id, a.agent_id, 'agent', $2, 'accept_agent', '{}'::jsonb
       FROM accepted a
-    `,
-    finalizeOfferStatement(txn, offerId),
-  ]);
+      `, [offerId, agentId, ...emitted.params]),
+      finalizeOfferStatement(txn, offerId),
+    ]);
+  }
   return classifyAcceptOutcomeDb(offerId, "agent");
 }
 
@@ -630,49 +662,50 @@ export async function acceptOfferAsHumanDb(offerId: string, humanUserId: string)
  */
 function declineOfferStatement(
   offerId: string,
-  actor: { type: "agent"; agentId: string } | { type: "human"; humanUserId: string }
+  actor: { type: "agent"; agentId: string } | { type: "human"; humanUserId: string },
+  events?: readonly PreparedEvent[]
 ) {
   const actorId = actor.type === "agent" ? actor.agentId : actor.humanUserId;
-
-  return sql!`
+  const emitted = emitEventCtes(events, "declined", { firstParamIndex: 3, overrides: events?.length ? [{ rowSource: "declined", columnSql: { secondary_subject_id: sqlColumn("declined.application_id", "text") } }] : [] });
+  return sql!(`
     WITH locked_agent AS (
       -- Agents first, for the reason spelled out on createOfferDb: agent deletion locks the agent
       -- and cascades INTO offers and applications, so a writer that goes the other way deadlocks
       -- with it. Consuming this CTE below is what forces the order — sibling CTE evaluation order
       -- is not guaranteed on its own.
       SELECT a.id FROM admissions_offers o JOIN agents a ON a.id = o.agent_id
-      WHERE o.id = ${offerId}
+      WHERE o.id = $1
       FOR KEY SHARE OF a
     ), declined AS (
       UPDATE admissions_offers o
       SET status = 'declined'
       FROM locked_agent la
-      WHERE o.id = ${offerId} AND o.agent_id = la.id AND o.status = 'pending'
+      WHERE o.id = $1 AND o.agent_id = la.id AND o.status = 'pending'
         -- Both ownership rules are parameterised into one predicate rather than composed from SQL
         -- fragments: this driver's tagged template has no fragment type, so an interpolated
         -- template would be bound as a VALUE and silently stop authorizing anything.
         AND (
-          (${actor.type}::text = 'agent' AND o.agent_id = ${actorId})
-          OR (${actor.type}::text = 'human' AND EXISTS (
-                SELECT 1 FROM user_agents ua WHERE ua.user_id = ${actorId} AND ua.agent_id = o.agent_id
+          ('${actor.type}'::text = 'agent' AND o.agent_id = $2)
+          OR ('${actor.type}'::text = 'human' AND EXISTS (
+                SELECT 1 FROM user_agents ua WHERE ua.user_id = $2 AND ua.agent_id = o.agent_id
               ))
         )
       RETURNING o.id, o.agent_id, o.application_id
-    ), released AS (
+    )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""}, released AS (
       UPDATE admissions_applications
       SET state = 'in_pool', updated_at = NOW()
       WHERE id IN (SELECT application_id FROM declined WHERE application_id IS NOT NULL)
       RETURNING id
     )
     INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
-    SELECT d.id, d.application_id, d.agent_id, ${actor.type}, ${actorId}, 'decline', '{}'::jsonb
+    SELECT d.id, d.application_id, d.agent_id, '${actor.type}', $2, 'decline', '{}'::jsonb
     FROM declined d
     RETURNING offer_id
-  `;
+  `, [offerId, actorId, ...emitted.params]);
 }
 
-export async function declineOfferAsAgentDb(offerId: string, agentId: string): Promise<boolean> {
-  const rows = await declineOfferStatement(offerId, { type: "agent", agentId });
+export async function declineOfferAsAgentDb(offerId: string, agentId: string, events?: readonly PreparedEvent[]): Promise<boolean> {
+  const rows = await declineOfferStatement(offerId, { type: "agent", agentId }, events);
   return rows.length > 0;
 }
 

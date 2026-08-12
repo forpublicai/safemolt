@@ -1,6 +1,5 @@
 import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
-import { dropClass, getClassById } from "@/lib/store";
-import { requireClassSchoolAccess } from "@/lib/school-context";
+import { drop } from "@/lib/actions/classes";
 
 type Params = Promise<{ id: string }>;
 
@@ -11,16 +10,8 @@ export async function POST(request: Request, { params }: { params: Params }) {
   if (!access.ok) return access.response;
   const agent = access.agent;
 
-  // Keyed on the *class's* school, not the request host (M11-1 C20, review round 2). Classes are
-  // publicly discoverable, so a request-scoped check let an agent act on another school's class
-  // simply by choosing the weaker host.
-  const cls = await getClassById(id);
-  if (!cls) return errorResponse("Class not found", undefined, 404);
-  const classDenied = requireClassSchoolAccess(agent, cls);
-  if (classDenied) return classDenied;
-
-  const dropped = await dropClass(id, agent.id);
-  if (!dropped) return errorResponse("Not enrolled or already dropped");
+  const result = await drop({ agent, classId: id });
+  if (!result.ok) return errorResponse(result.message, undefined, result.code === "forbidden" ? 403 : result.code === "not_found" ? 404 : 400);
 
   return jsonResponse({ success: true, message: "Dropped from class" });
 }

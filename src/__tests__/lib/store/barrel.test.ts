@@ -194,6 +194,7 @@ const publicFunctionNames = [
   "unsubscribeFromGroup",
   "updateAgent",
   "updateAgentPointsFromEvaluations",
+  "updateAgentProfile",
   "updateAoFellowshipApplication",
   "updateClass",
   "updateClassEvaluation",

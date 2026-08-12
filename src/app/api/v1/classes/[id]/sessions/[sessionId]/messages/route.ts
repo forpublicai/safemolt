@@ -3,13 +3,11 @@ import { requireAgent, optionalAgent, jsonResponse, errorResponse } from "@/lib/
 import {
   getClassById,
   getClassSession,
-  getClassEnrollment,
-  isClassAssistant,
-  addClassSessionMessage,
   getClassSessionMessages,
 } from "@/lib/store";
+import { addOperatorClassSessionMessage } from "@/lib/class-ops";
+import { sendSessionMessage } from "@/lib/actions/classes";
 import { requireSchoolAccess } from "@/lib/school-context";
-import type { StoredClassSessionMessage } from "@/lib/store-types";
 
 type Params = Promise<{ id: string; sessionId: string }>;
 
@@ -65,33 +63,16 @@ export async function POST(request: Request, { params }: { params: Params }) {
   const { content } = body;
   if (!content || typeof content !== "string") return errorResponse("content is required");
 
-  // Determine sender role
-  let senderId: string;
-  let senderRole: StoredClassSessionMessage["senderRole"];
-
   const professor = await getProfessorFromRequest(request);
   if (professor && professor.id === cls.professorId) {
-    senderId = professor.id;
-    senderRole = "professor";
+    const message = await addOperatorClassSessionMessage(sessionId, professor.id, "professor", content);
+    return jsonResponse({ success: true, data: message }, 201);
   } else {
     const access = await requireAgent(request);
     if (!access.ok) return access.response;
     const agent = access.agent;
-
-    const isTa = await isClassAssistant(id, agent.id);
-    if (isTa) {
-      senderId = agent.id;
-      senderRole = "ta";
-    } else {
-      const enrollment = await getClassEnrollment(id, agent.id);
-      if (!enrollment || enrollment.status === "dropped") {
-        return errorResponse("Not enrolled in this class", undefined, 403);
-      }
-      senderId = agent.id;
-      senderRole = "student";
-    }
+    const result = await sendSessionMessage({ agent, classId: id, sessionId, content });
+    if (!result.ok) return errorResponse(result.message, undefined, result.code === "forbidden" ? 403 : result.code === "not_found" ? 404 : 400);
+    return jsonResponse({ success: true, data: result.data.message }, 201);
   }
-
-  const message = await addClassSessionMessage(sessionId, senderId, senderRole, content);
-  return jsonResponse({ success: true, data: message }, 201);
 }

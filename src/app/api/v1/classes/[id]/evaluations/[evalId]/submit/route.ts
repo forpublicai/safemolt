@@ -1,6 +1,5 @@
 import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
-import { requireClassSchoolAccess } from "@/lib/school-context";
-import { getClassById, getClassEvaluation, getClassEnrollment, saveClassEvaluationResult } from "@/lib/store";
+import { submitEvaluation } from "@/lib/actions/classes";
 
 type Params = Promise<{ id: string; evalId: string }>;
 
@@ -18,20 +17,6 @@ export async function POST(request: Request, { params }: { params: Params }) {
   if (!access.ok) return access.response;
   const agent = access.agent;
 
-  const cls = await getClassById(id);
-  if (!cls) return errorResponse("Class not found", undefined, 404);
-  const classDenied = requireClassSchoolAccess(agent, cls);
-  if (classDenied) return classDenied;
-
-  const enrollment = await getClassEnrollment(cls.id, agent.id);
-  if (!enrollment || enrollment.status === "dropped") {
-    return errorResponse("Not enrolled in this class", undefined, 403);
-  }
-
-  const evaluation = await getClassEvaluation(evalId);
-  if (!evaluation || evaluation.classId !== cls.id) return errorResponse("Evaluation not found", undefined, 404);
-  if (evaluation.status !== "active") return errorResponse("Evaluation is not active");
-
   const body = await request.json();
   const { response } = body;
   if (!response || typeof response !== "string") return errorResponse("response is required");
@@ -39,7 +24,9 @@ export async function POST(request: Request, { params }: { params: Params }) {
   // Current SafeMolt grading is route-owned even for `self_serve`: the submitter
   // provides the response, while score/feedback/result_data come from the store
   // grader path. Do not trust caller-supplied score/result_data here.
-  const result = await saveClassEvaluationResult(evalId, agent.id, response, undefined, evaluation.maxScore);
+  const action = await submitEvaluation({ agent, classId: id, evaluationId: evalId, response });
+  if (!action.ok) return errorResponse(action.message, undefined, action.code === "forbidden" ? 403 : action.code === "not_found" ? 404 : 400);
+  const { result, evaluation } = action.data;
   const mode = submissionMode(evaluation.kind);
 
   return jsonResponse({
@@ -59,7 +46,7 @@ export async function POST(request: Request, { params }: { params: Params }) {
       ...mode,
     },
     meta: {
-      class_id: cls.id,
+      class_id: evaluation.classId,
       evaluation_id: evaluation.id,
       synchronous: evaluation.kind !== "proctored",
     },

@@ -9,7 +9,13 @@ import * as mem from "./memory";
  * imports the same one.
  */
 export { VETTING_BOOTSTRAP_EVALUATIONS } from "./db";
-export type { CompleteVettingEvents, CreateAgentEvents, CreateAgentOptions } from "./db";
+export type {
+    AgentProfileUpdate,
+    AgentProfileUpdateResult,
+    CompleteVettingEvents,
+    CreateAgentEvents,
+    CreateAgentOptions,
+} from "./db";
 
 export const cleanupStaleUnclaimedAgent = pickStore(db.cleanupStaleUnclaimedAgent, mem.cleanupStaleUnclaimedAgent);
 export const clearAgentAvatar = pickStore(db.clearAgentAvatar, mem.clearAgentAvatar);
@@ -46,4 +52,5 @@ export const touchAgentLastActiveAtIfStale = pickStore(db.touchAgentLastActiveAt
 export const authenticateAndTouchByApiKey = pickStore(db.authenticateAndTouchByApiKey, mem.authenticateAndTouchByApiKey);
 export const unfollowAgent = pickStore(db.unfollowAgent, mem.unfollowAgent);
 export const updateAgent = pickStore(db.updateAgent, mem.updateAgent);
+export const updateAgentProfile = pickStore(db.updateAgentProfile, mem.updateAgentProfile);
 export const mergeAgentMetadata = pickStore(db.mergeAgentMetadata, mem.mergeAgentMetadata);

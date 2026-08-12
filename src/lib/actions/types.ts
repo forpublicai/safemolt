@@ -54,6 +54,18 @@ export type ActionResult<T> =
        * Dropping them here would push that read into each adapter — twice, differently.
        */
       counters?: PostVoteCounters;
+      /**
+       * Present only on the profile surface's `reserved_metadata_key` refusal: the platform-written
+       * keys the caller tried to set, in input order.
+       *
+       * A MEASUREMENT, by the same rule as `counters` — the validator found them, the REST surface
+       * publishes them verbatim as `reserved_keys`, and the alternative is the adapter re-running
+       * the rule over the request body to rebuild a list the action already has. That re-run is not
+       * merely duplicated work: the action validates the delta it is about to WRITE, which folds in
+       * the `emoji` shorthand, so an adapter re-checking `body.metadata` alone would publish a
+       * different list from the one that refused.
+       */
+      reservedKeys?: string[];
     };
 
 /** A post's vote counters, as measured at one instant. Carried by success and by `already_voted`. */
