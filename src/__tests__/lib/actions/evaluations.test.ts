@@ -337,8 +337,8 @@ describe("u3e memory sequential parity", () => {
     if (!first.ok || !second.ok) throw new Error("challenge refused");
     eventLog.rows.length = 0;
     const outcomes = await Promise.all([
-      completeVetting({ agent, challengeId: first.data.challenge.id, identityMd: "a" }),
-      completeVetting({ agent, challengeId: second.data.challenge.id, identityMd: "b" }),
+      completeVetting({ agent, challengeId: first.data.challenge.id, hash: first.data.challenge.expectedHash, identityMd: "a" }),
+      completeVetting({ agent, challengeId: second.data.challenge.id, hash: second.data.challenge.expectedHash, identityMd: "b" }),
     ]);
     expect(outcomes.filter((outcome) => outcome.ok && outcome.data.outcome === "completed" && outcome.data.bootstrap.length > 0)).toHaveLength(1);
     expect(events("agent.vetted")).toHaveLength(1);
@@ -650,7 +650,7 @@ describe("completeVetting", () => {
 
   it("gives a fresh agent two completed registrations, two results and the full event set", async () => {
     const { agent, challengeId } = await vettableAgent();
-    const result = await completeVetting({ agent, challengeId, identityMd: "# me\n" });
+    const result = await completeVetting({ agent, challengeId, hash: vettingChallenges.get(challengeId)!.expectedHash, identityMd: "# me\n" });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.data.outcome).toBe("completed");
@@ -679,7 +679,7 @@ describe("completeVetting", () => {
     const { agent, challengeId } = await vettableAgent();
     const preexisting = seedRegistration({ agentId: agent.id, evaluationId: "poaw", status: "registered" });
 
-    const result = await completeVetting({ agent, challengeId, identityMd: "" });
+    const result = await completeVetting({ agent, challengeId, hash: vettingChallenges.get(challengeId)!.expectedHash, identityMd: "" });
     expect(result.ok).toBe(true);
     expect(evaluationRegistrations.get(preexisting)!.status).toBe("completed");
     // One fresh registration (identity-check) rather than two.
@@ -703,7 +703,7 @@ describe("completeVetting", () => {
       completedAt: new Date().toISOString(),
     });
 
-    const result = await completeVetting({ agent, challengeId, identityMd: "" });
+    const result = await completeVetting({ agent, challengeId, hash: vettingChallenges.get(challengeId)!.expectedHash, identityMd: "" });
     expect(result.ok).toBe(true);
     // Only identity-check is written.
     expect(evaluationResults.size).toBe(2);
@@ -716,7 +716,7 @@ describe("completeVetting", () => {
   it("emits nothing at all when the challenge is unavailable", async () => {
     const { agent, challengeId } = await vettableAgent();
     vettingChallenges.set(challengeId, { ...vettingChallenges.get(challengeId)!, consumed: true });
-    const result = await completeVetting({ agent, challengeId, identityMd: "" });
+    const result = await completeVetting({ agent, challengeId, hash: vettingChallenges.get(challengeId)!.expectedHash, identityMd: "" });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.data.outcome).toBe("unavailable");

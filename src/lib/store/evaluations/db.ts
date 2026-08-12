@@ -3,6 +3,7 @@ import type { NeonQueryFunctionInTransaction } from "@neondatabase/serverless";
 import type {
     EvaluationStartEffectInput,
     EvaluationStartOutcome,
+    EvaluationRegistrationOutcome,
     SaveEvaluationResultInput,
     SaveEvaluationResultOutcome,
     StoredRecentEvaluationResult,
@@ -67,7 +68,7 @@ export async function registerForEvaluation(
     evaluationId: string,
     trustedSchoolId?: string,
     events?: readonly PreparedEvent[]
-): Promise<{ id: string; registeredAt: string } | null> {
+): Promise<EvaluationRegistrationOutcome> {
     const id = generateEvaluationId('eval_reg');
     const registeredAt = new Date().toISOString();
     const params: unknown[] = [id, agentId, evaluationId, registeredAt, trustedSchoolId ?? 'foundation', trustedSchoolId != null];
@@ -80,22 +81,34 @@ export async function registerForEvaluation(
     });
     const rows = await sql!(
         `
-    WITH registered AS (
+    WITH existing AS (
+      SELECT id, registered_at, status FROM evaluation_registrations
+      WHERE agent_id = $2::text AND evaluation_id = $3::text
+        AND status IN ('registered', 'in_progress')
+      ORDER BY registered_at DESC LIMIT 1
+    ), registered AS (
       INSERT INTO evaluation_registrations (id, agent_id, evaluation_id, registered_at, status, school_id, school_scope_trusted)
       SELECT $1::text, $2::text, $3::text, $4::timestamptz, 'registered', $5::text, $6::boolean
       WHERE NOT EXISTS (
         SELECT 1 FROM evaluation_results
         WHERE agent_id = $2::text AND evaluation_id = $3::text AND passed = true
-      )
-      RETURNING id, registered_at
+      ) AND NOT EXISTS (SELECT 1 FROM existing)
+      RETURNING id, registered_at, status
     )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
-    SELECT id, registered_at FROM registered
+    SELECT id, registered_at, status, true AS created, false AS already_passed FROM registered
+    UNION ALL
+    SELECT id, registered_at, status, false AS created, false AS already_passed FROM existing
+    UNION ALL
+    SELECT NULL::text, NULL::timestamptz, NULL::text, false, true
+    WHERE NOT EXISTS (SELECT 1 FROM registered) AND NOT EXISTS (SELECT 1 FROM existing)
   `,
         [...params, ...emitted.params]
     );
     const r = (rows as Array<Record<string, unknown>>)[0];
-    if (!r) return null;
-    return { id: r.id as string, registeredAt: String(r.registered_at) };
+    if (r?.already_passed === true) return { kind: "already_passed", id: "", registeredAt: "" };
+    if (r?.created === true) { const id = r.id as string; const registeredAt = String(r.registered_at); return { kind: "created", id, registeredAt, registration: { id, registeredAt, status: "registered" } }; }
+    if (r?.id) { const id = String(r.id); const registeredAt = String(r.registered_at); const status = r.status as "registered" | "in_progress"; return { kind: "existing", id, registeredAt, registration: { id, registeredAt, status } }; }
+    return { kind: "already_passed", id: "", registeredAt: "" };
 }
 
 export async function getEvaluationRegistration(
@@ -495,11 +508,31 @@ export async function startEvaluationWithEffect(
         overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [],
     });
     const query = isPoaw
-        ? `/* start-evaluation-with-effect */ WITH started AS (UPDATE evaluation_registrations SET status = 'in_progress', started_at = NOW() WHERE id = $1::text AND status = 'registered' RETURNING id, agent_id),
-            effect AS (INSERT INTO vetting_challenges (id, agent_id, "values", nonce, expected_hash, created_at, expires_at)
-              SELECT $2::text, r.agent_id, $3::jsonb, $4::text, $5::text, $6::timestamptz, $7::timestamptz FROM started JOIN evaluation_registrations r ON r.id = started.id RETURNING id)
-            ${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
-            SELECT started.id, started.agent_id FROM started JOIN effect ON true`
+        ? `/* start-evaluation-with-effect */ WITH locked AS (
+              SELECT id, agent_id, status FROM evaluation_registrations WHERE id = $1::text FOR UPDATE
+            ), existing AS (
+              SELECT vc.* FROM vetting_challenges vc JOIN locked l ON l.agent_id = vc.agent_id
+              WHERE vc.consumed_at IS NULL AND vc.expires_at > NOW()
+              ORDER BY vc.created_at DESC LIMIT 1
+            ), started AS (
+              UPDATE evaluation_registrations r SET status = 'in_progress', started_at = NOW()
+              FROM locked l WHERE r.id = l.id AND l.status = 'registered' RETURNING r.id
+            ), effect AS (
+              INSERT INTO vetting_challenges (id, agent_id, "values", nonce, expected_hash, created_at, expires_at)
+              SELECT $2::text, l.agent_id, $3::jsonb, $4::text, $5::text, $6::timestamptz, $7::timestamptz
+              FROM locked l WHERE l.status = 'registered' AND NOT EXISTS (SELECT 1 FROM existing)
+              RETURNING id, agent_id, "values", nonce, expected_hash, created_at, expires_at
+            )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+            SELECT started.id AS started_id,
+                   COALESCE(existing.id, effect.id) AS challenge_id,
+                   COALESCE(existing.agent_id, effect.agent_id) AS agent_id,
+                   COALESCE(existing.values, effect.values) AS values,
+                   COALESCE(existing.nonce, effect.nonce) AS nonce,
+                   COALESCE(existing.expected_hash, effect.expected_hash) AS expected_hash,
+                   COALESCE(existing.created_at, effect.created_at) AS created_at,
+                   COALESCE(existing.expires_at, effect.expires_at) AS expires_at,
+                   (effect.id IS NOT NULL) AS created
+            FROM locked LEFT JOIN existing ON true LEFT JOIN effect ON true LEFT JOIN started ON true`
         : `/* start-evaluation-with-effect */ WITH locked AS (
               SELECT id, agent_id, status FROM evaluation_registrations WHERE id = $1::text FOR UPDATE
             ), live AS (
@@ -541,10 +574,15 @@ export async function startEvaluationWithEffect(
     ]);
     const rows = transactionResults[2] as Array<Record<string, unknown>>;
     // The PoAW projection carries no job_id column — its zero-row result alone means "refused".
-    if (rows.length === 0 || (!isPoaw && !rows[0]?.job_id)) return { started: false };
-    if (isPoaw) return { started: true, challenge: { id: effect.challengeId, agentId: String((rows[0] as Record<string, unknown>).agent_id), values: effect.values, nonce: effect.nonce, expectedHash: effect.expectedHash, createdAt: effect.createdAt, expiresAt: effect.expiresAt, fetched: false, consumed: false } };
+    if (rows.length === 0 || (isPoaw && !rows[0]?.challenge_id) || (!isPoaw && !rows[0]?.job_id)) return { kind: "none", started: false };
+    if (isPoaw) {
+        const row = rows[0] as Record<string, unknown>;
+        const challenge = { id: String(row.challenge_id), agentId: String(row.agent_id), values: row.values as number[], nonce: String(row.nonce), expectedHash: String(row.expected_hash), createdAt: new Date(String(row.created_at)).toISOString(), expiresAt: new Date(String(row.expires_at)).toISOString(), fetched: false, consumed: false };
+        return row.created === true ? { kind: "created", started: true, challenge } : { kind: "existing_challenge", started: Boolean(row.started_id), challenge };
+    }
     const job = await getCertificationJobByRegistration(registrationId);
-    return { started: Boolean(rows[0].started_id), certificationJob: job ?? undefined };
+    if (!job) return { kind: "none", started: false };
+    return rows[0].started_id ? { kind: "created", started: true, certificationJob: job } : { kind: "existing_job", started: false, certificationJob: job };
 }
 
 export async function saveEvaluationResult(input: SaveEvaluationResultInput): Promise<SaveEvaluationResultOutcome> {

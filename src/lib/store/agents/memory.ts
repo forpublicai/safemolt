@@ -304,8 +304,6 @@ export async function claimAgentForHumanUser(
   // not only for callers that happen to pre-read through getAgentByClaimToken.
   if (claimToken.startsWith(DISABLED_CREDENTIAL_PREFIX)) return null;
   validatePreparedEvents(events);
-  const id = claimTokenToAgentId.get(claimToken);
-  if (!id) return null;
   if (!(await getHumanUserById(humanUserId))) {
     // Mirrors the db store's 23503 rather than returning null: "no such human" is a caller fault,
     // not "you did not get this agent", and collapsing it into null would tell the route to answer
@@ -316,29 +314,37 @@ export async function claimAgentForHumanUser(
   // lookup above yields the event loop, so the id read before it is stale when this resumes; the db
   // statement resolves the token inside itself and its `sqlColumn("claimed.id")` names the row it
   // actually claimed. Reading the map again is the memory twin of that.
-  const resolvedId = claimTokenToAgentId.get(claimToken);
-  if (!resolvedId) return null;
-  const a = agents.get(resolvedId);
-  if (!a || a.isClaimed) return null;
-  const previouslyOwned = ownsAgentSync(humanUserId, resolvedId);
+  return (await claimAgentForHumanUserAfterLookup(claimToken, humanUserId, owner, events)).agent ?? null;
+}
 
-  const batch = prepareEventBatch(
-    (events ?? []).map((event, index) => (index === 0 ? { ...event, subjectId: resolvedId } : event))
-  );
-  const claimed: StoredAgent = { ...a, isClaimed: true, owner: owner ?? a.owner };
+async function claimAgentForHumanUserAfterLookup(
+  claimToken: string,
+  humanUserId: string,
+  owner?: string,
+  events?: readonly PreparedEvent[]
+): Promise<AgentClaimOutcome<StoredAgent>> {
+  const resolvedId = claimTokenToAgentId.get(claimToken);
+  if (!resolvedId) return { agentExists: false, claimed: false };
+  const agent = agents.get(resolvedId);
+  if (!agent) return { agentExists: false, claimed: false };
+  if (agent.isClaimed) return { agentExists: true, claimed: false };
+  const previouslyOwned = ownsAgentSync(humanUserId, resolvedId);
+  const batch = prepareEventBatch((events ?? []).map((event, index) =>
+    index === 0 ? { ...event, subjectId: resolvedId } : event
+  ));
+  const claimed: StoredAgent = { ...agent, isClaimed: true, owner: owner ?? agent.owner };
   agents.set(resolvedId, claimed);
-  // No await is permitted between the claim, the ownership link, and the event append.
   linkUserToAgentSync(humanUserId, resolvedId, "owner");
   const { dispatched } = appendPreparedBatch(batch);
   try {
     await dispatched;
   } catch (error) {
-    agents.set(resolvedId, { ...a });
+    agents.set(resolvedId, { ...agent });
     await unlinkUserFromAgent(humanUserId, resolvedId);
     if (previouslyOwned) linkUserToAgentSync(humanUserId, resolvedId, "owner");
     throw error;
   }
-  return claimed;
+  return { agentExists: true, claimed: true, agent: claimed };
 }
 
 export async function claimAgentForHumanUserWithOutcome(
@@ -347,10 +353,12 @@ export async function claimAgentForHumanUserWithOutcome(
   owner?: string,
   events?: readonly PreparedEvent[]
 ): Promise<AgentClaimOutcome<StoredAgent>> {
-  const claimed = await claimAgentForHumanUser(claimToken, humanUserId, owner, events);
-  const resolvedId = claimToken.startsWith(DISABLED_CREDENTIAL_PREFIX) ? undefined : claimTokenToAgentId.get(claimToken);
-  const agentExists = Boolean(resolvedId && agents.has(resolvedId));
-  return claimed ? { agentExists: true, claimed: true, agent: claimed } : { agentExists, claimed: false };
+  if (claimToken.startsWith(DISABLED_CREDENTIAL_PREFIX)) return { agentExists: false, claimed: false };
+  validatePreparedEvents(events);
+  if (!(await getHumanUserById(humanUserId))) {
+    throw new Error(`claimAgentForHumanUser: unknown human user ${humanUserId}`);
+  }
+  return claimAgentForHumanUserAfterLookup(claimToken, humanUserId, owner, events);
 }
 
 export async function setAgentUnclaimed(id: string) {
@@ -938,7 +946,6 @@ export async function completeVetting(
   if (!challenge || !agent) return { outcome: "unavailable", reason: "not_found" };
   if (challenge.agentId !== agentId) return { outcome: "unavailable", reason: "mismatch" };
   if (challenge.consumed) return { outcome: "unavailable", reason: "consumed" };
-  if (agent.isVetted) return { outcome: "unavailable", reason: "already_vetted" };
   if (new Date(challenge.expiresAt).getTime() <= Date.now()) return { outcome: "unavailable", reason: "expired" };
   const winningVetting = !agent.isVetted;
   if (winningVetting) agents.set(agentId, { ...agent, isVetted: true, identityMd });

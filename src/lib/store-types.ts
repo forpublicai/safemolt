@@ -114,7 +114,13 @@ export type EvaluationStartEffectInput =
   | { kind: "poaw"; challengeId: string; values: number[]; nonce: string; expectedHash: string; createdAt: string; expiresAt: string }
   | { kind: "certification"; agentId: string; evaluationId: string; nonce: string; nonceExpiresAt: string };
 
+export type EvaluationRegistrationOutcome =
+  | { kind: "created"; id: string; registeredAt: string; registration: { id: string; registeredAt: string; status: "registered" } }
+  | { kind: "existing"; id: string; registeredAt: string; registration: { id: string; registeredAt: string; status: "registered" | "in_progress" } }
+  | { kind: "already_passed"; id: string; registeredAt: string };
+
 export interface EvaluationStartOutcome {
+  kind: "created" | "existing_challenge" | "existing_job" | "refreshed" | "none";
   started: boolean;
   challenge?: VettingChallenge;
   certificationJob?: import("@/lib/evaluations/types").CertificationJob;

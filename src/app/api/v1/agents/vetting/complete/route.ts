@@ -1,60 +1,11 @@
 import { NextRequest } from "next/server";
 import { requireAgent, jsonResponse, errorResponse, checkRateLimitAndRespond } from "@/lib/auth";
 import { completeVetting } from "@/lib/actions/agents";
-import { getVettingChallenge, getAgentById } from "@/lib/store";
-import { isChallengeExpired, validateHash } from "@/lib/vetting";
+import { getAgentById } from "@/lib/store";
 import { putContextAndMaybeIndex } from "@/lib/memory/memory-service";
-import type { StoredAgent, VettingChallenge } from "@/lib/store-types";
 import { ensureGeneralMembership } from "@/lib/actions/groups";
 
 const MAX_IDENTITY_SIZE = 10 * 1024; // 10 KB limit for identity_md
-
-/**
- * Not-found, mismatch, consumed, and expired responses — shared by the pre-batch read and the
- * loser-classification re-read, so a completion that loses a race gets exactly the error a
- * sequential caller would have gotten (M11-1 C14).
- *
- * The consumed branch carries the lost-response retry: a committed completion whose response
- * never reached the agent leaves the challenge consumed AND the agent vetted, and the retry must
- * get idempotent success, not a 410 — that is the one consumed shape that is not a replay attack.
- * The hash must still validate (a wrong-hash replay of a consumed challenge stays an error), and
- * the batch is never re-run, so no duplicate bootstrap registration or result can exist.
- */
-async function classifyUnavailable(
-    agent: StoredAgent,
-    challenge: VettingChallenge | null,
-    hash: string
-): Promise<Response | { idempotentSuccess: true } | null> {
-    if (!challenge) {
-        return errorResponse("Challenge not found", "Invalid challenge ID", 404);
-    }
-    if (challenge.agentId !== agent.id) {
-        return errorResponse("Challenge mismatch", "This challenge was not issued to your agent", 403);
-    }
-    if (challenge.consumed) {
-        if (validateHash(hash, challenge.expectedHash)) {
-            const fresh = await getAgentById(agent.id);
-            if (fresh?.isVetted) return { idempotentSuccess: true };
-        }
-        return errorResponse("Challenge already used", "Start a new vetting challenge", 410);
-    }
-    if (isChallengeExpired(challenge.expiresAt)) {
-        return errorResponse(
-            "Challenge expired",
-            "The 15-second window has passed. Start a new vetting challenge.",
-            410
-        );
-    }
-    if (!validateHash(hash, challenge.expectedHash)) {
-        return errorResponse(
-            "Invalid hash",
-            "The submitted hash does not match. Make sure you sorted the values in ascending order and used the correct nonce.",
-            400
-        );
-    }
-    // Live, owned, unconsumed, unexpired, hash valid: nothing to refuse.
-    return null;
-}
 
 /**
  * Best-effort follow-ups that must not fail a committed vetting: the IDENTITY.md memory mirror
@@ -113,17 +64,6 @@ function parseCompletionBody(body: {
     return { ok: true, challengeId: challenge_id, hash, identityStr };
 }
 
-/** The lost-response retry answer: mirror the committed identity, then the standard success. */
-async function respondIdempotentSuccess(
-    agent: StoredAgent,
-    fallbackIdentity: string
-): Promise<Response> {
-    const fresh = await getAgentById(agent.id);
-    const identityContent = fresh?.identityMd ?? fallbackIdentity;
-    await runPostCommitFollowUps(agent.id, identityContent);
-    return successResponse(agent, identityContent.length > 0);
-}
-
 function successResponse(agent: { id: string; name: string }, identityReceived: boolean) {
     return jsonResponse({
         success: true,
@@ -163,25 +103,22 @@ export async function POST(request: NextRequest) {
         // Friendly classification on the current row. The batch's own predicates stay
         // authoritative — this read exists for accurate errors and the cheap idempotent path,
         // never as the decision.
-        const preRead = await classifyUnavailable(agent, await getVettingChallenge(challengeId), hash);
-        if (preRead instanceof Response) return preRead;
-        if (preRead?.idempotentSuccess) return respondIdempotentSuccess(agent, identityStr);
-
         // **The batch is C14's, unchanged** — the agent lock, then the challenge lock, the vetted
         // flip, the two self-contained bootstrap CTEs, the points recompute and consume-LAST. The
         // action adds only the events: `agent.vetted` on the flip, and per bootstrap evaluation an
         // `evaluation.registered` gated on the fresh-registration arm plus an `evaluation.completed`
         // gated on the result (M11-2 P1.4).
-        const completed = await completeVetting({ agent, challengeId, identityMd: identityStr });
-        if (!completed.ok) return errorResponse(completed.message, undefined, 400);
+        const completed = await completeVetting({ agent, challengeId, hash, identityMd: identityStr });
+        if (!completed.ok) {
+            const status = completed.reason === "challenge_not_found" ? 404 : completed.reason === "challenge_mismatch" ? 403 : completed.reason === "expired_challenge" || completed.reason === "consumed_challenge" ? 410 : 400;
+            const title = completed.reason === "challenge_not_found" ? "Challenge not found" : completed.reason === "challenge_mismatch" ? "Challenge mismatch" : completed.reason === "expired_challenge" ? "Challenge expired" : completed.reason === "consumed_challenge" ? "Challenge already used" : completed.reason === "invalid_hash" ? "Invalid hash" : completed.message;
+            return errorResponse(title, completed.message, status);
+        }
         const result = completed.data;
 
         if (result.outcome === "unavailable") {
             // Raced: re-read and classify with the same rules, so the loser's error (or the
             // lost-response success) is indistinguishable from the sequential case.
-            const classified = await classifyUnavailable(agent, await getVettingChallenge(challengeId), hash);
-            if (classified instanceof Response) return classified;
-            if (classified?.idempotentSuccess) return respondIdempotentSuccess(agent, identityStr);
             if (result.reason === "already_vetted") return errorResponse("Agent already vetted", "This agent has already completed vetting", 409);
             if (result.reason === "consumed") return errorResponse("Challenge already used", "Start a new vetting challenge", 410);
             if (result.reason === "mismatch") return errorResponse("Challenge mismatch", "This challenge was not issued to your agent", 403);

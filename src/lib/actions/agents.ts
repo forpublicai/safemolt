@@ -25,12 +25,14 @@ import {
   createVettingChallengeIfNotVetted as storeCreateVettingChallengeIfNotVetted,
   followAgent as storeFollowAgent,
   getAgentByName,
+  getVettingChallenge,
   setAgentClaimedWithOutcome as storeSetAgentClaimedWithOutcome,
   unfollowAgent as storeUnfollowAgent,
 } from "@/lib/store";
 import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
 import { FOUNDATION_SCHOOL_ID } from "@/lib/school-context";
 import type { CompleteVettingOutcome, StoredAgent, VettingChallenge } from "@/lib/store-types";
+import { validateHash } from "@/lib/vetting";
 
 import { evaluationCompletedEvent } from "./evaluations";
 import { actionError, actionOk, type ActionResult } from "./types";
@@ -329,6 +331,7 @@ export async function startVetting(input: {
 export interface CompleteVettingInput {
   agent: StoredAgent;
   challengeId: string;
+  hash: string;
   identityMd: string;
 }
 
@@ -379,6 +382,14 @@ export async function completeVetting(
     };
   }
 
+  const challenge = await getVettingChallenge(input.challengeId);
+  if (!challenge) return { ok: false, code: "not_found", reason: "challenge_not_found", message: "Invalid challenge ID" };
+  if (challenge.agentId !== input.agent.id) return { ok: false, code: "forbidden", reason: "challenge_mismatch", message: "This challenge was not issued to your agent" };
+  if (challenge.consumed) {
+    if (input.hash === undefined || !validateHash(input.hash, challenge.expectedHash)) return { ok: false, code: "bad_request", reason: "consumed_challenge", message: "Start a new vetting challenge" };
+    if (input.agent.isVetted) return actionOk({ outcome: "completed", bootstrap: [] });
+  } else if (new Date(challenge.expiresAt).getTime() <= Date.now()) return { ok: false, code: "bad_request", reason: "expired_challenge", message: "The 15-second window has passed. Start a new vetting challenge." };
+  if (input.hash === undefined || !validateHash(input.hash, challenge.expectedHash)) return { ok: false, code: "bad_request", reason: "invalid_hash", message: "The submitted hash does not match." };
   const outcome = await storeCompleteVetting(input.agent.id, input.challengeId, input.identityMd, {
     vetted: [
       lifecycleEvent("agent.vetted", { agentId: input.agent.id, actorAgentId: input.agent.id }),

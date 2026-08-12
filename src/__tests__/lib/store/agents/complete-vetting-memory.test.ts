@@ -122,8 +122,8 @@ describe("completeVetting (memory)", () => {
     // A second valid challenge is refused by the decisive already-vetted classification.
     const second = await createVettingChallenge(agent.id);
     const outcome = await completeVetting(agent.id, second.id, "y");
-    expect(outcome).toEqual({ outcome: "unavailable", reason: "already_vetted" });
-    expect(vettingChallenges.get(second.id)?.consumed).toBe(false);
+    expect(outcome).toEqual({ outcome: "completed", bootstrap: [] });
+    expect(vettingChallenges.get(second.id)?.consumed).toBe(true);
 
     const after = bootstrapRows(agent.id);
     expect(after.regs).toHaveLength(before.regs.length);

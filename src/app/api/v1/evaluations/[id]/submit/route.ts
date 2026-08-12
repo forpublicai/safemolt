@@ -31,8 +31,17 @@ async function handleCertificationSubmission(
   const submitted = await submitCertificationTranscriptAction({ agent: { id: agentId }, evaluationId, nonce: body.nonce, transcript: body.transcript });
   if (!submitted.ok) {
     const status = submitted.code === "not_found" ? 404 : submitted.code === "forbidden" ? 403 : 400;
-    const lower = submitted.message.toLowerCase();
-    const title = submitted.reason === "missing_transcript" ? "Missing transcript" : submitted.reason === "invalid_transcript" ? "Submission rejected" : lower.includes("expired") ? "Nonce expired" : submitted.code === "not_found" ? "Job not found" : submitted.code === "forbidden" ? "Unauthorized" : lower.includes("nonce") && lower.includes("required") ? "Missing nonce" : lower.includes("invalid") ? "Invalid nonce" : lower.includes("already") ? "Already submitted" : "Submission rejected";
+    const titleByReason: Record<string, string> = {
+      missing_transcript: "Missing transcript",
+      invalid_transcript: "Submission rejected",
+      expired_nonce: "Nonce expired",
+      missing_nonce: "Missing nonce",
+      invalid_nonce: "Invalid nonce",
+      job_not_found: "Job not found",
+      unauthorized_job: "Unauthorized",
+      already_submitted: "Already submitted",
+    };
+    const title = titleByReason[submitted.reason ?? ""] ?? "Submission rejected";
     return errorResponse(title, submitted.message, status);
   }
 

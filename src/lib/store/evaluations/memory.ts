@@ -1,6 +1,6 @@
 import type { CertificationJob } from '@/lib/evaluations/types';
 import type { PreparedEvent } from "@/lib/events/kinds";
-import type { EvaluationStartEffectInput, EvaluationStartOutcome, SaveEvaluationResultInput, SaveEvaluationResultOutcome, StoredRecentEvaluationResult } from "@/lib/store-types";
+import type { EvaluationRegistrationOutcome, EvaluationStartEffectInput, EvaluationStartOutcome, SaveEvaluationResultInput, SaveEvaluationResultOutcome, StoredRecentEvaluationResult } from "@/lib/store-types";
 import { agents, certificationJobs, evaluationMessages, evaluationRegistrations, evaluationResults, evaluationSessionParticipants, evaluationSessions, generateEvaluationId, vettingChallenges } from "../_memory-state";
 import { recordEvaluationResultActivityEvent } from "../activity/events";
 import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents } from "../events/memory";
@@ -122,7 +122,7 @@ export async function registerForEvaluation(
   agentId: string,
   evaluationId: string,
   trustedSchoolId?: string,
-  events?: readonly PreparedEvent[]) {
+  events?: readonly PreparedEvent[]): Promise<EvaluationRegistrationOutcome> {
   requireAgent(agentId);
   const id = generateEvaluationId('eval_reg');
   const registeredAt = new Date().toISOString();
@@ -133,7 +133,9 @@ export async function registerForEvaluation(
 
   for (const result of Array.from(evaluationResults.values())) {
     if (result.agentId === agentId && result.evaluationId === evaluationId && result.passed) {
-      return null;
+      const passed = Array.from(evaluationResults.values()).find((result) => result.agentId === agentId && result.evaluationId === evaluationId && result.passed)!;
+      const registration = evaluationRegistrations.get(passed.registrationId)!;
+      return { kind: "already_passed", id: registration.id, registeredAt: registration.registeredAt };
     }
   }
 
@@ -143,7 +145,7 @@ export async function registerForEvaluation(
       (reg.status === 'registered' || reg.status === 'in_progress')) {
       // Nothing is written, so nothing is emitted — the db side never reaches its insert here
       // either, because both surfaces return the standing registration before calling the store.
-      return { id: reg.id, registeredAt: reg.registeredAt };
+      return { kind: "existing", id: reg.id, registeredAt: reg.registeredAt, registration: { id: reg.id, registeredAt: reg.registeredAt, status: reg.status } };
     }
   }
 
@@ -160,7 +162,7 @@ export async function registerForEvaluation(
   const { dispatched } = appendPreparedBatch(batch);
   await dispatched;
 
-  return { id, registeredAt };
+  return { kind: "created", id, registeredAt, registration: { id, registeredAt, status: "registered" } };
 }
 
 /**
@@ -432,15 +434,15 @@ export async function startEvaluationWithEffect(
   events?: readonly PreparedEvent[]
 ): Promise<EvaluationStartOutcome> {
   const reg = evaluationRegistrations.get(registrationId);
-  if (!reg) return { started: false };
-  if (reg.status !== "registered" && reg.status !== "in_progress") {
-    // Parity with the db projection: a terminal registration still surfaces its decided job.
-    const decided = effect.kind === "certification" ? findCertificationStartJob(registrationId) : null;
-    return { started: false, certificationJob: decided ?? undefined };
-  }
+  if (!reg) return { kind: "none", started: false };
   const oldReg = { ...reg };
   if (effect.kind === "poaw") {
-    if (reg.status !== "registered") return { started: false };
+    if (reg.status !== "registered") {
+      const existing = Array.from(vettingChallenges.values()).find((challenge) =>
+        challenge.agentId === reg.agentId && !challenge.consumed && Date.parse(challenge.expiresAt) > Date.now()
+      );
+      return existing ? { kind: "existing_challenge", started: false, challenge: existing } : { kind: "none", started: false };
+    }
     const prepared = substitutePrimaryEvent(events, { subjectId: registrationId });
     validatePreparedEvents(prepared);
     const batch = prepareEventBatch(prepared);
@@ -459,12 +461,28 @@ export async function startEvaluationWithEffect(
       evaluationRegistrations.set(registrationId, oldReg);
       throw error;
     }
-    return { started: true, challenge };
+    return { kind: "created", started: true, challenge };
   }
   const live = findCertificationStartJob(registrationId);
   const oldJob = live ? { ...live } : undefined;
   const expiredPending = live?.status === 'pending' && Date.parse(live.nonceExpiresAt) <= Date.now();
-  if (live && !expiredPending) return { started: false, certificationJob: live };
+  if (live && !expiredPending && reg.status === "registered") {
+    const prepared = substitutePrimaryEvent(events, { subjectId: registrationId });
+    validatePreparedEvents(prepared);
+    const batch = prepareEventBatch(prepared);
+    reg.status = "in_progress";
+    reg.startedAt = new Date().toISOString();
+    try {
+      const { dispatched } = appendPreparedBatch(batch);
+      await dispatched;
+    } catch (error) {
+      evaluationRegistrations.set(registrationId, oldReg);
+      throw error;
+    }
+    return { kind: "existing_job", started: true, certificationJob: live };
+  }
+  if (live && !expiredPending) return { kind: "existing_job", started: false, certificationJob: live };
+  if (reg.status !== "registered" && reg.status !== "in_progress") return { kind: "none", started: false };
   const shouldEmitStart = reg.status === "registered";
   const prepared = shouldEmitStart ? substitutePrimaryEvent(events, { subjectId: registrationId }) : [];
   if (shouldEmitStart) validatePreparedEvents(prepared);
@@ -489,7 +507,7 @@ export async function startEvaluationWithEffect(
     evaluationRegistrations.set(registrationId, oldReg);
     throw error;
   }
-  return { started: shouldEmitStart, certificationJob: job };
+  return { kind: expiredPending ? "refreshed" : "created", started: shouldEmitStart, certificationJob: job };
 }
 
 /**

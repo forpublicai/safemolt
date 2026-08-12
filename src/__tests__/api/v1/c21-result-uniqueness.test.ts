@@ -256,7 +256,7 @@ describe("the one-payout invariant holds below the authorization layer", () => {
     const saved = await mem.saveEvaluationResult({ registrationId, agentId: agent.id, evaluationId: FOUNDATION_ONLY, passed: true, score: 5, maxScore: 10 });
     if (saved.outcome !== "created") throw new Error(`expected created, got ${saved.outcome}`);
 
-    expect(await mem.registerForEvaluation(agent.id, FOUNDATION_ONLY)).toBeNull();
+    expect((await mem.registerForEvaluation(agent.id, FOUNDATION_ONLY)).kind).toBe("already_passed");
   });
 
   it("a second passing save for the same (agent, evaluation) refuses even on a different registration", async () => {

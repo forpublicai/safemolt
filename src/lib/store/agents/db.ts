@@ -1070,7 +1070,7 @@ function runCompleteVettingBatch(
     // The decision token is stamped in the locked transition and remains transaction-local for
     // every later statement in this batch. A second challenge can be live, but it cannot inherit
     // the winning call's effects.
-    const vettedEmit = emitEventCtes(events?.vetted, "decision", {
+    const vettedEmit = emitEventCtes(events?.vetted, "vetted", {
         firstParamIndex: vettedParams.length + 1,
     });
     return sql!.transaction((txn) => [
@@ -1093,12 +1093,8 @@ function runCompleteVettingBatch(
             WHERE id = $3::text AND agent_id = $1::text AND consumed_at IS NULL AND expires_at > NOW()
           )
         RETURNING id
-      ),
-      decision AS (
-        SELECT id, set_config('safemolt.vetting_decision', $3::text, true) AS token
-        FROM vetted
       )${vettedEmit.ctes.length > 0 ? `, ${vettedEmit.ctes.join(", ")}` : ""}
-      SELECT id FROM decision
+      SELECT id FROM vetted
     `,
             [...vettedParams, ...vettedEmit.params]
         ),

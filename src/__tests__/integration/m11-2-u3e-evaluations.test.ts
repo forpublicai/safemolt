@@ -48,6 +48,7 @@ import { POST as EVALUATION_SUBMIT_ROUTE } from "@/app/api/v1/evaluations/[id]/s
 import { executors as evaluationExecutors } from "@/lib/agent-tools/definitions/evaluations";
 import { STORE_ASSIGNED_PAYLOAD_ID } from "@/lib/events/kinds";
 import type { StoredAgent, StoredEvent } from "@/lib/store-types";
+import { getVettingChallenge } from "@/lib/store";
 
 import { raceAgainstHeldLock, rejections, runConcurrently } from "./helpers/concurrency";
 import { closeIntegrationConnections, pgPool } from "./helpers/db";
@@ -86,6 +87,12 @@ async function seedAgent(options: { vetted?: boolean; claimToken?: string } = {}
     isAdmitted: true,
     claimToken: options.claimToken,
   } as StoredAgent;
+}
+
+async function challengeHash(id: string): Promise<string> {
+  const challenge = await getVettingChallenge(id);
+  if (!challenge) throw new Error(`missing challenge ${id}`);
+  return challenge.expectedHash;
 }
 
 /**
@@ -862,7 +869,7 @@ describe("post-write rollback gates", () => {
       if (!started.ok) throw new Error("challenge refused");
       return { agent: a, challengeId: started.data.challenge.id };
     })();
-    await expect(withEventFailure("agent.vetted", () => completeVetting({ agent, challengeId, identityMd: "" }))).rejects.toThrow(/u3e injected/);
+    await expect(withEventFailure("agent.vetted", async () => completeVetting({ agent, challengeId, hash: await challengeHash(challengeId), identityMd: "" }))).rejects.toThrow(/u3e injected/);
     expect((await pgPool().query(`SELECT is_vetted FROM agents WHERE id = $1`, [agent.id])).rows[0].is_vetted).toBe(false);
     expect((await pgPool().query(`SELECT consumed_at FROM vetting_challenges WHERE id = $1`, [challengeId])).rows[0].consumed_at).toBeNull();
     expect(await eventsSince("agent.vetted")).toHaveLength(0);
@@ -943,7 +950,7 @@ describe("vetting completion", () => {
     const { agent, challengeId } = await vettable();
     const before = await karma(agent.id);
 
-    const result = await completeVetting({ agent, challengeId, identityMd: "# me\n" });
+    const result = await completeVetting({ agent, challengeId, hash: await challengeHash(challengeId), identityMd: "# me\n" });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.data.outcome).toBe("completed");
@@ -999,7 +1006,7 @@ describe("vetting completion", () => {
     const { agent, challengeId } = await vettable();
     const preexisting = await seedRegistration(agent.id, "poaw", "registered");
 
-    const result = await completeVetting({ agent, challengeId, identityMd: "" });
+    const result = await completeVetting({ agent, challengeId, hash: await challengeHash(challengeId), identityMd: "" });
     expect(result.ok).toBe(true);
 
     const reused = await pgPool().query(`SELECT status FROM evaluation_registrations WHERE id = $1`, [
@@ -1029,7 +1036,7 @@ describe("vetting completion", () => {
       [nextId("res"), passedRegistration, agent.id]
     );
 
-    const result = await completeVetting({ agent, challengeId, identityMd: "" });
+    const result = await completeVetting({ agent, challengeId, hash: await challengeHash(challengeId), identityMd: "" });
     expect(result.ok).toBe(true);
 
     const completed = await eventsSince("evaluation.completed");
@@ -1049,7 +1056,7 @@ describe("vetting completion", () => {
     const { agent, challengeId } = await vettable();
     await pgPool().query(`UPDATE vetting_challenges SET consumed_at = NOW() WHERE id = $1`, [challengeId]);
 
-    const result = await completeVetting({ agent, challengeId, identityMd: "" });
+    const result = await completeVetting({ agent, challengeId, hash: await challengeHash(challengeId), identityMd: "" });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.data.outcome).toBe("unavailable");
@@ -1063,8 +1070,8 @@ describe("vetting completion", () => {
     const { agent, challengeId } = await vettable();
 
     const outcomes = await runConcurrently([
-      () => completeVetting({ agent, challengeId, identityMd: "a" }),
-      () => completeVetting({ agent, challengeId, identityMd: "b" }),
+      async () => completeVetting({ agent, challengeId, hash: await challengeHash(challengeId), identityMd: "a" }),
+      async () => completeVetting({ agent, challengeId, hash: await challengeHash(challengeId), identityMd: "b" }),
     ]);
     expect(rejections(outcomes)).toEqual([]);
     const completedRuns = outcomes.filter(
@@ -1088,8 +1095,8 @@ describe("vetting completion", () => {
     if (!first.ok || !second.ok) throw new Error("challenge refused");
     baselineEventId = Number((await pgPool().query(`SELECT COALESCE(MAX(id), 0)::bigint AS id FROM events`)).rows[0].id);
     const outcomes = await runConcurrently([
-      () => completeVetting({ agent, challengeId: first.data.challenge.id, identityMd: "a" }),
-      () => completeVetting({ agent, challengeId: second.data.challenge.id, identityMd: "b" }),
+      async () => completeVetting({ agent, challengeId: first.data.challenge.id, hash: await challengeHash(first.data.challenge.id), identityMd: "a" }),
+      async () => completeVetting({ agent, challengeId: second.data.challenge.id, hash: await challengeHash(second.data.challenge.id), identityMd: "b" }),
     ]);
     expect(rejections(outcomes)).toEqual([]);
     expect(outcomes.filter((outcome) => outcome.ok && outcome.value.ok && outcome.value.data.outcome === "completed")).toHaveLength(2);

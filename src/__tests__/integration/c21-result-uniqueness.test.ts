@@ -387,7 +387,7 @@ describe("one passed result per (agent, evaluation) — the round-8 index and it
         const saved = await saveEvaluationResult({ registrationId, agentId: agent, evaluationId: EVALUATION, passed: true, score: 7, maxScore: 10 });
         expect(saved.outcome).toBe("created");
 
-        expect(await registerForEvaluation(agent, EVALUATION)).toBeNull();
+        expect((await registerForEvaluation(agent, EVALUATION)).kind).toBe("already_passed");
     });
 
     it("a second passing save on a slipped-through registration trips the index and pays nothing", async () => {

@@ -42,7 +42,6 @@ import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kind
 import {
   addSessionMessage as storeAddSessionMessage,
   claimProctorSession as storeClaimProctorSession,
-  getEvaluationRegistration,
   getPassedEvaluations,
   registerForEvaluation as storeRegisterForEvaluation,
   saveEvaluationResult as storeSaveEvaluationResult,
@@ -55,10 +54,9 @@ import { generateNonce, getNonceExpiresAt } from "@/lib/evaluations/nonce";
 import { computeExpectedHash, generateChallengeValues, generateNonce as generateVettingNonce, getChallengeExpiry } from "@/lib/vetting";
 import {
   createVettingChallenge,
-  getCertificationJobByRegistration,
 } from "@/lib/store";
 import type { SaveEvaluationResultOutcome, StoredAgent } from "@/lib/store-types";
-import { actionError, actionOk, type ActionResult } from "@/lib/actions/types";
+import { actionOk, type ActionResult } from "@/lib/actions/types";
 import { getCertificationJobByNonce, expireStalePendingCertificationJob, submitCertificationTranscript } from "@/lib/store";
 import { validateNonce, isNonceExpired } from "@/lib/evaluations/nonce";
 
@@ -228,19 +226,6 @@ export async function registerForEvaluation(
     }
   }
 
-  const existing = await getEvaluationRegistration(input.agent.id, input.evaluationId);
-  if (existing && (existing.status === "registered" || existing.status === "in_progress")) {
-    return {
-      ok: true,
-      value: {
-        registrationId: existing.id,
-        registeredAt: existing.registeredAt,
-        status: existing.status,
-        alreadyRegistered: true,
-      },
-    };
-  }
-
   const registration = await storeRegisterForEvaluation(
     input.agent.id,
     input.evaluationId,
@@ -251,10 +236,7 @@ export async function registerForEvaluation(
       schoolId,
     })]
   );
-  if (!registration) {
-    // The insert is gated on no prior pass, so a completion that landed between the authorization
-    // check and the write refuses HERE rather than opening a re-mint (M11-1 review round 8). Same
-    // code, error and hint the pre-check publishes, so the two are indistinguishable to a caller.
+  if (registration.kind === "already_passed") {
     return deny(
       "evaluation_already_passed",
       "Evaluation already passed",
@@ -262,13 +244,15 @@ export async function registerForEvaluation(
       "This evaluation has already been passed; its result stands and cannot be earned again"
     );
   }
+  const existing = registration.kind === "existing";
+  const row = registration.registration;
   return {
     ok: true,
     value: {
-      registrationId: registration.id,
-      registeredAt: registration.registeredAt,
-      status: "registered",
-      alreadyRegistered: false,
+      registrationId: row.id,
+      registeredAt: row.registeredAt,
+      status: row.status,
+      alreadyRegistered: existing,
     },
   };
 }
@@ -377,12 +361,7 @@ export async function startEvaluationWithEffect(
     nonce: generateNonce(input.evaluationId, input.agent.id), nonceExpiresAt: getNonceExpiresAt(config.nonceValidityMinutes ?? 30).toISOString(),
   }, [startedEvent]);
   if (started.certificationJob) return { ok: true, value: { authorized: authorized.value, effect: { kind: "certification", job: started.certificationJob, config } } };
-  // A lost CAS is read-only. The store start operation is the only creator and the only
-  // operation allowed to transition this registration or replace a job.
-  const job = await getCertificationJobByRegistration(registration.id);
-  return job
-    ? { ok: true, value: { authorized: authorized.value, effect: { kind: "certification", job, config } } }
-    : { ok: true, value: { authorized: authorized.value, effect: { kind: "standard" } } };
+  return { ok: true, value: { authorized: authorized.value, effect: { kind: "standard" } } };
 }
 
 export interface SubmitCertificationTranscriptInput {
@@ -414,30 +393,31 @@ function normalizeCertificationTranscript(value: unknown): CertificationJob["tra
 export async function submitCertificationTranscriptAction(
   input: SubmitCertificationTranscriptInput
 ): Promise<ActionResult<{ jobId: string }>> {
-  if (!input.nonce) return actionError("bad_request", "The 'nonce' field is required");
+  if (!input.nonce) return { ok: false, code: "bad_request", reason: "missing_nonce", message: "The 'nonce' field is required" };
   if (input.transcript === undefined || input.transcript === null) return { ok: false, code: "bad_request", reason: "missing_transcript", message: "The 'transcript' field must be a non-empty array" };
+  if (!Array.isArray(input.transcript)) return { ok: false, code: "bad_request", reason: "invalid_transcript", message: "The 'transcript' field must be a non-empty array" };
   let transcript: NonNullable<CertificationJob["transcript"]>;
   try { transcript = normalizeCertificationTranscript(input.transcript) ?? []; }
   catch { return { ok: false, code: "bad_request", reason: "invalid_transcript", message: "The 'transcript' field must be a non-empty array" }; }
   if (transcript.length === 0) return { ok: false, code: "bad_request", reason: "missing_transcript", message: "The 'transcript' field must be a non-empty array" };
   const nonceValidation = validateNonce(input.nonce, input.evaluationId, input.agent.id);
-  if (!nonceValidation.valid) return actionError("bad_request", nonceValidation.error ?? "Nonce validation failed");
+  if (!nonceValidation.valid) return { ok: false, code: "bad_request", reason: "invalid_nonce", message: nonceValidation.error ?? "Nonce validation failed" };
   const job = await getCertificationJobByNonce(input.nonce);
-  if (!job) return actionError("not_found", "No certification job found for this nonce");
-  if (job.agentId !== input.agent.id) return actionError("forbidden", "This job belongs to another agent");
-  if (job.status !== "pending") return actionError("bad_request", `Job status is already '${job.status}'`);
+  if (!job) return { ok: false, code: "not_found", reason: "job_not_found", message: "No certification job found for this nonce" };
+  if (job.agentId !== input.agent.id) return { ok: false, code: "forbidden", reason: "unauthorized_job", message: "This job belongs to another agent" };
+  if (job.status !== "pending") return { ok: false, code: "bad_request", reason: "already_submitted", message: `Job status is already '${job.status}'` };
   if (isNonceExpired(job.nonceExpiresAt)) {
     await expireStalePendingCertificationJob(job.id);
-    return actionError("bad_request", "The nonce has expired. Start a new certification attempt.");
+    return { ok: false, code: "bad_request", reason: "expired_nonce", message: "The nonce has expired. Start a new certification attempt." };
   }
   const accepted = await submitCertificationTranscript(job.id, transcript, new Date().toISOString());
   if (!accepted) {
     const current = await getCertificationJobByNonce(input.nonce);
     if (current?.status === "pending") {
       await expireStalePendingCertificationJob(current.id);
-      return actionError("bad_request", "The nonce has expired. Start a new certification attempt.");
+      return { ok: false, code: "bad_request", reason: "expired_nonce", message: "The nonce has expired. Start a new certification attempt." };
     }
-    return actionError("bad_request", "A transcript was already submitted for this job");
+    return { ok: false, code: "bad_request", reason: "already_submitted", message: "A transcript was already submitted for this job" };
   }
   return actionOk({ jobId: job.id });
 }
