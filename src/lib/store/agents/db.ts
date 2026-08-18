@@ -873,13 +873,16 @@ export async function setAgentAdmitted(agentId: string, admitted: boolean): Prom
  * The two avatar writes, as ONE conditional statement each, carrying `agent.profile_updated`
  * (M11-2 P1.4, u3f).
  *
- * `IS DISTINCT FROM` / `IS NOT NULL` is the gate: re-uploading the identical image, or clearing an
- * avatar that is already absent, writes nothing and emits nothing. Neither surface can see the
- * difference — both have always answered success — but the event log can, and a `fields: ["avatar"]`
- * event for a write that changed nothing is exactly the ghost Decision 2 exists to prevent.
+ * `IS DISTINCT FROM` is the gate: re-uploading the identical image, or clearing an avatar that is
+ * already absent, writes nothing and emits nothing. Neither surface can see the difference — both
+ * have always answered success — but the event log can, and a `fields: ["avatar"]` event for a
+ * write that changed nothing is exactly the ghost Decision 2 exists to prevent.
  *
- * The row is re-read afterwards rather than returned by the statement, which is what these two have
- * always done: the caller wants the agent, and the read is not a projection write.
+ * The row is returned BY the statement — `updated` when the write moved the column, the locked
+ * `prior` snapshot when it did not — never re-read afterwards. A second `getAgentById` competes
+ * with a concurrent withdrawal (a `not_found` reported after this statement already committed the
+ * write and its event) and with a concurrent avatar edit (this response carrying the other write's
+ * value); reading the row the statement itself pinned closes both, and matches `updateAgentProfile`.
  */
 async function writeAgentAvatar(
     agentId: string,
@@ -891,18 +894,28 @@ async function writeAgentAvatar(
         firstParamIndex: params.length + 1,
         overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [],
     });
-    await sql!(
+    const rows = await sql!(
         `
-    WITH updated AS (
-      UPDATE agents SET avatar_url = $2::text
-      WHERE id = $1::text AND avatar_url IS DISTINCT FROM $2::text
-      RETURNING id
+    WITH prior AS (
+      SELECT * FROM agents WHERE id = $1::text FOR NO KEY UPDATE
+    ),
+    updated AS (
+      UPDATE agents a SET avatar_url = $2::text
+      FROM prior p
+      WHERE a.id = p.id AND a.avatar_url IS DISTINCT FROM $2::text
+      RETURNING a.*
     )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
-    SELECT id FROM updated
+    SELECT (SELECT to_jsonb(u) FROM updated u) AS updated_row,
+           (SELECT to_jsonb(p) FROM prior p) AS prior_row
   `,
         [...params, ...emitted.params]
     );
-    return getAgentById(agentId);
+    const row = (rows[0] ?? {}) as {
+        updated_row?: Record<string, unknown> | null;
+        prior_row?: Record<string, unknown> | null;
+    };
+    const written = row.updated_row ?? row.prior_row ?? null;
+    return written ? rowToAgent(written) : null;
 }
 
 export async function setAgentAvatar(

@@ -729,10 +729,14 @@ async function writeAgentAvatar(
   const a = agents.get(agentId);
   if (!a) return null;
   if ((a.avatarUrl ?? undefined) === avatarUrl) return a;
+  // Return the value this write stored, never a re-read after the dispatch await: a withdrawal
+  // landing in that window would otherwise make the map read empty and report a spurious null for
+  // a write that already happened — the db twin returns the statement's own row for the same reason.
+  const next = { ...a, avatarUrl };
   const batch = prepareEventBatch(events);
-  agents.set(agentId, { ...a, avatarUrl });
+  agents.set(agentId, next);
   await appendPreparedBatch(batch).dispatched;
-  return agents.get(agentId) ?? null;
+  return next;
 }
 
 export async function setAgentAvatar(agentId: string, avatarUrl: string, events?: readonly PreparedEvent[]) {

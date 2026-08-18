@@ -246,6 +246,19 @@ describe("the avatar statements are conditional", () => {
     await clearMyAvatar({ agent });
     expect(await eventsSince()).toEqual([]);
   });
+
+  it("rolls the avatar write back when its event cannot be written", async () => {
+    const agent = await seedAgent();
+
+    await withEventFailure("agent.profile_updated", async () => {
+      await expect(setMyAvatar({ agent, avatarUrl: "data:image/png;base64,ZZZ" })).rejects.toThrow(/injected/);
+    });
+
+    // The avatar UPDATE and its event are one statement, so the failed event took the write down
+    // with it: the column never moved and nothing was emitted.
+    expect((await agentRow(agent.id)).avatar_url).toBeNull();
+    expect(await eventsSince()).toEqual([]);
+  });
 });
 
 describe("context files carry their events in the same statement", () => {
@@ -294,6 +307,24 @@ describe("context files carry their events in the same statement", () => {
     );
     expect(rows[0].c).toBe(0);
     expect(await eventsSince()).toEqual([]);
+  });
+
+  it("rolls the delete back when the context-deleted event cannot be written", async () => {
+    const agent = await seedAgent();
+    await writeContextFile({ agentId: agent.id, path: "keep.md", content: "c" });
+
+    await withEventFailure("memory.context_deleted", async () => {
+      await expect(removeContextFile({ agentId: agent.id, path: "keep.md" })).rejects.toThrow(/injected/);
+    });
+
+    // The DELETE and its event are one statement: the failed event rolled the DELETE back, so the
+    // row survives and no context_deleted was emitted.
+    const { rows } = await pgPool().query(
+      `SELECT count(*)::int AS c FROM agent_context_files WHERE agent_id = $1 AND path = 'keep.md'`,
+      [agent.id]
+    );
+    expect(rows[0].c).toBe(1);
+    expect(await eventsSince("memory.context_deleted")).toEqual([]);
   });
 
   it("refuses a context write for an agent that does not exist, as the memory twin does", async () => {

@@ -28,6 +28,14 @@
  */
 jest.mock("@/auth", () => ({ auth: jest.fn(async () => null) }));
 
+// The raw-vector 429/503 outcomes are backend-failure paths, so the ONLY of these surfaces that
+// needs a mock: `upsertVectorForAgent` is wrapped over the real implementation, so every other test
+// (success, over-long) still exercises the genuine function; the two error tests override one call.
+jest.mock("@/lib/memory/memory-service", () => {
+  const actual = jest.requireActual("@/lib/memory/memory-service");
+  return { ...actual, upsertVectorForAgent: jest.fn(actual.upsertVectorForAgent) };
+});
+
 import { GET as ME_GET, PATCH as ME_PATCH } from "@/app/api/v1/agents/me/route";
 import { POST as AVATAR_PUT, DELETE as AVATAR_DELETE } from "@/app/api/v1/agents/me/avatar/route";
 import { POST as INBOX_READ } from "@/app/api/v1/agents/me/inbox/[notification_id]/read/route";
@@ -44,6 +52,7 @@ import { GET as EVAL_CHALLENGE } from "@/app/api/v1/evaluations/[id]/challenge/[
 import { executors as agentTools } from "@/lib/agent-tools/definitions/agents";
 import { executors as memoryTools } from "@/lib/agent-tools/definitions/memory";
 import * as contextStore from "@/lib/memory/context-store";
+import * as memoryService from "@/lib/memory/memory-service";
 import { agents, apiKeyToAgentId, notifications, vettingChallenges } from "@/lib/store/_memory-state";
 import type { StoredAgent, StoredNotification, VettingChallenge } from "@/lib/store-types";
 
@@ -674,6 +683,40 @@ describe("memory vector upsert / delete", () => {
     );
     expect(empty.status).toBe(400);
     expect(await body(empty)).toEqual(errorBody("Bad Request", "ids[] required", "bad_request"));
+  });
+
+  it("answers 429 when the sponsored-inference daily limit is reached", async () => {
+    const agent = seedAgent();
+    // The action recognizes the `PUBLIC_AI_SPONSORED_DAILY_LIMIT` prefix and strips it, leaving the
+    // human-facing tail as the hint; the route renders it 429 `rate_limited`.
+    (memoryService.upsertVectorForAgent as jest.Mock).mockRejectedValueOnce(
+      new Error("PUBLIC_AI_SPONSORED_DAILY_LIMIT: daily limit reached")
+    );
+    const response = await VECTOR_UPSERT(
+      new Request(`${BASE}/api/v1/memory/vector/upsert`, {
+        ...authed(agent, { method: "POST", body: JSON.stringify({ id: "v9", text: "over the limit" }) }),
+      })
+    );
+    expect(response.status).toBe(429);
+    expect(await body(response)).toEqual(errorBody("Too many requests", "daily limit reached", "rate_limited"));
+  });
+
+  it("answers 503 when the embedding or vector backend fails", async () => {
+    const agent = seedAgent();
+    // Any other provider error rides `vector_unavailable`, which the route renders 503 with a fixed
+    // hint (the raw backend message is deliberately not leaked to the agent).
+    (memoryService.upsertVectorForAgent as jest.Mock).mockRejectedValueOnce(
+      new Error("connect ECONNREFUSED 10.0.0.1:443")
+    );
+    const response = await VECTOR_UPSERT(
+      new Request(`${BASE}/api/v1/memory/vector/upsert`, {
+        ...authed(agent, { method: "POST", body: JSON.stringify({ id: "v10", text: "backend down" }) }),
+      })
+    );
+    expect(response.status).toBe(503);
+    expect(await body(response)).toEqual(
+      errorBody("Service unavailable", "embedding or vector store failed", "service_unavailable")
+    );
   });
 });
 
