@@ -35,7 +35,7 @@ import {
 import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
 import type { StoredClass, StoredEvent } from "@/lib/store-types";
 
-import { closeIntegrationConnections, pgPool } from "./helpers/db";
+import { closeIntegrationConnections, pgClient, pgPool } from "./helpers/db";
 import { raceAgainstHeldLock } from "./helpers/concurrency";
 import { POST as postSessionMessage } from "@/app/api/v1/classes/[id]/sessions/[sessionId]/messages/route";
 
@@ -391,42 +391,78 @@ describe("drop couples its event and rolls back on an event-insert failure", () 
 });
 
 describe("the enroll cap holds under a genuine two-connection race (R2-1)", () => {
-  it("a contender that waits on the class lock counts the winner's seat: one seat, one event", async () => {
+  it("two concurrent enrollInClass race the class lock: exactly one enrolls and emits one class.enrolled", async () => {
     // maxStudents = 1, no seat taken yet. The R2-1 defect: a SINGLE statement takes one snapshot at
-    // statement start, so a contender that blocks on the class `FOR UPDATE` still counts the seat as
-    // empty after the winner commits, and the cap is breached (both enrol, both emit). The fix makes
-    // the count a LATER transaction element, taken on a FRESH snapshot after the wait ends.
+    // statement start, so BOTH contenders that block on the class `FOR UPDATE` still count the seat as
+    // empty after the winner commits, and BOTH enrol and BOTH emit `class.enrolled`. The fix counts in
+    // a LATER transaction element, taken on a FRESH snapshot after the wait ends, so the loser sees the
+    // winner's committed seat and refuses. BOTH contenders are REAL enrollInClass calls, not a raw-SQL
+    // seat: a raw-SQL winner emits nothing, so it can never prove the winning call ITSELF emits exactly
+    // one event — a concurrency defect that suppressed the successful call's event would slip past.
     const prof = await seedProfessor();
     const cls = await seedActiveClass(prof, { maxStudents: 1 });
-    const winner = await seedAgent();
-    const contender = await seedAgent();
-    const winnerEnrl = nextId("enrl");
+    const a1 = await seedAgent();
+    const a2 = await seedAgent();
 
     baselineEventId = Number((await pgPool().query(`SELECT COALESCE(MAX(id), 0)::bigint AS id FROM events`)).rows[0].id);
 
-    const outcome = await raceAgainstHeldLock({
-      // Occupy the only seat AND hold the class row, uncommitted, so the contender that unblocks must
-      // observe the seat on a fresh snapshot to refuse it.
-      hold: async (holder) => {
-        await holder.query(`SELECT id FROM classes WHERE id = $1 FOR UPDATE`, [cls.id]);
-        await holder.query(
-          `INSERT INTO class_enrollments (id, class_id, agent_id, status, enrolled_at) VALUES ($1, $2, $3, 'enrolled', NOW())`,
-          [winnerEnrl, cls.id, winner]
-        );
-      },
-      contend: async () => await enrollInClass(cls.id, contender, [enrolledEvent(contender, cls.id)]),
-      contenderMarker: "class:enroll-lock",
-    });
+    // Hold the class row FOR UPDATE, uncommitted, so both enrollments block on element 1 and can only
+    // count on a fresh snapshot once released. A held pg transaction is the only real lock over the
+    // Neon HTTP driver (see helpers/concurrency); wall-clock ordering is never the basis here.
+    const holder = await pgClient();
+    let settled: PromiseSettledResult<Awaited<ReturnType<typeof enrollInClass>>>[] = [];
+    let blockedCount = 0;
+    try {
+      await holder.query("BEGIN");
+      await holder.query(`SELECT id FROM classes WHERE id = $1 FOR UPDATE`, [cls.id]);
 
-    // Cap held: the contender wrote nothing and heard `atCapacity`.
-    expect(outcome.result.enrollment).toBeNull();
-    expect(outcome.result.atCapacity).toBe(true);
-    expect(await enrollmentRowCount(cls.id, contender)).toBe(0);
-    // Only the winner's seat is filled, and no `class.enrolled` fired (winner was raw SQL, contender refused).
+      const c1 = enrollInClass(cls.id, a1, [enrolledEvent(a1, cls.id)]);
+      const c2 = enrollInClass(cls.id, a2, [enrolledEvent(a2, cls.id)]);
+      const both = Promise.allSettled([c1, c2]);
+
+      // Wait until BOTH enrollments are genuinely blocked (marker-scoped, from pg_blocking_pids),
+      // never a sleep. PostgreSQL QUEUES row-lock waiters, so only the first is blocked directly by
+      // the holder and the second is blocked by the first — so count marker-bearing backends that are
+      // blocked by ANYONE, not only those blocked directly by the holder.
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const { rows } = await pgPool().query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+           WHERE datname = current_database() AND pid <> pg_backend_pid()
+             AND cardinality(pg_blocking_pids(pid)) > 0
+             AND query LIKE '%class:enroll-lock%'`
+        );
+        blockedCount = rows[0].n;
+        if (blockedCount >= 2) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      await holder.query("COMMIT");
+      settled = await both;
+    } finally {
+      await holder.end();
+    }
+
+    // The barrier genuinely engaged BOTH contenders on the class lock.
+    expect(blockedCount).toBeGreaterThanOrEqual(2);
+
+    // Neither call rejected; each returned an outcome.
+    const outcomes = settled.map((s) => {
+      if (s.status !== "fulfilled") throw s.reason;
+      return s.value;
+    });
+    const winners = outcomes.filter((o) => o.enrollment !== null);
+    const losers = outcomes.filter((o) => o.enrollment === null);
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+    expect(losers[0]!.atCapacity).toBe(true);
+
+    // Exactly one seat filled, and EXACTLY ONE class.enrolled event — the winning call's own write.
+    // A suppressed-winner-event defect would show 0 here; a cap breach would show 2.
     expect(await totalEnrollments(cls.id)).toBe(1);
-    expect(await eventsSince("class.enrolled")).toEqual([]);
-    // The barrier genuinely engaged: the contender was seen blocked on the class lock.
-    expect(outcome.observedBlocked).toBe(true);
+    const emitted = await eventsSince("class.enrolled");
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.actorAgentId).toBe(winners[0]!.enrollment!.agentId);
   });
 });
 
