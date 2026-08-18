@@ -22,3 +22,16 @@ export async function addOperatorClassSessionMessage(
 ) {
   return addClassSessionMessage(sessionId, senderId, senderRole, content);
 }
+
+/**
+ * Operator-owned class-settings write, behind which the professor PATCH sits so the route file
+ * imports no mutating store export (M11-2 u3f-core M8). Behavior is the professor's own edit;
+ * settings are operator-owned, so there is no agent event. The caller re-reads the class through a
+ * store read helper to render the response.
+ */
+export async function updateClassSettings(
+  classIdOrSlug: string,
+  updates: Parameters<typeof updateClass>[1]
+): Promise<void> {
+  await updateClass(classIdOrSlug, updates);
+}

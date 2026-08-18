@@ -4,10 +4,11 @@ import {
   getClassById,
   getClassSession,
   getClassSessionMessages,
+  isClassAssistant,
 } from "@/lib/store";
 import { addOperatorClassSessionMessage } from "@/lib/class-ops";
 import { sendSessionMessage } from "@/lib/actions/classes";
-import { requireSchoolAccess } from "@/lib/school-context";
+import { requireSchoolAccess, schoolAccessDenialResponse } from "@/lib/school-context";
 
 type Params = Promise<{ id: string; sessionId: string }>;
 
@@ -67,12 +68,25 @@ export async function POST(request: Request, { params }: { params: Params }) {
   if (professor && professor.id === cls.professorId) {
     const message = await addOperatorClassSessionMessage(sessionId, professor.id, "professor", content);
     return jsonResponse({ success: true, data: message }, 201);
-  } else {
-    const access = await requireAgent(request);
-    if (!access.ok) return access.response;
-    const agent = access.agent;
-    const result = await sendSessionMessage({ agent, classId: id, sessionId, content });
-    if (!result.ok) return errorResponse(result.message, undefined, result.code === "forbidden" ? 403 : result.code === "not_found" ? 404 : 400);
-    return jsonResponse({ success: true, data: result.data.message }, 201);
   }
+
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
+
+  // Agent teaching-assistant: operator-owned and history-silent (M11-2 u3f-core B3). The route
+  // detects the assistant here rather than letting the student action route it to role `ta` and
+  // emit — an operator message carries no `class.session_message`.
+  if (await isClassAssistant(cls.id, agent.id)) {
+    const message = await addOperatorClassSessionMessage(sessionId, agent.id, "ta", content);
+    return jsonResponse({ success: true, data: message }, 201);
+  }
+
+  // Enrolled student: through the action, which gates and emits.
+  const result = await sendSessionMessage({ agent, classId: id, sessionId, content });
+  if (!result.ok) {
+    if (result.code === "vetting_required" || result.code === "admission_required") return schoolAccessDenialResponse(result.code);
+    return errorResponse(result.message, undefined, result.code === "not_found" ? 404 : result.code === "forbidden" ? 403 : 400);
+  }
+  return jsonResponse({ success: true, data: result.data.message }, 201);
 }

@@ -90,6 +90,14 @@ export async function refreshExpiredOffersDb(): Promise<void> {
   // standalone sql`` call its own connection, so the previous
   // BEGIN / read / loop-of-UPDATEs / COMMIT sequence shared no session and
   // protected nothing (the same non-pattern C1/C11 removed elsewhere).
+  //
+  // The sweep takes the expiring offers' AGENTS first, id-ordered `FOR KEY SHARE` — the same
+  // `sweep_agents` CTE `createOfferDb`'s internal cleanup uses (M11-2 B1). Both agent-deletion
+  // paths lock `agents` and then cascade into `admissions_applications` and `admissions_offers`, so
+  // a sweep that UPDATEs offers and applications with no `agents` lock runs the opposite way and can
+  // deadlock (40P01) with a withdrawal. The drain route runs this every 5 minutes, so the window is
+  // live. The `expired` UPDATE is scoped through `sweep_agents`, putting this sweep and agent
+  // deletion in one global order.
   const event: PreparedEvent<"admissions.offer_expired"> = {
     kind: "admissions.offer_expired", actorAgentId: null, subjectType: "admissions_offer",
     subjectId: "__STORE_ASSIGNED__", secondarySubjectId: "__STORE_ASSIGNED__", payload: {},
@@ -101,11 +109,22 @@ export async function refreshExpiredOffersDb(): Promise<void> {
     } }],
   });
   await sql!(`
-    WITH expired AS (
-      UPDATE admissions_offers
+    WITH sweep_agents AS (
+      -- Agents first, id-ordered, so this sweep and agent deletion cannot take the same rows in
+      -- opposite orders, and two concurrent sweeps cannot either.
+      SELECT a.id FROM agents a
+      WHERE a.id IN (
+        SELECT o.agent_id FROM admissions_offers o
+        WHERE o.status = 'pending' AND o.expires_at < NOW()
+      )
+      ORDER BY a.id
+      FOR KEY SHARE
+    ), expired AS (
+      UPDATE admissions_offers o
       SET status = 'expired'
-      WHERE status = 'pending' AND expires_at < NOW()
-      RETURNING id, application_id
+      FROM sweep_agents sa
+      WHERE o.agent_id = sa.id AND o.status = 'pending' AND o.expires_at < NOW()
+      RETURNING o.id, o.application_id
     ), ${emitted.ctes.join(", ")}, released AS (
       UPDATE admissions_applications a
       SET state = 'in_pool', updated_at = NOW()
@@ -559,27 +578,12 @@ export async function acceptOfferAsAgentDb(offerId: string, agentId: string, eve
   if (new Date(offer.expiresAt).getTime() < Date.now()) return "invalid";
 
   const emitted = emitEventCtes(events, "accepted", { firstParamIndex: 3, overrides: events?.length ? [{ rowSource: "accepted", columnSql: { secondary_subject_id: sqlColumn("accepted.application_id", "text") } }] : [] });
-  if (!events?.length) {
-    await sql!.transaction((txn) => [
-      txn`SELECT id FROM agents WHERE id = ${agentId} FOR KEY SHARE`,
-      txn`
-        WITH accepted AS (
-          UPDATE admissions_offers
-          SET accepted_at_agent = NOW()
-          WHERE id = ${offerId} AND agent_id = ${agentId} AND status = 'pending' AND expires_at > NOW()
-            AND accepted_at_agent IS NULL
-          RETURNING id, agent_id, application_id
-        )
-        INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
-        SELECT a.id, a.application_id, a.agent_id, 'agent', ${agentId}, 'accept_agent', '{}'::jsonb
-        FROM accepted a
-      `,
-      finalizeOfferStatement(txn, offerId),
-    ]);
-  } else {
-    await sql!.transaction((txn) => [
-      txn`SELECT id FROM agents WHERE id = ${agentId} FOR KEY SHARE`,
-      txn(`
+  // The acceptance classification is the LAST transaction element (M5), so it reads the offer's
+  // post-transition state under the accept UPDATE's own row lock — never a follow-up read after the
+  // commit, which a concurrent decline could win.
+  const results = await sql!.transaction((txn) => {
+    const accept = events?.length
+      ? txn(`
       WITH accepted AS (
         UPDATE admissions_offers
         SET accepted_at_agent = NOW()
@@ -590,29 +594,57 @@ export async function acceptOfferAsAgentDb(offerId: string, agentId: string, eve
       INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
       SELECT a.id, a.application_id, a.agent_id, 'agent', $2, 'accept_agent', '{}'::jsonb
       FROM accepted a
-      `, [offerId, agentId, ...emitted.params]),
+      `, [offerId, agentId, ...emitted.params])
+      : txn`
+        WITH accepted AS (
+          UPDATE admissions_offers
+          SET accepted_at_agent = NOW()
+          WHERE id = ${offerId} AND agent_id = ${agentId} AND status = 'pending' AND expires_at > NOW()
+            AND accepted_at_agent IS NULL
+          RETURNING id, agent_id, application_id
+        )
+        INSERT INTO admissions_audit (offer_id, application_id, agent_id, actor_type, actor_id, action, detail)
+        SELECT a.id, a.application_id, a.agent_id, 'agent', ${agentId}, 'accept_agent', '{}'::jsonb
+        FROM accepted a
+      `;
+    return [
+      txn`SELECT id FROM agents WHERE id = ${agentId} FOR KEY SHARE`,
+      accept,
       finalizeOfferStatement(txn, offerId),
-    ]);
-  }
-  return classifyAcceptOutcomeDb(offerId, "agent");
+      acceptOutcomeStatement(txn, offerId),
+    ];
+  });
+  const outcomeRows = results[results.length - 1] as Record<string, unknown>[];
+  return deriveAcceptOutcome(outcomeRows?.[0], "agent");
 }
 
 /**
- * What an acceptance actually achieved, read back after the transaction.
+ * The acceptance outcome, derived from a row read WITHIN the accept transaction (M11-2 M5).
  *
- * A decisive statement writing zero rows is NOT automatically `"ok"`: a decline could have won
- * after the pre-read, or the offer could have lapsed, in which case the caller must hear `invalid`
- * rather than a success that recorded nothing. But a REPEATED acceptance also writes zero rows and
- * is genuinely `"ok"` — the offer is accepted, this call simply added nothing. The stored
- * timestamp is what separates the two, so it is what this reads.
+ * A decisive statement writing zero rows is NOT automatically `"ok"`: a decline could have won, or
+ * the offer could have lapsed, in which case the caller must hear `invalid` rather than a success
+ * that recorded nothing. But a REPEATED acceptance also writes zero rows and is genuinely `"ok"` —
+ * the offer is accepted, this call simply added nothing. The stored timestamp separates the two, so
+ * it is what this reads.
+ *
+ * The reason this must be a transaction ELEMENT and not a follow-up read: a read after `COMMIT`
+ * holds no lock, so a decline committing in the gap between the commit and the read makes an
+ * acceptance whose timestamp, audit row and event all committed report `invalid`. The accept
+ * `UPDATE` holds the offer's row lock until the transaction ends, so a concurrent decline cannot
+ * commit before this reads; a final `SELECT` in the same transaction therefore reads exactly the
+ * state this acceptance produced.
  */
-async function classifyAcceptOutcomeDb(offerId: string, side: "agent" | "human"): Promise<"ok" | "invalid"> {
-  const offer = await getOfferByIdDb(offerId);
-  if (!offer) return "invalid";
-  const stamped = side === "agent" ? offer.acceptedAtAgent : offer.acceptedAtHuman;
+function deriveAcceptOutcome(row: Record<string, unknown> | undefined, side: "agent" | "human"): "ok" | "invalid" {
+  if (!row) return "invalid";
+  const stamped = side === "agent" ? row.accepted_at_agent : row.accepted_at_human;
   if (!stamped) return "invalid";
   // `fully_accepted` is a success too — this side's acceptance is what got it there.
-  return offer.status === "pending" || offer.status === "fully_accepted" ? "ok" : "invalid";
+  return row.status === "pending" || row.status === "fully_accepted" ? "ok" : "invalid";
+}
+
+/** The final transaction element M5 classifies from: the offer's own post-transition state. */
+function acceptOutcomeStatement(txn: AdmissionsTxn, offerId: string) {
+  return txn`SELECT status, accepted_at_agent, accepted_at_human FROM admissions_offers WHERE id = ${offerId}`;
 }
 
 export async function acceptOfferAsHumanDb(offerId: string, humanUserId: string): Promise<"ok" | "invalid"> {
@@ -625,7 +657,7 @@ export async function acceptOfferAsHumanDb(offerId: string, humanUserId: string)
   `;
   if (links.length === 0) return "invalid";
 
-  await sql!.transaction((txn) => [
+  const results = await sql!.transaction((txn) => [
     txn`SELECT id FROM agents WHERE id = ${offer.agentId} FOR KEY SHARE`,
     txn`
       WITH accepted AS (
@@ -645,8 +677,11 @@ export async function acceptOfferAsHumanDb(offerId: string, humanUserId: string)
       FROM accepted a
     `,
     finalizeOfferStatement(txn, offerId),
+    // M5: classify from within the transaction, under the accept UPDATE's row lock.
+    acceptOutcomeStatement(txn, offerId),
   ]);
-  return classifyAcceptOutcomeDb(offerId, "human");
+  const outcomeRows = results[results.length - 1] as Record<string, unknown>[];
+  return deriveAcceptOutcome(outcomeRows?.[0], "human");
 }
 
 /**

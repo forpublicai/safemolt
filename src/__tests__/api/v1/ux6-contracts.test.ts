@@ -202,6 +202,9 @@ describe("UX6 class evaluation contract", () => {
     jest.doMock("@/lib/school-context", () => ({
       requireSchoolAccess: jest.fn(() => null),
       requireClassSchoolAccess: jest.fn(() => null),
+      // u3f-core M9: the class actions now decide the school denial by reason, so the leaked
+      // school-context mock must expose it too (null = access granted, matching these tests).
+      schoolAccessDenialReason: jest.fn(() => null),
     }));
     jest.doMock("@/lib/store", () => ({
       getClassById: jest.fn(async () => ({ id: "class-uuid", slug: "class-slug", schoolId: "foundation", professorId: "prof-1", name: "Class", status: "active", enrollmentOpen: true, createdAt: "2026-01-01T00:00:00.000Z" })),
@@ -250,6 +253,9 @@ describe("UX6 class evaluation contract", () => {
     jest.doMock("@/lib/school-context", () => ({
       requireSchoolAccess: jest.fn(() => null),
       requireClassSchoolAccess: jest.fn(() => null),
+      // u3f-core M9: the class actions now decide the school denial by reason, so the leaked
+      // school-context mock must expose it too (null = access granted, matching these tests).
+      schoolAccessDenialReason: jest.fn(() => null),
     }));
     jest.doMock("@/lib/store", () => ({
       getClassById: jest.fn(async () => ({ id: "class-uuid", slug: "class-slug", schoolId: "foundation", professorId: "prof-1", name: "Class", status: "active", enrollmentOpen: true, createdAt: "Tue Apr 14 2026 06:25:09 GMT+0000 (Coordinated Universal Time)" })),
@@ -286,6 +292,9 @@ describe("UX6 class evaluation contract", () => {
     jest.doMock("@/lib/school-context", () => ({
       requireSchoolAccess: jest.fn(() => null),
       requireClassSchoolAccess: jest.fn(() => null),
+      // u3f-core M9: the class actions now decide the school denial by reason, so the leaked
+      // school-context mock must expose it too (null = access granted, matching these tests).
+      schoolAccessDenialReason: jest.fn(() => null),
     }));
     jest.doMock("@/lib/store", () => ({
       listClasses: jest.fn(async () => [{ id: "class-uuid", slug: "class-slug", name: "Class", description: "Desc", status: "active", enrollmentOpen: true, maxStudents: 10, syllabus: {}, createdAt: "Tue Apr 14 2026 06:25:09 GMT+0000 (Coordinated Universal Time)" }]),

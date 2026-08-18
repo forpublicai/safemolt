@@ -12,7 +12,7 @@ import type {
   StoredAdmissionsOffer,
 } from "./types";
 import type { PreparedEvent } from "@/lib/events/kinds";
-import { appendPreparedBatch, prepareEventBatch } from "@/lib/store/events/memory";
+import { appendPreparedBatch, prepareEventBatch, type PreparedEventBatch } from "@/lib/store/events/memory";
 
 const g = globalThis as typeof globalThis & {
   __safemolt_adm_cycles?: Map<string, StoredAdmissionsCycle>;
@@ -86,21 +86,40 @@ function genId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/**
+ * The public expiry driver (memory mode — Decision 6: no cron, the read path drives it). Unlike
+ * `expireLapsedOffersSync`, which `createOffer` runs event-LESS, this one emits one
+ * `admissions.offer_expired` per offer it lapses — matching `refreshExpiredOffersDb`, which emits
+ * from its `expired` UPDATE's RETURNING (M11-2 B2).
+ *
+ * Both callers share ONE mutation — `expireLapsedOffersSync`, which applies the "no OTHER live
+ * offer" release predicate the db side and the migration both apply. The event set is derived from
+ * a pure pre-scan so the batch is preflighted BEFORE any state moves (Decision 4); the pre-scan and
+ * the mutation use the same `nowMs` and the same lapsed predicate, so they name the same offers.
+ * Each offer lapses once — an already-`expired` offer is not `pending`, so a re-call emits nothing.
+ */
 export async function refreshExpiredOffersMem(): Promise<void> {
   seedDefaultCycle();
-  const now = Date.now();
-  for (const o of Array.from(offers.values())) {
-    if (o.status !== "pending") continue;
-    if (new Date(o.expiresAt).getTime() < now) {
-      offers.set(o.id, { ...o, status: "expired" });
-      if (o.applicationId) {
-        const a = apps.get(o.applicationId);
-        if (a && a.state === "offered") {
-          apps.set(a.id, { ...a, state: "in_pool", updatedAt: new Date().toISOString() });
-        }
-      }
-    }
-  }
+  const nowMs = Date.now();
+  const nowIso = new Date().toISOString();
+
+  const lapsing = Array.from(offers.values()).filter(
+    (o) => o.status === "pending" && new Date(o.expiresAt).getTime() < nowMs
+  );
+  if (lapsing.length === 0) return;
+
+  const batch = prepareEventBatch(
+    lapsing.map((offer): PreparedEvent<"admissions.offer_expired"> => ({
+      kind: "admissions.offer_expired",
+      actorAgentId: null,
+      subjectType: "admissions_offer",
+      subjectId: offer.id,
+      secondarySubjectId: offer.applicationId,
+      payload: {},
+    }))
+  );
+  expireLapsedOffersSync(nowMs, nowIso);
+  await appendPreparedBatch(batch).dispatched;
 }
 
 export async function getDefaultOpenCycleIdMem(): Promise<string | null> {
@@ -170,8 +189,17 @@ export async function ensureApplicationInPoolMem(
   if (!agent) throw new Error("agent_not_found");
   if (agent.isAdmitted) throw new Error("already_admitted");
 
-  const existing = await getApplicationByAgentCycleMem(agentId, cycleId);
-  if (existing) return existing;
+  // --- synchronous from here (M11-2 M7). The (agentId, cycleId) uniqueness is re-checked AFTER the
+  // last await, by hand, with no yield before the write: a concurrent ensure that created the row
+  // while this call was suspended in getAgentById must be seen here, or two applications and two
+  // events are written where the PG unique index permits one. Reading through the async accessor
+  // would reintroduce an await into this window; read the maps directly.
+  const key = `${agentId}:${cycleId}`;
+  const existingId = appKey.get(key);
+  if (existingId) {
+    const existing = apps.get(existingId);
+    if (existing) return existing;
+  }
 
   const id = genId("admapp");
   const now = new Date().toISOString();
@@ -194,7 +222,8 @@ export async function ensureApplicationInPoolMem(
   };
   const batch = prepareEventBatch((events ?? []).map((event) => ({ ...event, subjectId: id })));
   apps.set(id, a);
-  appKey.set(`${agentId}:${cycleId}`, id);
+  appKey.set(key, id);
+  // --- end synchronous section ---
   await appendPreparedBatch(batch).dispatched;
   return a;
 }
@@ -401,15 +430,15 @@ export async function getOfferByIdMem(offerId: string): Promise<StoredAdmissions
  * which is what keeps the audit row single. `setAgentAdmitted` is awaited afterwards precisely
  * because the flip has already excluded every other caller.
  */
-async function tryFinalizeOfferMem(offerId: string): Promise<"completed" | "waiting" | "noop"> {
+function finalizeOfferSyncMem(offerId: string): string | null {
   // --- one synchronous section, and it STARTS at the link read. Reading the links across an
   // `await` and then deciding on the stale answer is the same check-then-act window the db side
   // closes with an EXISTS predicate: a link added in the gap would let this finalize agent-only.
   const offer = offers.get(offerId);
-  if (!offer || offer.status !== "pending") return "noop";
-  if (new Date(offer.expiresAt).getTime() < Date.now()) return "noop";
+  if (!offer || offer.status !== "pending") return null;
+  if (new Date(offer.expiresAt).getTime() < Date.now()) return null;
   const humanOk = !agentHasLinkedUsersSync(offer.agentId) || Boolean(offer.acceptedAtHuman);
-  if (!offer.acceptedAtAgent || !humanOk) return "waiting";
+  if (!offer.acceptedAtAgent || !humanOk) return null;
 
   const now = new Date().toISOString();
   offers.set(offerId, { ...offer, status: "fully_accepted" });
@@ -427,18 +456,33 @@ async function tryFinalizeOfferMem(offerId: string): Promise<"completed" | "wait
     detail: {},
   });
   // --- end synchronous section: the flip above has already excluded every other caller ---
-  await setAgentAdmitted(offer.agentId, true);
-  return "completed";
+  return offer.agentId;
+}
+
+/**
+ * Finalize the offer and, if it flipped, admit the agent.
+ *
+ * The flip is `finalizeOfferSyncMem`, which runs to completion synchronously before the
+ * `setAgentAdmitted` await — so a caller that invokes this immediately after its own write (no
+ * `await` between) keeps the write and the flip in one non-yielding section (M11-2 M6).
+ */
+async function tryFinalizeOfferMem(offerId: string): Promise<void> {
+  const admitAgentId = finalizeOfferSyncMem(offerId);
+  if (admitAgentId) await setAgentAdmitted(admitAgentId, true);
 }
 
 export async function acceptOfferAsAgentMem(offerId: string, agentId: string, events?: readonly PreparedEvent[]): Promise<"ok" | "invalid"> {
   const offer = offers.get(offerId);
   if (!offer || offer.agentId !== agentId || offer.status !== "pending") return "invalid";
   if (new Date(offer.expiresAt).getTime() < Date.now()) return "invalid";
-  // Idempotent, matching db mode: only the FIRST acceptance writes a timestamp and an audit row.
-  // Repeating the call is still "ok" — the offer is accepted — it simply records nothing new.
+  // --- one synchronous section (M11-2 M6): preflight, the accept write, the audit AND the finalize
+  // flip, with no `await` between them. The db batch marks acceptance and finalizes atomically; if
+  // memory yielded on event dispatch before finalizing, a concurrent decline could flip a no-human
+  // offer to `declined` after this recorded acceptance + event and returned "ok". Idempotent,
+  // matching db mode: only the FIRST acceptance writes a timestamp, an audit row and an event.
+  let batch: PreparedEventBatch | null = null;
   if (!offer.acceptedAtAgent) {
-    const batch = prepareEventBatch(events);
+    batch = prepareEventBatch(events);
     offers.set(offerId, { ...offer, acceptedAtAgent: new Date().toISOString() });
     recordAudit({
       offerId,
@@ -449,9 +493,11 @@ export async function acceptOfferAsAgentMem(offerId: string, agentId: string, ev
       action: "accept_agent",
       detail: {},
     });
-    await appendPreparedBatch(batch).dispatched;
   }
-  await tryFinalizeOfferMem(offerId);
+  const admitAgentId = finalizeOfferSyncMem(offerId);
+  // --- end synchronous section: dispatch and the admit await only after every state change ---
+  if (batch) await appendPreparedBatch(batch).dispatched;
+  if (admitAgentId) await setAgentAdmitted(admitAgentId, true);
   return "ok";
 }
 

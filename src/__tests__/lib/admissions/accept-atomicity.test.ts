@@ -42,9 +42,10 @@ jest.mock("@/lib/db", () => {
           const texts = batch.map((q) => q.__text);
           state.batches.push(texts);
           if (state.transactionError) return Promise.reject(state.transactionError);
-          // The double has to reflect what the batch DID, not just that it ran: since M11-1b D6 the
-          // caller reads the offer back to decide between "ok" and "invalid", so a mock that leaves
-          // the row untouched would report every acceptance as invalid.
+          // The double has to reflect what the batch DID, not just that it ran: since M11-2 M5 the
+          // ok/invalid outcome comes from the FINAL transaction element (a SELECT of the offer's
+          // post-transition state), so a mock that leaves the row untouched — or returns nothing for
+          // that element — would report every acceptance as invalid.
           if (state.offerRow) {
             const stamp = new Date().toISOString();
             if (texts.some((t) => t.includes("SET accepted_at_agent = NOW()"))) {
@@ -54,7 +55,11 @@ jest.mock("@/lib/db", () => {
               state.offerRow = { ...state.offerRow, accepted_at_human: stamp };
             }
           }
-          return Promise.resolve(batch.map(() => []));
+          return Promise.resolve(
+            batch.map((q) =>
+              q.__text.includes("SELECT status, accepted_at_agent") && state.offerRow ? [state.offerRow] : []
+            )
+          );
         }
       ),
     }

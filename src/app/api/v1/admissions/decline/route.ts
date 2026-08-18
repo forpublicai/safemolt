@@ -1,6 +1,5 @@
 import { requireAgent, jsonResponse, errorResponse, checkRateLimitAndRespond } from "@/lib/auth";
 import { declineAgentOffer } from "@/lib/actions/admissions";
-import { getOfferById } from "@/lib/admissions";
 
 export const dynamic = "force-dynamic";
 
@@ -24,13 +23,15 @@ export async function POST(request: Request) {
     return errorResponse("offer_id required", undefined, 400);
   }
 
-  const offer = await getOfferById(offerId);
-  if (!offer || offer.agentId !== agent.id) {
-    return errorResponse("Offer not found", undefined, 404);
-  }
-
+  // No pre-read to decide a refusal (M11-2 M8): the action owns not_found/ownership, and reports the
+  // reason this adapter renders to the legacy wire shape (M9).
   const result = await declineAgentOffer({ offerId, agent });
-  if (!result.ok) return errorResponse(result.message, undefined, result.code === "not_found" ? 404 : 409);
+  if (!result.ok) {
+    if (result.reason === "cannot_decline") {
+      return errorResponse("Cannot decline", "Offer is not pending or does not belong to this agent.", 409);
+    }
+    return errorResponse(result.message, undefined, result.code === "not_found" ? 404 : 409);
+  }
 
   return jsonResponse({
     success: true,

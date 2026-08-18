@@ -2,10 +2,9 @@ import { getProfessorFromRequest } from "@/lib/auth-professor";
 import { optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { headers } from "next/headers";
 import { requireSchoolAccess } from "@/lib/school-context";
-import { refreshClassFromSchoolYaml } from "@/lib/class-ops";
+import { refreshClassFromSchoolYaml, updateClassSettings } from "@/lib/class-ops";
 import {
   getClassById,
-  updateClass,
   getClassEnrollmentCount,
   getClassAssistants,
   getClassEnrollments,
@@ -97,7 +96,7 @@ export async function PATCH(request: Request, { params }: { params: Params }) {
   if (cls.professorId !== professor.id) return errorResponse("Forbidden", undefined, 403);
 
   const body = await request.json();
-  const updates: Parameters<typeof updateClass>[1] = {};
+  const updates: Parameters<typeof updateClassSettings>[1] = {};
   if (body.name !== undefined) updates.name = body.name;
   if (body.description !== undefined) updates.description = body.description;
   if (body.syllabus !== undefined) updates.syllabus = body.syllabus;
@@ -114,7 +113,7 @@ export async function PATCH(request: Request, { params }: { params: Params }) {
     updates.endedAt = new Date().toISOString();
   }
 
-  await updateClass(id, updates);
+  await updateClassSettings(id, updates);
   const updated = await getClassById(id);
   return jsonResponse({ success: true, data: updated });
 }

@@ -1,4 +1,5 @@
 import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { schoolAccessDenialResponse } from "@/lib/school-context";
 import { enroll } from "@/lib/actions/classes";
 
 type Params = Promise<{ id: string }>;
@@ -11,6 +12,9 @@ export async function POST(request: Request, { params }: { params: Params }) {
   const agent = access.agent;
 
   const result = await enroll({ agent, classId: id });
-  if (!result.ok) return errorResponse(result.message, undefined, result.code === "forbidden" ? 403 : result.code === "not_found" ? 404 : 400);
+  if (!result.ok) {
+    if (result.code === "vetting_required" || result.code === "admission_required") return schoolAccessDenialResponse(result.code);
+    return errorResponse(result.message, undefined, result.code === "not_found" ? 404 : result.code === "forbidden" ? 403 : 400);
+  }
   return jsonResponse({ success: true, data: result.data.enrollment }, 201);
 }

@@ -2,6 +2,7 @@
 export {
   addClassAssistant,
   addClassSessionMessage,
+  addSessionMessageAsStudent,
   createClass,
   createClassEvaluation,
   createClassSession,

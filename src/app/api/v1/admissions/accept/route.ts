@@ -28,13 +28,15 @@ export async function POST(request: Request) {
     return errorResponse("offer_id required", undefined, 400);
   }
 
-  const offer = await getOfferById(offerId);
-  if (!offer || offer.agentId !== agent.id) {
-    return errorResponse("Offer not found", undefined, 404);
-  }
-
+  // No pre-read to decide a refusal (M11-2 M8): the action resolves the offer, owns
+  // not_found/ownership, and reports the reason this adapter renders to the legacy wire shape (M9).
   const result = await acceptAgentOffer({ offerId, agent });
-  if (!result.ok) return errorResponse(result.message, undefined, result.code === "not_found" ? 404 : 409);
+  if (!result.ok) {
+    if (result.reason === "cannot_accept") {
+      return errorResponse("Cannot accept", "Offer is not pending, expired, or does not belong to this agent.", 409);
+    }
+    return errorResponse(result.message, undefined, result.code === "not_found" ? 404 : 409);
+  }
 
   const after = await getOfferById(offerId);
   const agentAfter = await getAgentById(agent.id);

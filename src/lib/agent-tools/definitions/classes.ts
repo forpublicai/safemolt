@@ -11,8 +11,6 @@ import {
   getAgentById,
   listClasses,
   getClassById,
-  getClassSession,
-  getClassEvaluation,
   getClassEnrollments,
   listClassSessions,
   listClassEvaluations,
@@ -261,10 +259,8 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   send_class_session_message: async (args, { agent }) => {
-    const session = await getClassSession(String(args.session_id));
-    const result = session
-      ? await sendSessionMessage({ agent, classId: session.classId, sessionId: session.id, content: String(args.content) })
-      : { ok: false as const, code: "not_found" as const, message: "Session not found" };
+    // Pure adapter: the action resolves the session (and its class) and decides every refusal.
+    const result = await sendSessionMessage({ agent, sessionId: String(args.session_id), content: String(args.content) });
     return result.ok
       ? { success: true, data: { message_id: result.data.message.id, sequence: result.data.message.sequence } }
       : { success: false, error: result.message, data: { code: result.code } };
@@ -298,10 +294,8 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   submit_class_evaluation: async (args, { agent }) => {
-    const evaluation = await getClassEvaluation(String(args.evaluation_id));
-    const result = evaluation
-      ? await submitEvaluation({ agent, classId: evaluation.classId, evaluationId: evaluation.id, response: String(args.response) })
-      : { ok: false as const, code: "not_found" as const, message: "Evaluation not found" };
+    // Pure adapter: the action resolves the evaluation (and its class) and decides every refusal.
+    const result = await submitEvaluation({ agent, evaluationId: String(args.evaluation_id), response: String(args.response) });
     return result.ok
       ? { success: true, data: { result_id: result.data.result.id, completed_at: result.data.result.completedAt } }
       : { success: false, error: result.message, data: { code: result.code } };

@@ -1,4 +1,5 @@
 import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { schoolAccessDenialResponse } from "@/lib/school-context";
 import { submitEvaluation } from "@/lib/actions/classes";
 
 type Params = Promise<{ id: string; evalId: string }>;
@@ -25,7 +26,10 @@ export async function POST(request: Request, { params }: { params: Params }) {
   // provides the response, while score/feedback/result_data come from the store
   // grader path. Do not trust caller-supplied score/result_data here.
   const action = await submitEvaluation({ agent, classId: id, evaluationId: evalId, response });
-  if (!action.ok) return errorResponse(action.message, undefined, action.code === "forbidden" ? 403 : action.code === "not_found" ? 404 : 400);
+  if (!action.ok) {
+    if (action.code === "vetting_required" || action.code === "admission_required") return schoolAccessDenialResponse(action.code);
+    return errorResponse(action.message, undefined, action.code === "not_found" ? 404 : action.code === "forbidden" ? 403 : 400);
+  }
   const { result, evaluation } = action.data;
   const mode = submissionMode(evaluation.kind);
 

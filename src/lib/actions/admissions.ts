@@ -12,16 +12,29 @@ import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kind
 import type { StoredAgent } from "@/lib/store-types";
 import { actionError, actionOk, type ActionResult } from "./types";
 
+/**
+ * The refusal `reason`s the admissions REST adapters map back to their EXACT legacy wire shapes
+ * (title, hint, status) — M11-2 M9. The action classifies; each route renders. Admissions has no
+ * tool surface, so these are consumed by the routes alone.
+ */
+export type AdmissionsRefusalReason =
+  | "not_eligible"
+  | "no_open_cycle"
+  | "no_application"
+  | "application_closed"
+  | "cannot_accept"
+  | "cannot_decline";
+
 export async function updateNiche(input: { agent: StoredAgent; fields: { primaryDomain?: string | null; nonGoals?: string | null; evaluationPlan?: string | null } }): Promise<ActionResult<{ application: NonNullable<Awaited<ReturnType<typeof updateApplicationNiche>>> }>> {
   const eligibility = await getAdmissionsPoolEligibility(input.agent.id);
-  if (!eligibility.eligible) return actionError("forbidden", "Complete admissions criteria before editing an application.");
+  if (!eligibility.eligible) return { ok: false, code: "forbidden", reason: "not_eligible", message: "Complete admissions criteria before editing an application." };
   const cycleId = await getDefaultOpenCycleId();
-  if (!cycleId) return actionError("bad_request", "No open admissions cycle is configured.");
+  if (!cycleId) return { ok: false, code: "bad_request", reason: "no_open_cycle", message: "No open admissions cycle is configured." };
   const app = await getApplicationByAgentCycle(input.agent.id, cycleId);
-  if (!app) return actionError("not_found", "No application");
-  if (["rejected", "admitted"].includes(app.state)) return actionError("bad_request", "This application is no longer editable.");
+  if (!app) return { ok: false, code: "not_found", reason: "no_application", message: "No application" };
+  if (["rejected", "admitted"].includes(app.state)) return { ok: false, code: "bad_request", reason: "application_closed", message: "This application is no longer editable." };
   const updated = await updateApplicationNiche(app.id, input.fields);
-  return updated ? actionOk({ application: updated }) : actionError("not_found", "No application");
+  return updated ? actionOk({ application: updated }) : { ok: false, code: "not_found", reason: "no_application", message: "No application" };
 }
 
 export async function ensurePoolApplication(input: { agent: StoredAgent; cycleId: string; lazy: boolean }) {
@@ -41,7 +54,9 @@ export async function acceptAgentOffer(input: { agent: StoredAgent; offerId: str
     subjectType: "admissions_offer", subjectId: offer.id, secondarySubjectId: offer.applicationId,
     payload: {},
   };
-  return (await acceptOffer(input.offerId, input.agent.id, [event])) === "ok" ? actionOk({}) : actionError("bad_request", "Cannot accept offer");
+  return (await acceptOffer(input.offerId, input.agent.id, [event])) === "ok"
+    ? actionOk({})
+    : { ok: false, code: "bad_request", reason: "cannot_accept", message: "Cannot accept offer" };
 }
 
 export async function declineAgentOffer(input: { agent: StoredAgent; offerId: string }): Promise<ActionResult<Record<string, never>>> {
@@ -51,5 +66,7 @@ export async function declineAgentOffer(input: { agent: StoredAgent; offerId: st
     kind: "admissions.offer_declined", actorAgentId: input.agent.id,
     subjectType: "admissions_offer", subjectId: offer.id, secondarySubjectId: offer.applicationId, payload: {},
   };
-  return (await declineOffer(input.offerId, input.agent.id, [event])) ? actionOk({}) : actionError("bad_request", "Cannot decline offer");
+  return (await declineOffer(input.offerId, input.agent.id, [event]))
+    ? actionOk({})
+    : { ok: false, code: "bad_request", reason: "cannot_decline", message: "Cannot decline offer" };
 }

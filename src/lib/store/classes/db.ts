@@ -334,16 +334,82 @@ export async function isClassAssistant(classId: string, agentId: string): Promis
 
 // --- Class Enrollments ---
 
-export async function enrollInClass(classId: string, agentId: string, events?: readonly PreparedEvent[]): Promise<StoredClassEnrollment> {
+/**
+ * The result of an enrollment attempt, projected by the decisive statement (M11-2 u3f-core M4).
+ *
+ * Capacity, `enrollment_open`, `status` and "already enrolled" were checked by the action against
+ * UNLOCKED pre-reads, then the insert ran with no such predicate — a race breached the seat cap and
+ * still emitted `class.enrolled` on the over-cap write. The gate now lives inside the statement,
+ * under a `classes` row lock that serialises concurrent enrollments for one class, so the flags the
+ * action classifies from are the ones the write itself was decided by. `enrollment` is the row when
+ * it passed every rule (and only then does the event fire); the flags say why it did not otherwise.
+ */
+export interface EnrollOutcome {
+    enrollment: StoredClassEnrollment | null;
+    classPresent: boolean;
+    isOpen: boolean;
+    isActive: boolean;
+    already: boolean;
+    atCapacity: boolean;
+}
+
+export async function enrollInClass(classId: string, agentId: string, events?: readonly PreparedEvent[]): Promise<EnrollOutcome> {
     const resolvedClassId = await resolveClassId(classId);
-    if (!resolvedClassId) throw new Error("Class not found");
+    if (!resolvedClassId) {
+        return { enrollment: null, classPresent: false, isOpen: false, isActive: false, already: false, atCapacity: false };
+    }
     const id = generateClassId('enrl');
     const enrolledAt = new Date().toISOString();
+    // $1 id, $2 class, $3 agent, $4 enrolledAt.
     const params = [id, resolvedClassId, agentId, enrolledAt];
-    const emitted = emitEventCtes(events, "enrolled", { firstParamIndex: params.length + 1, overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [] });
-    await sql!(`WITH inserted AS (INSERT INTO class_enrollments (id, class_id, agent_id, status, enrolled_at)
-        VALUES ($1, $2, $3, 'enrolled', $4) RETURNING *)${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""} SELECT * FROM inserted`, [...params, ...emitted.params]);
-    return { id, classId: resolvedClassId, agentId, status: 'enrolled', enrolledAt };
+    const emitted = emitEventCtes(events, "inserted", {
+        firstParamIndex: params.length + 1,
+        // One event per row of `inserted` (0 or 1), each carrying the row's own id — correct for the
+        // ON CONFLICT re-enroll branch too, where the surviving row is the previously-dropped one and
+        // its id is not the freshly-minted $1.
+        overrides: events?.length ? [{ rowSource: "inserted", columnSql: { subject_id: sqlColumn("inserted.id", "text") } }] : [],
+    });
+    const rows = await sql!(`WITH
+        locked AS (SELECT status, enrollment_open, max_students FROM classes WHERE id = $2 FOR UPDATE),
+        cnt AS (SELECT COUNT(*)::int AS n FROM class_enrollments WHERE class_id = $2 AND status IN ('enrolled', 'active')),
+        existing AS (SELECT status AS st FROM class_enrollments WHERE class_id = $2 AND agent_id = $3),
+        gate AS (
+            SELECT
+                EXISTS (SELECT 1 FROM locked) AS present,
+                COALESCE((SELECT enrollment_open FROM locked), false) AS is_open,
+                COALESCE((SELECT status = 'active' FROM locked), false) AS is_active,
+                EXISTS (SELECT 1 FROM existing WHERE st <> 'dropped') AS already,
+                COALESCE(((SELECT max_students FROM locked) IS NOT NULL AND (SELECT n FROM cnt) >= (SELECT max_students FROM locked)), false) AS at_capacity
+        ),
+        inserted AS (
+            INSERT INTO class_enrollments (id, class_id, agent_id, status, enrolled_at)
+            SELECT $1, $2, $3, 'enrolled', $4 FROM gate
+            WHERE present AND is_open AND is_active AND NOT already AND NOT at_capacity
+            ON CONFLICT (class_id, agent_id) DO UPDATE SET status = 'enrolled', enrolled_at = EXCLUDED.enrolled_at
+                WHERE class_enrollments.status = 'dropped'
+            RETURNING id, status, enrolled_at
+        )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""}
+        SELECT g.present, g.is_open, g.is_active, g.already, g.at_capacity,
+               i.id AS enrollment_id, i.status AS enrollment_status, i.enrolled_at AS enrollment_enrolled_at
+        FROM gate g LEFT JOIN inserted i ON true`, [...params, ...emitted.params]);
+    const row = (rows as Array<Record<string, unknown>>)[0] ?? {};
+    const enrollment: StoredClassEnrollment | null = row.enrollment_id
+        ? {
+            id: String(row.enrollment_id),
+            classId: resolvedClassId,
+            agentId,
+            status: row.enrollment_status as StoredClassEnrollment['status'],
+            enrolledAt: row.enrollment_enrolled_at instanceof Date ? row.enrollment_enrolled_at.toISOString() : String(row.enrollment_enrolled_at),
+        }
+        : null;
+    return {
+        enrollment,
+        classPresent: Boolean(row.present),
+        isOpen: Boolean(row.is_open),
+        isActive: Boolean(row.is_active),
+        already: Boolean(row.already),
+        atCapacity: Boolean(row.at_capacity),
+    };
 }
 
 export async function dropClass(classId: string, agentId: string, events?: readonly PreparedEvent[]): Promise<boolean> {
@@ -488,23 +554,25 @@ export async function updateClassSession(
 
 // --- Class Session Messages ---
 
+/**
+ * Operator-owned message writer (professor / agent teaching-assistant). Deliberately UNGATED and
+ * history-silent: the class-session route pre-checks the session is active before it reaches here,
+ * and an operator message carries no event (M11-2 u3f-core B3). The enrolled-student path — the one
+ * agent-visible producer — is `addSessionMessageAsStudent`, which gates in its statement and emits.
+ */
 export async function addClassSessionMessage(
     sessionId: string,
     senderId: string,
     senderRole: StoredClassSessionMessage['senderRole'],
-    content: string,
-    events?: readonly PreparedEvent[]
+    content: string
 ): Promise<StoredClassSessionMessage> {
     const id = generateClassId('cmsg');
     const createdAt = new Date().toISOString();
-    const params = [id, sessionId, senderId, senderRole, content, createdAt];
-    const emitted = emitEventCtes(events, "inserted", { firstParamIndex: params.length + 1, overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(2, "text") }, payloadMergeSql: sqlPayloadObject({ message_id: sqlParam(1, "text") }) }] : [] });
-    const seqResult = await sql!(`WITH inserted AS (
+    const seqResult = await sql!(`
         INSERT INTO class_session_messages (id, session_id, sender_id, sender_role, content, created_at, sequence)
         SELECT $1, $2, $3, $4, $5, $6,
             COALESCE((SELECT MAX(sequence) + 1 FROM class_session_messages WHERE session_id = $2), 1)
-        RETURNING id, sequence, created_at
-    )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""} SELECT id, sequence, created_at FROM inserted`, [...params, ...emitted.params]);
+        RETURNING id, sequence, created_at`, [id, sessionId, senderId, senderRole, content, createdAt]);
     const row = (seqResult as Array<Record<string, unknown>>)[0];
     return {
         id: row?.id as string ?? id,
@@ -515,6 +583,65 @@ export async function addClassSessionMessage(
         sequence: Number(row?.sequence ?? 1),
         createdAt: row?.created_at ? String(row.created_at) : createdAt,
     };
+}
+
+/**
+ * The result of an enrolled-student session message (M11-2 u3f-core M4). Session-active and
+ * enrollment were pre-read by the action, then the insert ran unconditionally and emitted
+ * `class.session_message` even for a session that completed mid-flight. Both gates now live in the
+ * statement; `message` is the row when it passed, and the flags say why it did not.
+ */
+export interface StudentMessageOutcome {
+    message: StoredClassSessionMessage | null;
+    sessionActive: boolean;
+    enrolled: boolean;
+}
+
+export async function addSessionMessageAsStudent(
+    classId: string,
+    sessionId: string,
+    agentId: string,
+    content: string,
+    events?: readonly PreparedEvent[]
+): Promise<StudentMessageOutcome> {
+    const resolvedClassId = (await resolveClassId(classId)) ?? classId;
+    const id = generateClassId('cmsg');
+    const createdAt = new Date().toISOString();
+    // $1 id, $2 session, $3 agent, $4 role, $5 content, $6 createdAt, $7 class.
+    const params = [id, sessionId, agentId, 'student', content, createdAt, resolvedClassId];
+    const emitted = emitEventCtes(events, "inserted", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(2, "text") }, payloadMergeSql: sqlPayloadObject({ message_id: sqlParam(1, "text") }) }] : [],
+    });
+    const rows = await sql!(`WITH
+        sess AS (SELECT status FROM class_sessions WHERE id = $2),
+        gate AS (
+            SELECT
+                COALESCE((SELECT status = 'active' FROM sess), false) AS session_active,
+                EXISTS (SELECT 1 FROM class_enrollments WHERE class_id = $7 AND agent_id = $3 AND status <> 'dropped') AS enrolled
+        ),
+        inserted AS (
+            INSERT INTO class_session_messages (id, session_id, sender_id, sender_role, content, created_at, sequence)
+            SELECT $1, $2, $3, $4, $5, $6,
+                COALESCE((SELECT MAX(sequence) + 1 FROM class_session_messages WHERE session_id = $2), 1)
+            FROM gate WHERE session_active AND enrolled
+            RETURNING id, sequence, created_at
+        )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""}
+        SELECT g.session_active, g.enrolled, i.id, i.sequence, i.created_at
+        FROM gate g LEFT JOIN inserted i ON true`, [...params, ...emitted.params]);
+    const row = (rows as Array<Record<string, unknown>>)[0] ?? {};
+    const message: StoredClassSessionMessage | null = row.id
+        ? {
+            id: String(row.id),
+            sessionId,
+            senderId: agentId,
+            senderRole: 'student',
+            content,
+            sequence: Number(row.sequence ?? 1),
+            createdAt: row.created_at ? String(row.created_at) : createdAt,
+        }
+        : null;
+    return { message, sessionActive: Boolean(row.session_active), enrolled: Boolean(row.enrolled) };
 }
 
 export async function getClassSessionMessages(sessionId: string): Promise<StoredClassSessionMessage[]> {
@@ -625,6 +752,17 @@ export async function updateClassEvaluation(
 
 // --- Class Evaluation Results ---
 
+/**
+ * Save a class-evaluation result.
+ *
+ * **The agent submission is gated in-statement, the professor grade is not** (M11-2 u3f-core M4).
+ * When the caller passes events — only the enrolled-student submit action does — the upsert fires
+ * only where the evaluation is `active` and the agent is still enrolled, so a race that closed the
+ * evaluation or dropped the agent cannot land a result nor emit `class.evaluation_submitted` on it.
+ * The professor grade route passes no events and reaches an ungated upsert: a professor is never
+ * "enrolled" and may grade a closed evaluation, so gating that path would break grading. `null` is
+ * returned when the gate refused (an agent race); the ungated path always returns a row.
+ */
 export async function saveClassEvaluationResult(
     evaluationId: string,
     agentId: string,
@@ -634,14 +772,27 @@ export async function saveClassEvaluationResult(
     resultData?: Record<string, unknown>,
     feedback?: string,
     events?: readonly PreparedEvent[]
-): Promise<StoredClassEvaluationResult> {
+): Promise<StoredClassEvaluationResult | null> {
     const id = generateClassId('cres');
     const completedAt = new Date().toISOString();
     const params = [id, evaluationId, agentId, response ?? null, score ?? null, maxScore ?? null, resultData ? JSON.stringify(resultData) : null, feedback ?? null, completedAt];
     const emitted = emitEventCtes(events, "result", { firstParamIndex: params.length + 1, overrides: events?.length ? [{ rowSource: "result", columnSql: { subject_id: sqlColumn("result.id", "text") }, payloadMergeSql: sqlPayloadObject({ result_id: sqlColumn("result.id", "text") }) }] : [] });
-    const resultRows = await sql!(`WITH result AS (
+    const gated = !!(events && events.length);
+    const gatePreamble = gated
+        ? `ev AS (SELECT status, class_id FROM class_evaluations WHERE id = $2),
+        gate AS (
+            SELECT
+                COALESCE((SELECT status = 'active' FROM ev), false) AS eval_active,
+                EXISTS (SELECT 1 FROM class_enrollments WHERE class_id = (SELECT class_id FROM ev) AND agent_id = $3 AND status <> 'dropped') AS enrolled
+        ),
+        `
+        : "";
+    const insertSource = gated
+        ? `SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9 FROM gate WHERE eval_active AND enrolled`
+        : `VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`;
+    const resultRows = await sql!(`WITH ${gatePreamble}result AS (
         INSERT INTO class_evaluation_results (id, evaluation_id, agent_id, response, score, max_score, result_data, feedback, completed_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ${insertSource}
         ON CONFLICT (evaluation_id, agent_id) DO UPDATE SET
             response = EXCLUDED.response,
             score = EXCLUDED.score,
@@ -651,7 +802,8 @@ export async function saveClassEvaluationResult(
             completed_at = EXCLUDED.completed_at
         RETURNING id, evaluation_id, agent_id, response, score, max_score, result_data, feedback, completed_at
     )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""} SELECT id, evaluation_id, agent_id, response, score, max_score, result_data, feedback, completed_at FROM result`, [...params, ...emitted.params]);
-    const actual = resultRows[0] as Record<string, unknown>;
+    const actual = resultRows[0] as Record<string, unknown> | undefined;
+    if (!actual) return null;
     return { id: actual.id as string, evaluationId, agentId, response, score, maxScore, resultData, feedback, completedAt };
 }
 

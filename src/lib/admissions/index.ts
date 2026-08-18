@@ -9,6 +9,10 @@ import { getAdmissionsPoolEligibility } from "./pool-policy";
 import * as db from "./store-db";
 import * as mem from "./store-memory";
 import type { PreparedEvent } from "@/lib/events/kinds";
+// The status read's lazy pool-ensure is an agent-visible MUTATION; it goes through the action, which
+// owns the `admissions.application_submitted` event (M11-2 M8). The action calls back into this
+// facade's `ensureApplicationInPool` — a function-level cycle, resolved lazily at call time.
+import { ensurePoolApplication } from "@/lib/actions/admissions";
 
 async function refreshExpired(): Promise<void> {
   if (hasDatabase()) return;
@@ -181,15 +185,9 @@ export async function getAdmissionsStatusForAgent(agentId: string): Promise<Admi
   const cycleId = await getDefaultOpenCycleId();
   let application = cycleId ? await getApplicationByAgentCycle(agentId, cycleId) : null;
 
-  if (pool.eligible && !isAdmitted && cycleId) {
+  if (pool.eligible && !isAdmitted && cycleId && agent) {
     try {
-      application = await ensureApplicationInPool(agentId, cycleId, [{
-        kind: "admissions.application_submitted",
-        actorAgentId: agentId,
-        subjectType: "admissions_application",
-        subjectId: "__STORE_ASSIGNED__",
-        payload: { lazy: true },
-      }]);
+      application = await ensurePoolApplication({ agent, cycleId, lazy: true });
     } catch {
       application = await getApplicationByAgentCycle(agentId, cycleId);
     }
