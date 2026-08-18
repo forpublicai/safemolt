@@ -369,17 +369,28 @@ export async function enrollInClass(classId: string, agentId: string, events?: r
         // its id is not the freshly-minted $1.
         overrides: events?.length ? [{ rowSource: "inserted", columnSql: { subject_id: sqlColumn("inserted.id", "text") } }] : [],
     });
-    const rows = await sql!(`WITH
-        locked AS (SELECT status, enrollment_open, max_students FROM classes WHERE id = $2 FOR UPDATE),
+    // **The seat cap is a TWO-ELEMENT transaction, not one statement** (M11-2 u3f-core R2-1, the
+    // same shape admissions D6 documents). The cap is class-wide, so it can only be serialised on the
+    // class row — but a `FOR UPDATE` inside a single statement does not make the count correct under
+    // READ COMMITTED: that statement's snapshot is taken when it BEGINS, so a contender that waits on
+    // the class lock still counts seats as they stood before the winner committed, and the cap is
+    // breached anyway (both enrol, both emit `class.enrolled`). Element 1 takes the class row
+    // `FOR UPDATE`; element 2 is a LATER statement whose FRESH snapshot is taken after the wait ended,
+    // so its count sees the winner's committed seat. Element 2 reads the class row plain — the lock
+    // from element 1 is held for the whole transaction, so no writer can change it in between.
+    const results = await sql!.transaction((txn) => [
+        txn`SELECT id FROM classes WHERE id = ${resolvedClassId} FOR UPDATE /* class:enroll-lock */`,
+        txn(`WITH
+        cls AS (SELECT status, enrollment_open, max_students FROM classes WHERE id = $2),
         cnt AS (SELECT COUNT(*)::int AS n FROM class_enrollments WHERE class_id = $2 AND status IN ('enrolled', 'active')),
         existing AS (SELECT status AS st FROM class_enrollments WHERE class_id = $2 AND agent_id = $3),
         gate AS (
             SELECT
-                EXISTS (SELECT 1 FROM locked) AS present,
-                COALESCE((SELECT enrollment_open FROM locked), false) AS is_open,
-                COALESCE((SELECT status = 'active' FROM locked), false) AS is_active,
+                EXISTS (SELECT 1 FROM cls) AS present,
+                COALESCE((SELECT enrollment_open FROM cls), false) AS is_open,
+                COALESCE((SELECT status = 'active' FROM cls), false) AS is_active,
                 EXISTS (SELECT 1 FROM existing WHERE st <> 'dropped') AS already,
-                COALESCE(((SELECT max_students FROM locked) IS NOT NULL AND (SELECT n FROM cnt) >= (SELECT max_students FROM locked)), false) AS at_capacity
+                COALESCE(((SELECT max_students FROM cls) IS NOT NULL AND (SELECT n FROM cnt) >= (SELECT max_students FROM cls)), false) AS at_capacity
         ),
         inserted AS (
             INSERT INTO class_enrollments (id, class_id, agent_id, status, enrolled_at)
@@ -391,8 +402,10 @@ export async function enrollInClass(classId: string, agentId: string, events?: r
         )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""}
         SELECT g.present, g.is_open, g.is_active, g.already, g.at_capacity,
                i.id AS enrollment_id, i.status AS enrollment_status, i.enrolled_at AS enrollment_enrolled_at
-        FROM gate g LEFT JOIN inserted i ON true`, [...params, ...emitted.params]);
-    const row = (rows as Array<Record<string, unknown>>)[0] ?? {};
+        FROM gate g LEFT JOIN inserted i ON true`, [...params, ...emitted.params]),
+    ]);
+    const rows = results[1] as Array<Record<string, unknown>>;
+    const row = rows[0] ?? {};
     const enrollment: StoredClassEnrollment | null = row.enrollment_id
         ? {
             id: String(row.enrollment_id),
@@ -613,12 +626,20 @@ export async function addSessionMessageAsStudent(
         firstParamIndex: params.length + 1,
         overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(2, "text") }, payloadMergeSql: sqlPayloadObject({ message_id: sqlParam(1, "text") }) }] : [],
     });
+    // The session and the sender's enrollment are re-checked under a `FOR SHARE` LOCK, never a bare
+    // snapshot read (M11-2 u3f-core R2-1; agents.md "a parent-liveness check inside a write is a
+    // FOR SHARE LOCK, never a bare EXISTS"). A bare read is snapshot-evaluated and never re-checked,
+    // so a session completing (or the agent dropping) concurrently could commit after this
+    // statement's snapshot and still let the message land. `FOR SHARE` follows the update chain to
+    // the latest committed row and conflicts with the completer's / dropper's `FOR UPDATE`, so a
+    // concurrent completion or drop either loses to this read or is seen by it.
     const rows = await sql!(`WITH
-        sess AS (SELECT status FROM class_sessions WHERE id = $2),
+        sess AS (SELECT status FROM class_sessions WHERE id = $2 FOR SHARE /* class:msg-session-lock */),
+        enr AS (SELECT 1 AS ok FROM class_enrollments WHERE class_id = $7 AND agent_id = $3 AND status <> 'dropped' FOR SHARE),
         gate AS (
             SELECT
                 COALESCE((SELECT status = 'active' FROM sess), false) AS session_active,
-                EXISTS (SELECT 1 FROM class_enrollments WHERE class_id = $7 AND agent_id = $3 AND status <> 'dropped') AS enrolled
+                EXISTS (SELECT 1 FROM enr) AS enrolled
         ),
         inserted AS (
             INSERT INTO class_session_messages (id, session_id, sender_id, sender_role, content, created_at, sequence)
@@ -778,12 +799,19 @@ export async function saveClassEvaluationResult(
     const params = [id, evaluationId, agentId, response ?? null, score ?? null, maxScore ?? null, resultData ? JSON.stringify(resultData) : null, feedback ?? null, completedAt];
     const emitted = emitEventCtes(events, "result", { firstParamIndex: params.length + 1, overrides: events?.length ? [{ rowSource: "result", columnSql: { subject_id: sqlColumn("result.id", "text") }, payloadMergeSql: sqlPayloadObject({ result_id: sqlColumn("result.id", "text") }) }] : [] });
     const gated = !!(events && events.length);
+    // The evaluation and the submitter's enrollment are re-checked under a `FOR SHARE` LOCK, never a
+    // bare snapshot read (M11-2 u3f-core R2-1; agents.md "a parent-liveness check inside a write is a
+    // FOR SHARE LOCK, never a bare EXISTS"). `FOR SHARE` follows the update chain to the latest
+    // committed row and conflicts with a `FOR UPDATE`, so an evaluation closed (or the agent dropped)
+    // concurrently is either seen by this read or loses to it — a bare `EXISTS` is snapshot-evaluated
+    // and would let the result land on a closed evaluation.
     const gatePreamble = gated
-        ? `ev AS (SELECT status, class_id FROM class_evaluations WHERE id = $2),
+        ? `ev AS (SELECT status, class_id FROM class_evaluations WHERE id = $2 FOR SHARE),
+        enr AS (SELECT 1 AS ok FROM class_enrollments WHERE class_id = (SELECT class_id FROM ev) AND agent_id = $3 AND status <> 'dropped' FOR SHARE),
         gate AS (
             SELECT
                 COALESCE((SELECT status = 'active' FROM ev), false) AS eval_active,
-                EXISTS (SELECT 1 FROM class_enrollments WHERE class_id = (SELECT class_id FROM ev) AND agent_id = $3 AND status <> 'dropped') AS enrolled
+                EXISTS (SELECT 1 FROM enr) AS enrolled
         ),
         `
         : "";

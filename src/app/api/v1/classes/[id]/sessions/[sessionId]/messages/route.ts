@@ -78,6 +78,13 @@ export async function POST(request: Request, { params }: { params: Params }) {
   // detects the assistant here rather than letting the student action route it to role `ta` and
   // emit — an operator message carries no `class.session_message`.
   if (await isClassAssistant(cls.id, agent.id)) {
+    // The assistant is still an agent acting on a class that has its OWN school (M11-2 u3f-core
+    // R2-2). `requireAgent` above answered only "may this identity use SafeMolt at all", keyed on
+    // the request host — so a vetted-but-unadmitted agent could reach a non-Foundation class
+    // through the weaker Foundation host. Gate on the CLASS's school before the operator write, the
+    // same rule the enrolled-student branch runs inside `sendSessionMessage`'s `resolveClass`.
+    const accessError = requireSchoolAccess(agent, cls.schoolId);
+    if (accessError) return accessError;
     const message = await addOperatorClassSessionMessage(sessionId, agent.id, "ta", content);
     return jsonResponse({ success: true, data: message }, 201);
   }

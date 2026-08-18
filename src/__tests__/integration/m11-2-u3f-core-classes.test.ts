@@ -19,11 +19,13 @@
  * @jest-environment node
  */
 import {
+  addClassAssistant,
   addSessionMessageAsStudent,
   createClass,
   createClassEvaluation,
   createClassSession,
   createProfessor,
+  dropClass,
   enrollInClass,
   saveClassEvaluationResult,
   updateClass,
@@ -34,6 +36,8 @@ import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kind
 import type { StoredClass, StoredEvent } from "@/lib/store-types";
 
 import { closeIntegrationConnections, pgPool } from "./helpers/db";
+import { raceAgainstHeldLock } from "./helpers/concurrency";
+import { POST as postSessionMessage } from "@/app/api/v1/classes/[id]/sessions/[sessionId]/messages/route";
 
 const RUN = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
 let seq = 0;
@@ -57,12 +61,16 @@ async function seedProfessor(): Promise<string> {
   return id;
 }
 
-async function seedActiveClass(professorId: string, opts: { maxStudents?: number } = {}): Promise<StoredClass> {
+async function seedActiveClass(professorId: string, opts: { maxStudents?: number; schoolId?: string } = {}): Promise<StoredClass> {
   const id = nextId("cls");
-  const cls = await createClass(professorId, `${id} Class`, undefined, undefined, undefined, opts.maxStudents, "foundation", id, id);
+  const cls = await createClass(professorId, `${id} Class`, undefined, undefined, undefined, opts.maxStudents, opts.schoolId ?? "foundation", id, id);
   await updateClass(id, { status: "active", enrollmentOpen: true });
   return cls;
 }
+
+/** Seed a vetted agent whose api key is recoverable (`apiKeyFor`) — for the route actor branches. */
+const apiKeyFor = (agentId: string) => `u3fclkey${agentId}`;
+const professorKeyFor = (professorId: string) => `u3fclprofkey${professorId}`;
 
 async function seedSession(classId: string, status: "active" | "completed"): Promise<string> {
   const session = await createClassSession(classId, "Session", "lecture", undefined, 1);
@@ -84,6 +92,42 @@ function messageEvent(agentId: string, sessionId: string): PreparedEvent<"class.
 }
 function evalEvent(agentId: string, classId: string, evaluationId: string): PreparedEvent<"class.evaluation_submitted"> {
   return { kind: "class.evaluation_submitted", actorAgentId: agentId, subjectType: "class_evaluation_result", subjectId: STORE_ASSIGNED_PAYLOAD_ID, schoolId: "foundation", payload: { class_id: classId, evaluation_id: evaluationId, result_id: STORE_ASSIGNED_PAYLOAD_ID } };
+}
+function droppedEvent(agentId: string, classId: string): PreparedEvent<"class.dropped"> {
+  return { kind: "class.dropped", actorAgentId: agentId, subjectType: "class_enrollment", subjectId: STORE_ASSIGNED_PAYLOAD_ID, schoolId: "foundation", payload: { class_id: classId } };
+}
+
+async function totalEnrollments(classId: string): Promise<number> {
+  const { rows } = await pgPool().query(
+    `SELECT count(*)::int AS c FROM class_enrollments WHERE class_id = $1 AND status <> 'dropped'`,
+    [classId]
+  );
+  return rows[0].c;
+}
+
+async function enrollmentStatus(classId: string, agentId: string): Promise<string | null> {
+  const { rows } = await pgPool().query(
+    `SELECT status FROM class_enrollments WHERE class_id = $1 AND agent_id = $2 LIMIT 1`,
+    [classId, agentId]
+  );
+  return rows[0]?.status ?? null;
+}
+
+/** A message-route POST with a bearer credential and the middleware-injected school header. */
+function messageRequest(classId: string, sessionId: string, apiKey: string, content = "hello", schoolId = "foundation"): Request {
+  return new Request(`https://safe.test/api/v1/classes/${classId}/sessions/${sessionId}/messages`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${apiKey}`,
+      "x-school-id": schoolId,
+    },
+    body: JSON.stringify({ content }),
+  });
+}
+
+function messageRouteParams(classId: string, sessionId: string) {
+  return { params: Promise.resolve({ id: classId, sessionId }) };
 }
 
 async function eventsSince(kind?: string): Promise<StoredEvent[]> {
@@ -325,5 +369,223 @@ describe("evaluation submission couples its event and gates on active + enrolled
     const { rows } = await pgPool().query(`SELECT count(*)::int AS c FROM class_evaluation_results WHERE evaluation_id = $1`, [evalId]);
     expect(rows[0].c).toBe(0);
     expect(await eventsSince("class.evaluation_submitted")).toEqual([]);
+  });
+});
+
+describe("drop couples its event and rolls back on an event-insert failure", () => {
+  it("rolls the drop back when its event cannot be written", async () => {
+    const prof = await seedProfessor();
+    const cls = await seedActiveClass(prof);
+    const agentId = await seedAgent();
+    await enrollInClass(cls.id, agentId);
+    expect(await enrollmentStatus(cls.id, agentId)).toBe("enrolled");
+
+    await withEventFailure("class.dropped", async () => {
+      await expect(dropClass(cls.id, agentId, [droppedEvent(agentId, cls.id)])).rejects.toThrow(/injected/);
+    });
+
+    // The enrollment is still enrolled — the UPDATE to 'dropped' rolled back with the failed event.
+    expect(await enrollmentStatus(cls.id, agentId)).toBe("enrolled");
+    expect(await eventsSince("class.dropped")).toEqual([]);
+  });
+});
+
+describe("the enroll cap holds under a genuine two-connection race (R2-1)", () => {
+  it("a contender that waits on the class lock counts the winner's seat: one seat, one event", async () => {
+    // maxStudents = 1, no seat taken yet. The R2-1 defect: a SINGLE statement takes one snapshot at
+    // statement start, so a contender that blocks on the class `FOR UPDATE` still counts the seat as
+    // empty after the winner commits, and the cap is breached (both enrol, both emit). The fix makes
+    // the count a LATER transaction element, taken on a FRESH snapshot after the wait ends.
+    const prof = await seedProfessor();
+    const cls = await seedActiveClass(prof, { maxStudents: 1 });
+    const winner = await seedAgent();
+    const contender = await seedAgent();
+    const winnerEnrl = nextId("enrl");
+
+    baselineEventId = Number((await pgPool().query(`SELECT COALESCE(MAX(id), 0)::bigint AS id FROM events`)).rows[0].id);
+
+    const outcome = await raceAgainstHeldLock({
+      // Occupy the only seat AND hold the class row, uncommitted, so the contender that unblocks must
+      // observe the seat on a fresh snapshot to refuse it.
+      hold: async (holder) => {
+        await holder.query(`SELECT id FROM classes WHERE id = $1 FOR UPDATE`, [cls.id]);
+        await holder.query(
+          `INSERT INTO class_enrollments (id, class_id, agent_id, status, enrolled_at) VALUES ($1, $2, $3, 'enrolled', NOW())`,
+          [winnerEnrl, cls.id, winner]
+        );
+      },
+      contend: async () => await enrollInClass(cls.id, contender, [enrolledEvent(contender, cls.id)]),
+      contenderMarker: "class:enroll-lock",
+    });
+
+    // Cap held: the contender wrote nothing and heard `atCapacity`.
+    expect(outcome.result.enrollment).toBeNull();
+    expect(outcome.result.atCapacity).toBe(true);
+    expect(await enrollmentRowCount(cls.id, contender)).toBe(0);
+    // Only the winner's seat is filled, and no `class.enrolled` fired (winner was raw SQL, contender refused).
+    expect(await totalEnrollments(cls.id)).toBe(1);
+    expect(await eventsSince("class.enrolled")).toEqual([]);
+    // The barrier genuinely engaged: the contender was seen blocked on the class lock.
+    expect(outcome.observedBlocked).toBe(true);
+  });
+});
+
+describe("a student message races a concurrent session completion (R2-1)", () => {
+  it("a completion committing during the message write leaves nothing written and nothing emitted", async () => {
+    const prof = await seedProfessor();
+    const cls = await seedActiveClass(prof);
+    const agentId = await seedAgent();
+    await enrollInClass(cls.id, agentId);
+    const sessionId = await seedSession(cls.id, "active");
+
+    baselineEventId = Number((await pgPool().query(`SELECT COALESCE(MAX(id), 0)::bigint AS id FROM events`)).rows[0].id);
+
+    const outcome = await raceAgainstHeldLock({
+      // Complete the session, uncommitted, holding the session row `FOR UPDATE`. The message's
+      // `FOR SHARE` read blocks here; a bare snapshot read (the R2-1 defect) would see the pre-update
+      // active row and let the message land on a session being completed.
+      hold: async (holder) => {
+        await holder.query(`UPDATE class_sessions SET status = 'completed', ended_at = NOW() WHERE id = $1`, [sessionId]);
+      },
+      contend: async () => await addSessionMessageAsStudent(cls.id, sessionId, agentId, "hello", [messageEvent(agentId, sessionId)]),
+      contenderMarker: "class:msg-session-lock",
+    });
+
+    expect(outcome.result.message).toBeNull();
+    expect(outcome.result.sessionActive).toBe(false);
+    const { rows } = await pgPool().query(`SELECT count(*)::int AS c FROM class_session_messages WHERE session_id = $1`, [sessionId]);
+    expect(rows[0].c).toBe(0);
+    expect(await eventsSince("class.session_message")).toEqual([]);
+    expect(outcome.observedBlocked).toBe(true);
+  });
+});
+
+describe("the messages route renders the full 201 body for each actor branch, and gates the assistant on the school (R2-2)", () => {
+  async function readBody(res: Response): Promise<Record<string, unknown>> {
+    return (await res.json()) as Record<string, unknown>;
+  }
+
+  it("professor branch returns 201 with the operator message body (no event)", async () => {
+    const prof = await seedProfessor();
+    const cls = await seedActiveClass(prof);
+    const sessionId = await seedSession(cls.id, "active");
+    baselineEventId = Number((await pgPool().query(`SELECT COALESCE(MAX(id), 0)::bigint AS id FROM events`)).rows[0].id);
+
+    const res = await postSessionMessage(
+      messageRequest(cls.id, sessionId, professorKeyFor(prof)),
+      messageRouteParams(cls.id, sessionId)
+    );
+
+    expect(res.status).toBe(201);
+    const body = await readBody(res);
+    expect(body).toMatchObject({
+      success: true,
+      data: {
+        id: expect.any(String),
+        sessionId,
+        senderId: prof,
+        senderRole: "professor",
+        content: "hello",
+        sequence: expect.any(Number),
+        createdAt: expect.any(String),
+      },
+    });
+    expect(await eventsSince("class.session_message")).toEqual([]);
+  });
+
+  it("agent teaching-assistant branch returns 201 with the operator message body (no event)", async () => {
+    const prof = await seedProfessor();
+    const cls = await seedActiveClass(prof);
+    const sessionId = await seedSession(cls.id, "active");
+    const ta = await seedAgent();
+    await addClassAssistant(cls.id, ta);
+    baselineEventId = Number((await pgPool().query(`SELECT COALESCE(MAX(id), 0)::bigint AS id FROM events`)).rows[0].id);
+
+    const res = await postSessionMessage(
+      messageRequest(cls.id, sessionId, apiKeyFor(ta)),
+      messageRouteParams(cls.id, sessionId)
+    );
+
+    expect(res.status).toBe(201);
+    const body = await readBody(res);
+    expect(body).toMatchObject({
+      success: true,
+      data: {
+        id: expect.any(String),
+        sessionId,
+        senderId: ta,
+        senderRole: "ta",
+        content: "hello",
+        sequence: expect.any(Number),
+        createdAt: expect.any(String),
+      },
+    });
+    expect(await eventsSince("class.session_message")).toEqual([]);
+  });
+
+  it("student branch returns 201 with the emitted student message body and emits class.session_message", async () => {
+    const prof = await seedProfessor();
+    const cls = await seedActiveClass(prof);
+    const sessionId = await seedSession(cls.id, "active");
+    const student = await seedAgent();
+    await enrollInClass(cls.id, student);
+    baselineEventId = Number((await pgPool().query(`SELECT COALESCE(MAX(id), 0)::bigint AS id FROM events`)).rows[0].id);
+
+    const res = await postSessionMessage(
+      messageRequest(cls.id, sessionId, apiKeyFor(student)),
+      messageRouteParams(cls.id, sessionId)
+    );
+
+    expect(res.status).toBe(201);
+    const body = await readBody(res);
+    expect(body).toMatchObject({
+      success: true,
+      data: {
+        id: expect.any(String),
+        sessionId,
+        senderId: student,
+        senderRole: "student",
+        content: "hello",
+        sequence: expect.any(Number),
+        createdAt: expect.any(String),
+      },
+    });
+    const emitted = await eventsSince("class.session_message");
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({ subjectType: "class_session", subjectId: sessionId });
+  });
+
+  it("refuses an unadmitted agent teaching-assistant on a non-Foundation class (the R2-2 bypass)", async () => {
+    // The class belongs to another school; the assistant is vetted (so `requireAgent` passes on the
+    // Foundation host) but not admitted to that school. Before R2-2 the TA branch wrote the message
+    // with no school check; now it must answer 403 admission_required.
+    const savedGate = process.env.ADMISSIONS_GATE_DISABLED;
+    delete process.env.ADMISSIONS_GATE_DISABLED;
+    try {
+      const prof = await seedProfessor();
+      const schoolId = `u3fclschool${RUN}`;
+      const cls = await seedActiveClass(prof, { schoolId });
+      const sessionId = await seedSession(cls.id, "active");
+      const ta = await seedAgent(); // vetted, not admitted
+      await addClassAssistant(cls.id, ta);
+      baselineEventId = Number((await pgPool().query(`SELECT COALESCE(MAX(id), 0)::bigint AS id FROM events`)).rows[0].id);
+
+      // The request reaches the Foundation host (x-school-id: foundation), so `requireAgent` passes
+      // on the weaker rule; the class's own school is what must refuse.
+      const res = await postSessionMessage(
+        messageRequest(cls.id, sessionId, apiKeyFor(ta), "hello", "foundation"),
+        messageRouteParams(cls.id, sessionId)
+      );
+
+      expect(res.status).toBe(403);
+      const body = await readBody(res);
+      expect(body).toMatchObject({ success: false, admission_required: true });
+      const { rows } = await pgPool().query(`SELECT count(*)::int AS c FROM class_session_messages WHERE session_id = $1`, [sessionId]);
+      expect(rows[0].c).toBe(0);
+      expect(await eventsSince()).toEqual([]);
+    } finally {
+      if (savedGate === undefined) delete process.env.ADMISSIONS_GATE_DISABLED;
+      else process.env.ADMISSIONS_GATE_DISABLED = savedGate;
+    }
   });
 });

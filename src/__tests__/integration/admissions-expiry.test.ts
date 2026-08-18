@@ -20,9 +20,21 @@
  *
  * @jest-environment node
  */
-import { runAdmissionsExpiryDuty, getAdmissionsStatusForAgent } from "@/lib/admissions";
+import {
+  runAdmissionsExpiryDuty,
+  getAdmissionsStatusForAgent,
+  ensureApplicationInPool,
+  getApplicationByAgentCycle,
+  updateApplicationNiche,
+  acceptOfferAsAgent,
+  declineOfferAsAgent,
+} from "@/lib/admissions";
+import { deleteAgent } from "@/lib/store";
+import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
+import type { DeleteAgentResult } from "@/lib/store-types";
 
-import { closeIntegrationConnections, pgPool } from "./helpers/db";
+import { closeIntegrationConnections, pgClient, pgPool } from "./helpers/db";
+import { pidOf, waitersOn, waitForWaiter, runConcurrently, rejections } from "./helpers/concurrency";
 
 const RUN = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
 let seq = 0;
@@ -91,13 +103,28 @@ async function appState(appId: string): Promise<string> {
 }
 
 async function expiredEventsFor(offerId: string): Promise<Array<Record<string, unknown>>> {
+  return eventsForKind("admissions.offer_expired", offerId);
+}
+
+async function eventsForKind(kind: string, subjectId: string): Promise<Array<Record<string, unknown>>> {
   const { rows } = await pgPool().query(
     `SELECT actor_agent_id, subject_type, subject_id, secondary_subject_id, payload
        FROM events
-      WHERE id > $1 AND kind = 'admissions.offer_expired' AND subject_id = $2 ORDER BY id`,
-    [baselineEventId, offerId]
+      WHERE id > $1 AND kind = $2 AND subject_id = $3 ORDER BY id`,
+    [baselineEventId, kind, subjectId]
   );
   return rows;
+}
+
+/** Poll until some backend is blocked by `pid` (a third connection reports it), or time out. */
+async function waitForBlockedBy(pid: number, timeoutMs = 5000): Promise<Array<{ pid: number; query: string }>> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const waiters = await waitersOn(pid);
+    if (waiters.length > 0) return waiters;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return [];
 }
 
 /** Fail every event insert of one kind, so the mutation's own rollback can be observed. */
@@ -210,5 +237,192 @@ describe("runAdmissionsExpiryDuty (db mode)", () => {
         `CREATE UNIQUE INDEX IF NOT EXISTS ${ONE_PENDING_INDEX} ON admissions_offers (agent_id) WHERE status = 'pending'`
       );
     }
+  });
+});
+
+/**
+ * R2-4 — the expiry sweep raced against a real withdrawal, on two connections.
+ *
+ * The prior expiry suite only ran the sweep alone, so "it executed" was standing in for "B1's
+ * agents-first order holds". This forces the exact concurrent window: the sweep is mid-statement,
+ * holding the agent it took FIRST (B1's `sweep_agents FOR KEY SHARE`) and blocked on a held offer,
+ * while a `deleteAgent` of that same agent is launched. Under B1 the withdrawal's `DELETE FROM
+ * agents` must QUEUE BEHIND the sweep's agent lock — a linear wait chain with no cycle. Without
+ * agents-first, the sweep would hold no agent lock and the withdrawal would instead block on the
+ * CONTROLLER, never on the sweep — which the `blocked by the sweep` assertion below detects.
+ */
+describe("runAdmissionsExpiryDuty vs deleteAgent — B1 agents-first lock order", () => {
+  it("the withdrawal queues behind the sweep's agent lock and neither deadlocks", async () => {
+    const cycle = await seedCycle();
+    const { agent, app } = await seedOfferedApp(cycle);
+    const offer = await insertOffer(agent, cycle, app, "pending", inHours(-1)); // past-due
+
+    const holder = await pgClient();
+    let sweep: Promise<void> | null = null;
+    let withdrawal: Promise<DeleteAgentResult> | null = null;
+    try {
+      const holderPid = await pidOf(holder);
+      await holder.query("BEGIN");
+      // Hold the offer row. The sweep, having taken the agent FOR KEY SHARE first (B1), blocks HERE.
+      await holder.query(`SELECT id FROM admissions_offers WHERE id = $1 FOR UPDATE`, [offer]);
+
+      sweep = runAdmissionsExpiryDuty();
+      sweep.catch(() => {}); // no unhandled rejection while we poll
+      expect(await waitForWaiter(holderPid, "adm:expiry-sweep")).toBe(true);
+
+      // The sweep now holds the agent FOR KEY SHARE. The withdrawal must block ON THE SWEEP.
+      const sweepPid = (await waitersOn(holderPid, "adm:expiry-sweep"))[0]!.pid;
+      withdrawal = deleteAgent(agent);
+      withdrawal.catch(() => {});
+      const blockedBySweep = await waitForBlockedBy(sweepPid);
+      // This is the whole of B1: the withdrawal is queued behind the sweep's agent lock, not behind
+      // the controller. Zero here means the sweep never took the agent first.
+      expect(blockedBySweep.length).toBeGreaterThan(0);
+    } finally {
+      await holder.query("COMMIT").catch(() => {});
+      await holder.end();
+    }
+
+    // Both finish, and NEITHER 40P01s — the chain (withdrawal → sweep → holder) has no cycle.
+    const outcomes = await runConcurrently<void | DeleteAgentResult>([() => sweep!, () => withdrawal!]);
+    expect(rejections(outcomes)).toEqual([]);
+
+    // The sweep won the agent lock and ran first: it emitted before the withdrawal cascaded the rows
+    // away.
+    expect(await expiredEventsFor(offer)).toHaveLength(1);
+    // The withdrawal then ran: the agent and its cascaded application/offer are gone.
+    expect(outcomes[1]).toMatchObject({ ok: true, value: { ok: true } });
+    const { rows } = await pgPool().query(`SELECT id FROM agents WHERE id = $1`, [agent]);
+    expect(rows).toHaveLength(0);
+  });
+});
+
+/**
+ * R2-4 — every db producer's mutation and its event commit together, so an injected event-insert
+ * failure rolls the mutation back. The expiry sweep already proved this; these cover the other three
+ * admissions producers.
+ */
+describe("db event-insert failure rolls the producer back", () => {
+  const submitEvent = (agentId: string): PreparedEvent<"admissions.application_submitted"> => ({
+    kind: "admissions.application_submitted",
+    actorAgentId: agentId,
+    subjectType: "admissions_application",
+    subjectId: STORE_ASSIGNED_PAYLOAD_ID,
+    payload: { lazy: false },
+  });
+
+  it("application creation: application_submitted failure leaves no application and no event", async () => {
+    const cycle = await seedCycle();
+    const agent = await seedAgent();
+
+    await withEventFailure("admissions.application_submitted", async () => {
+      await expect(ensureApplicationInPool(agent, cycle, [submitEvent(agent)])).rejects.toThrow(/injected/);
+    });
+
+    expect(await getApplicationByAgentCycle(agent, cycle)).toBeNull();
+    const { rows } = await pgPool().query(
+      `SELECT id FROM events WHERE id > $1 AND kind = 'admissions.application_submitted' AND actor_agent_id = $2`,
+      [baselineEventId, agent]
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  it("acceptance: offer_accepted failure leaves the offer pending, unaccepted, and the agent not admitted", async () => {
+    const cycle = await seedCycle();
+    const { agent, app } = await seedOfferedApp(cycle);
+    const offer = await insertOffer(agent, cycle, app, "pending", inHours(48)); // live
+    const acceptEvent: PreparedEvent<"admissions.offer_accepted"> = {
+      kind: "admissions.offer_accepted", actorAgentId: agent, subjectType: "admissions_offer",
+      subjectId: offer, secondarySubjectId: app, payload: {},
+    };
+
+    await withEventFailure("admissions.offer_accepted", async () => {
+      await expect(acceptOfferAsAgent(offer, agent, [acceptEvent])).rejects.toThrow(/injected/);
+    });
+
+    expect(await offerStatus(offer)).toBe("pending");
+    const { rows: offerRows } = await pgPool().query(
+      `SELECT accepted_at_agent FROM admissions_offers WHERE id = $1`,
+      [offer]
+    );
+    expect(offerRows[0].accepted_at_agent).toBeNull();
+    expect(await appState(app)).toBe("offered"); // the finalize's app transition rolled back too
+    const { rows: agentRows } = await pgPool().query(`SELECT is_admitted FROM agents WHERE id = $1`, [agent]);
+    expect(agentRows[0].is_admitted).toBe(false); // the finalize's admit rolled back too
+    const { rows: audit } = await pgPool().query(
+      `SELECT id FROM admissions_audit WHERE offer_id = $1 AND action = 'accept_agent'`,
+      [offer]
+    );
+    expect(audit).toHaveLength(0);
+    expect(await eventsForKind("admissions.offer_accepted", offer)).toEqual([]);
+  });
+
+  it("decline: offer_declined failure leaves the offer pending and the application offered", async () => {
+    const cycle = await seedCycle();
+    const { agent, app } = await seedOfferedApp(cycle);
+    const offer = await insertOffer(agent, cycle, app, "pending", inHours(48)); // live
+    const declineEvent: PreparedEvent<"admissions.offer_declined"> = {
+      kind: "admissions.offer_declined", actorAgentId: agent, subjectType: "admissions_offer",
+      subjectId: offer, secondarySubjectId: app, payload: {},
+    };
+
+    await withEventFailure("admissions.offer_declined", async () => {
+      await expect(declineOfferAsAgent(offer, agent, [declineEvent])).rejects.toThrow(/injected/);
+    });
+
+    expect(await offerStatus(offer)).toBe("pending");
+    expect(await appState(app)).toBe("offered");
+    const { rows: audit } = await pgPool().query(
+      `SELECT id FROM admissions_audit WHERE offer_id = $1 AND action = 'decline'`,
+      [offer]
+    );
+    expect(audit).toHaveLength(0);
+    expect(await eventsForKind("admissions.offer_declined", offer)).toEqual([]);
+  });
+});
+
+/**
+ * R2-3 — the niche edit is ONE conditional UPDATE whose `state NOT IN ('rejected','admitted')`
+ * predicate is the authoritative editability gate. A decided application matches zero rows and is
+ * left untouched, so a staff decision that lands after the action's pre-read cannot be overwritten.
+ */
+describe("updateApplicationNiche (db) — decided applications are not editable", () => {
+  async function seedApp(cycle: string, state: string, primaryDomain: string | null): Promise<string> {
+    const agent = await seedAgent();
+    const appId = nextId("app");
+    await pgPool().query(
+      `INSERT INTO admissions_applications (id, agent_id, cycle_id, state, primary_domain) VALUES ($1,$2,$3,$4,$5)`,
+      [appId, agent, cycle, state, primaryDomain]
+    );
+    return appId;
+  }
+
+  it("edits an OPEN application and returns the updated row", async () => {
+    const cycle = await seedCycle();
+    const appId = await seedApp(cycle, "in_pool", null);
+
+    const updated = await updateApplicationNiche(appId, { primaryDomain: "robotics" });
+    expect(updated).not.toBeNull();
+    expect(updated!.primaryDomain).toBe("robotics");
+  });
+
+  it("refuses a REJECTED application and writes nothing", async () => {
+    const cycle = await seedCycle();
+    const appId = await seedApp(cycle, "rejected", "orig");
+
+    const updated = await updateApplicationNiche(appId, { primaryDomain: "robotics" });
+    expect(updated).toBeNull();
+    const { rows } = await pgPool().query(`SELECT primary_domain FROM admissions_applications WHERE id = $1`, [appId]);
+    expect(rows[0].primary_domain).toBe("orig");
+  });
+
+  it("refuses an ADMITTED application and writes nothing", async () => {
+    const cycle = await seedCycle();
+    const appId = await seedApp(cycle, "admitted", "orig");
+
+    const updated = await updateApplicationNiche(appId, { primaryDomain: "robotics" });
+    expect(updated).toBeNull();
+    const { rows } = await pgPool().query(`SELECT primary_domain FROM admissions_applications WHERE id = $1`, [appId]);
+    expect(rows[0].primary_domain).toBe("orig");
   });
 });

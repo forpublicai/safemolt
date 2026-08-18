@@ -109,6 +109,7 @@ export async function refreshExpiredOffersDb(): Promise<void> {
     } }],
   });
   await sql!(`
+    /* adm:expiry-sweep */
     WITH sweep_agents AS (
       -- Agents first, id-ordered, so this sweep and agent deletion cannot take the same rows in
       -- opposite orders, and two concurrent sweeps cannot either.
@@ -252,6 +253,19 @@ export async function transitionApplicationStateDb(
   return getApplicationByIdDb(applicationId);
 }
 
+/**
+ * Niche edit as ONE conditional UPDATE, gated on an allowed-state predicate (M11-2 u3f R2-3).
+ *
+ * The pre-D6-style shape pre-read the row, then UPDATEd with no state condition, so a staff
+ * admit/reject landing between the action's read and this write let the agent edit a CLOSED
+ * application from stale data (the pre-read-is-stale rule). The write is now the authoritative gate:
+ * `state NOT IN ('rejected','admitted')` in the WHERE clause means a raced-closed application
+ * matches ZERO rows and the statement returns null, and the action classifies that null as
+ * `application_closed`.
+ *
+ * There is no field pre-read to lose an update against, either: per field, the CASE keeps the column
+ * when the caller did not supply it and writes it — value or explicit NULL — when the caller did.
+ */
 export async function updateApplicationNicheDb(
   applicationId: string,
   fields: {
@@ -260,20 +274,21 @@ export async function updateApplicationNicheDb(
     evaluationPlan?: string | null;
   }
 ): Promise<StoredAdmissionsApplication | null> {
-  const cur = await getApplicationByIdDb(applicationId);
-  if (!cur) return null;
-  const pd = fields.primaryDomain !== undefined ? fields.primaryDomain : cur.primaryDomain;
-  const ng = fields.nonGoals !== undefined ? fields.nonGoals : cur.nonGoals;
-  const ep = fields.evaluationPlan !== undefined ? fields.evaluationPlan : cur.evaluationPlan;
-  await sql!`
+  const pdSet = fields.primaryDomain !== undefined;
+  const ngSet = fields.nonGoals !== undefined;
+  const epSet = fields.evaluationPlan !== undefined;
+  const rows = await sql!`
     UPDATE admissions_applications
-    SET primary_domain = ${pd},
-        non_goals = ${ng},
-        evaluation_plan = ${ep},
+    SET primary_domain = CASE WHEN ${pdSet}::boolean THEN ${fields.primaryDomain ?? null}::text ELSE primary_domain END,
+        non_goals = CASE WHEN ${ngSet}::boolean THEN ${fields.nonGoals ?? null}::text ELSE non_goals END,
+        evaluation_plan = CASE WHEN ${epSet}::boolean THEN ${fields.evaluationPlan ?? null}::text ELSE evaluation_plan END,
         updated_at = NOW()
     WHERE id = ${applicationId}
+      AND state NOT IN ('rejected', 'admitted')
+    RETURNING *
   `;
-  return getApplicationByIdDb(applicationId);
+  const r = rows[0] as Record<string, unknown> | undefined;
+  return r ? rowApp(r) : null;
 }
 
 export async function updateApplicationDedupeDb(

@@ -33,6 +33,7 @@ import {
   getOfferByIdMem,
   refreshExpiredOffersMem,
   transitionApplicationStateMem,
+  updateApplicationNicheMem,
 } from "@/lib/admissions/store-memory";
 import { acceptAgentOffer, declineAgentOffer, ensurePoolApplication } from "@/lib/actions/admissions";
 import { linkUserToAgent } from "@/lib/human-users-memory";
@@ -255,6 +256,32 @@ describe("expiry — memory driver emits admissions.offer_expired (B2)", () => {
     expect(since(before, "admissions.offer_expired").filter((e) => e.subjectId === offer)).toEqual([]);
     expect((await getOfferByIdMem(offer))!.status).toBe("pending");
     expect((await getApplicationByIdMem(app))!.state).toBe("offered");
+  });
+});
+
+describe("niche edit — the store re-checks editability before the write (R2-3)", () => {
+  it("edits an OPEN application and returns the updated row", async () => {
+    const cycle = await openCycle();
+    const agent = seedAgent();
+    const app = await ensureApplicationInPoolMem(agent.id, cycle, [submitEvent(agent.id, true)]);
+
+    const updated = await updateApplicationNicheMem(app.id, { primaryDomain: "robotics" });
+    expect(updated).not.toBeNull();
+    expect(updated!.primaryDomain).toBe("robotics");
+    expect((await getApplicationByIdMem(app.id))!.primaryDomain).toBe("robotics");
+  });
+
+  it("refuses to edit a CLOSED application and writes nothing", async () => {
+    const cycle = await openCycle();
+    const agent = seedAgent();
+    const app = await ensureApplicationInPoolMem(agent.id, cycle, [submitEvent(agent.id, true)]);
+    // A staff decision closed the application after the action's pre-read would have seen it open.
+    await transitionApplicationStateMem(app.id, "rejected");
+
+    const updated = await updateApplicationNicheMem(app.id, { primaryDomain: "robotics" });
+    expect(updated).toBeNull();
+    // The niche field was NOT written: the decided application is untouched.
+    expect((await getApplicationByIdMem(app.id))!.primaryDomain).toBeNull();
   });
 });
 

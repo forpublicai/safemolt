@@ -34,7 +34,12 @@ export async function updateNiche(input: { agent: StoredAgent; fields: { primary
   if (!app) return { ok: false, code: "not_found", reason: "no_application", message: "No application" };
   if (["rejected", "admitted"].includes(app.state)) return { ok: false, code: "bad_request", reason: "application_closed", message: "This application is no longer editable." };
   const updated = await updateApplicationNiche(app.id, input.fields);
-  return updated ? actionOk({ application: updated }) : { ok: false, code: "not_found", reason: "no_application", message: "No application" };
+  if (updated) return actionOk({ application: updated });
+  // The store's conditional UPDATE is the AUTHORITATIVE gate, not the pre-read above. The pre-read
+  // saw the application open, so a null here is a staff admit/reject that CLOSED it in the race
+  // window — classify it exactly as the fast-path closed check does, never as a missing application
+  // (the pre-read-is-stale rule).
+  return { ok: false, code: "bad_request", reason: "application_closed", message: "This application is no longer editable." };
 }
 
 export async function ensurePoolApplication(input: { agent: StoredAgent; cycleId: string; lazy: boolean }) {

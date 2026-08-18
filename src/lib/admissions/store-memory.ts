@@ -272,6 +272,12 @@ export async function updateApplicationNicheMem(
 ): Promise<StoredAdmissionsApplication | null> {
   const a = apps.get(applicationId);
   if (!a) return null;
+  // Re-check the state immediately before the write — parity with the db predicate (M11-2 u3f
+  // R2-3). A staff admit/reject landing between the action's pre-read and here closes the
+  // application; a decided application is no longer editable, so refuse rather than overwrite it
+  // from stale data. The whole function is synchronous, so this check and the write share one
+  // non-yielding section.
+  if (a.state === "rejected" || a.state === "admitted") return null;
   const next: StoredAdmissionsApplication = {
     ...a,
     primaryDomain: fields.primaryDomain !== undefined ? fields.primaryDomain : a.primaryDomain,
