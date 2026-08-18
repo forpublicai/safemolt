@@ -22,7 +22,11 @@ do not push unless the user asks. Commit ladder this session, oldest first:
 | `34c53c6` | u4prep2 follow-label parity repair |
 | `ac7c901` | u3e tests-only evidence round (production frozen) |
 | `a2585c5` | u3f: the eleven kinds + none-manifests pre-landed |
-| *(next)* | u3f: both lanes' implementation + the UX6 re-anchor — the commit this handoff ships with |
+| `682e40a` | u3f: both lanes' implementation + the UX6 re-anchor |
+| `bc1dcb1` | u3f-LITE review round 1 closed (avatar statement-return race + 429/503 pins + rollback coverage) |
+| `30acf36` | u3f-CORE review round 1 closed (3 BLOCKER + 7 MAJOR) |
+| `a06175d` | u3f-CORE review round 2 closed (4 MAJOR) |
+| `c0b2f9b` | u3f-CORE review round 3 closed (enroll-cap race proof strengthened) — **u3f CONVERGED (codex r4 clean)** |
 
 ## Verified state at the break
 
@@ -98,7 +102,7 @@ do not push unless the user asks. Commit ladder this session, oldest first:
 | u3d | P1.4 playground slice | **converged 2026-08-13** (combined convergence round, clean verdict) |
 | u4prep2 | drain-time shadow comparison | **converged 2026-08-13** ("No findings"). Final design: every transitional projection is STATEMENT-ATOMIC with its event (follow + group-join were the last two spliced), which is what makes the `superseded` stamp safe without an evidence ledger |
 | u3e | P1.4 evaluations + agent lifecycle | **fully converged 2026-08-13** after 12 scoped review rounds + 13 luna fix rounds + 5 orchestrator repairs + 1 tests-only opus round ("the u3e review is complete with zero production defects"). Full trail + all findings files in `ai/m11-2-handoff/` |
-| u3f | P1.4 last slice: classes, memory, profile, admissions, inbox | **IMPLEMENTED, NOT YET REVIEWED** — see next steps |
+| u3f | P1.4 last slice: classes, memory, profile, admissions, inbox | **CONVERGED 2026-08-18** — LITE one round (3 MAJOR); CORE r1 (3 BLOCKER + 7 MAJOR) → r2 (4 MAJOR) → r3 (1 test-proof gap) → r4 CLEAN "CONVERGED". Two opus lanes per round on disjoint fences (admissions/classes). Full findings + adjudication in `ai/m11-2-handoff/codex-findings-u3f-*.md` |
 
 ## u3f state at the stop (implemented on disk, committed, unreviewed)
 
@@ -136,15 +140,16 @@ prepared `class.evaluation_submitted` event; both lanes independently flagged it
 
 ## Next steps, in order
 
-1. **u3f review rounds (the risk split, directive 7).** LITE: ONE codex round over the lite
-   surface, stop unless BLOCKER/MAJOR. CORE: BLOCKER/MAJOR iteration on the two
-   atomicity-bearing spots — the admissions batch order and the drain-route expiry sweep — plus
-   the mixed-actor split's boundary (the messages route must import no mutating store export).
-   Write the two scoped prompts the way the u3e pair was written (`codex-u3e-review-{a,b}.md` are
-   the template: scope list, established contracts, "Recent (this round's subject)", priorities,
-   "do NOT run jest/build", `< /dev/null`, quiet machine, solo, sequential). Fix rounds: luna for
-   store/statement work, an opus subagent for tests-only work. Full five gates + checkpoint commit
-   per round boundary.
+0. **u3f review — DONE, CONVERGED 2026-08-18** (was step 1). LITE one codex round (3 MAJOR fixed,
+   `bc1dcb1`); CORE four rounds — r1 3 BLOCKER + 7 MAJOR (`30acf36`), r2 4 MAJOR (`a06175d`), r3 one
+   test-proof gap (`c0b2f9b`), r4 clean "CONVERGED". The loop that worked this session: two OPUS
+   harness subagents per round on disjoint fences (admissions / classes), orchestrator re-verifies
+   the FULL five gates itself, checkpoint commit per green boundary, codex re-review to convergence.
+   Reviewer prompts + findings + fix specs archived as `ai/m11-2-handoff/codex-u3f-review-*.md`,
+   `codex-findings-u3f-*.md`, `u3f-core-fix-*-prompt.md`. **One product decision left open for the
+   user (finding B3): agent teaching-assistant class messages are now history-silent per the
+   u3f-spec's professor/TA operator branch — reversible in the messages route + `sendSessionMessage`
+   action if the user wants TA messages to keep emitting.** THE NEXT STEP IS NOW P1.5/P1.6.
 2. **P1.5 / P1.6** — remaining tools/routes become adapters everywhere; the generated ESLint
    boundary + `src/lib/store/export-manifest.ts` + AST discipline test + manifest-completeness
    test; the permanent exemption list per the Surface bound (the about-timeline reaction route and
