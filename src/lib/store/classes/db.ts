@@ -599,15 +599,19 @@ export async function addClassSessionMessage(
 }
 
 /**
- * The result of an enrolled-student session message (M11-2 u3f-core M4). Session-active and
- * enrollment were pre-read by the action, then the insert ran unconditionally and emitted
+ * The result of an agent session message — an enrolled STUDENT or a class ASSISTANT (TA)
+ * (M11-2 u3f-core M4; TA-emit restored per the user's B3 decision 2026-08-18). Session-active and
+ * participation were pre-read by the action, then the insert ran unconditionally and emitted
  * `class.session_message` even for a session that completed mid-flight. Both gates now live in the
- * statement; `message` is the row when it passed, and the flags say why it did not.
+ * statement; `message` is the row when it passed, and the flags say why it did not. `isAssistant`
+ * decides the stored role (`ta` vs `student`) from the SAME locked read that authorized the write,
+ * so a concurrently-revoked assistant cannot be mislabeled.
  */
 export interface StudentMessageOutcome {
     message: StoredClassSessionMessage | null;
     sessionActive: boolean;
     enrolled: boolean;
+    isAssistant: boolean;
 }
 
 export async function addSessionMessageAsStudent(
@@ -620,35 +624,39 @@ export async function addSessionMessageAsStudent(
     const resolvedClassId = (await resolveClassId(classId)) ?? classId;
     const id = generateClassId('cmsg');
     const createdAt = new Date().toISOString();
-    // $1 id, $2 session, $3 agent, $4 role, $5 content, $6 createdAt, $7 class.
-    const params = [id, sessionId, agentId, 'student', content, createdAt, resolvedClassId];
+    // $1 id, $2 session, $3 agent, $4 content, $5 createdAt, $6 class. The role is decided IN the
+    // statement from the locked assistant read, so it is not a parameter.
+    const params = [id, sessionId, agentId, content, createdAt, resolvedClassId];
     const emitted = emitEventCtes(events, "inserted", {
         firstParamIndex: params.length + 1,
         overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(2, "text") }, payloadMergeSql: sqlPayloadObject({ message_id: sqlParam(1, "text") }) }] : [],
     });
-    // The session and the sender's enrollment are re-checked under a `FOR SHARE` LOCK, never a bare
-    // snapshot read (M11-2 u3f-core R2-1; agents.md "a parent-liveness check inside a write is a
-    // FOR SHARE LOCK, never a bare EXISTS"). A bare read is snapshot-evaluated and never re-checked,
-    // so a session completing (or the agent dropping) concurrently could commit after this
-    // statement's snapshot and still let the message land. `FOR SHARE` follows the update chain to
-    // the latest committed row and conflicts with the completer's / dropper's `FOR UPDATE`, so a
-    // concurrent completion or drop either loses to this read or is seen by it.
+    // The session, the sender's enrollment AND the sender's assistant row are re-checked under a
+    // `FOR SHARE` LOCK, never a bare snapshot read (M11-2 u3f-core R2-1; agents.md "a parent-liveness
+    // check inside a write is a FOR SHARE LOCK, never a bare EXISTS"). A bare read is snapshot-
+    // evaluated and never re-checked, so a session completing (or the agent dropping) concurrently
+    // could commit after this statement's snapshot and still let the message land. `FOR SHARE`
+    // follows the update chain to the latest committed row and conflicts with the completer's /
+    // dropper's `FOR UPDATE`. An assistant OR an enrolled (non-dropped) student may post; the role
+    // is `ta` for an assistant and `student` otherwise, from the same locked read.
     const rows = await sql!(`WITH
         sess AS (SELECT status FROM class_sessions WHERE id = $2 FOR SHARE /* class:msg-session-lock */),
-        enr AS (SELECT 1 AS ok FROM class_enrollments WHERE class_id = $7 AND agent_id = $3 AND status <> 'dropped' FOR SHARE),
+        enr AS (SELECT 1 AS ok FROM class_enrollments WHERE class_id = $6 AND agent_id = $3 AND status <> 'dropped' FOR SHARE),
+        asst AS (SELECT 1 AS ok FROM class_assistants WHERE class_id = $6 AND agent_id = $3 FOR SHARE),
         gate AS (
             SELECT
                 COALESCE((SELECT status = 'active' FROM sess), false) AS session_active,
-                EXISTS (SELECT 1 FROM enr) AS enrolled
+                EXISTS (SELECT 1 FROM enr) AS enrolled,
+                EXISTS (SELECT 1 FROM asst) AS is_assistant
         ),
         inserted AS (
             INSERT INTO class_session_messages (id, session_id, sender_id, sender_role, content, created_at, sequence)
-            SELECT $1, $2, $3, $4, $5, $6,
+            SELECT $1, $2, $3, CASE WHEN g.is_assistant THEN 'ta' ELSE 'student' END, $4, $5,
                 COALESCE((SELECT MAX(sequence) + 1 FROM class_session_messages WHERE session_id = $2), 1)
-            FROM gate WHERE session_active AND enrolled
+            FROM gate g WHERE g.session_active AND (g.enrolled OR g.is_assistant)
             RETURNING id, sequence, created_at
         )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""}
-        SELECT g.session_active, g.enrolled, i.id, i.sequence, i.created_at
+        SELECT g.session_active, g.enrolled, g.is_assistant, i.id, i.sequence, i.created_at
         FROM gate g LEFT JOIN inserted i ON true`, [...params, ...emitted.params]);
     const row = (rows as Array<Record<string, unknown>>)[0] ?? {};
     const message: StoredClassSessionMessage | null = row.id
@@ -656,13 +664,18 @@ export async function addSessionMessageAsStudent(
             id: String(row.id),
             sessionId,
             senderId: agentId,
-            senderRole: 'student',
+            senderRole: row.is_assistant ? 'ta' : 'student',
             content,
             sequence: Number(row.sequence ?? 1),
             createdAt: row.created_at ? String(row.created_at) : createdAt,
         }
         : null;
-    return { message, sessionActive: Boolean(row.session_active), enrolled: Boolean(row.enrolled) };
+    return {
+        message,
+        sessionActive: Boolean(row.session_active),
+        enrolled: Boolean(row.enrolled),
+        isAssistant: Boolean(row.is_assistant),
+    };
 }
 
 export async function getClassSessionMessages(sessionId: string): Promise<StoredClassSessionMessage[]> {

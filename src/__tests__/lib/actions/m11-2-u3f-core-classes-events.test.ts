@@ -113,15 +113,17 @@ function makeStore(s: FakeState) {
         const sessionActive = sess?.status === "active";
         const enr = s.enrollments.get(key(classId, agentId));
         const enrolled = !!enr && enr.status !== "dropped";
-        if (sessionActive && enrolled) {
+        const isAssistant = s.assistants.has(key(classId, agentId));
+        if (sessionActive && (enrolled || isAssistant)) {
           if (events) s.emitted.push(...events);
           return {
-            message: { id: `cmsg_${agentId}`, sessionId, senderId: agentId, senderRole: "student" as const, content, sequence: 1, createdAt: "t" },
+            message: { id: `cmsg_${agentId}`, sessionId, senderId: agentId, senderRole: isAssistant ? ("ta" as const) : ("student" as const), content, sequence: 1, createdAt: "t" },
             sessionActive: true,
-            enrolled: true,
+            enrolled,
+            isAssistant,
           };
         }
-        return { message: null, sessionActive: !!sessionActive, enrolled };
+        return { message: null, sessionActive: !!sessionActive, enrolled, isAssistant };
       }
     ),
 
@@ -445,7 +447,7 @@ describe("the messages route splits the operator branch from the student branch 
     expect(state.emitted).toEqual([]);
   });
 
-  it("routes an agent teaching-assistant through the operator writer with no event", async () => {
+  it("routes an agent teaching-assistant through the action, which emits class.session_message (B3: TA emits)", async () => {
     const state = freshState();
     const cls = seedClass(state, { professorId: "prof-1" });
     const sessionId = activeSession(state, cls);
@@ -459,8 +461,10 @@ describe("the messages route splits the operator branch from the student branch 
     const res = await POST(req(), { params: Promise.resolve({ id: cls.id, sessionId }) });
 
     expect(res.status).toBe(201);
-    expect(oper.addOperatorClassSessionMessage).toHaveBeenCalledWith(sessionId, ta.id, "ta", "hello");
-    expect(state.emitted).toEqual([]);
+    // The TA no longer uses the history-silent operator writer; the action emits the event.
+    expect(oper.addOperatorClassSessionMessage).not.toHaveBeenCalled();
+    expect(state.emitted).toHaveLength(1);
+    expect(state.emitted[0]).toMatchObject({ kind: "class.session_message", actorAgentId: ta.id, subjectId: sessionId });
   });
 
   it("routes an enrolled student through the action, which emits class.session_message", async () => {

@@ -17,15 +17,16 @@ describe("u3f core migration seams", () => {
     expect(read("src/app/api/v1/classes/[id]/route.ts")).toContain("@/lib/class-ops");
   });
 
-  it("detects the agent teaching-assistant in the messages route (B3 split)", () => {
+  it("routes every agent message through the action; only the professor is operator-owned (B3: TA emits)", () => {
     const messages = read("src/app/api/v1/classes/[id]/sessions/[sessionId]/messages/route.ts");
-    // The route routes the professor and the agent-TA to the operator writer, and only the enrolled
-    // student to the action — so the assistant is detected HERE, not inside the student action.
-    expect(messages).toContain("isClassAssistant");
+    // Only the human professor stays on the history-silent operator writer; every agent — an
+    // enrolled student OR a class assistant (TA) — goes through the action, which emits. The route
+    // no longer special-cases the TA (the store gate admits an assistant and stamps role `ta`).
     expect(messages).toContain("addOperatorClassSessionMessage");
     expect(messages).toContain("sendSessionMessage");
-    const action = read("src/lib/actions/classes.ts");
-    expect(action).not.toContain("isClassAssistant");
+    expect(messages).not.toContain("isClassAssistant");
+    // The gated writer authorizes an assistant OR an enrolled student in-statement and derives the role.
+    expect(read("src/lib/store/classes/db.ts")).toContain("class_assistants WHERE class_id = $6");
   });
 
   it("moves the professor PATCH write behind class-ops (M8: no mutating store import)", () => {

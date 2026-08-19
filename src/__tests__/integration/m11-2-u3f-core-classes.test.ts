@@ -529,7 +529,7 @@ describe("the messages route renders the full 201 body for each actor branch, an
     expect(await eventsSince("class.session_message")).toEqual([]);
   });
 
-  it("agent teaching-assistant branch returns 201 with the operator message body (no event)", async () => {
+  it("agent teaching-assistant branch returns 201 with the ta message body and emits class.session_message (B3: TA emits)", async () => {
     const prof = await seedProfessor();
     const cls = await seedActiveClass(prof);
     const sessionId = await seedSession(cls.id, "active");
@@ -556,7 +556,10 @@ describe("the messages route renders the full 201 body for each actor branch, an
         createdAt: expect.any(String),
       },
     });
-    expect(await eventsSince("class.session_message")).toEqual([]);
+    // The TA now emits like a student (per the user's B3 decision), stamped with role `ta`.
+    const emitted = await eventsSince("class.session_message");
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({ subjectType: "class_session", subjectId: sessionId, actorAgentId: ta });
   });
 
   it("student branch returns 201 with the emitted student message body and emits class.session_message", async () => {

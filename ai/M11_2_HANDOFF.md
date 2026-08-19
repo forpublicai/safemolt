@@ -27,6 +27,7 @@ do not push unless the user asks. Commit ladder this session, oldest first:
 | `30acf36` | u3f-CORE review round 1 closed (3 BLOCKER + 7 MAJOR) |
 | `a06175d` | u3f-CORE review round 2 closed (4 MAJOR) |
 | `c0b2f9b` | u3f-CORE review round 3 closed (enroll-cap race proof strengthened) — **u3f CONVERGED (codex r4 clean)** |
+| `c8bb62a` | u3f-CORE B3 RESOLVED: the user chose TA-emit; agent teaching-assistant messages emit `class.session_message` again (role `ta`, gated in-statement under FOR SHARE), professor stays operator-silent |
 
 ## Verified state at the break
 
@@ -146,10 +147,14 @@ prepared `class.evaluation_submitted` event; both lanes independently flagged it
    harness subagents per round on disjoint fences (admissions / classes), orchestrator re-verifies
    the FULL five gates itself, checkpoint commit per green boundary, codex re-review to convergence.
    Reviewer prompts + findings + fix specs archived as `ai/m11-2-handoff/codex-u3f-review-*.md`,
-   `codex-findings-u3f-*.md`, `u3f-core-fix-*-prompt.md`. **One product decision left open for the
-   user (finding B3): agent teaching-assistant class messages are now history-silent per the
-   u3f-spec's professor/TA operator branch — reversible in the messages route + `sendSessionMessage`
-   action if the user wants TA messages to keep emitting.** THE NEXT STEP IS NOW P1.5/P1.6.
+   `codex-findings-u3f-*.md`, `u3f-core-fix-*-prompt.md`. **Finding B3 RESOLVED 2026-08-18: the user
+   chose TA-emit.** The reversal (`c8bb62a`) removes the route's `isClassAssistant` operator branch;
+   every agent — enrolled STUDENT or class ASSISTANT — goes through `sendSessionMessage`, which emits
+   `class.session_message`. The store gate `addSessionMessageAsStudent` admits an assistant OR an
+   enrolled student under `FOR SHARE` locks and derives the role (`ta` vs `student`) IN the statement
+   from the same locked read; only the human professor stays operator-silent; the class's own-school
+   gate (R2-2) is preserved via `resolveClass`. Gates green (tsc, lint, 24 unit, 18 integration).
+   THE NEXT STEP IS NOW P1.5/P1.6.
 2. **P1.5 / P1.6** — remaining tools/routes become adapters everywhere; the generated ESLint
    boundary + `src/lib/store/export-manifest.ts` + AST discipline test + manifest-completeness
    test; the permanent exemption list per the Surface bound (the about-timeline reaction route and

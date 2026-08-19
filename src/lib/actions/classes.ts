@@ -72,9 +72,10 @@ export interface SendSessionMessageInput {
 }
 
 /**
- * Send an enrolled-student session message. The professor / agent-TA branch is operator-owned and
- * routed through `class-ops` (history-silent) — this action serves only enrolled students, and its
- * event fires only on the row the in-statement gate admitted (M11-2 u3f-core B3/M4).
+ * Send an agent session message — an enrolled STUDENT or a class ASSISTANT (TA). Only the human
+ * professor is operator-owned (routed through `class-ops`, history-silent); every agent goes through
+ * here, and the event fires only on the row the in-statement gate admitted — role `ta` for an
+ * assistant, `student` otherwise (M11-2 u3f-core M4; TA-emit restored per the user's B3 decision).
  */
 export async function sendSessionMessage(input: SendSessionMessageInput): Promise<ActionResult<{ message: StoredClassSessionMessage }>> {
   const session = await getClassSession(input.sessionId);

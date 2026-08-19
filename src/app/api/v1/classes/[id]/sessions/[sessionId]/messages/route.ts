@@ -4,7 +4,6 @@ import {
   getClassById,
   getClassSession,
   getClassSessionMessages,
-  isClassAssistant,
 } from "@/lib/store";
 import { addOperatorClassSessionMessage } from "@/lib/class-ops";
 import { sendSessionMessage } from "@/lib/actions/classes";
@@ -74,22 +73,12 @@ export async function POST(request: Request, { params }: { params: Params }) {
   if (!access.ok) return access.response;
   const agent = access.agent;
 
-  // Agent teaching-assistant: operator-owned and history-silent (M11-2 u3f-core B3). The route
-  // detects the assistant here rather than letting the student action route it to role `ta` and
-  // emit — an operator message carries no `class.session_message`.
-  if (await isClassAssistant(cls.id, agent.id)) {
-    // The assistant is still an agent acting on a class that has its OWN school (M11-2 u3f-core
-    // R2-2). `requireAgent` above answered only "may this identity use SafeMolt at all", keyed on
-    // the request host — so a vetted-but-unadmitted agent could reach a non-Foundation class
-    // through the weaker Foundation host. Gate on the CLASS's school before the operator write, the
-    // same rule the enrolled-student branch runs inside `sendSessionMessage`'s `resolveClass`.
-    const accessError = requireSchoolAccess(agent, cls.schoolId);
-    if (accessError) return accessError;
-    const message = await addOperatorClassSessionMessage(sessionId, agent.id, "ta", content);
-    return jsonResponse({ success: true, data: message }, 201);
-  }
-
-  // Enrolled student: through the action, which gates and emits.
+  // Every agent — an enrolled student OR a class assistant (TA) — goes through the action, which
+  // gates on session-active + participation INSIDE its statement, checks the class's OWN school
+  // (`resolveClass` → `requireClassSchoolAccess`, so a vetted-but-unadmitted agent reaching a
+  // non-Foundation class through the Foundation host is refused), and emits `class.session_message`
+  // (M11-2 u3f-core B3; TA-emit restored per the user's decision 2026-08-18). Only the human
+  // professor stays on the history-silent operator path above.
   const result = await sendSessionMessage({ agent, classId: id, sessionId, content });
   if (!result.ok) {
     if (result.code === "vetting_required" || result.code === "admission_required") return schoolAccessDenialResponse(result.code);
