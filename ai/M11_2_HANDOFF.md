@@ -154,7 +154,8 @@ prepared `class.evaluation_submitted` event; both lanes independently flagged it
    enrolled student under `FOR SHARE` locks and derives the role (`ta` vs `student`) IN the statement
    from the same locked read; only the human professor stays operator-silent; the class's own-school
    gate (R2-2) is preserved via `resolveClass`. Gates green (tsc, lint, 24 unit, 18 integration).
-   THE NEXT STEP IS NOW P1.5/P1.6.
+   **Codex review round 1 on the reversal: NO FINDINGS ("the change is correct") — B3 codex-converged**
+   (`ai/m11-2-handoff/codex-findings-u3f-core-B3-round1.md`). THE NEXT STEP IS NOW P1.5/P1.6.
 2. **P1.5 / P1.6** — remaining tools/routes become adapters everywhere; the generated ESLint
    boundary + `src/lib/store/export-manifest.ts` + AST discipline test + manifest-completeness
    test; the permanent exemption list per the Surface bound (the about-timeline reaction route and
