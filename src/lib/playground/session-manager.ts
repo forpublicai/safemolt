@@ -18,6 +18,7 @@ import {
 } from './lifecycle';
 import type { PreparedEvent } from '@/lib/events/kinds';
 import type { ExecutionGuard } from '@/lib/store/execution-guard';
+import type { ShouldStop } from '@/lib/worker/stop-signal';
 import {
     playgroundRoundOpenedEvent,
     playgroundSessionCompletedEvent,
@@ -85,8 +86,31 @@ const ROUND1_PROMPT_REPAIR_GRACE_MS = 2 * 60 * 1000;
 const ROUND_ADVANCE_PAGE_SIZE = 50;
 const ROUND_ADVANCE_MAX_PAGES = 20;
 
-/** Bound on the pending-activation repair scan (u6 P3.1). A repair path, so one bounded call is enough. */
-const PENDING_ACTIVATION_SCAN_LIMIT = 50;
+/**
+ * The pending-activation repair scan's page size and its PER-PASS BUDGET (E fix round 1, finding 4).
+ *
+ * This used to be a single 50-row call, which is a starvation window rather than a budget: an
+ * under-subscribed lobby never becomes ineligible on its own, so fifty of them held the only page
+ * forever and an eligible session behind them was never activated by the repair sweep. The scan now
+ * pages with the same attempted-exclusion shape the round advance uses, and stops at
+ * `PAGE_SIZE × MAX_PAGES` rows examined in one pass — 1000, the same budget the round advance takes.
+ *
+ * The budget is a bound on ONE invocation, not on the backlog: pending sessions leave this set for
+ * good when they activate or when the expiry sweep below cancels them at `PENDING_TIMEOUT_MS`, so a
+ * population past the budget drains across passes instead of stranding its tail.
+ */
+const PENDING_ACTIVATION_PAGE_SIZE = 50;
+const PENDING_ACTIVATION_MAX_PAGES = 20;
+
+/**
+ * The round_opened bridge / wakeup re-arm scan's page size and per-pass budget (E fix round 1,
+ * finding 2). Same numbers as the two scans above, for the same reason: the pass is oldest-first, so
+ * a bound decides how far behind the front a session may sit this pass, never whether it is reachable
+ * at all. `PLAYGROUND_SESSION_MAX_LIFETIME_MS` is what bounds how long a session can stay in front of
+ * the queue — the lifetime cap completes it, and the sessions behind it move up.
+ */
+const ARM_SCAN_PAGE_SIZE = 50;
+const ARM_SCAN_MAX_PAGES = 20;
 
 /** Agents must have been active within this many days to be eligible */
 const ACTIVITY_WINDOW_DAYS = 7;
@@ -1060,41 +1084,48 @@ export async function getActiveSession(
  * Called periodically (e.g., on any playground API hit or via cron).
  */
 /**
- * `isLockLost`, threaded from `runDeadlinesAndCap`'s renewal timer: when it starts returning `true`
- * mid-sweep, the lock has already been reclaimed by a contender (a TTL this pass ran past), and
- * every phase below checks it between steps and stops claiming further work immediately — returning
- * whatever completed so far, since every phase here is independently resumable from its own
- * due-state predicate on the next sweep.
+ * Step 1 of the sweep: advance every active session whose round has expired — **due-ASC, exhaustive,
+ * never a fixed newest-first window** (u6 P3.1, replacing the `listPlaygroundSessions({status:
+ * 'active', limit:50})` + JS filter this used to run: with 51+ concurrent sessions the oldest overdue
+ * one sat outside that window forever). `listActiveSessionsDueForRound` orders by `round_deadline`
+ * ascending, so the most-overdue session is always examined first, and a successful advance moves the
+ * deadline forward — which is what lets the row drop out of the next page on its own, the same
+ * shrinking-predicate shape `enforceSessionLifetimeCap` uses.
+ *
+ * **`attemptedThisPass` is the one thing this loop needs that the lifetime cap's doesn't.** A
+ * completion is nearly always successful or racily lost to a concurrent writer — either way the row
+ * leaves the due set. A round advance can fail for a real reason (a broken game state, an inference
+ * error) and leave `round_deadline` untouched, so re-querying "due, oldest first" without tracking
+ * what this pass already tried would hand the same stuck session every page, forever re-appearing at
+ * the front and starving every other due session behind it. Tracking attempted ids makes a stuck
+ * session cost exactly one attempt per invocation, same as before this fix, while still reaching
+ * every other due session within the pass.
+ *
+ * **The exclusion is IN THE QUERY, and that is the fix, not the Set** (E fix round 1, finding 3).
+ * Filtering the repeats out here after the fact answered "no fresh rows" for a page whose fifty rows
+ * had all just failed — the loop then broke, and the eligible session behind them waited for a whole
+ * new invocation that would fail the same fifty again first. Handing the attempted ids to the store
+ * means the next page is drawn from rows this pass has NOT seen. The list is bounded by
+ * `ROUND_ADVANCE_PAGE_SIZE × ROUND_ADVANCE_MAX_PAGES` by construction.
  */
-async function checkDeadlines(isLockLost?: () => boolean): Promise<PlaygroundDeadlineRunResult> {
-    const store = await getStore();
+async function advanceDueRounds(
+    store: Awaited<ReturnType<typeof getStore>>,
+    stop: ShouldStop
+): Promise<number> {
     let advanced = 0;
-    const advanceStartedAt = performance.now();
-    const lockLost = () => isLockLost?.() ?? false;
-
-    // 1. Advance active sessions whose round has expired — **due-ASC, exhaustive, never a fixed
-    // newest-first window** (u6 P3.1, replacing the `listPlaygroundSessions({status:'active',
-    // limit:50})` + JS filter this used to run: with 51+ concurrent sessions the oldest overdue one
-    // sat outside that window forever). `listActiveSessionsDueForRound` orders by `round_deadline`
-    // ascending, so the most-overdue session is always examined first, and a successful advance moves
-    // the deadline forward — which is what lets the row drop out of the next page on its own, the same
-    // shrinking-predicate shape `enforceSessionLifetimeCap` uses.
-    //
-    // **`attemptedThisPass` is the one thing this loop needs that the lifetime cap's doesn't.** A
-    // completion is nearly always successful or racily lost to a concurrent writer — either way the
-    // row leaves the due set. A round advance can fail for a real reason (a broken game state, an
-    // inference error) and leave `round_deadline` untouched, so re-querying "due, oldest first" without
-    // tracking what this pass already tried would hand the same stuck session every page, forever
-    // re-appearing at the front and starving every other due session behind it. Tracking attempted ids
-    // makes a stuck session cost exactly one attempt per invocation, same as before this fix, while
-    // still reaching every other due session within the pass.
     const attemptedThisPass = new Set<string>();
     for (let page = 0; page < ROUND_ADVANCE_MAX_PAGES; page += 1) {
-        if (lockLost()) break;
-        const due = await store.listActiveSessionsDueForRound(ROUND_ADVANCE_PAGE_SIZE);
-        const fresh = due.filter((session) => !attemptedThisPass.has(session.id));
-        if (fresh.length === 0) break;
-        for (const session of fresh) {
+        if (stop()) break;
+        const due = await store.listActiveSessionsDueForRound(
+            ROUND_ADVANCE_PAGE_SIZE,
+            Array.from(attemptedThisPass)
+        );
+        if (due.length === 0) break;
+        for (const session of due) {
+            // Before the claim, never merely before the page: `tryAdvanceRound` claims a resolution
+            // lease and buys GM inference, which is exactly what a lock this sweep no longer holds
+            // must not spend.
+            if (stop()) return advanced;
             attemptedThisPass.add(session.id);
             try {
                 await tryAdvanceRound(session.id);
@@ -1105,55 +1136,221 @@ async function checkDeadlines(isLockLost?: () => boolean): Promise<PlaygroundDea
         }
         if (due.length < ROUND_ADVANCE_PAGE_SIZE) break;
     }
-    const advanceDurationMs = performance.now() - advanceStartedAt;
-    if (lockLost()) {
-        console.error('[playground] Deadline lock lost mid-sweep after round advancement; stopping further claims.');
-        return { advanced, capped: 0, advanceDurationMs, capDurationMs: 0 };
-    }
+    return advanced;
+}
 
-    const capStartedAt = performance.now();
-    const { completed: capped } = await enforceSessionLifetimeCap();
-    const capDurationMs = performance.now() - capStartedAt;
-    if (lockLost()) {
-        console.error('[playground] Deadline lock lost mid-sweep after the lifetime cap; stopping further claims.');
-        return { advanced, capped, advanceDurationMs, capDurationMs };
-    }
-
-    // 1b. Auto-activate pending sessions that have reached minPlayers. This is a repair path — the
-    // primary path is `joinSession`'s inline activation attempt the moment a join reaches
-    // `minPlayers` — so `listPendingSessionsForActivationScan`'s oldest-created-first order (u6 P3.1)
-    // exists to keep a fixed window from hiding a session whose inline attempt was interrupted behind
-    // a stream of freshly created pending ones, same reasoning as the round1-prompt repair below.
+/**
+ * One pending candidate, re-read fresh and activated only if it is still pending and still has the
+ * game's `minPlayers`. Never throws — a failure here is logged and the scan continues to the next
+ * candidate, exactly as it did when this was the loop's inline body.
+ */
+async function activatePendingIfEligible(
+    store: Awaited<ReturnType<typeof getStore>>,
+    pendingId: string
+): Promise<void> {
     try {
-        const pendingToConsider = await store.listPendingSessionsForActivationScan(PENDING_ACTIVATION_SCAN_LIMIT);
-        for (const pending of pendingToConsider) {
-            try {
-                const fresh = await store.getPlaygroundSession(pending.id);
-                if (!fresh || fresh.status !== 'pending') continue;
+        const fresh = await store.getPlaygroundSession(pendingId);
+        if (!fresh || fresh.status !== 'pending') return;
 
-                const game = resolvePlaygroundGame(fresh.schoolId, fresh.gameId);
-                if (!game) continue;
+        const game = resolvePlaygroundGame(fresh.schoolId, fresh.gameId);
+        if (!game) return;
 
-                const participantCount = (fresh.participants || []).length;
-                if (participantCount >= game.minPlayers) {
-                    await activateSession(fresh, game);
-                }
-            } catch (err) {
-                console.error(`[playground] Error checking pending session ${pending.id}:`, err);
+        if ((fresh.participants || []).length >= game.minPlayers) {
+            await activateSession(fresh, game);
+        }
+    } catch (err) {
+        console.error(`[playground] Error checking pending session ${pendingId}:`, err);
+    }
+}
+
+/**
+ * Step 1b of the sweep: activate pending sessions that have reached `minPlayers`. This is a repair
+ * path — the primary path is `joinSession`'s inline activation attempt the moment a join reaches
+ * `minPlayers` — so `listPendingSessionsForActivationScan`'s oldest-created-first order (u6 P3.1)
+ * exists to keep a fixed window from hiding a session whose inline attempt was interrupted behind a
+ * stream of freshly created pending ones, same reasoning as the round1-prompt repair.
+ *
+ * **Paged, with the same attempted-exclusion the round advance uses** (E fix round 1, finding 4). A
+ * single 50-row call was a starvation window, not a budget: eligibility is decided against the
+ * TypeScript game registry and cannot be pushed into SQL, so an under-subscribed lobby stays in this
+ * set indefinitely — fifty of them owned the only page, and an eligible session behind them was never
+ * reached. Excluding what this pass has already examined is what lets the loop page past them;
+ * `PENDING_ACTIVATION_MAX_PAGES` then bounds one invocation rather than the backlog.
+ *
+ * Never throws: a scan failure is logged and the sweep moves on to its next phase, as before.
+ */
+async function activateEligiblePendings(
+    store: Awaited<ReturnType<typeof getStore>>,
+    stop: ShouldStop
+): Promise<void> {
+    try {
+        const examinedThisPass = new Set<string>();
+        for (let page = 0; page < PENDING_ACTIVATION_MAX_PAGES; page += 1) {
+            if (stop()) return;
+            const pendingToConsider = await store.listPendingSessionsForActivationScan(
+                PENDING_ACTIVATION_PAGE_SIZE,
+                Array.from(examinedThisPass)
+            );
+            if (pendingToConsider.length === 0) return;
+            for (const pending of pendingToConsider) {
+                // `activateSession` transitions the session and buys the round-1 GM prompt — a claim,
+                // so it needs the check before it rather than once per page.
+                if (stop()) return;
+                examinedThisPass.add(pending.id);
+                await activatePendingIfEligible(store, pending.id);
             }
+            if (pendingToConsider.length < PENDING_ACTIVATION_PAGE_SIZE) return;
         }
     } catch (err) {
         console.error('[playground] Error scanning pending sessions for activation:', err);
     }
-    if (lockLost()) {
-        console.error('[playground] Deadline lock lost mid-sweep after pending activation; stopping further claims.');
+}
+
+/**
+ * Steps 1d + 1e for ONE active session — the rollout bridge, then the wakeup re-arm.
+ *
+ * Extracted from `checkDeadlines`'s sweep (E fix round 1) when that pass gained its own page loop:
+ * the body is unchanged, and lifting it out is what keeps the loop's paging and its per-session stop
+ * check readable at one nesting level. Its two halves stay independently error-scoped — a bridge
+ * failure still leaves arming to run, and neither can stop the next session — so this never throws.
+ */
+async function bridgeAndArmSession(
+    store: Awaited<ReturnType<typeof getStore>>,
+    session: PlaygroundSession
+): Promise<void> {
+    // Still promptless ⇒ the repair owns this one, and the bridge must not manufacture an
+    // event for a round nobody can act on. BOTH empty spellings are tested deliberately:
+    // `rowToPlaygroundSession` maps a NULL column to `null` while the memory store stores
+    // `undefined`, so a `=== undefined` check alone reconstructed a round_opened for every
+    // promptless session in db mode — the exact ghost this kind's timing rule forbids. An
+    // empty-STRING prompt is a stored prompt (the publication's `IS NULL` predicate says so)
+    // and is deliberately not treated as missing here either.
+    if (session.currentRoundPrompt === undefined || session.currentRoundPrompt === null) return;
+
+    // 1d. Rollout bridge: an active, PROMPTED current round lacking a round_opened event gets
+    // exactly one synthetic one (idempotent via idem_key — a session predating this kind, or
+    // one whose real event is merely slow to have landed, converges to one event either way).
+    let eventId = await store.findRoundOpenedEventId(session.id, session.currentRound);
+    if (!eventId) {
+        try {
+            // The one UNGATED emit in this lane: the bridge has no accompanying mutation to
+            // gate on — the session is already prompted, and nothing about it is changing.
+            const emitted = await store.emitEvent(
+                playgroundRoundOpenedEvent({
+                    sessionId: session.id,
+                    round: session.currentRound,
+                    schoolId: session.schoolId ?? null,
+                    reconstructed: true,
+                    idemKey: `playground_round_opened:${session.id}:${session.currentRound}`,
+                })
+            );
+            eventId = emitted.id;
+            console.log(`[playground] Reconstructed round_opened for session ${session.id} round ${session.currentRound}.`);
+        } catch (err) {
+            // A 23505 on the idem key means a concurrent sweep pass already reconstructed it —
+            // benign, not an error.
+            const code = (err as { code?: string } | null)?.code;
+            if (code !== '23505') {
+                console.error(`[playground] Error reconstructing round_opened for session ${session.id}:`, err);
+            }
+            // Re-read either way: on the benign race the winner's event is what this pass
+            // must arm against, and a genuine failure simply leaves it null and skips.
+            eventId = await store.findRoundOpenedEventId(session.id, session.currentRound);
+        }
+    }
+    if (!eventId) return; // no round_opened for this round, so nothing to key a wakeup on
+
+    // 1e. Create-or-re-arm wakeups for active, un-acted participants of the current round.
+    try {
+        // Settled before the actions read, so a session with nobody left to wake costs no
+        // query at all — the common shape once participants forfeit out of a long game.
+        const candidates = session.participants.filter((p) => p.status === 'active');
+        if (candidates.length === 0) return;
+        const actions = await store.getPlaygroundActions(session.id, session.currentRound);
+        const acted = new Set(actions.map((a) => a.agentId));
+        const unActed = candidates.filter((p) => !acted.has(p.agentId));
+        for (const participant of unActed) {
+            const delivery = await store.resolveWakeupDelivery(participant.agentId);
+            if (!delivery) continue;
+            // The gated variant, never the plain one (codex u5-C round 1 MAJOR): the
+            // pre-reads above are only the cheap skip — the decisive freshness check runs
+            // INSIDE this statement, FOR SHARE on the session row, so a round advancing
+            // between the read and this write arms nothing rather than arming a stale turn.
+            await store.createOrReArmPlaygroundRoundWakeup({
+                agentId: participant.agentId,
+                eventId,
+                payload: { session_id: session.id, round: session.currentRound },
+                delivery,
+                sessionId: session.id,
+                round: session.currentRound,
+            });
+        }
+    } catch (err) {
+        console.error(`[playground] Error arming wakeups for session ${session.id}:`, err);
+    }
+}
+
+/**
+ * `shouldStop`, threaded from `runDeadlinesAndCap`: the ONE "stop claiming" signal
+ * (`src/lib/worker/stop-signal.ts`), true when the singleton lock's renewal has failed — a contender
+ * already owns the row — or when the worker is shutting down. Both mean the same thing to this
+ * function: start nothing new.
+ *
+ * **It is checked before EVERY session claim, not merely between phases** (E fix round 1, finding 1).
+ * A between-phases check alone let a sweep that lost its lock keep advancing rounds, activating
+ * lobbies, reconstructing events and completing capped sessions for the rest of a page — every one of
+ * them a claim made against a lock somebody else holds, and every one of them duplicating the GM
+ * inference the lock exists to prevent. A session already in flight finishes its current statement;
+ * nothing after it starts. Every phase here is independently resumable from its own due-state
+ * predicate, so an early stop is a delay and never a loss.
+ */
+async function checkDeadlines(shouldStop?: ShouldStop): Promise<PlaygroundDeadlineRunResult> {
+    const store = await getStore();
+    const advanceStartedAt = performance.now();
+    const stop = () => shouldStop?.() ?? false;
+    /** One message for both causes — the sweep cannot tell them apart, and treats them identically. */
+    const stopped = (phase: string) =>
+        console.error(`[playground] Deadline sweep stopped claiming ${phase} (lock lost or shutting down).`);
+
+    // 1. Advance active sessions whose round has expired (see `advanceDueRounds`).
+    const advanced = await advanceDueRounds(store, stop);
+    const advanceDurationMs = performance.now() - advanceStartedAt;
+    if (stop()) {
+        stopped('after round advancement');
+        return { advanced, capped: 0, advanceDurationMs, capDurationMs: 0 };
+    }
+
+    // The cap sweep gets the signal too (E fix round 1, finding 1): it used to receive none at all, so
+    // a lock lost during round advancement still let a whole paged cap sweep run to completion, and a
+    // lock lost DURING the cap sweep was invisible to it entirely.
+    const capStartedAt = performance.now();
+    const { completed: capped } = await enforceSessionLifetimeCap(stop);
+    const capDurationMs = performance.now() - capStartedAt;
+    if (stop()) {
+        stopped('after the lifetime cap');
+        return { advanced, capped, advanceDurationMs, capDurationMs };
+    }
+
+    // 1b. Auto-activate pending sessions that have reached minPlayers (see `activateEligiblePendings`).
+    await activateEligiblePendings(store, stop);
+    if (stop()) {
+        stopped('after pending activation');
         return { advanced, capped, advanceDurationMs, capDurationMs };
     }
 
     // 1c. Repair active round-1 sessions whose prompt never landed (a crashed activation write).
+    //
+    // Deliberately still ONE oldest-first page. A repair either fills `current_round_prompt` or loses
+    // to a writer that already did, so the processed rows leave the set — the round-advance loop's
+    // attempted-exclusion exists for failures that leave the row in place, and a repair that fails
+    // (an inference error) has exactly that shape. That residual is recorded rather than fixed here:
+    // it was not among the E-round findings, the grace period keeps the set small, and every
+    // additional page costs a GM prompt call. Revisit if the repair set is ever observed at 50.
     try {
         const stuck = await store.listSessionsNeedingRound1PromptRepair(ROUND1_PROMPT_REPAIR_GRACE_MS, 50);
         for (const session of stuck) {
+            // `generateRoundPrompt` is an inference call — a claim, checked before each one.
+            if (stop()) break;
             try {
                 const game = resolvePlaygroundGame(session.schoolId, session.gameId);
                 if (!game) continue;
@@ -1171,8 +1368,8 @@ async function checkDeadlines(isLockLost?: () => boolean): Promise<PlaygroundDea
     } catch (err) {
         console.error('[playground] Error scanning for round-1 prompt repairs:', err);
     }
-    if (lockLost()) {
-        console.error('[playground] Deadline lock lost mid-sweep after round-1 prompt repair; stopping further claims.');
+    if (stop()) {
+        stopped('after round-1 prompt repair');
         return { advanced, capped, advanceDurationMs, capDurationMs };
     }
 
@@ -1186,85 +1383,36 @@ async function checkDeadlines(isLockLost?: () => boolean): Promise<PlaygroundDea
     // per-test budget. Nothing about the SEQUENCE changes — the bridge still runs before the arming
     // for each session, and the two stay independently error-scoped, so a bridge failure still
     // leaves arming to run and an arming failure does not stop the next session's bridge.
+    //
+    // **The list is OLDEST-FIRST and paged** (E fix round 1, finding 2). It used to be
+    // `listPlaygroundSessions({ status: 'active', limit: 50 })` — the NEWEST fifty — so the pass that
+    // exists to keep the zero-forfeit guarantee starved precisely the sessions that had waited
+    // longest: past fifty live sessions, the oldest un-armed one was outside the window on every
+    // sweep and its participants were never woken for a round they were expected to act in. See the
+    // store function for why paging here is an attempted-id exclusion rather than a keyset cursor.
     try {
-        const active = await store.listPlaygroundSessions({ status: 'active', limit: 50 });
-        for (const session of active) {
-            // Still promptless ⇒ the repair owns this one, and the bridge must not manufacture an
-            // event for a round nobody can act on. BOTH empty spellings are tested deliberately:
-            // `rowToPlaygroundSession` maps a NULL column to `null` while the memory store stores
-            // `undefined`, so a `=== undefined` check alone reconstructed a round_opened for every
-            // promptless session in db mode — the exact ghost this kind's timing rule forbids. An
-            // empty-STRING prompt is a stored prompt (the publication's `IS NULL` predicate says so)
-            // and is deliberately not treated as missing here either.
-            if (session.currentRoundPrompt === undefined || session.currentRoundPrompt === null) continue;
-
-            // 1d. Rollout bridge: an active, PROMPTED current round lacking a round_opened event gets
-            // exactly one synthetic one (idempotent via idem_key — a session predating this kind, or
-            // one whose real event is merely slow to have landed, converges to one event either way).
-            let eventId = await store.findRoundOpenedEventId(session.id, session.currentRound);
-            if (!eventId) {
-                try {
-                    // The one UNGATED emit in this lane: the bridge has no accompanying mutation to
-                    // gate on — the session is already prompted, and nothing about it is changing.
-                    const emitted = await store.emitEvent(
-                        playgroundRoundOpenedEvent({
-                            sessionId: session.id,
-                            round: session.currentRound,
-                            schoolId: session.schoolId ?? null,
-                            reconstructed: true,
-                            idemKey: `playground_round_opened:${session.id}:${session.currentRound}`,
-                        })
-                    );
-                    eventId = emitted.id;
-                    console.log(`[playground] Reconstructed round_opened for session ${session.id} round ${session.currentRound}.`);
-                } catch (err) {
-                    // A 23505 on the idem key means a concurrent sweep pass already reconstructed it —
-                    // benign, not an error.
-                    const code = (err as { code?: string } | null)?.code;
-                    if (code !== '23505') {
-                        console.error(`[playground] Error reconstructing round_opened for session ${session.id}:`, err);
-                    }
-                    // Re-read either way: on the benign race the winner's event is what this pass
-                    // must arm against, and a genuine failure simply leaves it null and skips.
-                    eventId = await store.findRoundOpenedEventId(session.id, session.currentRound);
-                }
+        const examinedThisPass = new Set<string>();
+        armPages: for (let page = 0; page < ARM_SCAN_MAX_PAGES; page += 1) {
+            if (stop()) break;
+            const active = await store.listActiveSessionsForArmScan(
+                ARM_SCAN_PAGE_SIZE,
+                Array.from(examinedThisPass)
+            );
+            if (active.length === 0) break;
+            for (const session of active) {
+                // Before each session: the bridge EMITS an event and the arm pass WRITES wakeup rows
+                // — both claims, neither of which may be made under a lock this sweep has lost.
+                if (stop()) break armPages;
+                examinedThisPass.add(session.id);
+                await bridgeAndArmSession(store, session);
             }
-            if (!eventId) continue; // no round_opened for this round, so nothing to key a wakeup on
-
-            // 1e. Create-or-re-arm wakeups for active, un-acted participants of the current round.
-            try {
-                // Settled before the actions read, so a session with nobody left to wake costs no
-                // query at all — the common shape once participants forfeit out of a long game.
-                const candidates = session.participants.filter((p) => p.status === 'active');
-                if (candidates.length === 0) continue;
-                const actions = await store.getPlaygroundActions(session.id, session.currentRound);
-                const acted = new Set(actions.map((a) => a.agentId));
-                const unActed = candidates.filter((p) => !acted.has(p.agentId));
-                for (const participant of unActed) {
-                    const delivery = await store.resolveWakeupDelivery(participant.agentId);
-                    if (!delivery) continue;
-                    // The gated variant, never the plain one (codex u5-C round 1 MAJOR): the
-                    // pre-reads above are only the cheap skip — the decisive freshness check runs
-                    // INSIDE this statement, FOR SHARE on the session row, so a round advancing
-                    // between the read and this write arms nothing rather than arming a stale turn.
-                    await store.createOrReArmPlaygroundRoundWakeup({
-                        agentId: participant.agentId,
-                        eventId,
-                        payload: { session_id: session.id, round: session.currentRound },
-                        delivery,
-                        sessionId: session.id,
-                        round: session.currentRound,
-                    });
-                }
-            } catch (err) {
-                console.error(`[playground] Error arming wakeups for session ${session.id}:`, err);
-            }
+            if (active.length < ARM_SCAN_PAGE_SIZE) break;
         }
     } catch (err) {
         console.error('[playground] Error scanning active sessions for round_opened reconstruction and wakeup arming:', err);
     }
-    if (lockLost()) {
-        console.error('[playground] Deadline lock lost mid-sweep after wakeup arming; stopping further claims.');
+    if (stop()) {
+        stopped('after wakeup arming');
         return { advanced, capped, advanceDurationMs, capDurationMs };
     }
 
@@ -1300,11 +1448,14 @@ async function checkDeadlines(isLockLost?: () => boolean): Promise<PlaygroundDea
  * would run deadline progression unlocked, defeating the lock the same way the direct
  * `checkDeadlines()` calls used to — `src/__tests__/lib/playground-deadline-lock-discipline.test.ts`
  * scans the tree for a second importer.
+ *
+ * `shouldStop` is the composed "stop claiming" signal (`src/lib/worker/stop-signal.ts`): lock lost,
+ * or the worker shutting down. See `checkDeadlines` for where it is checked.
  */
 export async function runDeadlineProgressionUnlocked(
-    isLockLost?: () => boolean
+    shouldStop?: ShouldStop
 ): Promise<PlaygroundDeadlineRunResult> {
-    return checkDeadlines(isLockLost);
+    return checkDeadlines(shouldStop);
 }
 
 // ============================================

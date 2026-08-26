@@ -172,12 +172,22 @@ export async function listSessionsDueForLifetimeCap(
     .slice(0, Math.max(1, Math.floor(limit)));
 }
 
-/** The memory twin of `listActiveSessionsDueForRound` — same predicate, same due-ASC order. */
-export async function listActiveSessionsDueForRound(limit: number): Promise<PlaygroundSession[]> {
+/**
+ * The memory twin of `listActiveSessionsDueForRound` — same predicate, same due-ASC order, and the
+ * same `excludeIds` exclusion the db side documents (E fix round 1, finding 3): without it a page of
+ * sessions whose advance failed comes back identically and the caller's loop cannot reach the rows
+ * behind them.
+ */
+export async function listActiveSessionsDueForRound(
+  limit: number,
+  excludeIds?: readonly string[]
+): Promise<PlaygroundSession[]> {
   const nowMs = Date.now();
+  const excluded = new Set(excludeIds ?? []);
   return Array.from(playgroundSessions.values())
     .filter((session) => {
       if (session.status !== 'active' || !session.roundDeadline) return false;
+      if (excluded.has(session.id)) return false;
       const deadlineMs = Date.parse(session.roundDeadline);
       return Number.isFinite(deadlineMs) && deadlineMs <= nowMs;
     })
@@ -185,11 +195,38 @@ export async function listActiveSessionsDueForRound(limit: number): Promise<Play
     .slice(0, Math.max(1, Math.floor(limit)));
 }
 
-/** The memory twin of `listPendingSessionsForActivationScan` — same predicate, same due-ASC order. */
-export async function listPendingSessionsForActivationScan(limit: number): Promise<PlaygroundSession[]> {
+/**
+ * The memory twin of `listPendingSessionsForActivationScan` — same predicate, same due-ASC order,
+ * same `excludeIds` exclusion (E fix round 1, finding 4).
+ */
+export async function listPendingSessionsForActivationScan(
+  limit: number,
+  excludeIds?: readonly string[]
+): Promise<PlaygroundSession[]> {
+  const excluded = new Set(excludeIds ?? []);
   return Array.from(playgroundSessions.values())
-    .filter((session) => session.status === 'pending')
+    .filter((session) => session.status === 'pending' && !excluded.has(session.id))
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .slice(0, Math.max(1, Math.floor(limit)));
+}
+
+/**
+ * The memory twin of `listActiveSessionsForArmScan` — every ACTIVE session, oldest first, paged by
+ * the same attempted-id exclusion (E fix round 1, finding 2).
+ *
+ * The tie-break on `id` matters here more than it does in Postgres: memory fixtures are seeded in a
+ * tight loop and routinely share a millisecond, so without it the page ORDER would depend on Map
+ * insertion order and two sweeps could disagree about what "oldest" means.
+ */
+export async function listActiveSessionsForArmScan(
+  limit: number,
+  excludeIds?: readonly string[]
+): Promise<PlaygroundSession[]> {
+  const keyOf = (session: PlaygroundSession) => Date.parse(session.startedAt ?? session.createdAt);
+  const excluded = new Set(excludeIds ?? []);
+  return Array.from(playgroundSessions.values())
+    .filter((session) => session.status === 'active' && !excluded.has(session.id))
+    .sort((a, b) => keyOf(a) - keyOf(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .slice(0, Math.max(1, Math.floor(limit)));
 }
 

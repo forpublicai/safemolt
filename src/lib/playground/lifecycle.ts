@@ -11,6 +11,7 @@ import {
   renewWorkerLock,
 } from "@/lib/store";
 import { playgroundSessionCompletedEvent } from "@/lib/actions/playground-events";
+import { anyStopSignal, type ShouldStop } from "@/lib/worker/stop-signal";
 
 const DEFAULT_SESSION_MAX_LIFETIME_MS = 6 * 60 * 60 * 1000;
 const SESSION_CAP_SUMMARY =
@@ -21,11 +22,12 @@ const LIFETIME_CAP_PAGE_SIZE = 50;
 const LIFETIME_CAP_MAX_PAGES = 20;
 
 /**
- * `isLockLost`, when supplied, lets a long-running implementation check — cheaply, synchronously —
- * whether the lock's background renewal has already failed, and stop claiming further work rather
- * than run to completion unguarded. See `runDeadlinesAndCap`.
+ * `shouldStop`, when supplied, lets a long-running implementation check — cheaply, synchronously —
+ * whether it should still be claiming work: the lock's background renewal has failed, or the process
+ * is shutting down. Either way it stops claiming rather than running to completion unguarded. See
+ * `runDeadlinesAndCap`, which composes both causes into the one predicate it passes down.
  */
-type DeadlineRunner = (isLockLost?: () => boolean) => Promise<Partial<PlaygroundDeadlineRunResult> | void>;
+type DeadlineRunner = (shouldStop?: ShouldStop) => Promise<Partial<PlaygroundDeadlineRunResult> | void>;
 
 export interface PlaygroundDeadlineRunResult {
   advanced: number;
@@ -107,19 +109,30 @@ export function revalidatePlaygroundSeed(schoolId?: string): void {
  *
  * `LIFETIME_CAP_MAX_PAGES` bounds one invocation rather than the backlog: the ordering means the next
  * run resumes at the oldest sessions still due, so a backlog drains across runs instead of starving.
+ *
+ * **`shouldStop` reaches EVERY completion, not just the page boundary** (E fix round 1, finding 1).
+ * This sweep used to take no stop signal at all: a deadline sweep that lost its singleton lock during
+ * round advancement still ran a whole paged cap sweep afterwards, and one that lost it mid-cap never
+ * found out — every completion after the loss being a write made under a lock a contender already
+ * owned. The predicate is synchronous and cheap, so it is read before each page AND before each
+ * conditional completion; a session already being completed finishes, nothing after it starts, and
+ * the ordering means the next run resumes exactly where this one stopped.
  */
-export async function enforceSessionLifetimeCap(): Promise<{ completed: number }> {
+export async function enforceSessionLifetimeCap(shouldStop?: ShouldStop): Promise<{ completed: number }> {
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
   const cutoff = new Date(nowMs - PLAYGROUND_SESSION_MAX_LIFETIME_MS).toISOString();
+  const stop = () => shouldStop?.() ?? false;
   let completed = 0;
   const touchedSchools = new Set<string>();
 
-  for (let page = 0; page < LIFETIME_CAP_MAX_PAGES; page += 1) {
+  capPages: for (let page = 0; page < LIFETIME_CAP_MAX_PAGES; page += 1) {
+    if (stop()) break;
     const due = await listSessionsDueForLifetimeCap(cutoff, LIFETIME_CAP_PAGE_SIZE);
     if (due.length === 0) break;
 
     for (const session of due) {
+      if (stop()) break capPages;
       // The cap is a lifecycle safety stop, not a GM resolution. Preserve the
       // transcript exactly as-written and surface the stop reason in summary.
       //
@@ -170,7 +183,8 @@ export async function enforceSessionLifetimeCap(): Promise<{ completed: number }
  */
 export async function runDeadlinesAndCap(
   label: string,
-  runDeadlineCheck?: DeadlineRunner
+  runDeadlineCheck?: DeadlineRunner,
+  shouldStop?: ShouldStop
 ): Promise<PlaygroundDeadlineRunResult> {
   const holder = randomUUID();
   const acquired = await acquireWorkerLock(DEADLINE_LOCK_NAME, holder, WORKER_LOCK_TTL_MS);
@@ -192,11 +206,16 @@ export async function runDeadlinesAndCap(
       });
   }, LOCK_RENEW_INTERVAL_MS);
 
+  // ONE predicate for the runner, whichever cause fires (E fix round 1, finding 5). The caller's
+  // signal is the worker's `SIGTERM` flag; ours is the renewal loss above. The sweep cannot act on
+  // the difference — both mean "claim nothing further" — so it is handed a single question to ask.
+  const stopClaiming = anyStopSignal(() => lockLost, shouldStop);
+
   try {
     const result = runDeadlineCheck
-      ? await runDeadlineCheck(() => lockLost)
+      ? await runDeadlineCheck(stopClaiming)
       : await import("@/lib/playground/session-manager").then(({ runDeadlineProgressionUnlocked }) =>
-          runDeadlineProgressionUnlocked(() => lockLost)
+          runDeadlineProgressionUnlocked(stopClaiming)
         );
     return {
       advanced: result?.advanced ?? 0,

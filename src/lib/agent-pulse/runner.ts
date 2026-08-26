@@ -34,6 +34,8 @@
  */
 import { randomUUID } from "node:crypto";
 
+import type { ShouldStop } from "@/lib/worker/stop-signal";
+
 import { getAgentById } from "@/lib/store";
 import {
   abandonExpiredWakeupLeases,
@@ -480,10 +482,19 @@ export interface PulseBatchResult {
  * Run due wakeups up to `maxSlots` — `agent-loop.ts`'s `runAgentLoopBatch` calls this with the same
  * batch size cron always used. One claim per slot; a slot that finds the queue empty ends the pass
  * early rather than spinning through the remaining slots (there is nothing left to claim).
+ *
+ * `shouldStop` (optional) is the shared "stop claiming" signal — the worker passes its `SIGTERM`
+ * flag (u6 E fix round 1, finding 5). Checked before EVERY claim, because a batch is where a
+ * shutdown otherwise fails to take effect: clearing the duty timers stops the NEXT pass, while the
+ * pass already running kept claiming and starting fresh inference for the rest of its slots, each
+ * one a tick the grace window then had to wait out. A wakeup already claimed runs to completion —
+ * leases, not this predicate, are what make a killed tick safe (P3.1) — so the only effect is that
+ * nothing new is claimed. Callers with no such signal pass nothing and the check is a no-op.
  */
-export async function runPulseBatch(maxSlots: number): Promise<PulseBatchResult> {
+export async function runPulseBatch(maxSlots: number, shouldStop?: ShouldStop): Promise<PulseBatchResult> {
   const results: PulseBatchResult["results"] = [];
   for (let slot = 0; slot < maxSlots; slot += 1) {
+    if (shouldStop?.()) break;
     const claim = await claimOneWakeup();
     if (!claim) break;
     const { wakeup, claimToken } = claim;

@@ -93,6 +93,22 @@ let lastContractHash: string | null = null;
 let lastDrainAt: number | null = null;
 let lastDrainError: string | null = null;
 
+/**
+ * The shutdown half of the shared "stop claiming" signal (`src/lib/worker/stop-signal.ts`), handed to
+ * every duty that claims work in a loop (E fix round 1, finding 5).
+ *
+ * Clearing the timers on `SIGTERM` stops the NEXT pass; it does nothing about the pass already
+ * running, which kept claiming wakeup slots and playground sessions — starting fresh inference the
+ * grace window then had to wait out, for work that a still-live instance would have taken anyway.
+ * Duties read this before every new claim; whatever is already claimed finishes.
+ *
+ * The DRAIN duty deliberately does not take it. Its unit of work is an event whose completion is a
+ * receipt, not a claim against a lease or an inference budget: a pass interrupted anywhere leaves the
+ * unreceipted events for the next runtime's scan, and its own phase budget already bounds how long
+ * one pass can run. There is nothing for a stop signal to prevent there.
+ */
+const isShuttingDown = (): boolean => shuttingDown;
+
 function track<T>(promise: Promise<T>): Promise<T> {
   inFlight.add(promise);
   const settle = () => inFlight.delete(promise);
@@ -134,17 +150,19 @@ async function runDrainDuty(): Promise<void> {
 
 async function runDeadlineDuty(): Promise<void> {
   const { runDeadlinesAndCap } = await import("@/lib/playground/lifecycle");
-  await runDeadlinesAndCap("worker");
+  // No runner override — the third argument is this process's shutdown flag, which the entry point
+  // composes with its own lock-loss signal before handing ONE predicate to the sweep.
+  await runDeadlinesAndCap("worker", undefined, isShuttingDown);
 }
 
 async function runWakeupDuty(): Promise<void> {
   const { claimAndRunWakeups } = await import("@/lib/worker/wakeup-pass");
-  await claimAndRunWakeups();
+  await claimAndRunWakeups(isShuttingDown);
 }
 
 async function runIdleSweepDuty(): Promise<void> {
   const { runIdleSweep } = await import("@/lib/worker/idle-scheduler");
-  await runIdleSweep();
+  await runIdleSweep(isShuttingDown);
 }
 
 // --- node:http /healthz ---------------------------------------------------------------------------
@@ -173,6 +191,17 @@ let timers: NodeJS.Timeout[] = [];
 
 async function main(): Promise<void> {
   await checkMigrationLedgerOrExit();
+
+  // The contract hash BEFORE the server accepts a request (E fix round 1, finding 6). It used to be
+  // set only by the first successful drain, so `/healthz` answered `contract_hash: null` for the
+  // first `WORKER_DRAIN_INTERVAL_MS` of every boot — and the deployment-version barrier reads exactly
+  // that field to decide whether a runtime is on the target contract. A null was indistinguishable
+  // from a wrong hash, so a cutover check racing a fresh worker saw a runtime it could not clear.
+  // `computeConsumerContractHash` is pure and synchronous over this build's kind union and coverage
+  // manifests — nothing about it needs a drain to have happened.
+  const { computeConsumerContractHash } = await import("@/lib/events/consumer-contract");
+  lastContractHash = computeConsumerContractHash();
+  console.log(`[worker] consumer contract hash ${lastContractHash}`);
 
   server.listen(PORT, () => {
     console.log(`[worker] /healthz listening on :${PORT}`);

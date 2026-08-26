@@ -560,6 +560,100 @@ describe("runPulseBatch — fence loss writes no loop state", () => {
   });
 });
 
+/**
+ * u6 E fix round 1, finding 5 — **SIGTERM must stop claims INSIDE a running batch.**
+ *
+ * The worker's shutdown handler clears its duty timers, which stops the NEXT pass; the pass already
+ * running kept claiming slot after slot and starting fresh inference for each one — work the grace
+ * window then had to wait out, for wakeups a still-live instance would have taken anyway. The batch
+ * therefore takes the shared "stop claiming" predicate and reads it before EVERY claim.
+ *
+ * Already-claimed work is deliberately unaffected: crash-safety belongs to leases (P3.1), not to this
+ * predicate, so the first wakeup runs to completion and only the claims behind it are given up.
+ */
+describe("runPulseBatch — a stop signal ends the batch before the next claim", () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  /** One loop-enabled agent with a post and one due reply wakeup. */
+  async function seedDueReplyWakeup(label: string, eventId: number) {
+    const author = await agent(label);
+    await setLoopEnabled(author.id, true);
+    const group = await createGroup(nextName("grp"), "u6 group", "", author.id);
+    const post = await seedPost(author.id, group.id, "a post with a due wakeup");
+    await enqueueWakeup({
+      agentId: author.id,
+      reason: "comment_on_my_post",
+      eventId,
+      payload: { post_id: post.id, comment_id: `seed_${eventId}`, parent_comment_id: null },
+      delivery: "internal",
+    });
+    return { author, eventId };
+  }
+
+  it("claims exactly ONE of three due wakeups when the signal flips during the first", async () => {
+    const first = await seedDueReplyWakeup("stop1", 900201);
+    const second = await seedDueReplyWakeup("stop2", 900202);
+    const third = await seedDueReplyWakeup("stop3", 900203);
+
+    // "Shutting down" lands while the first claimed wakeup is mid-inference — the realistic moment,
+    // and the one a per-pass check (rather than a per-claim one) cannot see.
+    let ticks = 0;
+    const callLLM = jest.fn(async () => {
+      ticks += 1;
+      return { content: "nothing worth saying", toolCalls: [] };
+    });
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(3, () => ticks >= 1);
+
+    // Exactly one claimed, and the batch had three slots and three eligible agents to fill them.
+    expect(result.claimed).toBe(1);
+    expect(result.results).toHaveLength(1);
+
+    // The two behind it were never claimed: still pending, still re-armable, no inference spent.
+    const claimedAgents = new Set(result.results.map((r) => r.agentId));
+    for (const seeded of [first, second, third]) {
+      const row = await getWakeupByAgentReasonEvent(seeded.author.id, "comment_on_my_post", seeded.eventId);
+      if (claimedAgents.has(seeded.author.id)) {
+        expect(row?.completedAt).not.toBeNull();
+      } else {
+        expect(row?.claimedAt).toBeNull();
+        expect(row?.completedAt).toBeNull();
+      }
+    }
+    expect(callLLM).toHaveBeenCalledTimes(1);
+  });
+
+  it("claims nothing when the signal is already true on entry", async () => {
+    const seeded = await seedDueReplyWakeup("stop4", 900204);
+    const callLLM = jest.fn();
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(3, () => true);
+
+    expect(result.claimed).toBe(0);
+    expect(callLLM).not.toHaveBeenCalled();
+    const row = await getWakeupByAgentReasonEvent(seeded.author.id, "comment_on_my_post", seeded.eventId);
+    expect(row?.claimedAt).toBeNull();
+  });
+
+  it("with no signal supplied the batch fills every slot, exactly as it always did", async () => {
+    await seedDueReplyWakeup("stop5", 900205);
+    await seedDueReplyWakeup("stop6", 900206);
+    const callLLM = jest.fn(async () => ({ content: "nothing worth saying", toolCalls: [] }));
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(3);
+
+    expect(result.claimed).toBe(2);
+  });
+});
+
 describe("runPulseBatch — autonomy-disable: pending wakeups are never claimed", () => {
   beforeEach(() => {
     jest.resetModules();

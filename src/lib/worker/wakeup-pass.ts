@@ -1,4 +1,5 @@
 import { runPulseBatch, type PulseBatchResult } from "@/lib/agent-pulse/runner";
+import type { ShouldStop } from "@/lib/worker/stop-signal";
 
 /**
  * M11-2 u6 P3.1 worker duty (b): claim and run due wakeups.
@@ -15,6 +16,11 @@ function wakeupPassSlots(): number {
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_WAKEUP_PASS_SLOTS;
 }
 
-export async function claimAndRunWakeups(): Promise<PulseBatchResult> {
-  return runPulseBatch(wakeupPassSlots());
+/**
+ * `shouldStop` is the worker's shutdown flag, forwarded to the batch so a `SIGTERM` landing mid-pass
+ * stops the pass CLAIMING more slots (E fix round 1, finding 5) rather than only stopping the next
+ * pass from starting.
+ */
+export async function claimAndRunWakeups(shouldStop?: ShouldStop): Promise<PulseBatchResult> {
+  return runPulseBatch(wakeupPassSlots(), shouldStop);
 }

@@ -189,6 +189,59 @@ describe("playground lifecycle", () => {
     expect(mockedListDueSessions).toHaveBeenCalledTimes(20);
   });
 
+  /**
+   * u6 E fix round 1, finding 1 (BLOCKER) — **the cap sweep obeys the "stop claiming" signal, before
+   * every completion.**
+   *
+   * The signal did not reach this function at all: `checkDeadlines` called it with no arguments, so a
+   * sweep that had already lost its singleton lock during round advancement still ran a whole paged
+   * cap sweep afterwards, and a lock lost DURING the cap sweep was invisible to it for the rest of the
+   * pass. Every completion after the loss is a write made under a lock a contender already owns —
+   * exactly the duplicate work the lock exists to prevent.
+   *
+   * "After session A" is expressed as the signal flipping inside the FIRST completion, which is the
+   * moment the renewal timer's failure would land in production. Session B is the assertion: it is
+   * still due, and this pass must not touch it.
+   */
+  it("stops completing the moment the signal fires — every session behind it is untouched", async () => {
+    const now = Date.now();
+    jest.spyOn(Date, "now").mockReturnValue(now);
+    duePages([staleSession("A", now), staleSession("B", now), staleSession("C", now)]);
+    let lost = false;
+    mockedUpdatePlaygroundSession.mockImplementation(async () => {
+      lost = true; // the renewal failed while session A was being completed
+      return true;
+    });
+
+    await expect(enforceSessionLifetimeCap(() => lost)).resolves.toEqual({ completed: 1 });
+
+    // Not "fewer than three" — exactly one, and exactly the one that was already in flight.
+    expect(mockedUpdatePlaygroundSession).toHaveBeenCalledTimes(1);
+    expect(mockedUpdatePlaygroundSession.mock.calls[0][0]).toBe("A");
+  });
+
+  it("claims nothing at all — not even a page query — when the signal is already true on entry", async () => {
+    const now = Date.now();
+    jest.spyOn(Date, "now").mockReturnValue(now);
+    // Deliberately NOT `duePages`: that queues a one-shot page, and a page this test proves is never
+    // requested would stay queued and be answered to the NEXT test's first query.
+    mockedListDueSessions.mockResolvedValue([staleSession("never-touched", now)]);
+
+    await expect(enforceSessionLifetimeCap(() => true)).resolves.toEqual({ completed: 0 });
+
+    expect(mockedListDueSessions).not.toHaveBeenCalled();
+    expect(mockedUpdatePlaygroundSession).not.toHaveBeenCalled();
+  });
+
+  it("with no signal supplied, nothing changes — the check is a no-op for every legacy caller", async () => {
+    const now = Date.now();
+    jest.spyOn(Date, "now").mockReturnValue(now);
+    duePages([staleSession("A", now), staleSession("B", now)]);
+    mockedUpdatePlaygroundSession.mockResolvedValue(true);
+
+    await expect(enforceSessionLifetimeCap()).resolves.toEqual({ completed: 2 });
+  });
+
   it("counts only the completions the conditional transition actually made", async () => {
     const now = Date.now();
     jest.spyOn(Date, "now").mockReturnValue(now);
@@ -304,5 +357,29 @@ describe("playground lifecycle", () => {
     expect(typeof seenIsLockLost).toBe("function");
     // Nothing has failed a renewal yet, so it must read false.
     expect(seenIsLockLost!()).toBe(false);
+  });
+
+  /**
+   * u6 E fix round 1, finding 5 — the caller's shutdown flag and this entry point's own lock-loss
+   * flag are ONE predicate by the time the sweep sees them.
+   *
+   * The sweep cannot act on the difference (both mean "claim nothing further"), and giving it two
+   * questions to ask is how one of them ends up unasked at a claim point.
+   */
+  it("composes the CALLER's stop signal with its own lock-loss signal into one predicate", async () => {
+    let seenShouldStop: (() => boolean) | undefined;
+    const runDeadlineCheck = jest.fn((shouldStop?: () => boolean) => {
+      seenShouldStop = shouldStop;
+      return Promise.resolve({ advanced: 0, capped: 0 });
+    });
+    let shuttingDown = false;
+
+    await runDeadlinesAndCap("worker", runDeadlineCheck, () => shuttingDown);
+
+    // Neither cause has fired.
+    expect(seenShouldStop!()).toBe(false);
+    // The caller's cause alone is enough — the renewal here never failed.
+    shuttingDown = true;
+    expect(seenShouldStop!()).toBe(true);
   });
 });

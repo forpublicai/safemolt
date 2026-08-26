@@ -42,6 +42,11 @@ export const listPendingSessionsForActivationScan = pickStore(
     db.listPendingSessionsForActivationScan,
     mem.listPendingSessionsForActivationScan
 );
+// u6 E fix round 1, finding 2: the round_opened bridge and the wakeup re-arm pass read THIS instead
+// of the newest-50 active window they used to, so the oldest un-armed session is the first one they
+// reach rather than the one they never reach. Paged by attempted-id exclusion, because arming changes
+// nothing the query filters on and a re-issued query would otherwise return the same page forever.
+export const listActiveSessionsForArmScan = pickStore(db.listActiveSessionsForArmScan, mem.listActiveSessionsForArmScan);
 // M11-2 P3.2: the round-1 prompt publication both round-1 writers share, and the query that finds a
 // session whose activation continuation crashed before it could run.
 export const storeRound1PromptIfMissing = pickStore(db.storeRound1PromptIfMissing, mem.storeRound1PromptIfMissing);

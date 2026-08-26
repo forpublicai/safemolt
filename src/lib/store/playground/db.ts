@@ -290,14 +290,63 @@ export async function listSessionsDueForLifetimeCap(
  * successful advance moves `round_deadline` to a new future value (or clears it on completion), a
  * processed row leaves the due set on its own; a row that fails to advance (caught, logged) stays due
  * and is retried next pass, exactly as before.
+ *
+ * **`excludeIds` is what makes the caller's page loop able to make progress at all** (E fix round 1,
+ * finding 3). A failed advance does NOT leave the due set — nothing moved its deadline — so a page
+ * whose rows all fail comes back identically on the next query, and a caller that merely filtered the
+ * repeats in JavaScript saw an empty remainder and stopped, leaving session 51 unreached for as long
+ * as those fifty kept failing. Excluding the ids already attempted THIS PASS, in the query, is what
+ * lets the next page hold rows the caller has not seen. The list is bounded by the caller's own
+ * page-size × max-pages budget (`session-manager.ts`), so it can never grow past one pass's work.
  */
-export async function listActiveSessionsDueForRound(limit: number): Promise<PlaygroundSession[]> {
+export async function listActiveSessionsDueForRound(
+    limit: number,
+    excludeIds?: readonly string[]
+): Promise<PlaygroundSession[]> {
+    const exclude = excludeIds && excludeIds.length > 0 ? Array.from(excludeIds) : null;
     const rows = await sql!`
       SELECT * FROM playground_sessions
       WHERE status = 'active'
         AND round_deadline IS NOT NULL
         AND round_deadline <= NOW()
+        AND (${exclude}::text[] IS NULL OR id <> ALL(${exclude}::text[]))
       ORDER BY round_deadline ASC
+      LIMIT ${Math.max(1, Math.floor(limit))}
+    `;
+    return (rows as Record<string, unknown>[]).map(rowToPlaygroundSession);
+}
+
+/**
+ * u6 P3.1 due-scan #3 (E fix round 1, finding 2): the ACTIVE sessions the round_opened bridge and the
+ * wakeup re-arm pass must visit, **oldest first and cursor-paged**.
+ *
+ * That pass used to read `listPlaygroundSessions({ status: 'active', limit: 50 })` — the NEWEST fifty
+ * — so the zero-forfeit machinery it exists to serve starved exactly the sessions that needed it
+ * most: with 51 live sessions the oldest un-armed one was outside the window on every sweep, and its
+ * participants were never woken for a round they were expected to act in.
+ *
+ * **`excludeIds` is REQUIRED for progress here, not merely helpful.** The other due scans page on a
+ * SHRINKING predicate — a processed row stops being due — but arming changes nothing this query
+ * filters on, so a re-issued query returns the same first page forever. Excluding what the caller has
+ * already examined this pass is what makes the second page hold different rows.
+ *
+ * A keyset cursor over `(COALESCE(started_at, created_at), id)` was the alternative and is
+ * deliberately NOT used: `rowToPlaygroundSession` hands back millisecond ISO strings while these
+ * columns are microsecond `timestamptz`, so a cursor built from a returned row rounds DOWN and the
+ * row it came from satisfies `>` again — the same page, forever, within the caller's budget. The id
+ * exclusion carries no such precision loss, and it is the shape the other two scans already use.
+ * `id` still breaks the ORDER BY tie so two sessions sharing a timestamp cannot hide each other.
+ */
+export async function listActiveSessionsForArmScan(
+    limit: number,
+    excludeIds?: readonly string[]
+): Promise<PlaygroundSession[]> {
+    const exclude = excludeIds && excludeIds.length > 0 ? Array.from(excludeIds) : null;
+    const rows = await sql!`
+      SELECT * FROM playground_sessions
+      WHERE status = 'active'
+        AND (${exclude}::text[] IS NULL OR id <> ALL(${exclude}::text[]))
+      ORDER BY COALESCE(started_at, created_at) ASC, id ASC
       LIMIT ${Math.max(1, Math.floor(limit))}
     `;
     return (rows as Record<string, unknown>[]).map(rowToPlaygroundSession);
@@ -312,11 +361,25 @@ export async function listActiveSessionsDueForRound(limit: number): Promise<Play
  * that inline attempt was interrupted (a crash, a lost CAS). Oldest-first ordering is what keeps a
  * fixed-size window from hiding a genuinely stuck session behind a stream of freshly created pending
  * ones, matching `listSessionsNeedingRound1PromptRepair`'s shape for the same repair-path reason.
+ *
+ * **`excludeIds` exists for the same reason it does on the round-advance scan** (E fix round 1,
+ * finding 4), with one difference that makes it more necessary, not less: the eligibility rule this
+ * scan serves — "as many participants as the GAME definition's `minPlayers`" — reads a TypeScript
+ * game registry and cannot be pushed into SQL at all, so an ineligible pending row is not merely a
+ * failed attempt, it is a permanent member of this set until it expires. Fifty under-subscribed
+ * lobbies would otherwise fill every page forever and an eligible session behind them would never be
+ * activated by the repair sweep. Excluding what this pass already examined lets the caller page past
+ * them; the list is bounded by the caller's page-size × max-pages budget.
  */
-export async function listPendingSessionsForActivationScan(limit: number): Promise<PlaygroundSession[]> {
+export async function listPendingSessionsForActivationScan(
+    limit: number,
+    excludeIds?: readonly string[]
+): Promise<PlaygroundSession[]> {
+    const exclude = excludeIds && excludeIds.length > 0 ? Array.from(excludeIds) : null;
     const rows = await sql!`
       SELECT * FROM playground_sessions
       WHERE status = 'pending'
+        AND (${exclude}::text[] IS NULL OR id <> ALL(${exclude}::text[]))
       ORDER BY created_at ASC
       LIMIT ${Math.max(1, Math.floor(limit))}
     `;
