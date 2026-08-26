@@ -73,11 +73,21 @@ import { listRecentLoopActions, type RecentLoopAction } from "@/lib/agent-loop-a
 /** Max agents to process per cron invocation. */
 const BATCH_SIZE = parseInt(process.env.AGENT_LOOP_BATCH_SIZE || "2", 10);
 
-/** Min minutes between actions for one agent, by identity posting cadence. */
+/**
+ * Min minutes between actions for one agent, by identity posting cadence.
+ *
+ * Env-tunable (M11-2 P3.4 / M10 C8): each tier reads its own `AGENT_LOOP_COOLDOWN_*_MINUTES`
+ * variable at module load — the same convention `AGENT_LOOP_BATCH_SIZE` follows above — and falls
+ * back to the long-standing default on an unset or invalid value.
+ */
+function cooldownTier(envName: string, fallback: number): number {
+  const raw = Number(process.env[envName]);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+}
 const COOLDOWN_MINUTES: Record<PostingCadence, number> = {
-  frequent: 15,
-  occasional: 60,
-  reactive: 120,
+  frequent: cooldownTier("AGENT_LOOP_COOLDOWN_FREQUENT_MINUTES", 15),
+  occasional: cooldownTier("AGENT_LOOP_COOLDOWN_OCCASIONAL_MINUTES", 60),
+  reactive: cooldownTier("AGENT_LOOP_COOLDOWN_REACTIVE_MINUTES", 120),
 };
 
 /**
@@ -996,11 +1006,23 @@ export async function runAgentLoopBatch(): Promise<AgentLoopResult> {
   // for that agent again.
   await runPulseMaintenance();
 
-  const eligible = await listEligibleAgents(now);
-  for (const agentId of eligible) {
-    await enqueueIdleWakeup(agentId).catch((e) => {
-      console.error(`[agent-loop] idle-sweep enqueue failed for ${agentId}:`, e);
-    });
+  // The idle SCAN has one implementation per store mode (u6 stitch — both lanes flagged the
+  // duplication): in db mode it is `worker/idle-scheduler.ts`'s SQL-side scan, which also applies
+  // the plan's enqueue-time budget advisory (a cap-exhausted agent gets no doomed row manufactured,
+  // refused and completed on every sweep until midnight); the `listEligibleAgents` loop below is
+  // its MEMORY twin (Jest/no-DB — `runIdleSweep` is a documented no-op there, and the advisory miss
+  // only creates a row `claimNextWakeup`'s authoritative budget spend then refuses). The dynamic
+  // import mirrors the runner's own, for the same import-cycle reason documented at the top.
+  if (hasDatabase()) {
+    const { runIdleSweep } = await import("@/lib/worker/idle-scheduler");
+    await runIdleSweep();
+  } else {
+    const eligible = await listEligibleAgents(now);
+    for (const agentId of eligible) {
+      await enqueueIdleWakeup(agentId).catch((e) => {
+        console.error(`[agent-loop] idle-sweep enqueue failed for ${agentId}:`, e);
+      });
+    }
   }
 
   const batch = await runPulseBatch(BATCH_SIZE);
