@@ -21,11 +21,42 @@
  * present at the status flip and NO `round_opened` after the prompt write against the pre-change
  * tree, and it now asserts the mirror image. Both versions were run.
  *
+ * **E fix round 2 adds the STALE-SIGNAL cases** (findings 1 and 2). Every claim in this sweep is
+ * preceded by at least one store read, and a read is a network round trip in production — so the
+ * caller's per-session "stop claiming" check is already stale by the time the claim is reached, and
+ * a sweep that lost its singleton lock during the read went on to activate a lobby, publish a
+ * reconstructed event and arm wakeups under a lock a contender owns. Those three claims now re-read
+ * the signal immediately before themselves, and the only way to tell such a check from the caller's
+ * is a signal that flips DURING the read in between — which is what the pass-through store mock
+ * below exists for. This file owns them because it is the memory-mode suite that already drives all
+ * three phases end to end through `runDeadlineProgressionUnlocked`; the cap sweep's twin property
+ * lives with the cap sweep, in `src/__tests__/lib/playground/lifecycle.test.ts`.
+ *
  * @jest-environment node
  */
 jest.mock("@/lib/memory/platform-ingest", () => ({
   schedulePlaygroundMemoryIngest: jest.fn(),
 }));
+
+/**
+ * A PASS-THROUGH partial mock of the store (E fix round 2, findings 1 and 2).
+ *
+ * Every export stays the real memory-mode one. Three are wrapped in `jest.fn` so a case can make the
+ * "stop claiming" signal flip DURING the store read that a claim sits behind — the eligibility read
+ * before an activation, the locator read before the bridge's emit, and the wakeup write itself, so
+ * the participant AFTER the one already in flight is the observable. Nothing else in this file
+ * behaves differently: `beforeEach` reinstates the pass-through implementations, so every other case
+ * runs against the real functions.
+ */
+jest.mock("@/lib/store", () => {
+  const actual = jest.requireActual<typeof import("@/lib/store")>("@/lib/store");
+  return {
+    ...actual,
+    getPlaygroundSession: jest.fn(actual.getPlaygroundSession),
+    findRoundOpenedEventId: jest.fn(actual.findRoundOpenedEventId),
+    createOrReArmPlaygroundRoundWakeup: jest.fn(actual.createOrReArmPlaygroundRoundWakeup),
+  };
+});
 
 /**
  * The GM prompt call is DEFERRED on purpose.
@@ -48,7 +79,12 @@ jest.mock("@/lib/playground/engine", () => ({
 }));
 
 import { runDeadlineProgressionUnlocked } from "@/lib/playground/session-manager";
-import { createPlaygroundSession, getPlaygroundSession } from "@/lib/store";
+import {
+  createOrReArmPlaygroundRoundWakeup,
+  createPlaygroundSession,
+  findRoundOpenedEventId,
+  getPlaygroundSession,
+} from "@/lib/store";
 import {
   agents,
   eventLog,
@@ -165,12 +201,23 @@ const wakeupsFor = (sessionId: string) =>
     (row) => (row.payload as { session_id?: string }).session_id === sessionId
   );
 
+/**
+ * The real store, for two jobs: reinstating the pass-throughs above, and reading state back in a
+ * stale-signal case WITHOUT tripping the very wrapper that case installed.
+ */
+const actualStore = jest.requireActual<typeof import("@/lib/store")>("@/lib/store");
+
 beforeEach(() => {
   playgroundSessions.clear();
   playgroundActions.clear();
   agents.clear();
   resetWakeupState();
   promptDeferrals.length = 0;
+  jest.mocked(getPlaygroundSession).mockImplementation(actualStore.getPlaygroundSession);
+  jest.mocked(findRoundOpenedEventId).mockImplementation(actualStore.findRoundOpenedEventId);
+  jest
+    .mocked(createOrReArmPlaygroundRoundWakeup)
+    .mockImplementation(actualStore.createOrReArmPlaygroundRoundWakeup);
 });
 
 // ---------------------------------------------------------------------------
@@ -217,6 +264,40 @@ describe("activation and the round-1 prompt write", () => {
     expect(opened[0].actorAgentId).toBeNull();
     // The two REAL producers carry no idem key: their uniqueness is the statement's predicate.
     expect(opened[0].idemKey).toBeNull();
+  });
+
+  /**
+   * u6 E fix round 2, finding 1 (BLOCKER) — **the signal is re-read AFTER the eligibility read, not
+   * only before it.**
+   *
+   * The activation scan checked the signal per pending session and then called a helper that spends
+   * a store round trip re-reading that session fresh. A renewal failing inside that window left the
+   * check's answer stale, and the very next statement transitioned the session and bought the round-1
+   * GM prompt — under a lock a contender already owns, duplicating the exact inference the lock
+   * exists to prevent.
+   *
+   * The flip rides on the eligibility read itself, because that is the whole window: nothing else
+   * runs between the caller's check and the claim. The fixture is eligible (`pub-debate` wants three
+   * players and has three), so a sweep that ignored the signal would certainly activate it.
+   */
+  it("activates nothing when the signal flips DURING the eligibility read", async () => {
+    const participants = [seedAgent(), seedAgent(), seedAgent()];
+    const session = await seedSession({ participants });
+    let lockLost = false;
+    jest.mocked(getPlaygroundSession).mockImplementation(async (id) => {
+      const fresh = await actualStore.getPlaygroundSession(id);
+      if (id === session.id) lockLost = true;
+      return fresh;
+    });
+    const since = marker();
+
+    await runDeadlineProgressionUnlocked(() => lockLost);
+    await settle();
+
+    // Untouched, not merely "not completed": no status flip, no GM prompt bought, no event.
+    expect((await actualStore.getPlaygroundSession(session.id))!.status).toBe("pending");
+    expect(promptDeferrals).toHaveLength(0);
+    expect(roundOpenedSince(since)).toEqual([]);
   });
 
   /**
@@ -358,6 +439,41 @@ describe("the rollout bridge", () => {
     expect(roundOpenedSince(afterFirst)).toEqual([]);
   });
 
+  /**
+   * u6 E fix round 2, finding 2 (BLOCKER) — **the bridge re-reads the signal before it publishes.**
+   *
+   * `bridgeAndArmSession` took no signal at all, so the caller's per-session check was the last one
+   * before the locator read AND the emit behind it. A sweep whose renewal failed during that read
+   * published a reconstructed `round_opened` — visible to every consumer, and duplicating what the
+   * contender now holding the lock is emitting for the same round.
+   *
+   * The fixture is the bridge's own: a prompted round with no event, which the sweep certainly
+   * reconstructs when the signal stays false (the case above this one).
+   */
+  it("emits nothing when the signal flips DURING the locator read", async () => {
+    const participants = [seedAgent(), seedAgent(), seedAgent()];
+    const session = await seedSession({
+      status: "active",
+      participants,
+      currentRound: 3,
+      currentRoundPrompt: "pre-M11 prompt",
+      roundDeadline: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    let lockLost = false;
+    jest.mocked(findRoundOpenedEventId).mockImplementation(async (sessionId, round) => {
+      const found = await actualStore.findRoundOpenedEventId(sessionId, round);
+      if (sessionId === session.id) lockLost = true;
+      return found;
+    });
+    const since = marker();
+
+    await runDeadlineProgressionUnlocked(() => lockLost);
+
+    expect(roundOpenedSince(since)).toEqual([]);
+    // And with no event id there is nothing to key a wakeup on, so the arming half stops with it.
+    expect(wakeupsFor(session.id)).toEqual([]);
+  });
+
   it("skips a still-promptless round — the repair owns that one", async () => {
     const participants = [seedAgent(), seedAgent(), seedAgent()];
     await seedSession({
@@ -447,6 +563,50 @@ describe("the sweep's wakeup arming", () => {
     await runDeadlineProgressionUnlocked();
 
     expect(wakeupsFor(session.id)).toEqual([]);
+  });
+
+  /**
+   * u6 E fix round 2, finding 2 (BLOCKER), second half — **the check is PER WAKEUP.**
+   *
+   * Each participant costs a delivery read and then a write against that agent's tick budget, so one
+   * check for the whole list is one check for N claims: a renewal failing at the first participant
+   * still armed every remaining one. The signal flips inside the first write, which is where the
+   * failure lands in production, and the assertion is the granularity — the claim already in flight
+   * stands, the next one is never made.
+   *
+   * **Two sweeps, because the first one's arming is not the writer under test.** The bridge's emit
+   * dispatches in-process here, and `wakeup-router.ts` arms the same participants from the event —
+   * so a single-sweep fixture measures the CONSUMER. Clearing the queue and sweeping again leaves
+   * the sweep's own loop alone with the work: the round's event now exists, so the bridge emits
+   * nothing and dispatches nothing.
+   */
+  it("stops arming at the participant after the one already in flight", async () => {
+    const [first, second, third] = [seedAgent(), seedAgent(), seedAgent()];
+    const session = await seedSession({
+      status: "active",
+      participants: [first, second, third],
+      currentRound: 2,
+      currentRoundPrompt: "round 2 prompt",
+      roundDeadline: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+
+    await runDeadlineProgressionUnlocked();
+    expect(wakeupsFor(session.id)).toHaveLength(3);
+    resetWakeupState();
+
+    let lockLost = false;
+    jest.mocked(createOrReArmPlaygroundRoundWakeup).mockImplementation(async (input) => {
+      const result = await actualStore.createOrReArmPlaygroundRoundWakeup(input);
+      lockLost = true;
+      return result;
+    });
+
+    await runDeadlineProgressionUnlocked(() => lockLost);
+
+    // Exactly one, never "fewer than three": the signal was false when this session was picked up,
+    // so a per-session check alone leaves all three armed — as the sweep above just demonstrated.
+    expect(wakeupsFor(session.id)).toHaveLength(1);
+    expect(wakeupsFor(session.id)[0].agentId).toBe(first.id);
   });
 
   it("skips a forfeited participant", async () => {

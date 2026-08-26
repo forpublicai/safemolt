@@ -82,6 +82,29 @@ const PENDING_TIMEOUT_MS = 24 * 60 * 60 * 1000;
  */
 const ROUND1_PROMPT_REPAIR_GRACE_MS = 2 * 60 * 1000;
 
+/**
+ * The round-1 prompt repair's page size and its PER-PASS BUDGET (E fix round 2, finding 3).
+ *
+ * This was the one scan the E round left at a single fixed page, on the recorded reasoning that a
+ * repair either fills `current_round_prompt` or loses to a writer that already did, so its rows
+ * drain on their own. That holds only for a repair that RUNS TO A WRITE. Two shapes do not: a
+ * candidate whose `game_id` resolves to no game definition is skipped without a write at all, and
+ * one whose GM call keeps failing is logged and left exactly as due as it was found. Both stay in
+ * this set indefinitely, so fifty of them owned the only page and the fifty-first session — an
+ * ordinary session whose activation continuation crashed — was never repaired by any pass.
+ *
+ * The remedy is the one the other three scans already use: the ids this pass has attempted are
+ * excluded IN THE QUERY, so the next page is drawn from rows this pass has not seen. Same numbers,
+ * for the same reason — the order is oldest-first, so the bound decides how far behind the front a
+ * session may sit this pass, never whether it is reachable at all.
+ *
+ * The budget is worth more here than on the other scans, because a REACHED candidate costs a GM
+ * prompt call rather than a statement: `PAGE_SIZE × MAX_PAGES` bounds one invocation, the `stop()`
+ * check before each generation can end the pass sooner, and the sweep runs again in five minutes.
+ */
+const ROUND1_REPAIR_PAGE_SIZE = 50;
+const ROUND1_REPAIR_MAX_PAGES = 20;
+
 /** How many due sessions one round-advance query returns, and how many such queries one sweep makes. */
 const ROUND_ADVANCE_PAGE_SIZE = 50;
 const ROUND_ADVANCE_MAX_PAGES = 20;
@@ -1143,10 +1166,18 @@ async function advanceDueRounds(
  * One pending candidate, re-read fresh and activated only if it is still pending and still has the
  * game's `minPlayers`. Never throws — a failure here is logged and the scan continues to the next
  * candidate, exactly as it did when this was the loop's inline body.
+ *
+ * **`stop` is re-read HERE, not merely at the caller's per-session check** (E fix round 2, finding
+ * 1). The caller checks before this call, and then this function spends a network round trip on the
+ * fresh read — a renewal failing inside that window leaves the caller's answer stale, and the very
+ * next thing is `activateSession`, which transitions the session and buys the round-1 GM prompt
+ * under a lock a contender already owns. The rule the whole sweep follows is "check immediately
+ * before the CLAIM", and the claim is on this side of the read.
  */
 async function activatePendingIfEligible(
     store: Awaited<ReturnType<typeof getStore>>,
-    pendingId: string
+    pendingId: string,
+    stop: ShouldStop
 ): Promise<void> {
     try {
         const fresh = await store.getPlaygroundSession(pendingId);
@@ -1156,6 +1187,7 @@ async function activatePendingIfEligible(
         if (!game) return;
 
         if ((fresh.participants || []).length >= game.minPlayers) {
+            if (stop()) return;
             await activateSession(fresh, game);
         }
     } catch (err) {
@@ -1194,15 +1226,86 @@ async function activateEligiblePendings(
             if (pendingToConsider.length === 0) return;
             for (const pending of pendingToConsider) {
                 // `activateSession` transitions the session and buys the round-1 GM prompt — a claim,
-                // so it needs the check before it rather than once per page.
+                // so it needs the check before it rather than once per page. This one is the cheap
+                // skip; the DECISIVE check is inside, immediately before the claim, because the
+                // eligibility read between the two is where a renewal failure lands.
                 if (stop()) return;
                 examinedThisPass.add(pending.id);
-                await activatePendingIfEligible(store, pending.id);
+                await activatePendingIfEligible(store, pending.id, stop);
             }
             if (pendingToConsider.length < PENDING_ACTIVATION_PAGE_SIZE) return;
         }
     } catch (err) {
         console.error('[playground] Error scanning pending sessions for activation:', err);
+    }
+}
+
+/**
+ * One repair candidate: regenerate its round-1 prompt and publish it through the conditional write
+ * both round-1 writers share. Never throws — a failure here is logged and the scan continues to the
+ * next candidate, exactly as it did when this was the loop's inline body.
+ *
+ * The two ways this returns WITHOUT changing anything are the reason the caller pages (E fix round
+ * 2, finding 3): an unresolvable `game_id` skips before the GM call, and a failed generation or a
+ * lost conditional write leaves `current_round_prompt` NULL. Either way the row is still a candidate
+ * on the next query, which is what made a single fixed page a permanent wall.
+ */
+async function repairRound1Prompt(
+    store: Awaited<ReturnType<typeof getStore>>,
+    session: PlaygroundSession
+): Promise<void> {
+    try {
+        const game = resolvePlaygroundGame(session.schoolId, session.gameId);
+        if (!game) return;
+        const roundPrompt = await generateRoundPrompt(session, game);
+        const stored = await store.storeRound1PromptIfMissing(session.id, roundPrompt, ACTION_TIMEOUT_MS, [
+            playgroundRoundOpenedEvent({ sessionId: session.id, round: 1, schoolId: session.schoolId ?? null }),
+        ]);
+        if (stored) {
+            console.log(`[playground] Repaired missing round-1 prompt for session ${session.id}.`);
+        }
+    } catch (err) {
+        console.error(`[playground] Error repairing round-1 prompt for session ${session.id}:`, err);
+    }
+}
+
+/**
+ * Step 1c of the sweep: republish a round-1 prompt whose activation continuation crashed, past the
+ * grace. `listSessionsNeedingRound1PromptRepair` answers oldest-first for the same repair-path reason
+ * the activation scan does — a stuck session must not be hidden behind newer ones.
+ *
+ * **Paged, with the same attempted-exclusion the other three scans use** (E fix round 2, finding 3).
+ * The E round left this at one fixed page and recorded why; codex round 2 overturned the reasoning,
+ * and correctly: a candidate that is skipped or that fails does not leave the set, so fifty of them
+ * starve the fifty-first forever. See `ROUND1_REPAIR_PAGE_SIZE` for the budget and what makes it
+ * safe.
+ *
+ * Never throws: a scan failure is logged and the sweep moves on to its next phase, as before.
+ */
+async function repairStuckRound1Prompts(
+    store: Awaited<ReturnType<typeof getStore>>,
+    stop: ShouldStop
+): Promise<void> {
+    try {
+        const attemptedThisPass = new Set<string>();
+        for (let page = 0; page < ROUND1_REPAIR_MAX_PAGES; page += 1) {
+            if (stop()) return;
+            const stuck = await store.listSessionsNeedingRound1PromptRepair(
+                ROUND1_PROMPT_REPAIR_GRACE_MS,
+                ROUND1_REPAIR_PAGE_SIZE,
+                Array.from(attemptedThisPass)
+            );
+            if (stuck.length === 0) return;
+            for (const session of stuck) {
+                // `generateRoundPrompt` is an inference call — a claim, checked before each one.
+                if (stop()) return;
+                attemptedThisPass.add(session.id);
+                await repairRound1Prompt(store, session);
+            }
+            if (stuck.length < ROUND1_REPAIR_PAGE_SIZE) return;
+        }
+    } catch (err) {
+        console.error('[playground] Error scanning for round-1 prompt repairs:', err);
     }
 }
 
@@ -1213,10 +1316,21 @@ async function activateEligiblePendings(
  * the body is unchanged, and lifting it out is what keeps the loop's paging and its per-session stop
  * check readable at one nesting level. Its two halves stay independently error-scoped — a bridge
  * failure still leaves arming to run, and neither can stop the next session — so this never throws.
+ *
+ * **It takes the stop signal itself** (E fix round 2, finding 2). It used to take none, so the
+ * caller's per-session check was the last one before FOUR store round trips and two kinds of write:
+ * the locator read, then an ungated `emitEvent`, then the actions read, then a delivery read and a
+ * wakeup write per participant. A renewal failing anywhere in there left a sweep that no longer
+ * holds the lock free to publish a reconstructed `round_opened` and arm every remaining participant
+ * against it — work a contender is simultaneously doing under the lock it now owns. Both writes are
+ * claims, so both get the check immediately before them: one before the emit, one before EACH
+ * wakeup. A wakeup already written stands; nothing after it starts, and the next pass re-arms
+ * whoever was missed from the same un-acted predicate.
  */
 async function bridgeAndArmSession(
     store: Awaited<ReturnType<typeof getStore>>,
-    session: PlaygroundSession
+    session: PlaygroundSession,
+    stop: ShouldStop
 ): Promise<void> {
     // Still promptless ⇒ the repair owns this one, and the bridge must not manufacture an
     // event for a round nobody can act on. BOTH empty spellings are tested deliberately:
@@ -1232,6 +1346,9 @@ async function bridgeAndArmSession(
     // one whose real event is merely slow to have landed, converges to one event either way).
     let eventId = await store.findRoundOpenedEventId(session.id, session.currentRound);
     if (!eventId) {
+        // The locator above is a network round trip, so the caller's check is already stale by the
+        // time this emit is reached — and this emit is a publication, visible to every consumer.
+        if (stop()) return;
         try {
             // The one UNGATED emit in this lane: the bridge has no accompanying mutation to
             // gate on — the session is already prompted, and nothing about it is changing.
@@ -1272,6 +1389,9 @@ async function bridgeAndArmSession(
         for (const participant of unActed) {
             const delivery = await store.resolveWakeupDelivery(participant.agentId);
             if (!delivery) continue;
+            // Per participant, immediately before the write: the delivery read above is another
+            // round trip, and each wakeup is its own claim on the agent's tick budget.
+            if (stop()) return;
             // The gated variant, never the plain one (codex u5-C round 1 MAJOR): the
             // pre-reads above are only the cheap skip — the decisive freshness check runs
             // INSIDE this statement, FOR SHARE on the session row, so a round advancing
@@ -1338,36 +1458,8 @@ async function checkDeadlines(shouldStop?: ShouldStop): Promise<PlaygroundDeadli
         return { advanced, capped, advanceDurationMs, capDurationMs };
     }
 
-    // 1c. Repair active round-1 sessions whose prompt never landed (a crashed activation write).
-    //
-    // Deliberately still ONE oldest-first page. A repair either fills `current_round_prompt` or loses
-    // to a writer that already did, so the processed rows leave the set — the round-advance loop's
-    // attempted-exclusion exists for failures that leave the row in place, and a repair that fails
-    // (an inference error) has exactly that shape. That residual is recorded rather than fixed here:
-    // it was not among the E-round findings, the grace period keeps the set small, and every
-    // additional page costs a GM prompt call. Revisit if the repair set is ever observed at 50.
-    try {
-        const stuck = await store.listSessionsNeedingRound1PromptRepair(ROUND1_PROMPT_REPAIR_GRACE_MS, 50);
-        for (const session of stuck) {
-            // `generateRoundPrompt` is an inference call — a claim, checked before each one.
-            if (stop()) break;
-            try {
-                const game = resolvePlaygroundGame(session.schoolId, session.gameId);
-                if (!game) continue;
-                const roundPrompt = await generateRoundPrompt(session, game);
-                const stored = await store.storeRound1PromptIfMissing(session.id, roundPrompt, ACTION_TIMEOUT_MS, [
-                    playgroundRoundOpenedEvent({ sessionId: session.id, round: 1, schoolId: session.schoolId ?? null }),
-                ]);
-                if (stored) {
-                    console.log(`[playground] Repaired missing round-1 prompt for session ${session.id}.`);
-                }
-            } catch (err) {
-                console.error(`[playground] Error repairing round-1 prompt for session ${session.id}:`, err);
-            }
-        }
-    } catch (err) {
-        console.error('[playground] Error scanning for round-1 prompt repairs:', err);
-    }
+    // 1c. Repair active round-1 sessions whose prompt never landed (see `repairStuckRound1Prompts`).
+    await repairStuckRound1Prompts(store, stop);
     if (stop()) {
         stopped('after round-1 prompt repair');
         return { advanced, capped, advanceDurationMs, capDurationMs };
@@ -1404,7 +1496,7 @@ async function checkDeadlines(shouldStop?: ShouldStop): Promise<PlaygroundDeadli
                 // — both claims, neither of which may be made under a lock this sweep has lost.
                 if (stop()) break armPages;
                 examinedThisPass.add(session.id);
-                await bridgeAndArmSession(store, session);
+                await bridgeAndArmSession(store, session, stop);
             }
             if (active.length < ARM_SCAN_PAGE_SIZE) break;
         }

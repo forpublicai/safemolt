@@ -552,22 +552,28 @@ export async function storeRound1PromptIfMissing(
 }
 
 /**
- * The memory twin of the round-1 repair query — same predicate, same OLDEST-FIRST order.
+ * The memory twin of the round-1 repair query — same predicate, same OLDEST-FIRST order, same
+ * `excludeIds` exclusion (E fix round 2, finding 3).
  *
- * See the db side for why both halves matter: the age filter belongs in the query so a fixed window
- * cannot hide a stuck session behind newer ones, and `currentRoundPrompt` is part of the predicate
- * so a repaired row leaves the candidate set.
+ * See the db side for why each half matters: the age filter belongs in the query so a fixed window
+ * cannot hide a stuck session behind newer ones, `currentRoundPrompt` is part of the predicate so a
+ * REPAIRED row leaves the candidate set, and the exclusion is what lets the caller page past the
+ * candidates that never leave it — the ones skipped for an unresolvable game, and the ones whose GM
+ * call keeps failing.
  */
 export async function listSessionsNeedingRound1PromptRepair(
   graceMs: number,
-  limit: number
+  limit: number,
+  excludeIds?: readonly string[]
 ): Promise<PlaygroundSession[]> {
   const cutoffMs = Date.now() - graceMs;
+  const excluded = new Set(excludeIds ?? []);
   return Array.from(playgroundSessions.values())
     .filter((session) => {
       if (session.status !== 'active') return false;
       if (session.currentRound !== 1) return false;
       if (session.currentRoundPrompt !== undefined) return false;
+      if (excluded.has(session.id)) return false;
       const startedAtMs = Date.parse(session.startedAt ?? session.createdAt);
       return Number.isFinite(startedAtMs) && startedAtMs <= cutoffMs;
     })

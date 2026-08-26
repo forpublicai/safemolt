@@ -318,7 +318,8 @@ export async function listActiveSessionsDueForRound(
 
 /**
  * u6 P3.1 due-scan #3 (E fix round 1, finding 2): the ACTIVE sessions the round_opened bridge and the
- * wakeup re-arm pass must visit, **oldest first and cursor-paged**.
+ * wakeup re-arm pass must visit, **oldest first and paged by attempted-id exclusion** — a keyset
+ * cursor was the alternative and is rejected below, so do not read "paged" as "cursor-paged".
  *
  * That pass used to read `listPlaygroundSessions({ status: 'active', limit: 50 })` — the NEWEST fifty
  * — so the zero-forfeit machinery it exists to serve starved exactly the sessions that needed it
@@ -1349,21 +1350,32 @@ export async function storeRound1PromptIfMissing(
  * A crashed activation continuation leaves a session active on round 1 with no prompt and no
  * deadline: un-expirable by every deadline-scanning path, and invisible to a newest-first window the
  * moment the population outgrows it. Selecting the due candidates directly, OLDEST FIRST, is what
- * makes a bounded sweep a delay rather than starvation — and because the repair either fills
- * `current_round_prompt` or loses to a writer that already did, a processed row cannot come back on
- * the next page.
+ * makes a bounded sweep a delay rather than starvation.
+ *
+ * **`excludeIds` is what lets the caller's page loop make progress** (E fix round 2, finding 3).
+ * This function's own docs used to claim the set drains on its own — "the repair either fills
+ * `current_round_prompt` or loses to a writer that already did" — and that is true only of a repair
+ * that reaches a write. A candidate whose `game_id` resolves to no game definition is skipped
+ * without one, and one whose GM call fails is left exactly as due as it was found: both are
+ * permanent members of this set, so a re-issued query returns the same page forever and the session
+ * behind them is never repaired. Excluding the ids attempted THIS PASS, in the query, is what makes
+ * the next page hold rows the caller has not seen. The list is bounded by the caller's own page-size
+ * × max-pages budget (`session-manager.ts`), so it can never grow past one pass's work.
  */
 export async function listSessionsNeedingRound1PromptRepair(
     graceMs: number,
-    limit: number
+    limit: number,
+    excludeIds?: readonly string[]
 ): Promise<PlaygroundSession[]> {
     const seconds = Math.max(1, Math.round(graceMs / 1000));
+    const exclude = excludeIds && excludeIds.length > 0 ? Array.from(excludeIds) : null;
     const rows = await sql!`
       SELECT * FROM playground_sessions
       WHERE status = 'active'
         AND current_round = 1
         AND current_round_prompt IS NULL
         AND COALESCE(started_at, created_at) <= NOW() - make_interval(secs => ${seconds}::int)
+        AND (${exclude}::text[] IS NULL OR id <> ALL(${exclude}::text[]))
       ORDER BY COALESCE(started_at, created_at) ASC
       LIMIT ${Math.max(1, Math.floor(limit))}
     `;

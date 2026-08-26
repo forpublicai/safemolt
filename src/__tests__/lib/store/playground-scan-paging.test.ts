@@ -1,9 +1,9 @@
 /**
- * M11-2 u6 E fix round 1 — the sweep's three scans PAGE, against the real memory store.
+ * M11-2 u6 E fix rounds 1 and 2 — the sweep's FOUR scans PAGE, against the real memory store.
  *
  * The db twins run the same predicates in SQL and the integration suite proves them against Postgres
  * with populations larger than one page; this file is the memory half, which Jest and local no-DB
- * development actually run. All three scans gained the same parameter for the same reason:
+ * development actually run. All four scans gained the same parameter for the same reason:
  *
  *  - `listActiveSessionsDueForRound` (finding 3): a FAILED advance leaves `roundDeadline` untouched,
  *    so a page whose rows all failed is still due and comes back identically. Excluding what the
@@ -15,6 +15,10 @@
  *    the NEWEST fifty actives, so the OLDEST un-armed session was outside every sweep's window. It
  *    is now oldest-first, and arming changes nothing the query filters on — so, again, the exclusion
  *    is the only thing that makes a second page different from the first.
+ *  - `listSessionsNeedingRound1PromptRepair` (round 2, finding 3): the one scan round 1 left at a
+ *    fixed page, on the reasoning that a repair always fills the prompt or loses to a writer that
+ *    did. A candidate skipped for an unresolvable game never reaches a write at all, and a failing
+ *    GM call leaves the row as due as it was found — so this set has permanent members too.
  *
  * @jest-environment node
  */
@@ -22,6 +26,7 @@ import {
   listActiveSessionsDueForRound,
   listActiveSessionsForArmScan,
   listPendingSessionsForActivationScan,
+  listSessionsNeedingRound1PromptRepair,
 } from "@/lib/store/playground/memory";
 import { playgroundSessions } from "@/lib/store/_memory-state";
 import type { PlaygroundSession } from "@/lib/playground/types";
@@ -170,5 +175,51 @@ describe("listActiveSessionsForArmScan", () => {
       "b-tie",
       "c-tie",
     ]);
+  });
+});
+
+describe("listSessionsNeedingRound1PromptRepair", () => {
+  const GRACE_MS = 2 * MINUTE;
+
+  /**
+   * The starvation shape for THIS scan (E fix round 2, finding 3). The three ahead are candidates
+   * the sweep can never repair — an unresolvable `game_id` is skipped before the GM call is made —
+   * so they keep their place at the front of the queue on every query. Without the exclusion the
+   * caller's second page is its first page, and `behind` is never repaired by any pass.
+   */
+  it("excludes the ids the caller already attempted this pass", async () => {
+    const attempted: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const id = `unrepairable${i}`;
+      attempted.push(id);
+      seed(id, {
+        gameId: "no-such-game",
+        startedAt: new Date(NOW - (30 - i) * MINUTE).toISOString(),
+      });
+    }
+    seed("behind", { startedAt: new Date(NOW - 5 * MINUTE).toISOString() });
+
+    expect((await listSessionsNeedingRound1PromptRepair(GRACE_MS, 3)).map((s) => s.id)).toEqual(
+      attempted
+    );
+    expect(
+      (await listSessionsNeedingRound1PromptRepair(GRACE_MS, 3, attempted)).map((s) => s.id)
+    ).toEqual(["behind"]);
+  });
+
+  /** The exclusion is added to the predicate, never in place of it. */
+  it("still answers only promptless, active, in-grace round-1 sessions", async () => {
+    seed("stuck");
+    seed("prompted", { currentRoundPrompt: "go" });
+    seed("inside-grace", { startedAt: new Date(NOW - MINUTE).toISOString() });
+    seed("round-two", { currentRound: 2 });
+    seed("cancelled", { status: "cancelled" });
+
+    expect((await listSessionsNeedingRound1PromptRepair(GRACE_MS, 50)).map((s) => s.id)).toEqual([
+      "stuck",
+    ]);
+    expect((await listSessionsNeedingRound1PromptRepair(GRACE_MS, 50, [])).map((s) => s.id)).toEqual(
+      ["stuck"]
+    );
   });
 });

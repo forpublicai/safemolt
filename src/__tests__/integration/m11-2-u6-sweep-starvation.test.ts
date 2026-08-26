@@ -30,6 +30,12 @@
  *  - finding 1: a sweep that has lost its singleton lock must claim nothing in ANY phase, the
  *    lifetime cap included (it used to be handed no signal at all).
  *
+ * **E fix round 2 adds the fifth**, and it is the same shape as finding 3 in the one phase round 1
+ * left alone: the round-1 prompt repair kept a single fixed page, on the recorded reasoning that a
+ * repair always fills the prompt or loses to a writer that did. A candidate whose `game_id` resolves
+ * to no game definition never reaches a write at all, so fifty of them are a permanent wall in front
+ * of an ordinary crashed session — the deferral is closed, not re-recorded.
+ *
  * The GM is mocked throughout: these cases are about which sessions each phase REACHES.
  */
 // The GM is the only thing here that would leave the process: the advance and activation phases call
@@ -182,6 +188,15 @@ async function roundsOf(ids: readonly string[]): Promise<Map<string, number>> {
     [ids]
   );
   return new Map(rows.map((r) => [r.id, Number(r.current_round)]));
+}
+
+/** `current_round_prompt`, the observable a round-1 REPAIR fills — NULL means still stuck. */
+async function promptsOf(ids: readonly string[]): Promise<Map<string, string | null>> {
+  const { rows } = await pgPool().query<{ id: string; current_round_prompt: string | null }>(
+    `SELECT id, current_round_prompt FROM playground_sessions WHERE id = ANY($1::text[])`,
+    [ids]
+  );
+  return new Map(rows.map((r) => [r.id, r.current_round_prompt]));
 }
 
 async function statusesOf(ids: readonly string[]): Promise<Map<string, string>> {
@@ -389,6 +404,65 @@ describe("the pending-activation sweep behind a full page of ineligible lobbies"
     expect(after.get(eligible)).toBe("active");
     // The lobbies ahead of it are examined and left exactly as they were.
     expect(ineligible.filter((id) => after.get(id) !== "pending")).toEqual([]);
+  }, 180_000);
+});
+
+/**
+ * u6 E fix round 2, finding 3 (MAJOR) — **fifty repairs that cannot succeed must not starve the
+ * fifty-first session.**
+ *
+ * The E round left this scan at one fixed page and recorded why: a repair either fills
+ * `current_round_prompt` or loses to a writer that already did, so its rows drain on their own.
+ * That is true only of a repair that reaches a WRITE. A candidate whose `game_id` resolves to no
+ * game definition is skipped before the GM call is even made, and a candidate whose generation keeps
+ * failing is logged and left exactly as due as it was found — both keep their place at the front of
+ * an oldest-first queue indefinitely. Codex round 2 overturned the deferral, and this is the case
+ * that closes it.
+ *
+ * The fifty are the cheap, deterministic form of that: an unresolvable game, so no GM call, no
+ * write, no chance of leaving the set.
+ */
+describe("the round-1 prompt repair sweep behind a full page of unrepairable sessions", () => {
+  it("repairs the session sitting behind fifty that cannot be repaired, in the SAME sweep", async () => {
+    await retireThisRunsLiveSessions();
+
+    /** `ROUND1_PROMPT_REPAIR_GRACE_MS` (`session-manager.ts`), mirrored so fixtures clear it. */
+    const GRACE_MS = 2 * 60 * 1000;
+    // Fifty promptless round-1 sessions the repair can never finish, seeded oldest-first so they own
+    // page 1 whole. Young enough that the lifetime cap must not take them off the board instead.
+    const unrepairable: string[] = [];
+    for (let i = 0; i < PAGE_SIZE; i += 1) {
+      unrepairable.push(
+        await seedSession({
+          status: "active",
+          ageMs: GRACE_MS + (PAGE_SIZE + 10 - i) * 60_000,
+          roundDeadlineOffsetMs: null,
+          currentRoundPrompt: null,
+          gameId: "u6st-no-such-game",
+        })
+      );
+    }
+    // The fifty-first: an ordinary session whose activation continuation crashed. Its game resolves,
+    // so the (mocked) GM answers and `storeRound1PromptIfMissing` publishes. Newest of the set, which
+    // puts it exactly one row past the end of page 1.
+    const repairable = await seedSession({
+      status: "active",
+      ageMs: GRACE_MS + 60_000,
+      roundDeadlineOffsetMs: null,
+      currentRoundPrompt: null,
+      gameId: "pub-debate",
+      schoolId: "foundation",
+      participants: participants(1, "u6strep"),
+    });
+
+    await runDeadlineProgressionUnlocked();
+
+    const prompts = await promptsOf([...unrepairable, repairable]);
+    // The whole point: the session behind the unrepairable page was repaired by THIS invocation.
+    expect(prompts.get(repairable)).toBe("u6st round prompt");
+    // And the fifty in front of it are untouched — still promptless, still candidates, retried on
+    // the next pass exactly as before this fix.
+    expect(unrepairable.filter((id) => prompts.get(id) !== null)).toEqual([]);
   }, 180_000);
 });
 

@@ -48,7 +48,10 @@ export const listPendingSessionsForActivationScan = pickStore(
 // nothing the query filters on and a re-issued query would otherwise return the same page forever.
 export const listActiveSessionsForArmScan = pickStore(db.listActiveSessionsForArmScan, mem.listActiveSessionsForArmScan);
 // M11-2 P3.2: the round-1 prompt publication both round-1 writers share, and the query that finds a
-// session whose activation continuation crashed before it could run.
+// session whose activation continuation crashed before it could run. Paged by attempted-id exclusion
+// like the three scans above (E fix round 2, finding 3): a candidate skipped for an unresolvable game
+// — or one whose GM call keeps failing — never leaves this set, so a fixed page starved the sessions
+// behind it.
 export const storeRound1PromptIfMissing = pickStore(db.storeRound1PromptIfMissing, mem.storeRound1PromptIfMissing);
 export const listSessionsNeedingRound1PromptRepair = pickStore(
     db.listSessionsNeedingRound1PromptRepair,
