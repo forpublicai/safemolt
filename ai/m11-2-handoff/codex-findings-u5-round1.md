@@ -43,3 +43,8 @@ representations, no write export hides behind a read prefix.
 
 Clean otherwise: cold-start fallback, per-section degraded isolation, endpoint serialization,
 metadata, and the narrow auth allowlist all confirmed correct.
+
+## Round 2 verdicts — WAVE u5 FULLY CONVERGED
+
+- Lane C r2: "CONVERGED: The unit needs no change." (zero findings)
+- Lanes A + B r2 (verification of the fixes, commit `e2ee255`): "Both lanes are CONVERGED."
