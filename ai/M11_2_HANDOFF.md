@@ -1,243 +1,248 @@
-# M11-2 execution handoff — stop point 2026-08-13
+# M11-2 execution handoff — stop point 2026-08-26: M11a CODE COMPLETE
 
-Work on `ai/PLAN_M11_2.md` stopped deliberately at a clean break, by user instruction, immediately
-after both u3f implementation lanes landed and the tree returned to green. This file is the pickup
-point for the next agent. Companion state lives in the orchestrator memory file
+Work on `ai/PLAN_M11_2.md` reached the end of M11a's code: every code phase (P1.5/P1.6, P4,
+P3.2, P3.3, P3.1, P3.4) is implemented, codex-reviewed to convergence, and committed. This file
+is the pickup point for the next session. Companion state lives in the orchestrator memory file
 `~/.claude/projects/-Users-mohsin-Github-safemolt/memory/m11-2-execution-state.md`.
 
-Branch: `ops/code-improve`. The tree is **COMMITTED** — checkpoint commits are ON (see the user
-directives below; this reversed the old no-commit instruction on 2026-08-12). Nothing is pushed;
-do not push unless the user asks. Commit ladder this session, oldest first:
+Branch: `ops/code-improve`. **NOTHING IS PUSHED** — do not push unless the user asks. The
+orchestrator owns ALL git writes; implementation agents are forbidden from git.
 
-| Commit | What it holds |
-|---|---|
-| `7efa80d` | Baseline WIP checkpoint: all M11-2 work to that point (231 files) |
-| `6e2c93e` | u3e codex r7 closure (luna r9 + orchestrator statement repairs) |
-| `fbe7093` | u4prep2 [A] round (superseded stamps, locked twin subjects, exact-kind attribution) |
-| `20a8531` | u3e codex r8 closure (luna r10; ensure-pin adjudication) |
-| `b1e9910` | u3e codex r9 closure (luna r11 + challenge-lock projection repair) |
-| `a230fe4` | u3e codex r10 closure (luna r12 + precedence-merge and backlog-drain repairs) |
-| `e9a4d06` | u3e codex r11 closure (luna r13 + verbatim-idempotency adjudication) |
-| `f6b80ac` | u4prep2 round 2: statement-atomic follow/group-join projections |
-| `34c53c6` | u4prep2 follow-label parity repair |
-| `ac7c901` | u3e tests-only evidence round (production frozen) |
-| `a2585c5` | u3f: the eleven kinds + none-manifests pre-landed |
-| `682e40a` | u3f: both lanes' implementation + the UX6 re-anchor |
-| `bc1dcb1` | u3f-LITE review round 1 closed (avatar statement-return race + 429/503 pins + rollback coverage) |
-| `30acf36` | u3f-CORE review round 1 closed (3 BLOCKER + 7 MAJOR) |
-| `a06175d` | u3f-CORE review round 2 closed (4 MAJOR) |
-| `c0b2f9b` | u3f-CORE review round 3 closed (enroll-cap race proof strengthened) — **u3f CONVERGED (codex r4 clean)** |
-| `c8bb62a` | u3f-CORE B3 RESOLVED: the user chose TA-emit; agent teaching-assistant messages emit `class.session_message` again (role `ta`, gated in-statement under FOR SHARE), professor stays operator-silent |
-
-## Verified state at the break
+## Verified state at the stop
 
 - `npx tsc --noEmit` — clean.
 - `npm run lint` — 0 errors (pre-existing complexity warnings only).
-- `npm test -- --runInBand` — 160 suites / **1518 tests, all green**.
-- `npm run test:integration` — 43 suites / **565 tests, all green** (the combined u3f tree).
+- `npm test -- --runInBand` — **189 suites / 1842 tests, all green.**
+- `npm run test:integration` — 53 suites / 698 tests; **one recorded flake** (see "Open items").
+  An immediate solo re-run of the failing suite was 19/19 green.
 - `npm run build` — green.
+
+## Commit ladder this session (oldest first)
+
+| Commit | What it holds |
+|---|---|
+| `360b844` | u3f-core B3 REVERSED per user decision: TA class messages emit again (in-statement role derivation under FOR SHARE) |
+| `84bd3d9` | B3 codex round: "No findings. The change is correct." |
+| `8491367` | u5 wave-1 lane specs (A boundary / B senses / C wakeups) |
+| `41dfcfe` | u5 Lane A: P1.5/P1.6 boundary machinery (manifest 321 exports, generator, 4 tests, exemptions; 2 real pre-existing defects found by the boundary itself) |
+| `79e5a77` | u5 Lane C gen-1 manager handoff + prepared subagent prompts (freshness rotation) |
+| `18f808d` | u5 Lane C d1–3: wakeups migration (FK CASCADE both ways), `playground.round_opened` kind+manifests, wakeup store both modes |
+| `5d5e8b6` | u5 Lane B: P4 senses library + `GET /agents/me/context` + loop/home rewire; `agent-opportunities.ts` deleted |
+| `cf1db07` | u5 Lane C d4–6: wakeup-router consumer, round_opened producers (conditional round-1 write + advancement CAS + bridge + arming), race suites — **wave-1 boundary, all five gates green** |
+| `20dd055` | u5-C codex r1 fix: the playground-round arm gate lives IN the statement (`createOrReArmPlaygroundRoundWakeup`, FOR SHARE live gate, both stores, mutation-checked both sides) |
+| `e2ee255` | u5 A+B codex r1 fixes: comment-aware extractor; loop projects actionable admissions; home projects ONE `buildAgentContext` |
+| `78a3299` | u5 convergence record — codex r2 clean on all three lanes |
+| `7e69449` | u6 both lanes: P3.3 runner + P3.1 worker + P3.4 sweeps + idle scheduler (WIP checkpoint) |
+| `128879d` | u6 stitch (orchestrator half): route de-dup (idle sweep + claim ran TWICE per tick), cooldown env tiers |
+| `c58282f` | u6 stitch (agent half): playground execution guard, round-mismatch proof, `agent_loop.action` Tier-1 + shadow, wakeup retention, starvation suite |
+| `933be02` | u6 codex round-1 findings + fix specs archived |
+| `f5f622d` | u6-D codex r1 fix: the idle-path fence BLOCKER (PulseTickBundle into tickAgent) + fence-loss discipline |
+| `e61ce57` | u6-E codex r1 fix: ShouldStop to every claim, three scan-starvation fixes, boot-time hash |
+| `ca502ab` | u6-E codex r2 fix: two stale-signal windows, repair-path paging (deferral ADJUDICATED must-close), comment |
+| `afb5a48` | u6-E codex r3 fix (orchestrator): re-check the signal AFTER the GM call — the longest window in the sweep |
+| `acc9490` | **M11a CODE COMPLETE** — convergence record, final gates, the flake recorded honestly |
+
+## Achieved (all codex-converged)
+
+| Unit | Content | Review trail |
+|---|---|---|
+| P0–u4prep2, u3–u3f | events substrate, drain, consumers, all P1.1–P1.4 producers, drain-time soak | converged in prior sessions (see this file's git history for the earlier ladder) |
+| u3f B3 | TA messages emit (user's product decision, reversing the spec's operator branch) | 1 round, clean |
+| u5 Lane A | P1.5/P1.6: `export-manifest.ts`, `gen-eslint-boundary.js`, the generated `no-restricted-imports` block, AST/drift/completeness/mixed-actor tests, §10 exemptions | 1 MINOR (comment-token leak in the generator) → fixed → CONVERGED |
+| u5 Lane B | P4.1–P4.3: `agent-senses/` (11 gatherers + `buildAgentContext(agentId,{focus})`, per-section `{items,degraded}`), the context endpoint, loop + home as projections of ONE context | 2 MAJOR (admissions never projected; home's parallel assembly) → fixed, mutation-proven → CONVERGED |
+| u5 Lane C | P3.2: `agent_wakeups` + `pulse_budget_counters` migration, wakeup store both modes, wakeup-router consumer, notifications' `playground_round_open`, round_opened producers, a4 reconstruction bridge, sweep arming | 1 MAJOR (freshness pre-read TOCTOU → in-statement FOR SHARE gate) → fixed → r2 "CONVERGED, zero findings" |
+| u6 part D | P3.3: the plan-verbatim claim CTE (budget atomic, one-result-row contract), token-fenced writes, `beforeTerminalTool`, the execution guard (comment-reply + playground-turn), reason-scoped context, `runAgentLoopBatch` degraded wrapper, `agent_loop.action` (Tier-1 `logAction`: journal insert + event + spliced activity projection in ONE statement; activity `shadow`) | r1 1 BLOCKER (idle path unfenced/unguarded) + 1 MAJOR (fence-loss wrote loop state) → r2 CONVERGED |
+| u6 part E | P3.1/P3.4: `worker/index.ts` (ledger boot check, 4 duties, /healthz with boot-time hash, SIGTERM), `worker_locks` (verbatim upsert, fresh-UUID holder, no same-holder arm), `checkDeadlines` PRIVATE behind the locked entry (discipline test; 5 direct callers converted), due-ASC scans with in-query attempted-id exclusion, stop-signal at EVERY claim point in EVERY phase, retention incl. `pruneTerminalWakeups`, honesty meta, idle scheduler, `render.yaml`, env-tunability | r1 1B+4M+1m → r2 2B+1M+1NIT → r3 1B (re-check after the GM call) → r4 CONVERGED |
+
+## Open items, in order
+
+1. **Push** — the user's explicit call; 20 commits ahead of origin.
+2. **The u3c flake**: `m11-2-u3c-groups.test.ts:454` ("leaves the two membership halves agreeing
+   when subscribe races unsubscribe") failed ONCE in 698 (canonical row present, snapshot missing
+   — the torn state the FOR-NO-KEY-UPDATE arbiter exists to prevent), clean 19/19 on solo re-run;
+   first failure across every full run this milestone. A task chip is filed. Verdict needed:
+   Neon-reset flake class vs a real narrow hole. Do not silently ignore it.
+3. **Deploy-time (not code)** — the runbooks are inventory §8: shadow deploy → ≥3-day production
+   soak (`scripts/soak-shadow-report.sql`; flip-clean = matched-only stamps + zero anomalies) →
+   per-kind `shadow → on` → inline-writer deletion, each a fully-rolled-out deploy behind the
+   consumer-contract-hash barrier. Specifics added this session: the P3.2 TWO-DEPLOY runbook for
+   `playground.round_opened` (consumer coverage before producers — bundled, the fence classifies
+   producer events as pre-activation and turns are permanently lost); `agent_loop.action` is a new
+   `shadow` kind on the activity consumer; the P3.1 worker deploy order (Vercel migrations first,
+   then the worker build; Render per `render.yaml`).
+4. **M11b (P5/P6/P7)** — a separate plan, not started. Rough size: half to two-thirds of this
+   session's work. b1 = P5.1 webhooks (the largest single unit — u3e-class review depth: SSRF,
+   delivery ledger, terminal coupling, two-deploy rollout) + P5.2 SSE; b2 = P6.1 mentions + P6.2
+   reactions; b3 = P6.3 DMs + P7 cleanup (the boundary allowlist shrinks to the permanent set).
 
 ## THE USER'S STANDING DIRECTIVES (verbatim intent — these govern how to work)
 
 1. **Reporting style**: ALWAYS report to the user in ASD-STE100 Simplified Technical English
    (global rule, `~/.claude/CLAUDE.md`). Code, comments, commits and repo documents are exempt.
-2. **Reviewer**: `codex` CLI is the review agent (default model gpt-5.6-sol),
-   `codex exec --sandbox read-only "$(cat <prompt>)" < /dev/null`.
-3. **Implementer**: "gpt luna" = `codex exec -m gpt-5.6-luna --sandbox workspace-write
-   -c sandbox_workspace_write.network_access=true "$(cat <prompt>)" < /dev/null` (without the
-   network flag the sandbox blocks Neon DNS and every DB gate fails ENOTFOUND).
-4. **Subagent models** (2026-08-12): haiku/sonnet for simple mechanical tasks (extraction, doc
-   sweeps), **opus for implementation subagents**; the orchestrator is the main agent.
-5. **Acceleration items 1–6, all adopted** (2026-08-12): (1) harness subagents as a second
-   implementation lane; (2) specs written during wait time; (3) batched convergence reviews;
-   (4) targeted gates while iterating, full five gates at round boundaries only; (5) u3f
-   risk-split (low-risk parts get ONE codex round, stop unless BLOCKER/MAJOR); (6) **checkpoint
-   commits** — the orchestrator owns ALL commits, one per green round boundary plus honest WIP
-   checkpoints before parallel phases; agents are forbidden from git writes; commit messages end
-   with the Claude co-author line.
-6. **Agent freshness** (2026-08-05): past ~50–60% of an agent's context budget, hand the next
-   round to a FRESH agent with a self-contained spec.
-7. **Fewer review rounds on low-risk chunks** (2026-08-05): full convergence only for
-   karma/lock/atomicity-bearing units.
-8. **Stop instruction** (2026-08-13): stop at a natural point, write this handoff.
+2. **Reviewer**: `codex` CLI (default gpt-5.6-sol),
+   `codex exec --sandbox read-only "$(cat <prompt>)" < /dev/null`, output captured to a file.
+3. **REVIEW EVERYTHING**: "dont forget to review work. use codex wherever appropriate. do not
+   push shit code." Every unit gets at least one codex round before it is considered done;
+   lock/atomicity/security-bearing units iterate to convergence.
+4. **KISS**: "remember KISS!" — the simplest implementation that satisfies the plan's gates. No
+   frameworks, no speculative abstraction, house patterns only. Encode it in every spec.
+5. **MAX PARALLELISM (2026-08-26)**: "parallelize as much implementation as possible. spawn
+   sonnet agents, that manage subagents. i want this entire milestone achieved fast." Sonnet
+   MANAGER agents run concurrent lanes on disjoint file fences and spawn their own implementation
+   subagents (opus for statement/store work, haiku for mechanical tasks).
+6. **Agent freshness / context kills**: "make sure to kill agents that eat up 60-70% of their
+   context and start new ones." Managers self-assess and STOP at ~60% with a complete handoff
+   file; the orchestrator spawns a fresh manager from it. Same rule for subagents (never resume
+   one past ~50–60%; fresh spawn with a self-contained handoff).
+7. **Checkpoint commits**: the orchestrator owns ALL commits — one per green round boundary plus
+   honest WIP checkpoints before/during parallel phases (scoped `git add` of one lane's files is
+   fine while other lanes run). Commit messages end with the Claude co-author line.
+8. **Risk-split review depth** (2026-08-05, still in force): full convergence for
+   karma/lock/atomicity/security-bearing units; low-risk chunks (docs, adapters over settled
+   actions, tooling) get ONE codex round and stop unless it finds a BLOCKER/MAJOR.
+9. **Stop instruction pattern**: at a natural stop, rewrite this handoff.
 
-## Operational rules learned this session (follow them; each closed a real incident)
+## THE ORCHESTRATION LOOP (what converged two waves in one session)
 
-- **Codex runs SOLO on a QUIET machine.** Parallel `codex exec` runs crash each other, and two
-  codex-sol review sessions died silently (exit 1, no final message) while an opus harness agent
-  ran gates in the same repo. Reviews only when no other lane executes. One exception proved
-  survivable: a luna implementation run and an opus agent ran concurrently ONCE (the u3f lanes)
-  with disjoint fences and both completed — but treat that as tolerated, not guaranteed.
-- **Close stdin on every codex launch** (`< /dev/null`): codex 0.147 reads "additional input from
-  stdin" and one background session had stale prompt text appended as a second user message.
-- **Luna's gate claims require orchestrator re-verification, every round.** Luna reported complete
-  or passing gates four separate times when its runs were stale, interrupted, or never re-run
-  after a last-minute edit. The orchestrator runs the full five gates itself before every commit
-  and every review round. Also tell reviewers "do NOT run jest/build" (their sandbox denies the
-  temp writes and the attempt can kill the session).
-- **Piped shell commands report the pipe tail's exit code**, and `cmd | tail` in a background task
-  DESTROYS the log — capture full output with `> file 2>&1` and grep the file.
-- **Integration test data must be run-unique, and singletons need orphan cleanup.** The reserved
-  integration DB persists rows AND cursors across runs. Two failure classes: (a) fixed values
-  under UNIQUE columns collide with prior runs (RUN-suffix everything — the u3e nonce precedent);
-  (b) one-per-scope partial unique indexes (`idx_pg_sessions_one_live_per_school`) ignore ids
-  entirely — an interrupted run's skipped afterAll leaves an orphan that blocks all later seeds,
-  so suites neutralize orphans in beforeAll (the u3d precedent). Also (c): the events table grows
-  across runs and the drain-time comparison prices each drained event at several round-trips, so
-  drain-heavy suites pay the cross-suite backlog once in beforeAll (the u3c precedent).
-- Known integration flake: `c13a` — re-run before concluding. Neon intermittently resets
-  connections — probe and retry before diagnosing. The advisory lock serializes runs — wait,
-  never kill; a dead holder's lock frees when its connection dies.
-- `claude -p` is broken (expired OAuth); the user must run `claude login`. Use harness subagents.
+1. Orchestrator scopes the wave: reads the plan lines, surveys the tree (never trust stale
+   inventory checkboxes — verify imports), splits into lanes with DISJOINT FILE FENCES, writes
+   one spec file per lane into `ai/m11-2-handoff/` (mission, deliverables, fences, gates,
+   working rules, report format), and checkpoint-commits the specs.
+2. Spawn sonnet MANAGERS concurrently (one per lane, `run_in_background: true` for the managers
+   themselves). Each manager prompt: read the spec first; spawn subagents for heavy items; hard
+   rules (no git, no codex, no full no-args integration, no build); context discipline; report
+   format.
+3. While lanes run: the orchestrator drafts the NEXT wave's specs and the codex prompts,
+   updates memory, and does nothing heavy in the repo.
+4. As each lane reports: the orchestrator RE-VERIFIES its claims (targeted gates), then makes a
+   SCOPED commit of that lane's files only (other lanes' WIP stays uncommitted).
+5. At the wave boundary (all lanes landed): full five gates — tsc, lint, full jest, FULL
+   `npm run test:integration` (~28 min, backgrounded), build — then the boundary commit.
+6. Codex rounds, STRICTLY SERIAL on a QUIET machine (no jest/build/agents running): scoped
+   prompts per unit (A/B batched when low-risk), findings adjudicated against the pinned
+   contracts BEFORE writing fix specs (reviewer proposals lose to pins — see the ledger), fixes
+   via opus fix agents (or orchestrator repairs for small prescribed defects), mutation-check
+   every behavioral fix, commit per round, re-review to a plain "CONVERGED".
+7. Archive everything: prompts as `codex-u*-review-*.md`, findings as `codex-findings-*.md`,
+   fix specs as `u*-fix-*-spec.md`, all committed.
 
-## Achieved (everything below is codex-converged unless marked)
+## OPERATIONAL GUARDRAILS (each closed a real incident — follow them)
 
-| Unit | Content | State |
-|---|---|---|
-| P0 | inventory (`ai/validation/m11-inventory.md`), baseline, tick-log instrumentation | done |
-| u1 | P1.0 events substrate + P2.2 drain/cursor/receipt/retry + `internal/events-drain` | converged |
-| u2 | P2.1 three consumers + kind union + manifests + shadow machinery | converged |
-| u3 | P1.1 posts producer | converged |
-| u3b | P1.2 comments/votes/follows | converged |
-| u3c | P1.3 groups | converged |
-| u3d | P1.4 playground slice | **converged 2026-08-13** (combined convergence round, clean verdict) |
-| u4prep2 | drain-time shadow comparison | **converged 2026-08-13** ("No findings"). Final design: every transitional projection is STATEMENT-ATOMIC with its event (follow + group-join were the last two spliced), which is what makes the `superseded` stamp safe without an evidence ledger |
-| u3e | P1.4 evaluations + agent lifecycle | **fully converged 2026-08-13** after 12 scoped review rounds + 13 luna fix rounds + 5 orchestrator repairs + 1 tests-only opus round ("the u3e review is complete with zero production defects"). Full trail + all findings files in `ai/m11-2-handoff/` |
-| u3f | P1.4 last slice: classes, memory, profile, admissions, inbox | **CONVERGED 2026-08-18** — LITE one round (3 MAJOR); CORE r1 (3 BLOCKER + 7 MAJOR) → r2 (4 MAJOR) → r3 (1 test-proof gap) → r4 CLEAN "CONVERGED". Two opus lanes per round on disjoint fences (admissions/classes). Full findings + adjudication in `ai/m11-2-handoff/codex-findings-u3f-*.md` |
+### Codex
+- **Codex runs SOLO on a QUIET machine.** Parallel codex runs crash each other; codex died while
+  an agent ran gates in the same repo. Reviews only when no lane executes.
+- **Close stdin** (`< /dev/null`) on every codex launch; capture full output with `> file 2>&1`
+  (a `| tail` in a background task DESTROYS the log; piped commands report the tail's exit code).
+- Tell reviewers "do NOT run jest/tsc/build — the sandbox denies the temp writes and the attempt
+  can kill your session"; state the gate results in the prompt instead.
+- Rewrite each round's prompt: a "recap + what changed" section, the commit to `git show`, the
+  focus list, and a "known, recorded decisions — do NOT re-flag" list (adjudicated pins get a
+  do-not-re-litigate line). Ask codex to ADJUDICATE recorded deferrals explicitly — it overturned
+  one correctly this session (the round-1-repair paging).
 
-## u3f state at the stop (implemented on disk, committed, unreviewed)
+### Sonnet managers and subagents
+- **THE WAIT-TRAP (this session's biggest lesson)**: a manager that ends its turn to "wait" for a
+  background child is STRANDED — it receives nothing. MANDATE `run_in_background: false` in every
+  manager prompt so subagent waits are synchronous. If a manager still strands, wake it via
+  SendMessage with explicit disk-state instructions.
+- An "orphaned" subagent (one a rotated manager could not stop) may COMPLETE INDEPENDENTLY and
+  report later — when it does, immediately message the successor manager so it does not rebuild
+  finished work. Fresh managers must check FILE MTIME QUIESCENCE before touching files a possibly
+  live predecessor child might still edit.
+- Manager rotation: handoff file → fresh manager whose prompt names the handoff as its first
+  read. Commit gen-N handoffs (they are archive material).
+- A stalled subagent (600 s watchdog) dies with its partial work ON DISK — the manager inventories
+  disk state and spawns a fresh one for the remainder; never re-runs from scratch blindly.
+- Verify manager/agent claims yourself: every lane report is re-verified with real gate runs
+  before its commit (the luna precedent: gate claims were stale four separate times).
 
-Two concurrent lanes, disjoint fences, kinds pre-landed at `a2585c5` (all eleven history-only,
-`none` in every manifest — no shadow protocol exists for this slice; spec:
-`ai/m11-2-handoff/u3f-spec.md`).
+### Parallel-lane hygiene
+- Disjoint file fences per lane, spelled in the spec, with an explicit "do not touch" list naming
+  the OTHER lanes' fences. Out-of-fence needs are RECORDED in the report, not acted on (one
+  justified exception this session: auth.ts's one-line allowlist — demanded by the plan itself).
+- **Generated files are collision points**: two lanes regenerating `.eslintrc.json` silently
+  overwrote each other once — the drift test caught it. Rule: lanes may append manifest names at
+  their own anchor and regenerate at lane END; the orchestrator regenerates once at the boundary;
+  the drift test arbitrates.
+- `src/lib/store/export-manifest.ts` is the designed merge point: a new store export from any
+  lane trips `boundary-manifest-completeness` BY NAME at the boundary — classify it (mutating
+  list, or a read prefix) and `npm run gen:boundary`. Constants/pure builders go in the mutating
+  list per the documented default-deny (no third bucket).
+- Cross-lane dependencies: sequence the dependent duty LAST in its lane; the lane checks disk
+  when it arrives (this session: Lane E wired Lane D's runner live when it landed mid-lane) or
+  leaves ONE marked stub hook. Shared naming collides in real time — coordinate renames through
+  the orchestrator (`runPulseHousekeeping` tripped the houses-deleted scan on the `house`
+  substring; renamed `runPulseMaintenance`).
+- agents.md/CLAUDE.md and `ai/validation/m11-inventory.md` edits are ORCHESTRATOR-ONLY during
+  parallel waves; lanes record their deltas in reports.
 
-**Core lane (luna; prompt `luna-u3f-core-prompt.md`; log in the 2026-08-13 session scratchpad):**
-`src/lib/actions/classes.ts` + `src/lib/actions/admissions.ts` + `src/lib/class-ops/index.ts`
-(NEW); event-coupled enroll/drop/session-message/evaluation-result writes; class routes + four
-class tools are adapters; the mixed-actor messages route split (agent branch → action, professor →
-class-ops); the classes/[id] GET YAML re-sync moved behind class-ops (inventory §4 records the
-decision); admissions application/accept/decline through actions with events joining the existing
-batches (agent-first FOR KEY SHARE preserved); the offer-expiry sweep joined the drain route's
-housekeeping (db) with the read path removed, memory keeping the read-path driver through one
-shared entry point.
+### Testing discipline
+- **Mutation-check every behavioral fix**: suppress the fix → watch the specific test fail with
+  the forbidden behavior observed → restore → green. Record the evidence VERBATIM in the report
+  and the commit. Orchestrator repairs get the same treatment.
+- Integration data on the reserved DB: RUN-suffix every fixture value under UNIQUE columns;
+  neutralize one-per-scope index orphans in beforeAll (`idx_pg_sessions_one_live_per_school`,
+  `idx_wakeups_dedup_idle`, `idx_wakeups_one_inflight`, and now the DUE SET for ordered
+  global-limit scans — a foreign leftover lands inside the page under test); drain-heavy suites
+  pay the cross-run backlog once in beforeAll.
+- The advisory lock serializes integration runs across lanes — WAIT, never kill a holder. Full
+  integration (~28 min) is orchestrator-only, at boundaries, backgrounded with the log to a file.
+- Known flake protocol: re-run the failing suite SOLO before diagnosing (Neon resets
+  intermittently). A first-ever failure of a converged race test gets recorded + a filed
+  investigation, never silently ignored (the u3c item above).
+- Memory-mode test discovery this session: the in-process dispatcher fires consumers
+  synchronously on emit, so a test isolating a SWEEP's own writes must clear/step around what the
+  consumer already produced from the same event.
 
-**Lite lane (opus subagent; full report in its completion notification, summarized):**
-`src/lib/actions/{profile,inbox,memory}.ts` (NEW); `updateAgentProfile` — ONE conditional
-statement moving description/display-name/metadata with `payload.fields` from the statement's own
-diff CTE (the old two-write half-apply is gone); avatar writes conditional (`IS DISTINCT FROM`);
-unconditional reserved-key rule checked on the delta; inbox read-state + raw vectors as Tier B
-actions (no events); memory-context write/delete Tier 1 with events in-statement
-(`context-store-db` now takes prepared events — a recorded fence deviation); the IDENTITY.md GET
-backfill invokes the write action with `lazy: true`; `markChallengeFetched` absorbed as a Tier-B
-action (it was NOT done in u3e — verified); 58 characterization pins; 10 mutation checks.
-Recorded deviations worth knowing at review: `types.ts` gained `reservedKeys?: string[]` on the
-refusal arm; `vector_unavailable` rides `bad_request` with a `reason`; `update_my_profile`
-deliberately gained no metadata parameter (pinned); three callers still write `agent_context_files`
-event-less (u3e's vetting surface + two outside the Surface bound — inventory §3d/§8).
+### Design guardrails reinforced by this session's findings (the classes codex keeps catching)
+- **A freshness/eligibility check separated from its write by an await is a TOCTOU** — gate INSIDE
+  the statement, `FOR SHARE` on the row the racing writer updates (never a bare EXISTS). The u5-C
+  arm gate and the u6 execution guard are the templates.
+- **A "stop claiming" signal (lock loss, SIGTERM) must be re-checked immediately before EVERY
+  claim/write, in EVERY phase — and again after every long await** (the GM call was the longest
+  window in the sweep). A conditional write's predicate protects against a racing WRITER, not
+  against this worker acting under a lost lock.
+- **Fence-loss ends a tick with NOTHING further written under lost ownership**: one token-fenced
+  completion attempt, then return — no loop-state/bookkeeping writers.
+- **Any bounded scan whose failed items stay in the set is a starvation bug**: oldest-first,
+  due-eligible predicates, in-query attempted-id exclusion (`AND id <> ALL($ids)`) with page ×
+  max-pages budgets. Keyset cursors on ms-ISO strings re-read µs rows — exclusion beats cursor
+  here.
+- **Transitional projections ride the emitting statement as CTEs** (the u4prep2 rule held for
+  `agent_loop.action`); duplicated projection definitions read as soak mismatches — delete the
+  old writer in the same change.
 
-**Orchestrator stitch:** the one cross-lane casualty was `ux6-contracts › submits a class
-evaluation by class slug` — re-anchored to the new store signature (the call now carries the
-prepared `class.evaluation_submitted` event; both lanes independently flagged it).
+## The adjudication ledger (pins that beat or bound reviewer proposals — do not re-litigate)
 
-## Next steps, in order
-
-0. **u3f review — DONE, CONVERGED 2026-08-18** (was step 1). LITE one codex round (3 MAJOR fixed,
-   `bc1dcb1`); CORE four rounds — r1 3 BLOCKER + 7 MAJOR (`30acf36`), r2 4 MAJOR (`a06175d`), r3 one
-   test-proof gap (`c0b2f9b`), r4 clean "CONVERGED". The loop that worked this session: two OPUS
-   harness subagents per round on disjoint fences (admissions / classes), orchestrator re-verifies
-   the FULL five gates itself, checkpoint commit per green boundary, codex re-review to convergence.
-   Reviewer prompts + findings + fix specs archived as `ai/m11-2-handoff/codex-u3f-review-*.md`,
-   `codex-findings-u3f-*.md`, `u3f-core-fix-*-prompt.md`. **Finding B3 RESOLVED 2026-08-18: the user
-   chose TA-emit.** The reversal (`c8bb62a`) removes the route's `isClassAssistant` operator branch;
-   every agent — enrolled STUDENT or class ASSISTANT — goes through `sendSessionMessage`, which emits
-   `class.session_message`. The store gate `addSessionMessageAsStudent` admits an assistant OR an
-   enrolled student under `FOR SHARE` locks and derives the role (`ta` vs `student`) IN the statement
-   from the same locked read; only the human professor stays operator-silent; the class's own-school
-   gate (R2-2) is preserved via `resolveClass`. Gates green (tsc, lint, 24 unit, 18 integration).
-   **Codex review round 1 on the reversal: NO FINDINGS ("the change is correct") — B3 codex-converged**
-   (`ai/m11-2-handoff/codex-findings-u3f-core-B3-round1.md`). THE NEXT STEP IS NOW P1.5/P1.6.
-2. **P1.5 / P1.6 — DONE, CONVERGED (wave u5 Lane A, 2026-08-26).** The adapter conversions were
-   already complete (u3–u3f); the wave landed the enforcement: `src/lib/store/export-manifest.ts`
-   (321 exports classified), `scripts/gen-eslint-boundary.js` → the generated
-   `no-restricted-imports` block, four boundary tests, the §10 exemptions. Codex: 2 MINOR total,
-   both fixed; "CONVERGED".
-3. **a3 = P4 — DONE, CONVERGED (wave u5 Lane B).** `src/lib/agent-senses/` + `GET
-   /api/v1/agents/me/context` + the loop/home rewire onto one `AgentContext`. Codex: 2 MAJOR
-   (admissions projection; home's parallel assembly), both fixed + mutation-proven; "CONVERGED".
-   **P3.2 — DONE, CONVERGED (wave u5 Lane C)**: the wakeup queue, router consumer,
-   `playground.round_opened` producers (conditional round-1 write, advancement CAS, bridge,
-   sweep arming). Codex: 1 MAJOR (the freshness pre-read → the in-statement `FOR SHARE` gated
-   arm), fixed; r2 "CONVERGED, zero findings".
-   **a4 = P3.3/P3.1/P3.4 — DONE, CONVERGED (wave u6 + stitch)**: the runner (plan-verbatim claim
-   CTE, token fencing, the beforeTerminalTool hook, the execution guard on comment-reply AND
-   playground-turn, fence-loss discipline), the worker (ledger boot check, singleton deadline
-   lock inside the ONE progression entry, due-ASC exhaustive scans with attempted-id exclusion,
-   SIGTERM/lock-loss stop signal at EVERY claim point, retention incl. wakeups, honesty meta,
-   render.yaml), the idle scheduler, `agent_loop.action` (Tier-1 logAction, activity `shadow`,
-   soak-comparable). Codex trail: D r1 1B+1M → r2 CONVERGED; E r1 1B+4M+1m → r2 2B+1M+1NIT →
-   r3 1B → r4 CONVERGED. Full trail: `ai/m11-2-handoff/codex-findings-u6-round1.md`.
-   **M11a's CODE IS COMPLETE.** M11b (P5/P6/P7) is a separate plan.
-4. **Deploy-time (not code) — NOW THE HEAD**: deploy the shadow state, run the ≥3-day production
-   soak (`scripts/soak-shadow-report.sql`; flip-clean = matched-only stamps + zero anomalies,
-   `superseded` counts toward neither side, ingest rows are `unverifiable`), then per-kind
-   `shadow → on` → inline-writer deletion, each a separate fully-rolled-out deploy behind the
-   consumer-contract-hash barrier (inventory §8 protocols — including the NEW P3.2 two-deploy
-   runbook for `playground.round_opened` and the `agent_loop.action` shadow kind). The u3f kinds
-   need none of this. The worker's first deploy follows the P3.1 order: Vercel migrations first,
-   then the worker build.
-
-## The adjudication ledger — pins that BEAT reviewer proposals (do not let a future round re-litigate)
-
-1. **The vetting ensure contract** (r8): every caller with a VALID unconsumed challenge gets
-   `completed` — consume + bootstrap ensure + recompute — even when already vetted; only the
-   `is_vetted` flip and `agent.vetted` gate on the winning unvetted decision. r8b's proposal to
-   reclassify the losing concurrent completion as a refusal was REJECTED.
-2. **The merged refusal precedence** (r10 repair): `mismatch` first — a FOREIGN challenge never
-   succeeds; a vetted agent's OWN dead-or-absent challenge answers `already_vetted`; only an
-   UNVETTED agent sees `consumed`/`expired`. Both stores identical. (Codex r10a-4's rule as
-   written broke the same-challenge race and c14's lost-response retry.)
-3. **Verbatim-only idempotency** (r11 repair): the hash identifies the request, so the idempotent
-   already-vetted success covers only a retry presenting the SAME valid proof; a wrong or absent
-   hash refuses in every challenge state (live `invalid_hash` 400, consumed `consumed_challenge`
-   410 — c14-pinned, expired `expired_challenge` 410). Codex r11b-1's decisive-only classification
-   was too broad.
-4. **The superseded dissolution** (u4prep2 round 2): no (event_id, effect_key) evidence ledger.
-   Every transitional projection is statement-atomic with its event, so a committed event PROVES
-   its inline write committed, and `superseded` can only mean a later event rewrote the reusable
-   key. Recorded in inventory §8 + the soak report header.
-5. **The torn-state reissue** (r9 repair): an `in_progress` certification registration whose only
-   jobs are dead `expired` rows deliberately gets a fresh job — that state is unreachable through
-   the new statement-atomic path and reissuing is B1's permanent-block cure. The held-lock race
-   test plants the winner's FULL state (status + job) for exactly this reason.
-
-## How to work (the loop that converged four units this session)
-
-Orchestrator writes a scoped spec/prompt → implementation agent executes (luna via codex CLI for
-store/statement work; opus harness subagent for parallel or tests-only lanes; characterization
-first; mutation-check every behavioral fix: failing test first, watch it fail, fix — or
-inverted-assertion evidence when production is frozen) → orchestrator RE-VERIFIES the five gates
-itself → checkpoint commit → `codex exec --sandbox read-only` reviews fresh, scoped A/B when the
-unit is big, findings saved to `ai/m11-2-handoff/codex-findings-<unit>-round<N>.md` → the
-orchestrator ADJUDICATES findings against the pinned contracts before writing the fix prompt
-(reviewer proposals lose to pins — see the ledger) → repeat until a clean verdict. Small
-prescribed defects (a missing join, a wrong projection, test-data hygiene) are orchestrator
-repairs, not full rounds. Review prompts get their "Recent (this round's subject)" section
-rewritten every round; adjudicated pins get a "do not re-flag" line.
-
-Gates: `npx tsc --noEmit && npm run lint && npm test -- --runInBand && npm run test:integration
-&& npm run build`. Full integration ≈ 28 minutes. Targeted while iterating; all five at
-boundaries.
+1–5. The u3e/u4prep2 ledger from the prior stop (vetting ensure contract; merged refusal
+precedence; verbatim-only idempotency; superseded dissolution; torn-state reissue) — all stand.
+6. **TA-emit (B3)**: the user chose it over the spec's operator branch; codex-clean. Do not
+   propose re-silencing.
+7. **Actionable-only admissions projection**: the loop prompt renders admissions ONLY when
+   next_action exists or the agent is not fully admitted (prompt-cost narrowing, orchestrator
+   adjudication on codex's fix proposal).
+8. **`createOrReArmWakeup`'s false/false race outcome** is legitimate (exactly one row exists);
+   no arbiter — do not add FOR UPDATE for a reporting gap.
+9. **Recorded interim guard coverage**: the statement-level execution guard reaches the two wired
+   actions (create_comment, submit_playground_action); every other runner-reachable terminal tool
+   sits behind the lease fence alone — documented in the runner header; extend per-action when
+   those actions gain guard parameters, do not re-flag the interim.
+10. **The drain duty takes no shutdown signal** (receipt-bounded, budget-bounded) — codex
+    adjudicated acceptable.
+11. **Exclusion-over-cursor** for the sweep paging (ms-ISO vs µs precision) — codex confirmed
+    sound.
 
 ## Where everything lives
 
-- Specs + review prompts + findings, every unit: `ai/m11-2-handoff/` (this directory is the
-  archive; the u3e trail alone is rounds 1–12 with prompts r1–r13).
-- The u3f spec: `ai/m11-2-handoff/u3f-spec.md`; core-lane prompt `luna-u3f-core-prompt.md`;
-  the lite-lane prompt is embedded in the 2026-08-13 session (its content is summarized in the
-  u3f state section above — reconstruct from the spec's items 1–4 if needed).
-- Invariants: `agents.md` (= CLAUDE.md) "Store and Migration Invariants" — grew across
-  u3b–u4prep2; read before touching any producer or consumer.
-- Inventory: `ai/validation/m11-inventory.md` (per-route/tool/kind rows, §8 rollout protocols,
-  the u3f runbook notes both lanes appended).
-- Session scratchpad logs (luna runs, codex runs, gate logs): `/private/tmp/claude-501/...` per
-  session — ephemeral; the durable copies are the findings files in `ai/m11-2-handoff/`.
+- Specs, review prompts, findings, fix specs, manager handoffs: `ai/m11-2-handoff/` (the u5 trail
+  is `u5-lane-*`, `codex-u5-*`, `codex-findings-u5-round1.md`; the u6 trail is `u6-lane-*`,
+  `u6-stitch-spec.md`, `u6-*-fix-*`, `codex-u6-*`, `codex-findings-u6-round1.md`).
+- Invariants: `CLAUDE.md` (= agents.md) "Store and Migration Invariants" — read before touching
+  any producer, consumer, or statement. NOTE: agents.md has NOT yet absorbed this wave's new
+  facts (the wakeup queue module, the worker & pulse section P3.1's docs delta names, the P3.2
+  runbook pointer) — a documentation pass is a small open item for the next session.
+- Inventory: `ai/validation/m11-inventory.md` — §7 rows updated for `playground.round_opened` and
+  `agent_loop.action`; §8 gained the P3.2 two-deploy runbook; §10 exemptions current.
+- Gates: `npx tsc --noEmit && npm run lint && npm test -- --runInBand && npm run test:integration
+  && npm run build`. Targeted while iterating; all five at boundaries; the orchestrator runs them
+  itself before every commit and every review round.
