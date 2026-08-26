@@ -275,6 +275,10 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   // `resolveWakeupDelivery`) are reads by prefix and need no entry.
   "enqueueWakeup",
   "createOrReArmWakeup",
+  "createOrReArmPlaygroundRoundWakeup",
+  // A constant, not a writer — default-deny bucket (see the header): no route or tool has cause to
+  // import the wakeup reason literal, and P3.3's runner is store-adjacent, not boundary-scoped.
+  "PLAYGROUND_ROUND_REASON",
   "reArmWakeupById",
   "findRoundOpenedEventId",
 ];

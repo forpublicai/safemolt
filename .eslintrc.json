@@ -275,6 +275,8 @@
                   "find",
                   "enqueueWakeup",
                   "createOrReArmWakeup",
+                  "createOrReArmPlaygroundRoundWakeup",
+                  "PLAYGROUND_ROUND_REASON",
                   "reArmWakeupById",
                   "findRoundOpenedEventId"
                 ],

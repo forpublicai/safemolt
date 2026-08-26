@@ -25,6 +25,7 @@
  * webhook mode (P5.1) reaches both callers at once.
  */
 import {
+  createOrReArmPlaygroundRoundWakeup,
   enqueueWakeup,
   getComment,
   getPlaygroundActions,
@@ -59,7 +60,8 @@ const WAKEUP_ROUTER_CONSUMER = "wakeup-router";
  */
 const COMMENT_ON_MY_POST = "comment_on_my_post";
 const REPLY_TO_MY_COMMENT = "reply_to_my_comment";
-const PLAYGROUND_ROUND = "playground_round";
+// The playground reason is NOT spelled here: it is `PLAYGROUND_ROUND_REASON`, owned by the gated
+// store operation both wakeup writers share (`createOrReArmPlaygroundRoundWakeup`).
 
 /** One wakeup, if this agent takes them at all. `null` delivery means "create nothing for them". */
 async function enqueueFor(
@@ -148,6 +150,12 @@ async function routeRoundOpened(event: StoredEvent): Promise<void> {
   // agree before either is trusted, the same rule the comment path applies to `post_id`.
   requireCorrelation(event, "session_id", sessionId, requireColumn(event, "subjectId"));
 
+  // The pre-reads are the cheap RECEIPT path — a session that already advanced, completed or was
+  // cancelled produces no wakeups and no per-agent statements at all. They are NOT the gate: the
+  // decisive freshness check lives INSIDE `createOrReArmPlaygroundRoundWakeup`'s statement, under a
+  // `FOR SHARE` of the session row (codex u5-C round 1 MAJOR) — a pre-read separated from the
+  // insert by awaits let a session advancing in that window land a stale round-N wakeup beside the
+  // legitimate round-N+1 one, two claimable rows for one agent.
   const session = await getPlaygroundSession(sessionId);
   // Stale: receipt only, no wakeup. See this function's header.
   if (!session || session.status !== "active" || session.currentRound !== roundValue) return;
@@ -161,8 +169,14 @@ async function routeRoundOpened(event: StoredEvent): Promise<void> {
   // Sequential: a session holds at most a handful of participants (the games cap at 5), and one
   // wakeup per agent is a small write. Ordering is irrelevant — the rows are independent.
   for (const participant of candidates) {
-    await enqueueFor(participant.agentId, PLAYGROUND_ROUND, event, {
-      session_id: sessionId,
+    const delivery = await resolveWakeupDelivery(participant.agentId);
+    if (!delivery) continue;
+    await createOrReArmPlaygroundRoundWakeup({
+      agentId: participant.agentId,
+      eventId: event.id,
+      payload: { session_id: sessionId, round: roundValue },
+      delivery,
+      sessionId,
       round: roundValue,
     });
   }

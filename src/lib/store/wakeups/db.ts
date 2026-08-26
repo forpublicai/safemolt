@@ -218,6 +218,105 @@ export async function createOrReArmWakeup(
   };
 }
 
+export interface CreateOrReArmPlaygroundRoundWakeupInput {
+  agentId: string;
+  /** ALWAYS non-null — this path is event-keyed dedup only, like `createOrReArmWakeup`. */
+  eventId: number;
+  payload: Record<string, unknown>;
+  delivery: WakeupDelivery;
+  dueAt?: string;
+  /** The session whose round this wakeup is for — the live-state gate's subject. */
+  sessionId: string;
+  round: number;
+}
+
+/**
+ * The one reason this gated path arms. A constant, not a parameter: the gate below reads playground
+ * tables, so the operation is playground-specific by nature, and both callers (the wakeup-router
+ * consumer and the deadline sweep) must spell the reason identically or the dedup triple splits.
+ */
+export const PLAYGROUND_ROUND_REASON = "playground_round";
+
+/**
+ * `createOrReArmWakeup`, but for `playground_round` — with the freshness check INSIDE the statement,
+ * under a lock (codex u5-C round 1 MAJOR).
+ *
+ * Both callers used to pre-read the session (active, `current_round` matches, agent un-acted) and
+ * then await other work before inserting. A pre-read that RETURNS competes with the decisive
+ * statement and loses (CLAUDE.md): a session advancing to round N+1 in that window let a stale
+ * round-N wakeup land beside the legitimate round-N+1 one — two claimable rows for one agent,
+ * double budget the moment P3.3's runner exists, because the event-keyed dedup index sees two
+ * different event ids.
+ *
+ * So `live` re-checks the session AND the agent's action at insert time, and takes the session row
+ * `FOR SHARE` — never a bare `EXISTS`, which is snapshot-evaluated and never re-checked. The
+ * advancement CAS is an `UPDATE` of that same row, so `FOR SHARE` either sees its committed round
+ * (and arms nothing) or blocks it until this statement commits (and the CAS then advances a session
+ * whose stale-round wakeup was never created). The action `NOT EXISTS` stays unlocked deliberately:
+ * a just-acted agent's wakeup is only wasted budget, and `submitAction`'s duplicate-per-round
+ * rejection already refuses the turn — the plan frames that check as budget protection, not
+ * correctness. Both arms — the insert AND the re-arm — gate on `live`, so a dead round can neither
+ * gain a new row nor resurrect a completed one.
+ *
+ * Lock order is `playground_sessions → agents` (the insert's FK takes `FOR KEY SHARE` on the
+ * agent), the same order `submitAction`'s gated insert takes; nothing in the tree takes an agent
+ * lock before a session lock, so no cycle is introduced.
+ */
+export async function createOrReArmPlaygroundRoundWakeup(
+  input: CreateOrReArmPlaygroundRoundWakeupInput
+): Promise<CreateOrReArmWakeupResult> {
+  const rows = await sql!(
+    `
+    /* p3.2:playground-round-arm */
+    WITH live AS (
+      SELECT s.id FROM playground_sessions s
+      WHERE s.id = $7 AND s.status = 'active' AND s.current_round = $8
+        AND NOT EXISTS (
+          SELECT 1 FROM playground_actions a
+          WHERE a.session_id = s.id AND a.agent_id = $1 AND a.round = $8
+        )
+      FOR SHARE OF s
+    ),
+    ins AS (
+      INSERT INTO agent_wakeups (agent_id, reason, event_id, payload, delivery, due_at)
+      SELECT $1, $2, $3, $4::jsonb, $5, COALESCE($6::timestamptz, NOW())
+      FROM live
+      ON CONFLICT DO NOTHING
+      RETURNING *
+    ),
+    rearmed AS (
+      UPDATE agent_wakeups
+      SET claimed_at = NULL, claim_token = NULL, lease_expires_at = NULL, completed_at = NULL, result = NULL
+      WHERE agent_id = $1 AND reason = $2 AND event_id = $3
+        AND EXISTS (SELECT 1 FROM live)
+        AND completed_at IS NOT NULL
+        AND result IS DISTINCT FROM 'acted'
+        AND (result IS DISTINCT FROM 'budget_exhausted' OR completed_at::date < CURRENT_DATE)
+      RETURNING *
+    )
+    SELECT (SELECT to_jsonb(ins) FROM ins) AS created_row,
+           (SELECT to_jsonb(rearmed) FROM rearmed) AS rearmed_row
+  `,
+    [
+      ...insertParams({
+        agentId: input.agentId,
+        reason: PLAYGROUND_ROUND_REASON,
+        eventId: input.eventId,
+        payload: input.payload,
+        delivery: input.delivery,
+        dueAt: input.dueAt,
+      }),
+      input.sessionId,
+      input.round,
+    ]
+  );
+  const row = rows[0] as { created_row: unknown; rearmed_row: unknown } | undefined;
+  return {
+    created: row?.created_row != null,
+    reArmed: row?.rearmed_row != null,
+  };
+}
+
 /**
  * The NORMATIVE re-arm predicate, standalone, by a KNOWN numeric id.
  *

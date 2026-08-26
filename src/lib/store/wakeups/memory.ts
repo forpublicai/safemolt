@@ -1,7 +1,9 @@
-import { eventLog, wakeupQueue } from "../_memory-state";
+import { eventLog, playgroundActions, playgroundSessions, wakeupQueue } from "../_memory-state";
 import {
+  PLAYGROUND_ROUND_REASON,
   ROUND_OPENED_KIND,
   normalizeListLimit,
+  type CreateOrReArmPlaygroundRoundWakeupInput,
   type CreateOrReArmWakeupInput,
   type CreateOrReArmWakeupResult,
   type EnqueueWakeupInput,
@@ -181,6 +183,58 @@ export async function createOrReArmWakeup(
   const existing = conflictingRow(input.agentId, input.reason, input.eventId);
   if (!existing) {
     insertRow(input, payload);
+    return { created: true, reArmed: false };
+  }
+  if (!reArmable(existing)) return { created: false, reArmed: false };
+  clearClaimAndCompletion(existing);
+  return { created: false, reArmed: true };
+}
+
+/**
+ * The memory twin of the db statement's `live` CTE (codex u5-C round 1 MAJOR): the session is
+ * active on THIS round and the agent has not acted in it.
+ *
+ * Read from the shared `_memory-state` registry — the sanctioned cross-domain path (the comments
+ * twin reads `posts` the same way) — and evaluated in the same synchronous section as the write, so
+ * no advancement can land between the check and the insert. The db side gets that guarantee from
+ * `FOR SHARE` on the session row; memory gets it from the section having no `await`.
+ */
+function playgroundRoundIsFresh(sessionId: string, agentId: string, round: number): boolean {
+  const session = playgroundSessions.get(sessionId);
+  if (!session || session.status !== "active" || session.currentRound !== round) return false;
+  for (const action of playgroundActions.values()) {
+    if (action.sessionId === sessionId && action.agentId === agentId && action.round === round) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * See `db.ts`: `createOrReArmWakeup` for `playground_round`, with the freshness gate evaluated in
+ * the SAME synchronous section as the write. Both arms — insert and re-arm — refuse when the round
+ * is no longer live, so a dead round can neither gain a new row nor resurrect a completed one.
+ */
+export async function createOrReArmPlaygroundRoundWakeup(
+  input: CreateOrReArmPlaygroundRoundWakeupInput
+): Promise<CreateOrReArmWakeupResult> {
+  // Normalized FIRST: a cyclic payload throws with nothing written, gate or no gate — the db store
+  // serializes before it sends anything.
+  const payload = normalizePayload(input.payload);
+  if (!playgroundRoundIsFresh(input.sessionId, input.agentId, input.round)) {
+    return { created: false, reArmed: false };
+  }
+  const asBase: CreateOrReArmWakeupInput = {
+    agentId: input.agentId,
+    reason: PLAYGROUND_ROUND_REASON,
+    eventId: input.eventId,
+    payload,
+    delivery: input.delivery,
+    dueAt: input.dueAt,
+  };
+  const existing = conflictingRow(asBase.agentId, asBase.reason, asBase.eventId);
+  if (!existing) {
+    insertRow(asBase, payload);
     return { created: true, reArmed: false };
   }
   if (!reArmable(existing)) return { created: false, reArmed: false };

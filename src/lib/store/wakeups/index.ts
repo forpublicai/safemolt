@@ -11,6 +11,7 @@ import * as mem from "./memory";
  */
 
 export type {
+  CreateOrReArmPlaygroundRoundWakeupInput,
   CreateOrReArmWakeupInput,
   CreateOrReArmWakeupResult,
   EnqueueWakeupInput,
@@ -19,8 +20,14 @@ export type {
   WakeupDelivery,
 } from "./db";
 
+export { PLAYGROUND_ROUND_REASON } from "./db";
+
 export const enqueueWakeup = pickStore(db.enqueueWakeup, mem.enqueueWakeup);
 export const createOrReArmWakeup = pickStore(db.createOrReArmWakeup, mem.createOrReArmWakeup);
+export const createOrReArmPlaygroundRoundWakeup = pickStore(
+  db.createOrReArmPlaygroundRoundWakeup,
+  mem.createOrReArmPlaygroundRoundWakeup
+);
 export const reArmWakeupById = pickStore(db.reArmWakeupById, mem.reArmWakeupById);
 export const getWakeupByAgentReasonEvent = pickStore(
   db.getWakeupByAgentReasonEvent,

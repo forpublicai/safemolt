@@ -22,10 +22,17 @@
  *
  * @jest-environment node
  */
-import { resetWakeupState, wakeupQueue } from "@/lib/store/_memory-state";
+import {
+  playgroundActions,
+  playgroundSessions,
+  resetWakeupState,
+  wakeupQueue,
+} from "@/lib/store/_memory-state";
 import { eventLog } from "@/lib/store/_memory-state";
 import { emitEvent } from "@/lib/store/events/memory";
+import type { PlaygroundSession, SessionAction } from "@/lib/playground/types";
 import {
+  createOrReArmPlaygroundRoundWakeup,
   createOrReArmWakeup,
   enqueueWakeup,
   findRoundOpenedEventId,
@@ -433,4 +440,136 @@ describe("resolveWakeupDelivery", () => {
     expect(await resolveWakeupDelivery(nextId("agent"))).toBe("internal");
     expect(await resolveWakeupDelivery("an-agent-that-was-never-created")).toBe("internal");
   });
+});
+
+describe("createOrReArmPlaygroundRoundWakeup — the in-section freshness gate (codex u5-C r1 MAJOR)", () => {
+  /**
+   * The memory twin of the db statement's `live` CTE. Each refusal clause below was
+   * mutation-checked: `playgroundRoundIsFresh` was made to return `true` unconditionally in
+   * `memory.ts`, the three refusal cases failed by wrongly writing, and the gate was restored.
+   *
+   * State is seeded straight into the shared `_memory-state` maps and removed in `afterEach` —
+   * `globalStore` outlives a test file, so anything left behind would leak into other suites.
+   */
+  const seeded: { sessions: string[]; actions: string[] } = { sessions: [], actions: [] };
+
+  function seedSession(currentRound: number, status: PlaygroundSession["status"] = "active"): string {
+    const id = nextId("sess");
+    playgroundSessions.set(id, {
+      id,
+      gameId: "test-game",
+      status,
+      participants: [],
+      transcript: [],
+      currentRound,
+      maxRounds: 5,
+      createdAt: new Date().toISOString(),
+    } as PlaygroundSession);
+    seeded.sessions.push(id);
+    return id;
+  }
+
+  function seedAction(sessionId: string, agentId: string, round: number): void {
+    const id = nextId("act");
+    playgroundActions.set(id, {
+      id,
+      sessionId,
+      agentId,
+      round,
+      content: "acted",
+      createdAt: new Date().toISOString(),
+    } as SessionAction);
+    seeded.actions.push(id);
+  }
+
+  function gatedInput(agentId: string, sessionId: string, round: number, eventId: number) {
+    return {
+      agentId,
+      eventId,
+      payload: { session_id: sessionId, round },
+      delivery: "internal" as const,
+      sessionId,
+      round,
+    };
+  }
+
+  afterEach(() => {
+    for (const id of seeded.sessions.splice(0)) playgroundSessions.delete(id);
+    for (const id of seeded.actions.splice(0)) playgroundActions.delete(id);
+  });
+
+  it("creates for a live round the agent has not acted in", async () => {
+    const agent = nextId("agent");
+    const session = seedSession(2);
+    expect(await createOrReArmPlaygroundRoundWakeup(gatedInput(agent, session, 2, 301))).toEqual({
+      created: true,
+      reArmed: false,
+    });
+    expect(await listWakeupsForAgent(agent)).toHaveLength(1);
+  });
+
+  it("refuses when the session has ADVANCED past the wakeup's round — the codex r1 failure case", async () => {
+    const agent = nextId("agent");
+    const session = seedSession(3); // the round-2 event is stale by the time it drains
+    expect(await createOrReArmPlaygroundRoundWakeup(gatedInput(agent, session, 2, 302))).toEqual({
+      created: false,
+      reArmed: false,
+    });
+    expect(await listWakeupsForAgent(agent)).toHaveLength(0);
+  });
+
+  it("refuses when the session is no longer active, and when it does not exist", async () => {
+    const agent = nextId("agent");
+    const completed = seedSession(2, "completed");
+    expect(await createOrReArmPlaygroundRoundWakeup(gatedInput(agent, completed, 2, 303))).toEqual({
+      created: false,
+      reArmed: false,
+    });
+    expect(
+      await createOrReArmPlaygroundRoundWakeup(gatedInput(agent, nextId("ghost"), 2, 304))
+    ).toEqual({ created: false, reArmed: false });
+    expect(await listWakeupsForAgent(agent)).toHaveLength(0);
+  });
+
+  it("refuses when the agent already ACTED this round", async () => {
+    const agent = nextId("agent");
+    const session = seedSession(2);
+    seedAction(session, agent, 2);
+    expect(await createOrReArmPlaygroundRoundWakeup(gatedInput(agent, session, 2, 305))).toEqual({
+      created: false,
+      reArmed: false,
+    });
+    expect(await listWakeupsForAgent(agent)).toHaveLength(0);
+  });
+
+  it("gates the RE-ARM arm too: a re-armable row stays completed once the round is dead", async () => {
+    const agent = nextId("agent");
+    const session = seedSession(2);
+    const first = await createOrReArmPlaygroundRoundWakeup(gatedInput(agent, session, 2, 306));
+    expect(first.created).toBe(true);
+    // Complete it re-armably (no production completion writer exists yet — P3.3), then advance.
+    const row = rows()[rows().length - 1];
+    const stored = wakeupQueue.rows.get(row.id)!;
+    stored.completedAt = new Date().toISOString();
+    stored.result = "error";
+    playgroundSessions.get(session)!.currentRound = 3;
+
+    expect(await createOrReArmPlaygroundRoundWakeup(gatedInput(agent, session, 2, 306))).toEqual({
+      created: false,
+      reArmed: false,
+    });
+    expect(wakeupQueue.rows.get(row.id)!.completedAt).not.toBeNull();
+
+    // Control: with the round restored, the same call re-arms.
+    playgroundSessions.get(session)!.currentRound = 2;
+    expect(await createOrReArmPlaygroundRoundWakeup(gatedInput(agent, session, 2, 306))).toEqual({
+      created: false,
+      reArmed: true,
+    });
+    expect(wakeupQueue.rows.get(row.id)!.completedAt).toBeNull();
+  });
+
+  function rows() {
+    return Array.from(wakeupQueue.rows.values());
+  }
 });

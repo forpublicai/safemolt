@@ -1168,12 +1168,17 @@ export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
                 for (const participant of unActed) {
                     const delivery = await store.resolveWakeupDelivery(participant.agentId);
                     if (!delivery) continue;
-                    await store.createOrReArmWakeup({
+                    // The gated variant, never the plain one (codex u5-C round 1 MAJOR): the
+                    // pre-reads above are only the cheap skip — the decisive freshness check runs
+                    // INSIDE this statement, FOR SHARE on the session row, so a round advancing
+                    // between the read and this write arms nothing rather than arming a stale turn.
+                    await store.createOrReArmPlaygroundRoundWakeup({
                         agentId: participant.agentId,
-                        reason: 'playground_round',
                         eventId,
                         payload: { session_id: session.id, round: session.currentRound },
                         delivery,
+                        sessionId: session.id,
+                        round: session.currentRound,
                     });
                 }
             } catch (err) {
