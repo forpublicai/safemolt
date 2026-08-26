@@ -2,6 +2,7 @@ import { activityTrailConsumer } from "./activity-trail";
 import type { RegisteredConsumer } from "./dispatch";
 import { memoryIngestConsumer } from "./memory-ingest";
 import { notificationsConsumer } from "./notifications";
+import { wakeupRouterConsumer } from "./wakeup-router";
 
 /**
  * M11-2 — every consumer the drain runtime drives.
@@ -23,4 +24,7 @@ export const eventConsumers: RegisteredConsumer[] = [
   notificationsConsumer,
   activityTrailConsumer,
   memoryIngestConsumer,
+  // M11-2 P3.2 (train a4, lane C). Appended: nothing about a wakeup needs to be decided before a
+  // projection is written, and in db mode the four run concurrently anyway.
+  wakeupRouterConsumer,
 ];

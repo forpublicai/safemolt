@@ -81,8 +81,15 @@ concurrent schedulers; repeated idle sweeps after cap exhaustion create no rows.
 - EDIT: `scripts/migrate.js`, `package.json` (worker script + tsx dep), `vercel.json` if a cron
   entry changes, `src/lib/playground/lifecycle.ts` + the six caller sites, the playground store's
   scan functions (due-variants), `src/app/api/v1/internal/*`, `.env.example`.
-- [BOUNDARY-FILL]: Lane D runner entry points; Lane C wakeup-store housekeeping names; exact list
-  of internal routes still lacking requireCronAuth.
+- BOUNDARY-FILLED (partial; Lane D entry points filled when it lands): the cron-auth audit is DONE —
+  every cron-driven internal route already uses `requireCronAuth` (`agent-loop`,
+  `certification-judging`, `events-drain`, `memory-ingest`, `playground-deadlines`,
+  `playground/cron/trigger`); the three without it (`agent-metadata`, `school-events`,
+  `agents/[id]`) are the federation surfaces that keep their own secrets DELIBERATELY (CLAUDE.md) —
+  deliverable 8 is therefore a verification test, not a code change. Lane C left NO housekeeping
+  writers in the wakeup store (abandon/terminalize are Lane D's); [LANE-D-FILL] the runner entry
+  points and housekeeping function names when Lane D reports. New store write exports must join
+  `src/lib/store/export-manifest.ts` + `npm run gen:boundary`, or the boundary tests fail.
 
 ## Gates / rules
 

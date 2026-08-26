@@ -20,6 +20,7 @@ import {
   activityTrailCoverage,
   memoryIngestCoverage,
   notificationsCoverage,
+  wakeupRouterCoverage,
   type CoverageState,
 } from "@/lib/events/consumers/coverage";
 import { eventConsumers } from "@/lib/events/consumers/registry";
@@ -37,11 +38,19 @@ function realContractInputs(): ConsumerContractInput[] {
 }
 
 describe("coverage manifests", () => {
-  it("registers exactly the three a1 consumers, in dispatch order", () => {
+  /**
+   * The three a1 consumers, plus a4's wakeup router (M11-2 P3.2, lane C).
+   *
+   * The router is APPENDED: order matters only in memory mode's sequential dispatch, and nothing
+   * about a wakeup needs deciding before a projection is written. It is the first consumer whose
+   * manifest carries no `legacy` and no `shadow` — its projection is born in the consumer.
+   */
+  it("registers the three a1 consumers and the a4 wakeup router, in dispatch order", () => {
     expect(eventConsumers.map((consumer) => consumer.name)).toEqual([
       "notifications",
       "activity-trail",
       "memory-ingest",
+      "wakeup-router",
     ]);
   });
 
@@ -143,6 +152,7 @@ describe("coverage manifests", () => {
     const { memoryIngestEffects } = await import("@/lib/events/consumers/memory-ingest");
     const { activityTrailEffects } = await import("@/lib/events/consumers/activity-trail");
     const { notificationEffects } = await import("@/lib/events/consumers/notifications");
+    const { wakeupRouterEffects } = await import("@/lib/events/consumers/wakeup-router");
 
     for (const kind of DELETION_KINDS) {
       const event: StoredEvent = {
@@ -164,7 +174,12 @@ describe("coverage manifests", () => {
         },
         createdAt: new Date().toISOString(),
       };
-      for (const effects of [notificationEffects, activityTrailEffects, memoryIngestEffects]) {
+      for (const effects of [
+        notificationEffects,
+        activityTrailEffects,
+        memoryIngestEffects,
+        wakeupRouterEffects,
+      ]) {
         for (const effect of await effects.describe(event)) {
           // Key-only means the payload carries the operation and the identifiers it keyed on, and
           // never a projection: no rendered content can be produced for a row that is gone.
@@ -408,6 +423,81 @@ describe("coverage manifests", () => {
       "admissions.offer_declined": "none",
       "admissions.offer_expired": "none",
     });
+  });
+
+  /**
+   * The fourth manifest, pinned separately — **it is the only one with no `legacy` and no `shadow`
+   * anywhere, and that is structural rather than incidental.**
+   *
+   * Protocol M cuts a projection over from an inline writer; the wakeup queue has none, in either
+   * store, because it is new in this deploy. So every entry is `on` or `none`, and the consumer must
+   * NOT appear in `DECLARED_LEGACY_WRITERS` — the `none`-with-a-declared-writer rule above already
+   * fails it from the other direction.
+   *
+   * Two kinds route, and the shortfall against P3.2's prose is the KIND UNION's doing: the plan also
+   * describes `agent.mentioned` (with mention suppression) and `dm.sent`, and neither kind exists in
+   * this build — they belong to a later train (P6.1 / b2). There is no producer, no payload and
+   * nothing to suppress against. `agent.followed` routes to nothing on purpose, which is what the
+   * plan says too.
+   */
+  it("ships the a4 wakeup-router manifest, on for exactly two kinds", () => {
+    expect(wakeupRouterCoverage).toEqual({
+      "system.activation_fence": "none",
+      "post.created": "none",
+      "post.deleted": "none",
+      "post.pinned": "none",
+      "post.unpinned": "none",
+      "post.voted": "none",
+      // A comment on your post, or a reply to your comment, is a reason to check in.
+      "comment.created": "on",
+      "comment.voted": "none",
+      // A new follower asks nothing of the followee.
+      "agent.followed": "none",
+      "agent.unfollowed": "none",
+      "group.created": "none",
+      "group.joined": "none",
+      "group.left": "none",
+      "group.settings_updated": "none",
+      "group.moderator_added": "none",
+      "group.moderator_removed": "none",
+      "group.subscribed": "none",
+      "group.unsubscribed": "none",
+      "playground.session_created": "none",
+      "playground.session_joined": "none",
+      "playground.participant_affiliation_updated": "none",
+      // The one kind an agent genuinely owes a turn to.
+      "playground.round_opened": "on",
+      // The action IS the turn.
+      "playground.action_submitted": "none",
+      "playground.session_completed": "none",
+      "playground.session_cancelled": "none",
+      "playground.session_expired": "none",
+      "evaluation.registered": "none",
+      "evaluation.started": "none",
+      "evaluation.session_message": "none",
+      "evaluation.proctor_claimed": "none",
+      "evaluation.completed": "none",
+      "agent.registered": "none",
+      "agent.registration_expired": "none",
+      "agent.claimed": "none",
+      "agent.vetting_started": "none",
+      "agent.vetted": "none",
+      "agent.profile_updated": "none",
+      "memory.context_written": "none",
+      "memory.context_deleted": "none",
+      "class.enrolled": "none",
+      "class.dropped": "none",
+      "class.session_message": "none",
+      "class.evaluation_submitted": "none",
+      "admissions.application_submitted": "none",
+      "admissions.offer_accepted": "none",
+      "admissions.offer_declined": "none",
+      "admissions.offer_expired": "none",
+    });
+    // No `legacy`, no `shadow` — the structural claim, asserted rather than merely written down.
+    expect(Object.values(wakeupRouterCoverage).filter((state) => state !== "on" && state !== "none"))
+      .toEqual([]);
+    expect(DECLARED_LEGACY_WRITERS["wakeup-router"]).toBeUndefined();
   });
 
   /**

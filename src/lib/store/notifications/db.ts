@@ -8,6 +8,7 @@ import type {
   NotificationLegacyRead,
   NotificationProjection,
   NotificationTwinSubject,
+  PlaygroundRoundOpenNotificationInput,
 } from "./memory";
 
 function rowToNotification(row: Record<string, unknown>): StoredNotification {
@@ -206,6 +207,53 @@ function followNotificationParams(input: FollowNotificationInput, id: string): u
 }
 
 /**
+ * The markable `playground_round_open` row, as a SELECT whose FROM locks the live session AT THIS
+ * ROUND (M11-2 P3.2, train a4).
+ *
+ * **The subject is the session at a round, not merely the session.** Consumption is at-least-once
+ * and delayed, so the consumer can read the session live on round N, pause, and resume after the GM
+ * has advanced it or completed it — a check-then-write insert would then manufacture a notification
+ * for a turn nobody can take, and nothing would ever remove it (`notifications` carries no FK to
+ * `playground_sessions`). `FOR SHARE` is the mode the comment writer already takes on ITS subject,
+ * and it contends with the round-1 write and the advance CAS's plain `UPDATE`s exactly as the
+ * comment writer's lock contends with `deletePost`'s `FOR UPDATE`.
+ *
+ * The un-acted predicate lives in the same statement for the same reason: an agent who submitted
+ * between the consumer's read and this insert is not waiting on anything.
+ *
+ * `$1 id, $2 dedup_key, $3 recipient, $4 session_id, $5 round, $6 created_at`.
+ */
+function playgroundRoundOpenSelectSql(): string {
+  return `
+      SELECT $1::text, $3::text, 'playground_round_open'::text, 'normal'::text, $6::timestamptz, NULL::timestamptz,
+        '{"id":"system","name":"Game Master"}'::jsonb,
+        jsonb_build_object('type', 'playground_session', 'id', $4::text),
+        '/playground'::text,
+        NULL::text, NULL::timestamptz,
+        jsonb_build_object('session_id', $4::text, 'round', $5::int),
+        $2::text
+      FROM (
+        -- The locked live subject: the session is still active on exactly this round.
+        SELECT id FROM playground_sessions
+        WHERE id = $4::text AND status = 'active' AND current_round = $5::int
+        FOR SHARE
+      ) s
+      WHERE NOT EXISTS (
+        -- The un-acted predicate, matching the router's own consume-time check exactly.
+        SELECT 1 FROM playground_actions a
+        WHERE a.session_id = $4::text AND a.round = $5::int AND a.agent_id = $3::text
+      )
+    `;
+}
+
+function playgroundRoundOpenParams(
+  input: PlaygroundRoundOpenNotificationInput,
+  id: string
+): unknown[] {
+  return [id, input.dedupKey, input.agentId, input.sessionId, input.round, input.createdAt];
+}
+
+/**
  * The race harness's handle on this insert.
  *
  * `pg_stat_activity` truncates a blocked backend's query text, so the marker sits near the START.
@@ -352,6 +400,15 @@ export async function createFollowNotificationIdempotent(
   return insertNotificationFromSelect(
     FOLLOW_NOTIFICATION_SELECT,
     followNotificationParams(input, generateNotificationId())
+  );
+}
+
+export async function createPlaygroundRoundOpenNotificationIdempotent(
+  input: PlaygroundRoundOpenNotificationInput
+): Promise<StoredNotification | null> {
+  return insertNotificationFromSelect(
+    playgroundRoundOpenSelectSql(),
+    playgroundRoundOpenParams(input, generateNotificationId())
   );
 }
 

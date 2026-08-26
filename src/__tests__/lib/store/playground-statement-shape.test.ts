@@ -38,9 +38,11 @@ import {
   createPlaygroundSession,
   expireStalePendingSessions,
   joinPlaygroundSessionWithOutcome,
+  storeRound1PromptIfMissing,
   submitPlaygroundActionGated,
 } from "@/lib/store/playground/db";
 import {
+  playgroundRoundOpenedEvent,
   playgroundSessionCompletedEvent,
   playgroundSessionCreatedEvent,
   playgroundSessionExpiredEvent,
@@ -172,6 +174,38 @@ describe("every playground event insert is GATED on its decisive CTE", () => {
     // The predicate is what makes a second sweep write nothing and emit nothing.
     expect(statement.text).toContain("AND status = 'active'");
     expect(statement.text).toContain("AND completed_at IS NULL");
+    assertPlaceholdersBind(statement);
+  });
+
+  /**
+   * M11-2 P3.2 — the round-1 prompt publication, the plan's NORMATIVE predicate.
+   *
+   * Two writers reach this statement (the activation continuation and the repair sweep), so every
+   * clause below is what keeps a merely SLOW original generation from overwriting the repair's
+   * already-announced prompt and emitting a second `round_opened` — whose distinct event id passes
+   * the wakeup queue's `(agent, reason, event_id)` dedup and hands every participant two turns.
+   */
+  it("storeRound1PromptIfMissing gates on the fill-if-missing predicate and stamps the clock", async () => {
+    await storeRound1PromptIfMissing("sess_1", "round 1 prompt", 3_600_000, [
+      playgroundRoundOpenedEvent({ sessionId: "sess_1", round: 1, schoolId: "foundation" }),
+    ]);
+
+    const statement = onlyStatement();
+    expect(statement.text).toContain("WITH prompted AS (");
+    expect(statement.text).toContain("WHERE EXISTS (SELECT 1 FROM prompted)");
+    expect(statement.text).toContain("AND status = 'active'");
+    expect(statement.text).toContain("AND current_round = 1");
+    // The clause that makes exactly one writer win.
+    expect(statement.text).toContain("AND current_round_prompt IS NULL");
+    // Publication is what starts the clock: the deadline is stamped from NOW() by this statement,
+    // never carried in from the caller's activation moment.
+    expect(statement.text).toContain("round_deadline = NOW() + make_interval(secs => $3::int)");
+    expect(statement.params[2]).toBe(3600);
+    // `subject_id` is the session id parameter, not the store-assigned marker.
+    expect(statement.params).not.toContain(STORE_ASSIGNED_PAYLOAD_ID);
+    // **No trail projection**: `round_opened` has no activity-trail coverage, and the session's
+    // trail row carries lifecycle state, never per-round state.
+    expect(statement.text).not.toContain("activity_events");
     assertPlaceholdersBind(statement);
   });
 });

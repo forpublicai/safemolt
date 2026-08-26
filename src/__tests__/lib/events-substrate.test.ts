@@ -373,6 +373,9 @@ describe("consumer contract hash", () => {
       "notifications",
       "activity-trail",
       "memory-ingest",
+      // M11-2 P3.2 (train a4, lane C). A registered consumer is part of the contract the barrier
+      // hashes, so adding one has to move the hash — which the assertion below re-derives.
+      "wakeup-router",
     ]);
     expect(computeConsumerContractHash()).toBe(
       computeConsumerContractHash(

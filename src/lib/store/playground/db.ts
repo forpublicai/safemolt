@@ -1118,17 +1118,29 @@ export async function getPlaygroundActions(sessionId: string, round: number): Pr
     return (rows as Record<string, unknown>[]).map(rowToSessionAction);
 }
 
+/**
+ * Flip a pending session to active — and **deliberately NOT its round deadline** (M11-2 P3.2).
+ *
+ * Activation used to pre-set `round_deadline` and only then generate the round-1 prompt
+ * asynchronously, so after an outage the deadline could expire on a round no participant could ever
+ * act on — and a repair that wrote only the prompt would publish into an already-expired deadline.
+ * The column is simply not touched here (NULL for every caller today, since a pending session has
+ * none), and `storeRound1PromptIfMissing` starts the clock at the instant the prompt is published.
+ * Deadline-scanning paths key off `roundDeadline` being set at all, so a promptless active round is
+ * un-expirable in the window between the two writes.
+ *
+ * Everything else is unchanged: the `status = 'pending'` gate still admits exactly one activator,
+ * and the trail still refreshes because the session did become visibly active.
+ */
 export async function activatePlaygroundSession(
     sessionId: string,
     initialRound: number,
-    roundDeadline: string,
     startedAt: string
 ): Promise<boolean> {
     const rows = await sql!`
         UPDATE playground_sessions
-        SET status = 'active', 
-            current_round = ${initialRound}, 
-            round_deadline = ${roundDeadline}, 
+        SET status = 'active',
+            current_round = ${initialRound},
             started_at = ${startedAt}
         WHERE id = ${sessionId} AND status = 'pending'
         RETURNING id
@@ -1137,4 +1149,81 @@ export async function activatePlaygroundSession(
         await recordPlaygroundSessionActivityEvent(sessionId);
     }
     return rows.length > 0;
+}
+
+/**
+ * Publish round 1's prompt — **the one conditional write both round-1 writers share**
+ * (M11-2 P3.2, the plan's normative predicate).
+ *
+ * Two producers reach this: the activation path's `safeWaitUntil` continuation, and the deadline
+ * sweep's repair of a crashed one. Routing both through `updatePlaygroundSession` — an unconditional
+ * COALESCE update — is what made a merely SLOW original generation able to overwrite the repair's
+ * already-announced prompt and emit a SECOND `round_opened`, whose distinct event id passes the
+ * `(agent, reason, event_id)` wakeup dedup and hands every participant two turns for one round.
+ * Exactly one writer matches the predicate; the loser writes nothing and emits nothing.
+ *
+ * **Publication is what starts the clock**: the deadline is stamped by this statement, from `NOW()`,
+ * so it is measured from the moment a participant could first act rather than from the status flip.
+ *
+ * **No activity-trail splice, deliberately.** `playground.round_opened`'s activity-trail coverage is
+ * `none`: a round opening is not a public activity kind, and the session's trail row carries only
+ * lifecycle-level state (created / joined / completed / cancelled / expired), never per-round state.
+ */
+export async function storeRound1PromptIfMissing(
+    sessionId: string,
+    prompt: string,
+    roundDurationMs: number,
+    events?: readonly PreparedEvent[]
+): Promise<boolean> {
+    const seconds = Math.max(1, Math.round(roundDurationMs / 1000));
+    const params: unknown[] = [sessionId, prompt, seconds];
+    const emitted = emitEventCtes(events, "prompted", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [],
+    });
+    const rows = await sql!(
+        `
+    WITH prompted AS (
+      UPDATE playground_sessions
+      SET current_round_prompt = $2::text,
+          round_deadline = NOW() + make_interval(secs => $3::int)
+      WHERE id = $1::text
+        AND status = 'active'
+        AND current_round = 1
+        AND current_round_prompt IS NULL
+      RETURNING id
+    )${spliceCtes(emitted.ctes)}
+    SELECT prompted.id FROM prompted
+  `,
+        [...params, ...emitted.params]
+    );
+    return rows.length > 0;
+}
+
+/**
+ * The active round-1 sessions whose prompt never landed — **the predicate is in the query**, exactly
+ * as `listSessionsDueForLifetimeCap`'s is, and for the same reason.
+ *
+ * A crashed activation continuation leaves a session active on round 1 with no prompt and no
+ * deadline: un-expirable by every deadline-scanning path, and invisible to a newest-first window the
+ * moment the population outgrows it. Selecting the due candidates directly, OLDEST FIRST, is what
+ * makes a bounded sweep a delay rather than starvation — and because the repair either fills
+ * `current_round_prompt` or loses to a writer that already did, a processed row cannot come back on
+ * the next page.
+ */
+export async function listSessionsNeedingRound1PromptRepair(
+    graceMs: number,
+    limit: number
+): Promise<PlaygroundSession[]> {
+    const seconds = Math.max(1, Math.round(graceMs / 1000));
+    const rows = await sql!`
+      SELECT * FROM playground_sessions
+      WHERE status = 'active'
+        AND current_round = 1
+        AND current_round_prompt IS NULL
+        AND COALESCE(started_at, created_at) <= NOW() - make_interval(secs => ${seconds}::int)
+      ORDER BY COALESCE(started_at, created_at) ASC
+      LIMIT ${Math.max(1, Math.floor(limit))}
+    `;
+    return (rows as Record<string, unknown>[]).map(rowToPlaygroundSession);
 }

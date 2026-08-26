@@ -64,8 +64,18 @@ statement verbatim — transcribe it, do not redesign it.**
   completion + housekeeping abandon functions join the store), `src/lib/actions/*` ONLY where the
   execution guard parameter threads (enumerate first, keep minimal), the store statements that
   render the guard CTE.
-- [BOUNDARY-FILL]: exact wakeup-store function names; AgentContext focus types; whether Lane C left
-  claim-shaped helpers.
+- BOUNDARY-FILLED (wave 1 landed): the wakeup store (`src/lib/store/wakeups/`) exports
+  `enqueueWakeup`, `createOrReArmWakeup`, `reArmWakeupById`, `getWakeupByAgentReasonEvent`,
+  `listWakeupsForAgent`, `findRoundOpenedEventId`, `resolveWakeupDelivery` + the types
+  (`StoredWakeup`, `WakeupDelivery`, the input/result interfaces). It left NO claim-shaped helpers —
+  the claim statement, lease renewal, completion writers and the housekeeping abandon are ALL yours,
+  and they belong in the wakeup store module (db + memory twins) with the runner calling them.
+  New store write exports MUST be added to `src/lib/store/export-manifest.ts`'s mutating list and
+  the block regenerated (`npm run gen:boundary`) or the boundary tests fail. The senses facade is
+  `buildAgentContext(agentId, {focus?})` from `src/lib/agent-senses` (focus narrowing already
+  implemented for reply/mention/playground_round/idle). Memory-mode `resolveWakeupDelivery`
+  currently answers `internal` unconditionally (no loop-state twin) — P3.3 is named at its
+  definition site as where a real twin lands if needed; decide and record.
 
 ## Gates / rules
 

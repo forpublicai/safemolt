@@ -418,12 +418,15 @@ export async function mergePlaygroundParticipantAffiliationFields(
 }
 
 /**
- * Activate a pending playground session (memory store implementation).
+ * Activate a pending playground session — **without a round deadline** (M11-2 P3.2).
+ *
+ * The db twin's comment carries the reasoning: the clock starts when the prompt is published, not at
+ * the status flip, so this writer leaves `roundDeadline` exactly as it found it (absent, for every
+ * caller today) and `storeRound1PromptIfMissing` stamps it.
  */
 export async function activatePlaygroundSession(
   sessionId: string,
   currentRound: number,
-  roundDeadline: string,
   startedAt: string) {
   const session = playgroundSessions.get(sessionId);
 
@@ -439,13 +442,81 @@ export async function activatePlaygroundSession(
     ...session,
     status: 'active',
     currentRound,
-    roundDeadline,
     startedAt,
   };
 
   playgroundSessions.set(sessionId, updated);
   await recordPlaygroundSessionActivityEvent(updated.id);
   return true;
+}
+
+/**
+ * The memory twin of the round-1 prompt publication — same predicate, same gate on the event.
+ *
+ * `currentRoundPrompt !== undefined` is the JS spelling of the statement's `current_round_prompt IS
+ * NULL`, and the distinction is load-bearing: this domain's type is `string | undefined`, so a
+ * falsy test would also treat an empty-string prompt as missing, which the SQL predicate would not.
+ *
+ * No trail projection is written, matching the db statement: `round_opened` has no activity-trail
+ * coverage, and a round opening is not a lifecycle transition of the session.
+ */
+export async function storeRound1PromptIfMissing(
+  sessionId: string,
+  prompt: string,
+  roundDurationMs: number,
+  events?: readonly PreparedEvent[]
+): Promise<boolean> {
+  const prepared = withSessionSubject(events, sessionId);
+  // Kind and payload FIRST, where Postgres renders — before the eligibility check, because the db
+  // twin renders its event arms whether or not the UPDATE then matches.
+  validatePreparedEvents(prepared);
+  const session = playgroundSessions.get(sessionId);
+  if (
+    !session ||
+    session.status !== 'active' ||
+    session.currentRound !== 1 ||
+    session.currentRoundPrompt !== undefined
+  ) {
+    return false;
+  }
+
+  const batch = prepareEventBatch(prepared);
+  // The synchronous section: the prompt, its deadline and the append, with no `await` between them.
+  playgroundSessions.set(sessionId, {
+    ...session,
+    currentRoundPrompt: prompt,
+    roundDeadline: new Date(Date.now() + roundDurationMs).toISOString(),
+  });
+  const { dispatched } = appendPreparedBatch(batch);
+  await dispatched;
+  return true;
+}
+
+/**
+ * The memory twin of the round-1 repair query — same predicate, same OLDEST-FIRST order.
+ *
+ * See the db side for why both halves matter: the age filter belongs in the query so a fixed window
+ * cannot hide a stuck session behind newer ones, and `currentRoundPrompt` is part of the predicate
+ * so a repaired row leaves the candidate set.
+ */
+export async function listSessionsNeedingRound1PromptRepair(
+  graceMs: number,
+  limit: number
+): Promise<PlaygroundSession[]> {
+  const cutoffMs = Date.now() - graceMs;
+  return Array.from(playgroundSessions.values())
+    .filter((session) => {
+      if (session.status !== 'active') return false;
+      if (session.currentRound !== 1) return false;
+      if (session.currentRoundPrompt !== undefined) return false;
+      const startedAtMs = Date.parse(session.startedAt ?? session.createdAt);
+      return Number.isFinite(startedAtMs) && startedAtMs <= cutoffMs;
+    })
+    .sort(
+      (a, b) =>
+        Date.parse(a.startedAt ?? a.createdAt) - Date.parse(b.startedAt ?? b.createdAt)
+    )
+    .slice(0, Math.max(1, Math.floor(limit)));
 }
 
 export async function createPlaygroundAction(input: CreateActionInput) {

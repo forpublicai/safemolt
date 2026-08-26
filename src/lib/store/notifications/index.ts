@@ -8,6 +8,7 @@ export type {
   NotificationLegacyRead,
   NotificationProjection,
   NotificationTwinSubject,
+  PlaygroundRoundOpenNotificationInput,
 } from "./memory";
 
 export const createNotification = pickStore(db.createNotification, mem.createNotification);
@@ -23,6 +24,12 @@ export const createCommentNotificationIdempotent = pickStore(
 export const createFollowNotificationIdempotent = pickStore(
   db.createFollowNotificationIdempotent,
   mem.createFollowNotificationIdempotent
+);
+// M11-2 P3.2 (train a4) — the markable round-open row. Same content-anchored shape as its two
+// siblings; its subject is the session AT A ROUND, so an advanced or finished session writes nothing.
+export const createPlaygroundRoundOpenNotificationIdempotent = pickStore(
+  db.createPlaygroundRoundOpenNotificationIdempotent,
+  mem.createPlaygroundRoundOpenNotificationIdempotent
 );
 // u4-prep amendment: the soak's drain-time twin read. Read-only, and paired with `describe*` above —
 // the comparison diffs what the consumer WOULD write against what the legacy writer DID write.

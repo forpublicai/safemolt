@@ -220,6 +220,7 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   "createNotification",
   "createCommentNotificationIdempotent",
   "createFollowNotificationIdempotent",
+  "createPlaygroundRoundOpenNotificationIdempotent",
   "deleteNotificationsAnchoredToPost",
   "markNotificationRead",
   "markAllNotificationsRead",
@@ -243,6 +244,7 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   "completePlaygroundSessionAtLifetimeCap",
   "mergePlaygroundParticipantAffiliationFields",
   "updatePlaygroundSession",
+  "storeRound1PromptIfMissing",
 
   // --- posts (src/lib/store/posts/index.ts) ---
   "createPost",

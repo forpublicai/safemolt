@@ -16,10 +16,13 @@
 import {
   createCommentNotificationIdempotent,
   createFollowNotificationIdempotent,
+  createPlaygroundRoundOpenNotificationIdempotent,
   deleteNotificationsAnchoredToPost,
   describeCommentNotification,
   describeFollowNotification,
   getComment,
+  getPlaygroundActions,
+  getPlaygroundSession,
   getPost,
   readNotificationProjectionByDedupKey,
   type CommentNotificationInput,
@@ -28,6 +31,7 @@ import {
 } from "@/lib/store";
 import type { NotificationType, StoredEvent } from "@/lib/store-types";
 
+import { PermanentEffectError } from "../errors";
 import { notificationsCoverage } from "./coverage";
 import {
   defineConsumer,
@@ -203,6 +207,59 @@ function twinSubject(event: StoredEvent): NotificationTwinSubject | null {
 }
 
 /**
+ * The MARKABLE round-open row, one per participant who still owes a move (M11-2 P3.2, train a4).
+ *
+ * **A separate effect from the wakeup router's, on the same event and the same predicate.** One
+ * owner per projection: this consumer writes the inbox row, the router writes the wakeup, and
+ * neither touches the other's table. They have separate cursors and separate retry ledgers, so a
+ * failure in one never duplicates or stalls the other.
+ *
+ * **It is not planned through `plan()`, deliberately.** `plan` answers ONE `PlannedNotification` per
+ * event and this kind fans out over a participant list, so folding it in would have to widen a shape
+ * a long tail of a1 gates depends on. `plan()`'s `switch` therefore has no case for this kind and
+ * returns `null`, which is exactly right: `describe` is never invoked for an `on` kind with no
+ * legacy writer, and if it ever were it would harmlessly return `[]` rather than dead code.
+ *
+ * Freshness is re-checked here AND inside each insert. This check decides whether there is anything
+ * to do; the insert's locked subject — the session, still active on exactly this round — is what
+ * makes the decision hold against a GM advancing the round in between.
+ */
+async function applyPlaygroundRoundOpenNotifications(event: StoredEvent): Promise<void> {
+  const payload = eventPayload(event);
+  const sessionId = payloadId(event, payload, "session_id");
+  const roundValue = payload.round;
+  // JSONB written by a possibly-newer producer: a non-integer round would make every comparison
+  // below false and silently swallow the kind forever. No retry repairs a malformed payload.
+  if (typeof roundValue !== "number" || !Number.isInteger(roundValue)) {
+    throw new PermanentEffectError(
+      `[events] event ${event.id} (${event.kind}) payload 'round' is not an integer`
+    );
+  }
+  requireCorrelation(event, "session_id", sessionId, requireColumn(event, "subjectId"));
+
+  const session = await getPlaygroundSession(sessionId);
+  if (!session || session.status !== "active" || session.currentRound !== roundValue) return;
+  const actions = await getPlaygroundActions(sessionId, roundValue);
+  const acted = new Set(actions.map((action) => action.agentId));
+  const candidates = session.participants.filter(
+    (participant) => participant.status === "active" && !acted.has(participant.agentId)
+  );
+
+  for (const participant of candidates) {
+    await createPlaygroundRoundOpenNotificationIdempotent({
+      sessionId,
+      round: roundValue,
+      agentId: participant.agentId,
+      createdAt: event.createdAt,
+      // The same Decision-6 shape the other two kinds use: `{type}:{recipient}:{event_id}`. The
+      // event id is the only correlation the row needs, so re-consuming one event writes nothing
+      // while a genuinely new round — a new event — writes a fresh row.
+      dedupKey: notificationDedupKey("playground_round_open", participant.agentId, event.id),
+    });
+  }
+}
+
+/**
  * The effects, exported beside the consumer.
  *
  * Every checked-in manifest puts every a1 kind at `legacy` or `none` in u2, so nothing else can
@@ -306,6 +363,12 @@ export const notificationEffects: ConsumerEffects = {
   async apply(event: StoredEvent): Promise<void> {
     if (event.kind === "post.deleted") {
       await deleteNotificationsAnchoredToPost(payloadId(event, eventPayload(event), "post_id"));
+      return;
+    }
+    // Special-cased ahead of `plan()` for the reason `post.deleted` is: this kind's effect is a
+    // fan-out over participants, not the single planned insert `plan()` answers with.
+    if (event.kind === "playground.round_opened") {
+      await applyPlaygroundRoundOpenNotifications(event);
       return;
     }
     const planned = await plan(event);

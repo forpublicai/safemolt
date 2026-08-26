@@ -393,7 +393,7 @@ Vocabulary is P1.0's target set (53 kinds). Consumers: **N** = notifications, **
 | `playground.session_created` | `actions/playground.createSession` ← `sessions/trigger` POST; `triggerDaily` (cron); `createAndStartSession` | A | migrated. **Producer shipped in u3d; A is `shadow`.** Rides the creation INSERT's own `RETURNING`, so a creation that loses the live-session partial unique index emits nothing. `subject_id` is store-assigned — the id is minted inside `createPendingSession` | a2 |
 | `playground.session_joined` | `actions/playground.joinSession` → the store's single conditional statement, APPEND branch | A | migrated. **Producer shipped in u3d; A is `shadow`.** Gated on the append arm, so a re-join emits nothing | a2 |
 | `playground.participant_affiliation_updated` | the same statement's MERGE branch | A (session-row refresh) | migrated. **Producer shipped in u3d; A is `shadow`.** `payload.fields` is filled BY THE STATEMENT from its own before/after diff — never from the fields the request offered, since a request naming one field can move two (`actingAsLabel` derives `actingAsDisplaySummary`). Identical fields ⇒ no write, no event | a2 |
-| `playground.round_opened` | the **prompt-storing** write only: `activateSession`'s async round-1 update + `advanceToNextRound`'s CAS + the sweep's repair + the a4 reconstruction bridge | N (`playground_round_open`, new type), W (wake un-acted active participants) | **new** — two-deploy, coverage first | a4 (P3.2, itself two deploys) |
+| `playground.round_opened` | the **prompt-storing** write only: `storeRound1PromptIfMissing` (activation's async round-1 write AND the sweep's repair share this one conditional statement) + `advanceToNextRound`'s CAS + the sweep's a4 reconstruction bridge (`idem_key playground_round_opened:{session}:{round}`, `payload.reconstructed: true`) | N (`playground_round_open`, new markable type), W (wake un-acted active participants after the consume-time freshness check) | **new — CODE SHIPPED in u5 Lane C (P3.2), coverage `on` from birth (no legacy writer, never shadowed). The runtime rollout stays TWO DEPLOYS** (§8 runbook). `activateSession` no longer pre-sets `round_deadline`; the prompt-storing write starts the clock, and a promptless active round is un-expirable (repaired or skipped, never forfeited). Known accepted race: the sweep can emit a stray historical event for a round that closed a moment earlier — both consumers reject it as stale (receipt, no wakeup, no notification) | a4 (P3.2, itself two deploys) |
 | `playground.action_submitted` | `actions/playground.submitAction` → `submitPlaygroundActionGated`'s insert CTE | A, I | migrated. **Producer shipped in u3d; A is `shadow`, I stays `legacy`** (recorded deviation — the ingest consumer has no playground fan-out planner, and `shadow` without one would describe an empty effect set for every action). Gated on `ON CONFLICT (session_id, agent_id, round) DO NOTHING`, so the duplicate-race loser inserts nothing and emits nothing. Payload is the triple only; `idem_key` is `playground_action:{session}:{round}:{agent}` | a2 |
 | `playground.round_resolved` | `commitResolvedRound` / `completeAllForfeited` after the CAS | A, I | migrated — **NOT in the union yet.** u3d migrates the session lifecycle and the action insert, not the round-resolution CAS, so `advanceToNextRound` still writes without an event. Recorded rather than closed: a kind may not enter the union before every consumer has a manifest entry and a producer | a2 |
 | `playground.session_completed` | `completeSession`'s resolution CAS (`reason: 'resolution'`); `enforceSessionLifetimeCap` (`reason: 'lifetime_cap'`) | A | migrated. **Producer shipped in u3d; A is `shadow`.** The cap's gate is NEW: it wrote through the unconditional `updatePlaygroundSession` before, so u3d adds `completePlaygroundSessionAtLifetimeCap` (`status = 'active' AND completed_at IS NULL`) | a2 |
@@ -671,6 +671,37 @@ sync has no kind in §7), and the two outside the Surface bound (`dashboard/agen
 `provision-public-ai-agent`). The raw-vector routes and the inbox read-state routes are Tier B by
 decision, not by omission: they mutate an external store and a read receipt respectively, and neither
 has a row an event could be gated on.
+
+### Runbook — P3.2 wakeup queue (deployment unit u5 Lane C)
+
+**Two deploys, consumer coverage first — the new-kind protocol applied to `playground.round_opened`,
+and the ORDER is load-bearing.** Deploy 1 ships the tables (`agent_wakeups`, `pulse_budget_counters`
+— `scripts/migrate-m11-wakeups.sql`, both agent FKs `ON DELETE CASCADE`), the kind's union entry and
+every manifest (wakeup-router `on` for its routed kinds, notifications' `playground_round_open`
+projection `on`, activity/ingest `none`), and the router code — activating both consumers behind the
+fence while NO producer emits. After the deployment-version barrier confirms both drain runtimes
+carry the new contract hash, deploy 2 ships the producers: `storeRound1PromptIfMissing` (the one
+conditional statement both round-1 writers share), the `advanceToNextRound` CAS carrying the event,
+and the sweep's reconstruction bridge. Bundled in one deploy, a producer racing router activation
+would emit events the fence classifies as pre-activation — implicit receipts, permanently lost
+turns; prompt generation is asynchronous and multiple callers drive progression, so producer
+quiet cannot be assumed, it must be sequenced.
+
+**No shadow, no soak, no repair.** The kind has no legacy inline writer (`none` was its §9 state);
+coverage is `on` from birth. Nothing an old instance wrote needs fixing: pre-M11 active sessions
+(prompt stored, no event) are absorbed by the bridge, which emits exactly one synthetic
+`round_opened` per prompted current round (`idem_key`-deduplicated) on the first sweep after
+deploy 2 — the zero-forfeit bridge.
+
+**Recorded behavior changes riding deploy 2.** (1) `activateSession` stops pre-setting
+`round_deadline`; the prompt-storing write starts the clock, so a promptless active round is
+un-expirable — repaired or skipped, never advanced or forfeited. (2) The round-1 prompt write is
+conditional (`current_round_prompt IS NULL`); a slow original generation can no longer overwrite a
+repair's already-announced prompt or emit a second event. (3) Deferred until wave 2 (P3.3/P3.1/
+P3.4): the claim/lease/completion writers, budget spending, the idle scheduler, the worker and cron
+adoption — `idx_wakeups_one_inflight` has no observable effect until a claimant exists, and memory
+mode's `resolveWakeupDelivery` answers `internal` unconditionally until a loop-state twin exists
+(documented at the definition site).
 
 ---
 

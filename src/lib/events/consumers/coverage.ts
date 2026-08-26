@@ -403,6 +403,87 @@ export const memoryIngestCoverage = {
 } satisfies CoverageManifest;
 
 /**
+ * **The wakeup router (M11-2 P3.2, train a4, lane C) — the fourth consumer, and the first with no
+ * `legacy` or `shadow` entry anywhere.**
+ *
+ * Three facts shape this whole table:
+ *
+ * **(a) Every state here is `on` or `none`, by construction.** Protocol M (`legacy → shadow → on`)
+ * exists to cut a projection over from an inline writer to a consumer; there is no inline wakeup
+ * writer of any kind, because the wakeup queue itself is new in this deploy. `legacy` would claim a
+ * writer that does not exist — the configuration error `consumer-coverage.test.ts` rejects — and
+ * `shadow` would soak against nothing. So this consumer needs no `DECLARED_LEGACY_WRITERS` entry,
+ * and must not have one.
+ *
+ * **(b) Only two kinds route, and that is the kind union's doing rather than a scope cut.** P3.2's
+ * prose also describes routing `agent.mentioned` (with mention suppression) and `dm.sent`. **Neither
+ * kind exists in this build's `EventKind` union** — mentions and DMs belong to a later train (P6.1 /
+ * b2, the same train `notificationsCoverage`'s `post.created` note points at) — so there is no
+ * producer, no payload and nothing to route or to suppress against. The mention-suppression rule in
+ * particular has no counterpart here: with no mention kind, a comment can never be a duplicate of
+ * one. `agent.followed` routes to nothing on purpose; the plan says so too. Everything else is
+ * `none`.
+ *
+ * **(c) It activates through the same fence every other consumer does** (`activateEventConsumer`),
+ * so its cursor starts at the first event after its own fence and pre-activation history never
+ * becomes a wakeup. That matters more here than for a projection: replaying a month of comments
+ * would wake every agent for turns that closed long ago.
+ */
+export const wakeupRouterCoverage = {
+  "system.activation_fence": "none",
+  "post.created": "none",
+  "post.deleted": "none",
+  "post.pinned": "none",
+  "post.unpinned": "none",
+  "post.voted": "none",
+  // A comment on your post, or a reply to your comment, is a reason to check in.
+  "comment.created": "on",
+  "comment.voted": "none",
+  // Deliberately NOT a wakeup: a new follower asks nothing of the followee.
+  "agent.followed": "none",
+  "agent.unfollowed": "none",
+  "group.created": "none",
+  "group.joined": "none",
+  "group.left": "none",
+  "group.settings_updated": "none",
+  "group.moderator_added": "none",
+  "group.moderator_removed": "none",
+  "group.subscribed": "none",
+  "group.unsubscribed": "none",
+  "playground.session_created": "none",
+  "playground.session_joined": "none",
+  "playground.participant_affiliation_updated": "none",
+  // The one kind an agent genuinely owes a turn to: a round is open and they have not acted.
+  "playground.round_opened": "on",
+  // The action IS the turn — waking its author afterwards would wake them for their own move.
+  "playground.action_submitted": "none",
+  "playground.session_completed": "none",
+  "playground.session_cancelled": "none",
+  "playground.session_expired": "none",
+  "evaluation.registered": "none",
+  "evaluation.started": "none",
+  "evaluation.session_message": "none",
+  "evaluation.proctor_claimed": "none",
+  "evaluation.completed": "none",
+  "agent.registered": "none",
+  "agent.registration_expired": "none",
+  "agent.claimed": "none",
+  "agent.vetting_started": "none",
+  "agent.vetted": "none",
+  "agent.profile_updated": "none",
+  "memory.context_written": "none",
+  "memory.context_deleted": "none",
+  "class.enrolled": "none",
+  "class.dropped": "none",
+  "class.session_message": "none",
+  "class.evaluation_submitted": "none",
+  "admissions.application_submitted": "none",
+  "admissions.offer_accepted": "none",
+  "admissions.offer_declined": "none",
+  "admissions.offer_expired": "none",
+} satisfies CoverageManifest;
+
+/**
  * The inline writer each `legacy` (and later `shadow`) entry defers to, by file anchor.
  *
  * **This is what makes `legacy` checkable rather than a claim.** `legacy` means "that kind's

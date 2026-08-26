@@ -1188,13 +1188,15 @@ describe("drain route", () => {
     expect(authorized.status).toBe(200);
     const body = await authorized.json();
     // The route's value here is that it RUNS, drives every REGISTERED consumer, and stamps its
-    // hash. Since u2 the registry is the three a1 consumers, so the report names them in dispatch
-    // order; their per-kind counts are the drain's business and are asserted above, not here.
+    // hash. Since u2 the registry is the three a1 consumers, and P3.2 appends a4's wakeup router,
+    // so the report names all four in dispatch order; their per-kind counts are the drain's
+    // business and are asserted above, not here.
     expect(body).toMatchObject({ success: true });
     expect((body.consumers as Array<{ name: string }>).map((consumer) => consumer.name)).toEqual([
       "notifications",
       "activity-trail",
       "memory-ingest",
+      "wakeup-router",
     ]);
     expect(body.contract_hash).toMatch(/^[0-9a-f]{64}$/);
 

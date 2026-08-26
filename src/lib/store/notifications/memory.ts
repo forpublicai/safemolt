@@ -7,6 +7,8 @@ import {
   generateId,
   notificationDedupKeys,
   notifications,
+  playgroundActions,
+  playgroundSessions,
   posts,
 } from "../_memory-state";
 
@@ -60,6 +62,29 @@ export interface FollowNotificationInput {
   /** The followee — the row the db side locks. */
   recipientAgentId: string;
   actorAgentId: string;
+  createdAt: string;
+}
+
+/**
+ * The markable `playground_round_open` row (M11-2 P3.2, train a4).
+ *
+ * **Content-anchored like the two above, but the subject is a SESSION AT A ROUND.** Existence is not
+ * enough: a round-open notification for a session that has since advanced, completed or been
+ * cancelled points at a turn nobody can take, so the write is gated on `status = 'active' AND
+ * current_round = round` inside the statement (db) and in one synchronous section (memory). The
+ * un-acted predicate is part of the same gate — an agent who already submitted for this round is not
+ * waiting on anything.
+ *
+ * `dedupKey` is `playground_round_open:{recipient}:{event_id}`, the same Decision-6 shape the other
+ * two use, and it is **non-nullable here**: this projection is born in the consumer, so there is no
+ * transitional inline writer without an event to name (the reason the other two admit `null`).
+ */
+export interface PlaygroundRoundOpenNotificationInput {
+  dedupKey: string;
+  sessionId: string;
+  round: number;
+  /** The participant this row is addressed to. Re-checked against the session in the statement. */
+  agentId: string;
   createdAt: string;
 }
 
@@ -284,6 +309,49 @@ export async function createFollowNotificationIdempotent(
   input: FollowNotificationInput
 ): Promise<StoredNotification | null> {
   const built = buildFollowNotification(input);
+  if (!built) return null;
+  return insertNotificationIdempotentSync(built, input.dedupKey);
+}
+
+/**
+ * Build the round-open row, or null when the round has moved on or the agent already acted.
+ *
+ * The two gates are the memory twin of the db statement's locked `FROM` and its `NOT EXISTS`, and
+ * they are re-evaluated here rather than trusted from the caller's read: the consumer's re-fetch
+ * decided whether there was anything to do, and this decides whether it is still true.
+ */
+function buildPlaygroundRoundOpenNotification(
+  input: PlaygroundRoundOpenNotificationInput
+): CreateNotificationInput | null {
+  const session = playgroundSessions.get(input.sessionId);
+  if (!session || session.status !== "active" || session.currentRound !== input.round) return null;
+  const acted = Array.from(playgroundActions.values()).some(
+    (action) =>
+      action.sessionId === input.sessionId &&
+      action.round === input.round &&
+      action.agentId === input.agentId
+  );
+  if (acted) return null;
+  return {
+    agentId: input.agentId,
+    type: "playground_round_open",
+    priority: "normal",
+    // **No actor: nobody ACTS to open a round — the GM/system does.** A fixed placeholder rather
+    // than a real agent id, because extending `NotificationActor` to tolerate "no actor" would
+    // change a shape every other kind relies on, and every other kind always has one.
+    actor: { id: "system", name: "Game Master" },
+    // The SESSION, not the round: a round has no id anywhere in the schema.
+    target: { type: "playground_session", id: input.sessionId },
+    href: "/playground",
+    metadata: { session_id: input.sessionId, round: input.round },
+    createdAt: input.createdAt,
+  };
+}
+
+export async function createPlaygroundRoundOpenNotificationIdempotent(
+  input: PlaygroundRoundOpenNotificationInput
+): Promise<StoredNotification | null> {
+  const built = buildPlaygroundRoundOpenNotification(input);
   if (!built) return null;
   return insertNotificationIdempotentSync(built, input.dedupKey);
 }

@@ -649,7 +649,8 @@ describe("the sweeps", () => {
       status: "active",
       startedAt: new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString(),
     });
-    for (let i = 0; i < 50; i += 1) await seedSession({ status: "active" });
+    const younger: string[] = [];
+    for (let i = 0; i < 50; i += 1) younger.push((await seedSession({ status: "active" })).id);
     const marker = await maxEventId();
 
     await enforceSessionLifetimeCap();
@@ -666,6 +667,17 @@ describe("the sweeps", () => {
         (e) => e.kind === "playground.session_completed" && e.subjectId !== overdue.id
       )
     ).toEqual([]);
+
+    // Retired now that this gate has finished asserting on them (u5 lane C). Fifty LIVE sessions
+    // are this test's fixture, not a state any later test in this file means to inherit — and every
+    // later `checkDeadlines()` pays for them, because the deadline sweep is O(active sessions) in
+    // Neon HTTP round trips. Leaving them behind pushed the shadow-parity gates past their per-test
+    // budget. `status` is moved directly rather than through a store writer, so nothing is emitted
+    // and no gate below sees a fabricated transition.
+    await pgPool().query(
+      `UPDATE playground_sessions SET status = 'completed', completed_at = NOW() WHERE id = ANY($1::text[])`,
+      [younger]
+    );
   });
 });
 

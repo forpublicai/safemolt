@@ -18,6 +18,7 @@ import {
 } from './lifecycle';
 import type { PreparedEvent } from '@/lib/events/kinds';
 import {
+    playgroundRoundOpenedEvent,
     playgroundSessionCompletedEvent,
     playgroundSessionCreatedEvent,
     playgroundSessionExpiredEvent,
@@ -71,6 +72,13 @@ function startClaimRenewal(sessionId: string, token: string): { stop: () => void
 
 /** Timeout for pending sessions to find players (24 hours) */
 const PENDING_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long an active round-1 session may sit promptless before the sweep regenerates its prompt.
+ * Normal round-1 generation completes in 15-20s (the GM-latency figure the submit path documents),
+ * so two minutes is generous grace before assuming the async write crashed.
+ */
+const ROUND1_PROMPT_REPAIR_GRACE_MS = 2 * 60 * 1000;
 
 /** Agents must have been active within this many days to be eligible */
 const ACTIVITY_WINDOW_DAYS = 7;
@@ -388,29 +396,42 @@ export async function joinSession(
  * wins the flip (join vs. deadline scan). Prompt generation rides
  * safeWaitUntil — a bare fire-and-forget promise could be killed when the
  * serverless response returns, leaving a session active with no prompt.
+ *
+ * M11-2 P3.2: the flip no longer claims a round deadline, and the prompt write is the CONDITIONAL
+ * `storeRound1PromptIfMissing` carrying `playground.round_opened`. The two changes are one idea —
+ * the round's clock and its event both belong to the write that durably publishes the prompt, so a
+ * wakeup can never exist for a round nobody can act on, and a slow generation racing the repair
+ * sweep cannot publish a second prompt or a second event.
  */
 async function activateSession(session: PlaygroundSession, game: PlaygroundGame): Promise<boolean> {
     const store = await getStore();
     const now = new Date().toISOString();
-    const roundDeadline = new Date(Date.now() + ACTION_TIMEOUT_MS).toISOString();
 
-    const activated = await store.activatePlaygroundSession(session.id, 1, roundDeadline, now);
+    const activated = await store.activatePlaygroundSession(session.id, 1, now);
     if (!activated) return false;
 
     console.log(`[playground] Session ${session.id} started with ${session.participants.length} players. Generating prompt...`);
 
+    // No roundDeadline yet: the clock starts when the prompt is durably stored, not before —
+    // an active round-1 session promptless in this window is treated as un-expirable by every
+    // deadline-scanning path (they all key off `roundDeadline` being set at all).
     const activeSession: PlaygroundSession = {
         ...session,
         status: 'active',
         currentRound: 1,
         startedAt: now,
-        roundDeadline,
     };
 
     safeWaitUntil(
         generateRoundPrompt(activeSession, game).then(async (roundPrompt) => {
-            await store.updatePlaygroundSession(session.id, { currentRoundPrompt: roundPrompt });
-            console.log(`[playground] Round 1 prompt saved for session ${session.id}.`);
+            const stored = await store.storeRound1PromptIfMissing(session.id, roundPrompt, ACTION_TIMEOUT_MS, [
+                playgroundRoundOpenedEvent({ sessionId: session.id, round: 1, schoolId: session.schoolId ?? null }),
+            ]);
+            if (stored) {
+                console.log(`[playground] Round 1 prompt saved for session ${session.id}.`);
+            } else {
+                console.log(`[playground] Round 1 prompt for session ${session.id} was already stored (the repair sweep won this race); discarding this generation.`);
+            }
         }),
         `round1-prompt:${session.id}`
     );
@@ -657,7 +678,19 @@ async function advanceToNextRound(input: {
             currentRoundPrompt: nextPrompt,
             roundDeadline: nextDeadline,
         },
-        input.memories
+        input.memories,
+        // M11-2 P3.2: rounds >= 2 open through this CAS, which already carries the prompt — so the
+        // event rides the write that publishes it, and the LOSER of an advance race writes nothing
+        // and emits nothing. Two racers each emitting would produce two distinct event ids, which
+        // pass the wakeup queue's `(agent, reason, event_id)` dedup and hand every participant two
+        // turns for one round.
+        [
+            playgroundRoundOpenedEvent({
+                sessionId: input.session.id,
+                round: nextRound,
+                schoolId: input.session.schoolId ?? null,
+            }),
+        ]
     );
     if (!won) {
         console.warn(`[playground] advancement for ${input.session.id} round ${input.fence.round} lost its claim; result discarded`);
@@ -1044,6 +1077,111 @@ export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
         }
     } catch (err) {
         console.error('[playground] Error scanning pending sessions for activation:', err);
+    }
+
+    // 1c. Repair active round-1 sessions whose prompt never landed (a crashed activation write).
+    try {
+        const stuck = await store.listSessionsNeedingRound1PromptRepair(ROUND1_PROMPT_REPAIR_GRACE_MS, 50);
+        for (const session of stuck) {
+            try {
+                const game = resolvePlaygroundGame(session.schoolId, session.gameId);
+                if (!game) continue;
+                const roundPrompt = await generateRoundPrompt(session, game);
+                const stored = await store.storeRound1PromptIfMissing(session.id, roundPrompt, ACTION_TIMEOUT_MS, [
+                    playgroundRoundOpenedEvent({ sessionId: session.id, round: 1, schoolId: session.schoolId ?? null }),
+                ]);
+                if (stored) {
+                    console.log(`[playground] Repaired missing round-1 prompt for session ${session.id}.`);
+                }
+            } catch (err) {
+                console.error(`[playground] Error repairing round-1 prompt for session ${session.id}:`, err);
+            }
+        }
+    } catch (err) {
+        console.error('[playground] Error scanning for round-1 prompt repairs:', err);
+    }
+
+    // 1d + 1e. The rollout bridge, then create-or-re-arm — ONE pass over ONE list.
+    //
+    // The plan states these as two sweeps. They are fused here because they read the SAME list and
+    // ask the SAME question of it — this round's `round_opened` event id — so two passes re-issue
+    // both the list and the lookup for every active session on every sweep. The sweep runs against
+    // the Neon HTTP driver, where each call is its own round trip, and the duplication is the whole
+    // cost: it doubled the deadline sweep's wall time in the u3d integration suite, past its
+    // per-test budget. Nothing about the SEQUENCE changes — the bridge still runs before the arming
+    // for each session, and the two stay independently error-scoped, so a bridge failure still
+    // leaves arming to run and an arming failure does not stop the next session's bridge.
+    try {
+        const active = await store.listPlaygroundSessions({ status: 'active', limit: 50 });
+        for (const session of active) {
+            // Still promptless ⇒ the repair owns this one, and the bridge must not manufacture an
+            // event for a round nobody can act on. BOTH empty spellings are tested deliberately:
+            // `rowToPlaygroundSession` maps a NULL column to `null` while the memory store stores
+            // `undefined`, so a `=== undefined` check alone reconstructed a round_opened for every
+            // promptless session in db mode — the exact ghost this kind's timing rule forbids. An
+            // empty-STRING prompt is a stored prompt (the publication's `IS NULL` predicate says so)
+            // and is deliberately not treated as missing here either.
+            if (session.currentRoundPrompt === undefined || session.currentRoundPrompt === null) continue;
+
+            // 1d. Rollout bridge: an active, PROMPTED current round lacking a round_opened event gets
+            // exactly one synthetic one (idempotent via idem_key — a session predating this kind, or
+            // one whose real event is merely slow to have landed, converges to one event either way).
+            let eventId = await store.findRoundOpenedEventId(session.id, session.currentRound);
+            if (!eventId) {
+                try {
+                    // The one UNGATED emit in this lane: the bridge has no accompanying mutation to
+                    // gate on — the session is already prompted, and nothing about it is changing.
+                    const emitted = await store.emitEvent(
+                        playgroundRoundOpenedEvent({
+                            sessionId: session.id,
+                            round: session.currentRound,
+                            schoolId: session.schoolId ?? null,
+                            reconstructed: true,
+                            idemKey: `playground_round_opened:${session.id}:${session.currentRound}`,
+                        })
+                    );
+                    eventId = emitted.id;
+                    console.log(`[playground] Reconstructed round_opened for session ${session.id} round ${session.currentRound}.`);
+                } catch (err) {
+                    // A 23505 on the idem key means a concurrent sweep pass already reconstructed it —
+                    // benign, not an error.
+                    const code = (err as { code?: string } | null)?.code;
+                    if (code !== '23505') {
+                        console.error(`[playground] Error reconstructing round_opened for session ${session.id}:`, err);
+                    }
+                    // Re-read either way: on the benign race the winner's event is what this pass
+                    // must arm against, and a genuine failure simply leaves it null and skips.
+                    eventId = await store.findRoundOpenedEventId(session.id, session.currentRound);
+                }
+            }
+            if (!eventId) continue; // no round_opened for this round, so nothing to key a wakeup on
+
+            // 1e. Create-or-re-arm wakeups for active, un-acted participants of the current round.
+            try {
+                // Settled before the actions read, so a session with nobody left to wake costs no
+                // query at all — the common shape once participants forfeit out of a long game.
+                const candidates = session.participants.filter((p) => p.status === 'active');
+                if (candidates.length === 0) continue;
+                const actions = await store.getPlaygroundActions(session.id, session.currentRound);
+                const acted = new Set(actions.map((a) => a.agentId));
+                const unActed = candidates.filter((p) => !acted.has(p.agentId));
+                for (const participant of unActed) {
+                    const delivery = await store.resolveWakeupDelivery(participant.agentId);
+                    if (!delivery) continue;
+                    await store.createOrReArmWakeup({
+                        agentId: participant.agentId,
+                        reason: 'playground_round',
+                        eventId,
+                        payload: { session_id: session.id, round: session.currentRound },
+                        delivery,
+                    });
+                }
+            } catch (err) {
+                console.error(`[playground] Error arming wakeups for session ${session.id}:`, err);
+            }
+        }
+    } catch (err) {
+        console.error('[playground] Error scanning active sessions for round_opened reconstruction and wakeup arming:', err);
     }
 
     // 2. Expire stale pending sessions — a system TRANSITION to 'cancelled' (NULL actor +

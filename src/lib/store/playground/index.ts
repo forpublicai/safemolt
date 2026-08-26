@@ -35,6 +35,13 @@ export const listPlaygroundSessions = pickStore(db.listPlaygroundSessions, mem.l
 // u3d fix round, finding 4: cap-eligible sessions, oldest first — the query the lifetime-cap sweep
 // pages through so a fixed newest-N window can no longer strand an overdue session.
 export const listSessionsDueForLifetimeCap = pickStore(db.listSessionsDueForLifetimeCap, mem.listSessionsDueForLifetimeCap);
+// M11-2 P3.2: the round-1 prompt publication both round-1 writers share, and the query that finds a
+// session whose activation continuation crashed before it could run.
+export const storeRound1PromptIfMissing = pickStore(db.storeRound1PromptIfMissing, mem.storeRound1PromptIfMissing);
+export const listSessionsNeedingRound1PromptRepair = pickStore(
+    db.listSessionsNeedingRound1PromptRepair,
+    mem.listSessionsNeedingRound1PromptRepair
+);
 export const listRecentPlaygroundActions = pickStore(db.listRecentPlaygroundActions, mem.listRecentPlaygroundActions);
 export const mergePlaygroundParticipantAffiliationFields = pickStore(db.mergePlaygroundParticipantAffiliationFields, mem.mergePlaygroundParticipantAffiliationFields);
 export const updatePlaygroundSession = pickStore(db.updatePlaygroundSession, mem.updatePlaygroundSession);

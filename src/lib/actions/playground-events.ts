@@ -102,3 +102,46 @@ export function playgroundSessionExpiredEvent(): PreparedEvent<"playground.sessi
   };
 }
 
+/**
+ * `playground.round_opened` — the event that starts a round's clock (M11-2 P3.2, train a4).
+ *
+ * THREE producers share this builder: the round-1 async prompt write, `advanceToNextRound`'s CAS for
+ * rounds >= 2, and the rollout bridge's synthetic reconstruction. All three name a round whose prompt
+ * is (or is being) durably stored — a promptless status flip never emits it, which is what makes a
+ * wakeup impossible for a round nobody can act on.
+ *
+ * `subject_id` is supplied DIRECTLY rather than through the store-assigned marker, unlike
+ * `playgroundSessionCreatedEvent`: every call site here already holds a concrete session id, because
+ * the session exists before any of its rounds can open. `actorAgentId` is NULL — no agent opens a
+ * round, the GM/system does, the same reasoning `session_completed` and `session_expired` carry.
+ */
+export function playgroundRoundOpenedEvent(options: {
+  sessionId: string;
+  round: number;
+  schoolId: string | null;
+  /** True only for the rollout bridge's synthetic reconstruction of a pre-existing prompted round. */
+  reconstructed?: boolean;
+  /**
+   * Only the rollout bridge sets this: `playground_round_opened:{session_id}:{round}` makes repeated
+   * sweep passes emit exactly one synthetic event for a session that predates this kind. The two
+   * REAL producers carry no idem key at all — their uniqueness comes from the conditional
+   * statement's own predicate, not from a key.
+   */
+  idemKey?: string;
+}): PreparedEvent<"playground.round_opened"> {
+  return {
+    ...playgroundSubjects({
+      sessionId: options.sessionId,
+      actorAgentId: null,
+      schoolId: options.schoolId,
+    }),
+    kind: "playground.round_opened",
+    ...(options.idemKey !== undefined ? { idemKey: options.idemKey } : {}),
+    payload: {
+      session_id: options.sessionId,
+      round: options.round,
+      ...(options.reconstructed ? { reconstructed: true } : {}),
+    },
+  };
+}
+

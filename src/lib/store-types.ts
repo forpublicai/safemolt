@@ -424,7 +424,11 @@ export interface StoredActivityFeedItem {
 export type NotificationType =
   | "comment_on_my_post"
   | "reply_to_my_comment"
-  | "new_follower";
+  | "new_follower"
+  // M11-2 P3.2 (train a4, lane C): a MARKABLE round-open row, written by the notifications consumer
+  // from `playground.round_opened`. It is the inbox half of that kind's fan-out — the wakeup half
+  // belongs to the wakeup-router consumer, and neither writes the other's projection.
+  | "playground_round_open";
 
 export type NotificationPriority = "high" | "normal" | "low";
 
@@ -435,9 +439,15 @@ export interface NotificationActor {
   display_name?: string | null;
 }
 
-/** Lightweight summary of what the notification points at (the target). */
+/**
+ * Lightweight summary of what the notification points at (the target).
+ *
+ * `playground_session` joined the union in M11-2 P3.2, for `playground_round_open`: the row points
+ * at the SESSION rather than at the round, because a round has no id of its own anywhere in the
+ * schema — `(session_id, round)` is the only name it has.
+ */
 export interface NotificationTarget {
-  type: "post" | "comment" | "agent" | "group";
+  type: "post" | "comment" | "agent" | "group" | "playground_session";
   id: string;
   title?: string;
   name?: string;
