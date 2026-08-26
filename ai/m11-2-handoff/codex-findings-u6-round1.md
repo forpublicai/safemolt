@@ -25,3 +25,20 @@ match the scoped plan."
 Fix spec: `u6-d-fix-r1-spec.md`; opus fix agent dispatched.
 
 ## Part E — round 1 pending (runs after the D fix lands, machine-quiet rule)
+
+## Part E (worker / lock / sweeps) — 1 BLOCKER + 4 MAJOR + 1 MINOR, ALL ADOPTED
+
+**BLOCKER (session-manager ~1097)**: `isLockLost` checked only per-page in the round loop, and the
+cap sweep received NO signal — a lost lock kept claiming sessions B..Z. Fix: the signal threads
+into every phase, checked before each claim.
+**MAJOR (~1190)**: the bridge/wakeup-arm pass scanned the NEWEST 50 actives — the zero-forfeit
+bridge itself could starve older sessions. **MAJOR (~1094)**: a page of 50 failed advances was
+re-read forever; session 51 starved. **MAJOR (~1128)**: 50 stale pendings blocked an eligible
+activation behind them. Fix for all three: oldest-first due-eligible scans with per-pass
+attempted-exclusion/cursor progress and documented budgets.
+**MAJOR (worker ~201)**: SIGTERM stopped timers but not claims inside an active duty. Fix: a
+shutdown predicate before every new claim (runPulseBatch gains optional shouldStop — a recorded
+cross-fence parameter). **MINOR (~158)**: /healthz contract_hash null until the first drain; now
+computed at boot.
+
+Fix spec: `u6-e-fix-r1-spec.md`; opus fix agent dispatched. Part D's r1 fix landed in `f5f622d`.
