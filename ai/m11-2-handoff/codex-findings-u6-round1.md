@@ -42,3 +42,17 @@ cross-fence parameter). **MINOR (~158)**: /healthz contract_hash null until the 
 computed at boot.
 
 Fix spec: `u6-e-fix-r1-spec.md`; opus fix agent dispatched. Part D's r1 fix landed in `f5f622d`.
+
+## Round-by-round to convergence — WAVE u6 FULLY CONVERGED
+
+- **Part D**: r1 = 1 BLOCKER (idle path unfenced/unguarded) + 1 MAJOR (fence-loss still wrote loop
+  state) → fixed `f5f622d` (PulseTickBundle threading; fence-loss = distinct outcome, one
+  token-fenced completion, nothing else) → **r2 "CONVERGED"** (bundle reaches all paths;
+  token-fenced completion protects a new owner; non-pulse callers unchanged; a stop after a claim
+  cannot strand).
+- **Part E**: r1 = 1B+4M+1m → fixed `e61ce57` (ShouldStop to every claim in every phase;
+  oldest-first arm scan; attempted-id exclusion paging ×2; shouldStop into runPulseBatch and all
+  duties; boot-time hash) → r2 = 2B+1M+1NIT (two stale-signal windows; the round-1 repair
+  deferral ADJUDICATED must-close; a comment) → fixed `ca502ab` → r3 = 1 BLOCKER (the signal not
+  re-checked after the GM call — the longest window in the sweep) → orchestrator repair `afb5a48`
+  (re-check after generateRoundPrompt, mutation-checked) → **r4 "CONVERGED"**.

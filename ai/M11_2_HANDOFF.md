@@ -156,18 +156,35 @@ prepared `class.evaluation_submitted` event; both lanes independently flagged it
    gate (R2-2) is preserved via `resolveClass`. Gates green (tsc, lint, 24 unit, 18 integration).
    **Codex review round 1 on the reversal: NO FINDINGS ("the change is correct") — B3 codex-converged**
    (`ai/m11-2-handoff/codex-findings-u3f-core-B3-round1.md`). THE NEXT STEP IS NOW P1.5/P1.6.
-2. **P1.5 / P1.6** — remaining tools/routes become adapters everywhere; the generated ESLint
-   boundary + `src/lib/store/export-manifest.ts` + AST discipline test + manifest-completeness
-   test; the permanent exemption list per the Surface bound (the about-timeline reaction route and
-   the operator surfaces are named exemptions — plan §Surface bound).
-3. **a3 = P4** (senses), **a4 = P3** (worker + wakeups, internally P3.2 → P3.3 → P3.1 → P3.4);
-   then M11b (P5/P6/P7) — a separate plan.
-4. **Deploy-time (not code)**: deploy the shadow state, run the ≥3-day production soak
-   (`scripts/soak-shadow-report.sql`; flip-clean = matched-only stamps + zero anomalies,
+2. **P1.5 / P1.6 — DONE, CONVERGED (wave u5 Lane A, 2026-08-26).** The adapter conversions were
+   already complete (u3–u3f); the wave landed the enforcement: `src/lib/store/export-manifest.ts`
+   (321 exports classified), `scripts/gen-eslint-boundary.js` → the generated
+   `no-restricted-imports` block, four boundary tests, the §10 exemptions. Codex: 2 MINOR total,
+   both fixed; "CONVERGED".
+3. **a3 = P4 — DONE, CONVERGED (wave u5 Lane B).** `src/lib/agent-senses/` + `GET
+   /api/v1/agents/me/context` + the loop/home rewire onto one `AgentContext`. Codex: 2 MAJOR
+   (admissions projection; home's parallel assembly), both fixed + mutation-proven; "CONVERGED".
+   **P3.2 — DONE, CONVERGED (wave u5 Lane C)**: the wakeup queue, router consumer,
+   `playground.round_opened` producers (conditional round-1 write, advancement CAS, bridge,
+   sweep arming). Codex: 1 MAJOR (the freshness pre-read → the in-statement `FOR SHARE` gated
+   arm), fixed; r2 "CONVERGED, zero findings".
+   **a4 = P3.3/P3.1/P3.4 — DONE, CONVERGED (wave u6 + stitch)**: the runner (plan-verbatim claim
+   CTE, token fencing, the beforeTerminalTool hook, the execution guard on comment-reply AND
+   playground-turn, fence-loss discipline), the worker (ledger boot check, singleton deadline
+   lock inside the ONE progression entry, due-ASC exhaustive scans with attempted-id exclusion,
+   SIGTERM/lock-loss stop signal at EVERY claim point, retention incl. wakeups, honesty meta,
+   render.yaml), the idle scheduler, `agent_loop.action` (Tier-1 logAction, activity `shadow`,
+   soak-comparable). Codex trail: D r1 1B+1M → r2 CONVERGED; E r1 1B+4M+1m → r2 2B+1M+1NIT →
+   r3 1B → r4 CONVERGED. Full trail: `ai/m11-2-handoff/codex-findings-u6-round1.md`.
+   **M11a's CODE IS COMPLETE.** M11b (P5/P6/P7) is a separate plan.
+4. **Deploy-time (not code) — NOW THE HEAD**: deploy the shadow state, run the ≥3-day production
+   soak (`scripts/soak-shadow-report.sql`; flip-clean = matched-only stamps + zero anomalies,
    `superseded` counts toward neither side, ingest rows are `unverifiable`), then per-kind
    `shadow → on` → inline-writer deletion, each a separate fully-rolled-out deploy behind the
-   consumer-contract-hash barrier (inventory §8 protocols). The u3f kinds need NONE of this —
-   they are history-only with no legacy writers.
+   consumer-contract-hash barrier (inventory §8 protocols — including the NEW P3.2 two-deploy
+   runbook for `playground.round_opened` and the `agent_loop.action` shadow kind). The u3f kinds
+   need none of this. The worker's first deploy follows the P3.1 order: Vercel migrations first,
+   then the worker build.
 
 ## The adjudication ledger — pins that BEAT reviewer proposals (do not let a future round re-litigate)
 
