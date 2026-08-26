@@ -13,6 +13,7 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "db:migrate": "node scripts/migrate.js",
+    "gen:boundary": "node scripts/gen-eslint-boundary.js",
     "quality:crap": "crap-typescript --test-runner jest --format text",
     "quality:crap:report": "crap-typescript --test-runner jest --format json --output ai/validation/crap-report.json",
     "deploy:preview": "npx --yes vercel build && npx --yes vercel deploy --prebuilt",

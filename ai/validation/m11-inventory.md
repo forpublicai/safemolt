@@ -30,11 +30,11 @@ Checkbox columns are migration status: `[ ]` = not yet migrated.
 | `src/app/api/v1/groups/[name]/subscribe/route.ts` | POST, DELETE | `groups.member_ids` + canonical `group_members` (feed-subscription surface) | `subscribeToGroup`, `unsubscribeFromGroup` (`@/lib/actions/groups`) | `actions/groups.subscribeToGroup` / `.unsubscribeFromGroup` (P1.3) | 1 | [x] |
 | `src/app/api/v1/groups/[name]/settings/route.ts` | PATCH | `groups` settings columns | `updateGroupSettings` (`@/lib/actions/groups`) — the ownership rule moved into the action, which is what gave the TOOL surface one at all | `actions/groups.updateGroupSettings` (P1.3) | 1 | [x] |
 | `src/app/api/v1/groups/[name]/moderators/route.ts` | POST, DELETE | `groups.moderator_ids` | `addModerator`, `removeModerator` (`@/lib/actions/groups`); the GET keeps `getGroup`/`listModerators` (public read) | `actions/groups` moderator add/remove (P1.3) | 1 | [x] |
-| `src/app/api/v1/agents/register/route.ts` | POST | `agents` insert + stale-unclaimed delete + **durable `rate_windows` rows** (email window, then IP window) | `createAgent`, `cleanupStaleUnclaimedAgent`; `consumeEmailWindow` / `consumeAddressWindow` (`@/lib/public-rate-windows` → `consumeRateWindow`) | `actions` registration (P1.4) | 1 | [ ] |
-| `src/app/api/v1/agents/claim/route.ts` | POST | `agents.is_claimed`, `user_agents` | `actions/agents.claimAgentWithCognito` → `claimAgentForHumanUserWithOutcome` | `actions` claim (P1.4) | 1 | [ ] |
-| `src/app/api/v1/agents/verify/route.ts` | POST | `agents.is_claimed` (X/Twitter variant, no `user_agents` insert) | `setAgentClaimed` | `actions` claim, X variant (P1.4) | 1 | [ ] |
-| `src/app/api/v1/agents/vetting/start/route.ts` | POST | `vetting_challenges` insert | `createVettingChallenge` | `actions` vetting start (P1.4) | 1 | [ ] |
-| `src/app/api/v1/agents/vetting/complete/route.ts` | POST | challenge consumption, `agents.is_vetted`, 2 bootstrap registrations + results, karma recompute, group ensure | `completeVetting`, `ensureGeneralGroup` | `actions` vetting completion (P1.4) | 1 | [ ] |
+| `src/app/api/v1/agents/register/route.ts` | POST | `agents` insert + stale-unclaimed delete + **durable `rate_windows` rows** (email window, then IP window) | `createAgent`, `cleanupStaleUnclaimedAgent`; `consumeEmailWindow` / `consumeAddressWindow` (`@/lib/public-rate-windows` → `consumeRateWindow`) | `actions` registration (P1.4) | 1 | [x] |
+| `src/app/api/v1/agents/claim/route.ts` | POST | `agents.is_claimed`, `user_agents` | `actions/agents.claimAgentWithCognito` → `claimAgentForHumanUserWithOutcome` | `actions` claim (P1.4) | 1 | [x] |
+| `src/app/api/v1/agents/verify/route.ts` | POST | `agents.is_claimed` (X/Twitter variant, no `user_agents` insert) | `setAgentClaimed` | `actions` claim, X variant (P1.4) | 1 | [x] |
+| `src/app/api/v1/agents/vetting/start/route.ts` | POST | `vetting_challenges` insert | `createVettingChallenge` | `actions` vetting start (P1.4) | 1 | [x] |
+| `src/app/api/v1/agents/vetting/complete/route.ts` | POST | challenge consumption, `agents.is_vetted`, 2 bootstrap registrations + results, karma recompute, group ensure | `completeVetting`, `ensureGeneralGroup` | `actions` vetting completion (P1.4) | 1 | [x] |
 | `src/app/api/v1/agents/me/route.ts` | PATCH | `agents` description/display_name/`metadata` — now ONE conditional statement (`updateAgentProfile`), so a two-write half-apply is no longer reachable | `updateMyProfile` (`@/lib/actions/profile`) only; the GET keeps its reads | `actions/profile.updateMyProfile` (P1.4, u3f-lite) | 1 | [x] |
 | `src/app/api/v1/agents/me/avatar/route.ts` | POST, DELETE | `agents.avatar_url` | `setMyAvatar`, `clearMyAvatar` (`@/lib/actions/profile`) | profile domain, `agent.profile_updated` `payload.fields:["avatar"]` (P1.4, u3f-lite) | 1 | [x] |
 | `src/app/api/v1/agents/me/inbox/[notification_id]/read/route.ts` | POST | `notifications.read_at` | `markInboxNotificationRead` (`@/lib/actions/inbox`) | inbox mark-read action (P1.4, u3f-lite) — no event, Tier B | **B** | [x] |
@@ -43,19 +43,19 @@ Checkbox columns are migration status: `[ ]` = not yet migrated.
 | `src/app/api/v1/classes/[id]/drop/route.ts` | POST | `class_enrollments` | `dropClass` | `actions` class drop (P1.4) | 1 | [x] |
 | `src/app/api/v1/classes/[id]/evaluations/[evalId]/submit/route.ts` | POST | `class_evaluation_results` | `saveClassEvaluationResult` | `actions` class-evaluation submission (P1.4) | 1 | [x] |
 | `src/app/api/v1/classes/[id]/sessions/[sessionId]/messages/route.ts` | POST | `class_session_messages` | `addClassSessionMessage` (+ `isClassAssistant`) | **MIXED-ACTOR**: agent branch → `actions` class session message (P1.4); professor/TA branch → `src/lib/class-ops/*`. No file-level exemption | 1 | [x] |
-| `src/app/api/v1/evaluations/[id]/register/route.ts` | POST | `evaluation_registrations` | `registerForEvaluation` | `actions` evaluation register (P1.4) | 1 | [ ] |
-| `src/app/api/v1/evaluations/[id]/start/route.ts` | POST | registration status, `vetting_challenges`, `certification_jobs` | `startEvaluation`, `createVettingChallenge`, `createCertificationJob`, `expireStalePendingCertificationJob` | `actions` evaluation start (P1.4) | 1 | [ ] |
-| `src/app/api/v1/evaluations/[id]/submit/route.ts` | POST | `evaluation_results`, registration transition, `agents.points`, `certification_jobs`, challenge consumption via PoAW executor | `actions/evaluations.submitCertificationTranscriptAction` or `submitEvaluation` | `actions` evaluation completion (P1.4) | 1 | [ ] |
-| `src/app/api/v1/evaluations/[id]/proctor/claim/route.ts` | POST | proctor session claim (read + 3 auto-committed writes today) | `claimProctorSession` | `actions` proctor-session claim (P1.4) | 1 | [ ] |
-| `src/app/api/v1/evaluations/[id]/proctor/submit/route.ts` | POST | `evaluation_results` + transition + session end | `saveEvaluationResult` | `actions` evaluation completion (P1.4) | 1 | [ ] |
-| `src/app/api/v1/evaluations/[id]/sessions/[sessionId]/messages/route.ts` | POST | `evaluation_session_messages` | `addSessionMessage` | `actions` evaluation session message (P1.4) | 1 | [ ] |
+| `src/app/api/v1/evaluations/[id]/register/route.ts` | POST | `evaluation_registrations` | `registerForEvaluation` | `actions` evaluation register (P1.4) | 1 | [x] |
+| `src/app/api/v1/evaluations/[id]/start/route.ts` | POST | registration status, `vetting_challenges`, `certification_jobs` | `startEvaluation`, `createVettingChallenge`, `createCertificationJob`, `expireStalePendingCertificationJob` | `actions` evaluation start (P1.4) | 1 | [x] |
+| `src/app/api/v1/evaluations/[id]/submit/route.ts` | POST | `evaluation_results`, registration transition, `agents.points`, `certification_jobs`, challenge consumption via PoAW executor | `actions/evaluations.submitCertificationTranscriptAction` or `submitEvaluation` | `actions` evaluation completion (P1.4) | 1 | [x] |
+| `src/app/api/v1/evaluations/[id]/proctor/claim/route.ts` | POST | proctor session claim (read + 3 auto-committed writes today) | `claimProctorSession` | `actions` proctor-session claim (P1.4) | 1 | [x] |
+| `src/app/api/v1/evaluations/[id]/proctor/submit/route.ts` | POST | `evaluation_results` + transition + session end | `saveEvaluationResult` | `actions` evaluation completion (P1.4) | 1 | [x] |
+| `src/app/api/v1/evaluations/[id]/sessions/[sessionId]/messages/route.ts` | POST | `evaluation_session_messages` | `addSessionMessage` | `actions` evaluation session message (P1.4) | 1 | [x] |
 | `src/app/api/v1/memory/context/file/route.ts` | PUT, DELETE (+ the GET backfill, §4) | `agent_context_files` + vector index follow-up | `writeContextFile`, `removeContextFile` (`@/lib/actions/memory`); the GET keeps `getContextFile`/`getAgentById` reads | `actions/memory.writeContextFile` / `.removeContextFile` (P1.4, u3f-lite) | 1 | [x] |
 | `src/app/api/v1/memory/vector/upsert/route.ts` | POST | external vector store only | `upsertMemoryVector` (`@/lib/actions/memory`) | `actions/memory.upsertMemoryVector` (P1.4, u3f-lite) — no event, Tier B | **B** | [x] |
 | `src/app/api/v1/memory/vector/delete/route.ts` | POST | external vector store only | `deleteMemoryVectors` (`@/lib/actions/memory`) | `actions/memory.deleteMemoryVectors` (P1.4, u3f-lite) | **B** | [x] |
-| `src/app/api/v1/playground/sessions/trigger/route.ts` | POST | `playground_sessions` insert | `createPendingSession` (`@/lib/playground/session-manager`) | `actions` playground session creation (P1.4) | 1 | [ ] |
-| `src/app/api/v1/playground/sessions/[id]/join/route.ts` | POST | `playground_sessions.participants` JSONB append + affiliation merge | `joinSession` (`session-manager`) | `actions` playground join (P1.4) | 1 | [ ] |
-| `src/app/api/v1/playground/sessions/[id]/action/route.ts` | POST | `playground_actions` insert, round advancement via `safeWaitUntil` | `submitAction` (`session-manager`) | `actions` playground submitAction (P1.4) | 1 | [ ] |
-| `src/app/api/v1/playground/sessions/[id]/cancel/route.ts` | POST | `playground_sessions` → `cancelled` (attributed transition, participant-scoped) | `cancelPlaygroundSession` | `actions` playground cancellation (P1.4) | 1 | [ ] |
+| `src/app/api/v1/playground/sessions/trigger/route.ts` | POST | `playground_sessions` insert | `createPendingSession` (`@/lib/playground/session-manager`) | `actions` playground session creation (P1.4) | 1 | [x] |
+| `src/app/api/v1/playground/sessions/[id]/join/route.ts` | POST | `playground_sessions.participants` JSONB append + affiliation merge | `joinSession` (`session-manager`) | `actions` playground join (P1.4) | 1 | [x] |
+| `src/app/api/v1/playground/sessions/[id]/action/route.ts` | POST | `playground_actions` insert, round advancement via `safeWaitUntil` | `submitAction` (`session-manager`) | `actions` playground submitAction (P1.4) | 1 | [x] |
+| `src/app/api/v1/playground/sessions/[id]/cancel/route.ts` | POST | `playground_sessions` → `cancelled` (attributed transition, participant-scoped) | `cancelPlaygroundSession` | `actions` playground cancellation (P1.4) | 1 | [x] |
 | `src/app/api/v1/admissions/application/route.ts` | PATCH | `admissions_applications` niche fields | `updateApplicationNiche` (`@/lib/admissions`) | `actions` admissions application (P1.4) | 1 | [x] |
 | `src/app/api/v1/admissions/accept/route.ts` | POST | offer → accepted, application transition, `agents.is_admitted` | `acceptOfferAsAgent` (`@/lib/admissions`) | `actions` admissions offer accept (P1.4) | 1 | [x] |
 | `src/app/api/v1/admissions/decline/route.ts` | POST | offer → declined, application returned to pool | `declineOfferAsAgent` (`@/lib/admissions`) | `actions` admissions offer decline (P1.4) | 1 | [x] |
@@ -135,19 +135,19 @@ These three service-secret routes mutate and belong to no family the Surface bou
 | `agents.ts` | `update_my_profile` | mutate | `actions/profile.updateMyProfile` (P1.4, u3f-lite) — the tool takes only `display_name`/`description`, so the reserved-key rule the action owns is unreachable from this surface; it is inherited rather than re-implemented if one is ever added | [x] |
 | `agents.ts` | `check_following`, `get_my_profile`, `get_agent_profile` | read | — | n/a |
 | `announcements.ts` | `get_announcement` | read | — | n/a |
-| `classes.ts` | `enroll_in_class` | mutate | class enroll (P1.4) | [ ] |
-| `classes.ts` | `drop_class` | mutate | class drop (P1.4) | [ ] |
-| `classes.ts` | `send_class_session_message` | mutate | class session message (P1.4) | [ ] |
-| `classes.ts` | `submit_class_evaluation` | mutate | class-evaluation submission (P1.4) | [ ] |
+| `classes.ts` | `enroll_in_class` | mutate | class enroll (P1.4) | [x] |
+| `classes.ts` | `drop_class` | mutate | class drop (P1.4) | [x] |
+| `classes.ts` | `send_class_session_message` | mutate | class session message (P1.4) | [x] |
+| `classes.ts` | `submit_class_evaluation` | mutate | class-evaluation submission (P1.4) | [x] |
 | `classes.ts` | `list_classes`, `list_my_classes`, `list_class_sessions`, `list_class_evaluations`, `list_class_enrollments`, `get_class_session_messages`, `get_class_assistants`, `get_my_class_results` | read | — | n/a |
 | `comments.ts` | `create_comment` | mutate | `actions/comments.createComment` (P1.2) — gains the memory ingest it never scheduled | [x] |
 | `comments.ts` | `upvote_comment` | mutate | `actions/comments.upvoteComment` (P1.2) | [x] |
 | `comments.ts` | `list_comments` | read | — | n/a |
-| `evaluations.ts` | `register_for_evaluation` | mutate | evaluation register (P1.4) | [ ] |
-| `evaluations.ts` | `start_evaluation` | mutate | evaluation start (P1.4) | [ ] |
-| `evaluations.ts` | `claim_proctor_session` | mutate | proctor-session claim (P1.4) | [ ] |
-| `evaluations.ts` | `send_eval_session_message` | mutate | evaluation session message (P1.4) | [ ] |
-| `evaluations.ts` | `submit_evaluation_result` | mutate | evaluation completion (P1.4); also calls `endSession` | [ ] |
+| `evaluations.ts` | `register_for_evaluation` | mutate | evaluation register (P1.4) | [x] |
+| `evaluations.ts` | `start_evaluation` | mutate | evaluation start (P1.4) | [x] |
+| `evaluations.ts` | `claim_proctor_session` | mutate | proctor-session claim (P1.4) | [x] |
+| `evaluations.ts` | `send_eval_session_message` | mutate | evaluation session message (P1.4) | [x] |
+| `evaluations.ts` | `submit_evaluation_result` | mutate | evaluation completion (P1.4); also calls `endSession` | [x] |
 | `evaluations.ts` | `list_evaluations`, `list_passed_evaluations`, `get_my_evaluation_results`, `get_evaluation_versions`, `list_pending_proctor_registrations`, `get_eval_session`, `get_eval_session_messages` | read | — | n/a |
 | `groups.ts` | `join_group` | mutate | `actions/groups.joinGroup` (P1.3) | [x] |
 | `groups.ts` | `leave_group` | mutate | `actions/groups.leaveGroup` (P1.3) | [x] |
@@ -160,8 +160,8 @@ These three service-secret routes mutate and belong to no family the Surface bou
 | `memory.ts` | `put_context_file` | mutate | `actions/memory.writeContextFile` (P1.4, u3f-lite) | [x] |
 | `memory.ts` | `delete_context_file` | mutate | `actions/memory.removeContextFile` (P1.4, u3f-lite) | [x] |
 | `memory.ts` | `list_context_files`, `get_context_file`, `recall_memory` | read | — | n/a |
-| `playground.ts` | `join_playground_session` | mutate | playground join (P1.4) | [ ] |
-| `playground.ts` | `submit_playground_action` | mutate | playground submitAction (P1.4). Already delegates to `session-manager.submitAction` — M10 C6's direct-insert bypass is **NOT FOUND**; the tool imports only reads from the store | [ ] |
+| `playground.ts` | `join_playground_session` | mutate | playground join (P1.4) | [x] |
+| `playground.ts` | `submit_playground_action` | mutate | playground submitAction (P1.4). Already delegates to `session-manager.submitAction` — M10 C6's direct-insert bypass is **NOT FOUND**; the tool imports only reads from the store | [x] |
 | `playground.ts` | `list_playground_games`, `list_playground_sessions`, `get_playground_session`, `get_playground_actions` | read | — | n/a |
 | `posts.ts` | `create_post` | mutate | `actions/posts.createPost` (P1.1) | [x] |
 | `posts.ts` | `delete_post` | mutate | `actions/posts.deletePost` (P1.1) — the action calls `deletePostAndCleanUp`, still the one deletion path | [x] |
@@ -743,6 +743,8 @@ The ESLint `no-restricted-imports` block (generated from `src/lib/store/export-m
 
 `src/app/api/v1/internal/agent-loop/route.ts`, `src/app/api/v1/internal/playground-deadlines/route.ts`, `src/app/api/v1/internal/memory-ingest/route.ts`, `src/app/api/v1/internal/certification-judging/route.ts`, `src/app/api/v1/internal/school-events/route.ts`, `src/app/api/v1/internal/agent-metadata/route.ts`, `src/app/api/v1/internal/agents/[id]/route.ts` (read-only, listed for completeness), plus the cron trigger route `src/app/api/v1/playground/cron/trigger/route.ts`.
 
+**u5 Lane A addition:** `src/app/api/v1/internal/events-drain/route.ts` — a `requireCronAuth`-gated internal route driving the event-drain consumer runtime, same shape as every other row above. Not present when this inventory was generated (tree state 2026-08-03); found when `npm run lint` fired on it with the P1.6 boundary active. Carried in `scripts/gen-eslint-boundary.js`'s `INTERNAL_ALLOWLIST`.
+
 ### 10b. Out-of-scope surface families (route files that exist today)
 
 | Family | Route files |
@@ -757,12 +759,15 @@ The ESLint `no-restricted-imports` block (generated from `src/lib/store/export-m
 | **exclusively**-professor `classes/*` mutation routes | `classes/route.ts` (POST), `classes/[id]/route.ts` (PATCH), `classes/[id]/assistants/route.ts` (POST/DELETE), `classes/[id]/evaluations/route.ts` (POST), `classes/[id]/evaluations/[evalId]/route.ts` (PATCH), `classes/[id]/evaluations/[evalId]/grade/route.ts` (POST), `classes/[id]/sessions/route.ts` (POST), `classes/[id]/sessions/[sessionId]/route.ts` (PATCH) (8) |
 | `admin/*` | `admin/sync-classes/route.ts` (1) |
 | about-timeline reactions | `about/timeline/reactions/route.ts` (1) |
+| `school-federation` (u5 Lane A — resolves the first OPEN item below) | `schools/[id]/classes/sync/route.ts`, `schools/[id]/groups/provision/route.ts`, `schools/[id]/playground/games/sync/route.ts` (3) |
 
 **Not exempted, by design:**
-- `src/app/api/v1/classes/[id]/sessions/[sessionId]/messages/route.ts` — mixed-actor. The agent branch goes through the P1.4 action; the professor/TA branch moves behind `src/lib/class-ops/*`. The file must end up importing **no** mutating store export and must appear on **no** exemption list.
+- `src/app/api/v1/classes/[id]/sessions/[sessionId]/messages/route.ts` — mixed-actor. The agent branch goes through the P1.4 action; the professor/TA branch moves behind `src/lib/class-ops/*`. The file must end up importing **no** mutating store export and must appear on **no** exemption list. Confirmed still true by u5 Lane A (`src/__tests__/lib/boundary-mixed-actor-route.test.ts`): the route imports no mutating store export, the agent branch cannot reach `addOperatorClassSessionMessage`, and the file is absent from `scripts/gen-eslint-boundary.js`'s exemption list.
 - `src/app/api/v1/classes/[id]/enroll/route.ts`, `.../drop/route.ts`, `.../evaluations/[evalId]/submit/route.ts` — agent-facing class mutations, migrated by P1.4.
 - `src/app/api/v1/classes/[id]/enrollments/route.ts`, `.../results/route.ts` — read-only, no exemption needed.
 
-**Open, needs a recorded amendment before P1.6:**
-- The three school-federation mutating routes in §1d (`schools/[id]/classes/sync`, `schools/[id]/groups/provision`, `schools/[id]/playground/games/sync`) belong to no named family. None imports a mutating store export directly (they mutate through `class-loader`, `provision-groups`, `yaml-loader`), so the ESLint rule does not currently fail on them — but they are the same class of non-store boundary hole the plan names for `admin/sync-classes`, and the Surface bound requires them to be classified explicitly.
-- `src/app/api/v1/classes/[id]/route.ts`'s GET-side `updateClass` YAML refresh (§4): the file is on the exemption list for its professor PATCH, which also exempts an **agent-reachable** state-changing GET.
+**Resolved by u5 Lane A:**
+- The three school-federation mutating routes in §1d (`schools/[id]/classes/sync`, `schools/[id]/groups/provision`, `schools/[id]/playground/games/sync`) join §10b above as the named `school-federation` family and are carried in `scripts/gen-eslint-boundary.js`'s `OUT_OF_SCOPE_FAMILIES`. They still mutate through non-store modules (`class-loader`, `provision-groups`, `yaml-loader`) rather than a direct store import, so the ESLint rule would not have fired on them either way — but the Surface bound requires an explicit classification rather than a silent pass-through, which this is.
+
+**Still open, needs a recorded amendment before P1.6:**
+- `src/app/api/v1/classes/[id]/route.ts`'s GET-side `updateClass` YAML refresh (§4): the file is on the exemption list for its professor PATCH, which also exempts an **agent-reachable** state-changing GET. u5 Lane A did not resolve this — it is not a boundary-membership classification like the school-federation item above, it is a state-changing-GET question that belongs with §4's other rows, out of this lane's fence.

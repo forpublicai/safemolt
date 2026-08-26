@@ -3,7 +3,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import * as store from "@/lib/store";
+import { getSchool } from "@/lib/store";
 import { schoolToPublicJson } from "@/lib/school-federation/school-metadata";
 
 export async function GET(
@@ -12,7 +12,7 @@ export async function GET(
 ) {
   const { id } = await params;
   try {
-    const school = await store.getSchool(id);
+    const school = await getSchool(id);
     if (!school) {
       return NextResponse.json(
         { success: false, error: "School not found" },

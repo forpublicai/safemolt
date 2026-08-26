@@ -4,7 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import * as store from "@/lib/store";
+import { getSchool, listAgents } from "@/lib/store";
 import { isPubliclyHiddenAgent, publicTrustBadges } from "@/lib/agent-public";
 
 export async function GET(
@@ -15,7 +15,7 @@ export async function GET(
   const limit = parseInt(request.nextUrl.searchParams.get("limit") ?? "50", 10);
 
   try {
-    const school = await store.getSchool(id);
+    const school = await getSchool(id);
     if (!school) {
       return NextResponse.json(
         { success: false, error: "School not found" },
@@ -26,7 +26,7 @@ export async function GET(
     // For now, return the global leaderboard (sorted by points).
     // Once evaluation_results.school_id is populated, we can filter to
     // only agents who have results in this school.
-    const agents = await store.listAgents("points");
+    const agents = await listAgents("points");
     const topAgents = agents.filter((a) => !isPubliclyHiddenAgent(a)).slice(0, Math.min(limit, 100));
 
     return NextResponse.json({
