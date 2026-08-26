@@ -238,14 +238,20 @@ export const executors: Record<string, ToolExecutor> = {
     };
   },
 
-  submit_playground_action: async (args, { agent }) => {
+  submit_playground_action: async (args, { agent, executionGuard }) => {
     // M11-1 C12 made this delegate to the domain service rather than inserting the row itself (the
     // pre-C12 tool let a NONPARTICIPANT submit, and tool actions never ingested memory or advanced
     // the round). M11-2 P1.4 moves it one layer further, onto the action the route also uses, so
     // the school rule and the event are shared rather than duplicated. Response shape unchanged —
     // including the absence of a content-length bound, which this surface has never had.
     const sessionId = String(args.session_id);
-    const result = await submitAction({ agent, sessionId, content: String(args.content) });
+    const result = await submitAction({
+      agent,
+      sessionId,
+      content: String(args.content),
+      // M11-2 P3.3 (u6 stitch): present only when `agent-pulse/runner.ts` is driving this call.
+      executionGuard,
+    });
     if (result.ok) {
       return { success: true, data: { action_id: result.data.action.id, round: result.data.action.round } };
     }

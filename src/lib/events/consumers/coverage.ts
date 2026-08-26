@@ -214,6 +214,7 @@ export const notificationsCoverage = {
   "admissions.offer_accepted": "none",
   "admissions.offer_declined": "none",
   "admissions.offer_expired": "none",
+  "agent_loop.action": "none",
 } satisfies CoverageManifest;
 
 export const activityTrailCoverage = {
@@ -316,6 +317,22 @@ export const activityTrailCoverage = {
   "admissions.offer_accepted": "none",
   "admissions.offer_declined": "none",
   "admissions.offer_expired": "none",
+  /**
+   * u6 stitch item 3 (e) — train a4's one MIGRATED kind, and it enters `shadow` in the deploy that
+   * adds its producer (the Scope rule, exactly as `post.created`, `comment.created` and
+   * `group.joined` did). The legacy inline writer is `buildAgentLoopActivityUpsertCte`, spliced INTO
+   * `logAction`'s own insert statement (`src/lib/agent-loop.ts`) so it can stamp the
+   * `source_event_id` the drain-time comparison joins on — the u3b/u4prep2 statement-atomicity rule.
+   * It replaced the standalone `recordAgentLoopActivityEvent`, which ran as a SECOND auto-committed
+   * statement and therefore could name no event at all; that writer is gone rather than left beside
+   * this one, because two definitions of one projection is what the soak reads as a payload mismatch.
+   *
+   * DB-ONLY, and the parity is vacuous rather than missing: `agent_loop_action_log` has no memory
+   * twin, `logAction` is already a no-op with no database, and so no mutation and therefore no event
+   * occurs in memory mode at all — Decision 4's "no `await` between the mutation and its event" is
+   * satisfied by there being neither.
+   */
+  "agent_loop.action": "shadow",
 } satisfies CoverageManifest;
 
 export const memoryIngestCoverage = {
@@ -400,6 +417,7 @@ export const memoryIngestCoverage = {
   "admissions.offer_accepted": "none",
   "admissions.offer_declined": "none",
   "admissions.offer_expired": "none",
+  "agent_loop.action": "none",
 } satisfies CoverageManifest;
 
 /**
@@ -481,6 +499,7 @@ export const wakeupRouterCoverage = {
   "admissions.offer_accepted": "none",
   "admissions.offer_declined": "none",
   "admissions.offer_expired": "none",
+  "agent_loop.action": "none",
 } satisfies CoverageManifest;
 
 /**
@@ -673,6 +692,15 @@ export const DECLARED_LEGACY_WRITERS: Readonly<
         pattern: "recordPlaygroundActionActivityEvent\\(",
         count: 1,
       },
+    ],
+    /**
+     * u6 stitch: ONE invocation, and there is no memory twin to declare — `agent_loop_action_log`
+     * is DB-only, so `logAction` writes nothing at all with no database and the kind has no memory
+     * producer to keep a projection for. The db writer is the CTE spliced into `logAction`'s own
+     * statement, which is what lets it stamp `source_event_id` from the event that statement emits.
+     */
+    "agent_loop.action": [
+      { file: "src/lib/agent-loop.ts", pattern: "buildAgentLoopActivityUpsertCte\\(", count: 1 },
     ],
     /**
      * u3e: FOUR invocations, because two producers write this kind and each has a db and a memory

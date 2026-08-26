@@ -83,7 +83,13 @@ async function setup(opts: {
   sponsored?: boolean;
   hfToken?: string | null;
   sponsoredUsage?: { count: number; limit: number };
-  recordAgentLoopActivityEvent?: jest.Mock;
+  /**
+   * u6 stitch: reject any statement whose text matches — the seam that used to be
+   * `recordAgentLoopActivityEvent`'s mock. `logAction` no longer calls a second writer at all (it is
+   * Tier 1 now, and swallows its own statement's failure), so "a bookkeeping step threw after the
+   * terminal action landed" has to be produced at a step that still propagates: `recordAction`.
+   */
+  rejectSqlMatching?: RegExp;
 }) {
   jest.resetModules();
 
@@ -91,9 +97,13 @@ async function setup(opts: {
   for (const r of opts.llmResponses) {
     callLLM.mockResolvedValueOnce({ content: r.content ?? null, toolCalls: r.toolCalls ?? [] });
   }
-  const sql = jest.fn(async (_strings: TemplateStringsArray, ...values: unknown[]) =>
-    typeof values[1] === "string" ? [{ id: "log_1" }] : []
-  );
+  const sql = jest.fn(async (first: TemplateStringsArray | string, ...values: unknown[]) => {
+    // Both call shapes: a tagged template (every legacy statement) and text-plus-params (which
+    // `logAction` has taken since u6 stitch made it one rendered statement).
+    const text = typeof first === "string" ? first : first.join(" ");
+    if (opts.rejectSqlMatching?.test(text)) throw new Error("sql down");
+    return typeof values[1] === "string" ? [{ id: "log_1" }] : [];
+  });
   const executeTool =
     opts.executeTool ?? jest.fn(async (name: string) => ({ success: true, data: { tool: name } }));
   if (Object.prototype.hasOwnProperty.call(opts, "hfToken")) {
@@ -139,8 +149,10 @@ async function setup(opts: {
   // Reached through `gatherAdmissions`; unmocked it loads the real module, which asks the store
   // for functions this fixture does not carry.
   jest.doMock("@/lib/admissions", () => ({ getAdmissionsStatusForAgent: jest.fn(async () => null) }));
+  // `logAction` splices this projection into its own statement; the CTE BODY is asserted for real
+  // in `src/__tests__/lib/agent-loop-log-action.test.ts`, so here it only has to be a valid string.
   jest.doMock("@/lib/store/activity/events", () => ({
-    recordAgentLoopActivityEvent: opts.recordAgentLoopActivityEvent ?? jest.fn(),
+    buildAgentLoopActivityUpsertCte: jest.fn(() => "SELECT 1"),
   }));
   jest.doMock("@/lib/agent-loop-actions", () => ({ listRecentLoopActions: jest.fn(async () => []) }));
 
@@ -160,16 +172,29 @@ async function setup(opts: {
 const toolNames = (defs: unknown): string[] =>
   (defs as { function: { name: string } }[]).map((d) => d.function.name);
 
+/**
+ * The actions `logAction` journaled, decoded from the raw `sql` calls.
+ *
+ * u6 stitch: `logAction` is ONE rendered statement now (insert + event + trail projection), called in
+ * `sql(text, params)` form, so the action is `params[1]` of the call whose text names the journal
+ * table — not the third argument of a tagged template.
+ */
 const loggedActions = (sql: jest.Mock): string[] =>
   sql.mock.calls
-    .map((call) => call[2])
+    .filter((call) => typeof call[0] === "string" && call[0].includes("agent_loop_action_log"))
+    .map((call) => (call[1] as unknown[])?.[1])
     .filter((value): value is string => typeof value === "string" && PLATFORM_TOOLS.some((t) => t.function.name === value));
 
 /** M11-2 P0.4: the agent_loop_tick_log insert calls, decoded from the raw sql tag calls. */
 type TickJournalCall = { agentId: string; outcome: string; inferenceConsumed: boolean; terminalAction: boolean };
 const tickJournalCalls = (sql: jest.Mock): TickJournalCall[] =>
   sql.mock.calls
-    .filter((call) => (call[0] as TemplateStringsArray).join("?").includes("agent_loop_tick_log"))
+    // u6 stitch: `logAction` now calls `sql` in its TEXT-plus-params form, so this filter has to
+    // tolerate a plain string in slot 0 as well as a tagged template's strings array.
+    .filter((call) => {
+      const first = call[0] as TemplateStringsArray | string;
+      return (typeof first === "string" ? first : first.join("?")).includes("agent_loop_tick_log");
+    })
     .map((call) => ({
       agentId: call[1] as string,
       outcome: call[2] as string,
@@ -589,16 +614,15 @@ describe("agent loop tick journal (M11-2 P0.4)", () => {
     ]);
   });
 
-  it("journals error with terminal_action true when the terminal tool succeeded but logAction's activity write throws", async () => {
-    // logAction (agent-loop.ts) swallows its own INSERT failure internally and only propagates via
-    // recordAgentLoopActivityEvent — the real mechanism by which "terminal action landed, then
-    // bookkeeping threw" happens. This must not make the journal understate what actually happened:
-    // the terminal mutation landed before this throw.
+  it("journals error with terminal_action true when the terminal tool succeeded but post-action bookkeeping throws", async () => {
+    // "Terminal action landed, then bookkeeping threw" must not make the journal understate what
+    // actually happened. Since u6 stitch, `logAction` is Tier 1 and swallows its own statement's
+    // failure (nothing partial can survive it), so the step that still propagates is `recordAction`'s
+    // `agent_loop_state` update — which runs after the terminal mutation, exactly as the activity
+    // write used to.
     const { tickAgent, sql } = await setup({
       store: { listPosts: jest.fn(async () => [feedPost]) },
-      recordAgentLoopActivityEvent: jest.fn(async () => {
-        throw new Error("activity write down");
-      }),
+      rejectSqlMatching: /UPDATE agent_loop_state\s+SET actions_taken/,
       llmResponses: [
         { content: "DOMAIN: discussion", toolCalls: [] },
         {
@@ -608,7 +632,7 @@ describe("agent loop tick journal (M11-2 P0.4)", () => {
       ],
     });
 
-    await expect(tickAgent(agent.id)).rejects.toThrow("activity write down");
+    await expect(tickAgent(agent.id)).rejects.toThrow("sql down");
     expect(tickJournalCalls(sql)).toEqual([
       { agentId: agent.id, outcome: "error", inferenceConsumed: true, terminalAction: true },
     ]);
@@ -630,7 +654,8 @@ describe("agent loop tick journal (M11-2 P0.4)", () => {
         },
       ],
     });
-    sql.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    sql.mockImplementation(async (first: TemplateStringsArray | string, ...values: unknown[]) => {
+      const strings = typeof first === "string" ? [first] : first;
       if (strings.join("?").includes("agent_loop_tick_log")) {
         return new Promise(() => {}); // never settles
       }

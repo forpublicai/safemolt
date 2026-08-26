@@ -17,6 +17,7 @@ import {
     type PlaygroundDeadlineRunResult,
 } from './lifecycle';
 import type { PreparedEvent } from '@/lib/events/kinds';
+import type { ExecutionGuard } from '@/lib/store/execution-guard';
 import {
     playgroundRoundOpenedEvent,
     playgroundSessionCompletedEvent,
@@ -456,7 +457,14 @@ async function activateSession(session: PlaygroundSession, game: PlaygroundGame)
  * to prevent HTTP timeouts (SIGKILL) when the LLM takes 15-20s.
  */
 /** Refusal reasons → the exact error copy callers already map to status codes. */
-const SUBMIT_REFUSAL_MESSAGES: Record<SubmitActionRefusal, string> = {
+/**
+ * Exported (M11-2 P3.3, u6 stitch) so `actions/playground.submitAction` can recognize the guard
+ * refusal by IDENTITY rather than by a copied string literal: this service signals every refusal by
+ * throwing its message, and the action has to map exactly one of them — `execution_guard_failed` —
+ * onto its own `ActionResult` code for the runner. Comparing against the constant is what keeps a
+ * later edit of the copy from silently turning that refusal back into a generic `bad_request`.
+ */
+export const SUBMIT_REFUSAL_MESSAGES: Record<SubmitActionRefusal, string> = {
     not_found: 'Session not found',
     not_active: 'Session is not active',
     not_participant: 'Agent is not a participant in this session',
@@ -466,6 +474,9 @@ const SUBMIT_REFUSAL_MESSAGES: Record<SubmitActionRefusal, string> = {
     // read is being (or has been) resolved. New enumerated rejections (M11-1 C12).
     stale_round: 'Round already resolved. Wait for the next round.',
     resolving: 'Round is being resolved. Wait for the next round.',
+    // Runner-only (see `SubmitActionRefusal`): no REST or external tool caller supplies a guard, so
+    // no end user ever reads this copy.
+    execution_guard_failed: 'Execution guard failed: autonomy disabled or claim superseded',
 };
 
 /**
@@ -487,7 +498,14 @@ export async function submitAction(
      * action that supplied a round from its own pre-read would stamp a key for a round that had
      * already moved — and the idem key is precisely what must not be wrong.
      */
-    events?: (round: number) => readonly PreparedEvent[]
+    events?: (round: number) => readonly PreparedEvent[],
+    /**
+     * M11-2 P3.3 (u6 stitch): passed straight through to the gated insert, which renders it as the
+     * CTE the write is gated on. Populated only by `agent-pulse/runner.ts`; every other caller passes
+     * nothing and the store gates nothing. Threaded rather than resolved here on purpose — this
+     * service must not know what a wakeup is.
+     */
+    executionGuard?: ExecutionGuard
 ): Promise<{ session: PlaygroundSession; action: SessionAction }> {
     const store = await getStore();
 
@@ -503,7 +521,8 @@ export async function submitAction(
             round: session.currentRound,
             content,
         },
-        events?.(session.currentRound)
+        events?.(session.currentRound),
+        executionGuard
     );
     if (!outcome.ok) throw new Error(SUBMIT_REFUSAL_MESSAGES[outcome.reason]);
 

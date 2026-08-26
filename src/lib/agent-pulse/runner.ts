@@ -226,7 +226,10 @@ async function runIdleWakeup(agent: StoredAgent, wakeup: StoredWakeup, claimToke
 interface NarrowWakeupConfig {
   toolNames: ReadonlySet<string>;
   domain: LoopDomain;
-  /** Populate the execution guard for the terminal call — only `create_comment` reads it today. */
+  /**
+   * Populate the execution guard for the terminal call. Read today by `create_comment` and by
+   * `submit_playground_action` — i.e. by every terminal tool either narrow reason can reach.
+   */
   withExecutionGuard: boolean;
   /** playground_round only: the successful result's `round` must equal this or the tick errors. */
   expectedRound?: number;
@@ -358,17 +361,17 @@ async function runReplyWakeup(agent: StoredAgent, wakeup: StoredWakeup, claimTok
 }
 
 /**
- * `playground_round`: the lease-renewal fence applies (closing the ordinary check-then-act gap), but
- * the statement-level execution guard was deliberately NOT wired into `submitAction`'s store write
- * this train — `src/lib/store/playground/*` and `src/lib/playground/*` are a different lane's
- * concurrently-active territory (worker locks, deadline-sweep CAS races), and adding a guard CTE
- * there risked colliding with in-flight work on the exact same statements. The residual this leaves
- * is narrower than it sounds: `submitAction`'s own duplicate-per-round rejection is ALREADY the
- * backstop the plan names for the double-runner race ("for playground it is closed completely by
- * `submitAction`'s duplicate-per-round rejection"), and the specific gap a statement-level guard would
- * additionally close — a disable landing in the SECONDS between this fence's renewal and the write —
- * is the same order of exposure the plan accepts for social actions before this train's guard existed
- * at all. Recorded here as deferred work, not silently assumed closed.
+ * `playground_round`: covered by BOTH the lease-renewal fence and the statement-level execution
+ * guard, exactly like the reply family — `submit_playground_action` is the only tool the model can
+ * reach from this reason, and its executor forwards the guard down through
+ * `actions/playground.submitAction` into the gated insert's own CTE (u6 stitch closed what the
+ * lane-D pass had recorded as deferred: the guard was withheld only because
+ * `src/lib/store/playground/*` was a concurrently-active lane's territory at the time).
+ *
+ * What that buys over the fence alone is the seconds between the renewal and the write: a dashboard
+ * disable landing there now makes the INSERT match zero rows — no action row, no event, no trail —
+ * instead of committing a mutation for an agent whose autonomy is already off. `submitAction`'s
+ * duplicate-per-round rejection remains the backstop for the double-runner race, unchanged.
  */
 async function runPlaygroundRoundWakeup(
   agent: StoredAgent,
@@ -380,7 +383,7 @@ async function runPlaygroundRoundWakeup(
   return runNarrowWakeup(agent, wakeup, claimToken, focusForWakeup(wakeup), {
     toolNames: PLAYGROUND_ROUND_TOOL_NAMES,
     domain: "playground",
-    withExecutionGuard: false,
+    withExecutionGuard: true,
     expectedRound: round,
   });
 }

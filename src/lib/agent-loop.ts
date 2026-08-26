@@ -54,7 +54,9 @@ import {
   type PlaygroundPendingItem,
 } from "@/lib/agent-senses";
 import type { StoredAgent } from "@/lib/store-types";
-import { recordAgentLoopActivityEvent } from "@/lib/store/activity/events";
+import { buildAgentLoopActivityUpsertCte } from "@/lib/store/activity/events";
+import { emitEventCtes, sqlColumn, sqlPayloadObject } from "@/lib/store/events/statement";
+import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
 import { listRecentLoopActions, type RecentLoopAction } from "@/lib/agent-loop-actions";
 // M11-2 P3.3: the wakeup runner `runAgentLoopBatch` degrades into. Imported LAZILY, inside
 // `runAgentLoopBatch` itself, rather than at this file's top level — `agent-pulse/runner.ts` reaches
@@ -281,21 +283,92 @@ export async function logAction(
   targetId?: string,
   contentSnippet?: string
 ): Promise<void> {
-  let logId: string | undefined;
-  try {
-    const rows = await sql!`
-      INSERT INTO agent_loop_action_log (agent_id, action, target_type, target_id, content_snippet)
-      VALUES (${agentId}, ${action}, ${targetType ?? null}, ${targetId ?? null}, ${contentSnippet?.slice(0, 500) ?? null})
-      RETURNING id
-    `;
-    const row = rows[0] as Record<string, unknown> | undefined;
-    logId = row?.id ? String(row.id) : undefined;
-  } catch (error) {
-    console.error("[agent-loop] failed to log action", error);
-    return;
-  }
+  // **DB-only, and the event's memory parity is VACUOUS rather than missing.**
+  // `agent_loop_action_log` has no memory twin (`agent-loop-actions.ts` answers `[]` with no
+  // database), so with no DB there is no mutation — and therefore no event either. Decision 4's "no
+  // `await` between the mutation and its event append" is satisfied by there being neither.
+  // Previously this was reached by letting `sql!` throw into the catch below; the explicit guard says
+  // the same thing without logging an error for an expected no-op.
+  if (!hasDatabase()) return;
 
-  if (logId) await recordAgentLoopActivityEvent(logId);
+  // **Tier 1 (M11-2 P3.3, u6 stitch item 3): the journal INSERT, the event, and the transitional
+  // activity projection are ONE statement.**
+  //
+  // The event's `log_id` is minted by this INSERT, so it can only be filled here (the
+  // `STORE_ASSIGNED_PAYLOAD_ID` contract), and the projection stamps `source_event_id` from the event
+  // arm — an id that exists nowhere outside this statement, which is exactly the u3b/u4prep2 rule
+  // that forbids moving either writer back out. Before this change the projection was a SECOND
+  // auto-committed statement, so a journal row could commit with no trail row at all; now the three
+  // commit together or not at all.
+  const events: PreparedEvent<"agent_loop.action">[] = [
+    {
+      kind: "agent_loop.action",
+      // Actor and subject are the same agent — `agent.profile_updated`'s shape, and for its reason:
+      // a journal row is not an addressable domain object, and `schoolId` is null because an agent
+      // belongs to no school (stamping the tick's host would claim otherwise).
+      actorAgentId: agentId,
+      subjectType: "agent",
+      subjectId: agentId,
+      schoolId: null,
+      payload: {
+        log_id: STORE_ASSIGNED_PAYLOAD_ID,
+        action,
+        target_type: targetType ?? null,
+        target_id: targetId ?? null,
+      },
+    },
+  ];
+  const params: unknown[] = [
+    agentId,
+    action,
+    targetType ?? null,
+    targetId ?? null,
+    contentSnippet?.slice(0, 500) ?? null,
+  ];
+  const emitted = emitEventCtes(events, "inserted", {
+    firstParamIndex: params.length + 1,
+    // `rowSource` is required for the column reference: without it the event's SELECT has no FROM at
+    // all and `inserted.id` would raise 42P01. One row in, one event out — `inserted` holds exactly
+    // the one journal row this statement wrote, and the fragment stays gated on it, so a refused
+    // insert emits nothing.
+    overrides: [
+      {
+        rowSource: "inserted",
+        payloadMergeSql: sqlPayloadObject({ log_id: sqlColumn("inserted.id", "text") }),
+      },
+    ],
+  });
+  const primary = emitted.names[0] ?? null;
+
+  try {
+    await sql!(
+      `
+      WITH inserted AS (
+        INSERT INTO agent_loop_action_log (agent_id, action, target_type, target_id, content_snippet)
+        VALUES ($1::text, $2::text, $3::text, $4::text, $5::text)
+        RETURNING *
+      ), ${emitted.ctes.join(", ")},
+      -- The TRANSITIONAL inline writer, as a CTE of the emitting statement. Inside it the
+      -- agent_loop_action_log TABLE cannot serve as the row source (a CTE reads the statement's
+      -- snapshot, which predates the row being inserted beside it), so the projection reads
+      -- 'inserted', and its source_event_id reads the event arm. While the kind is shadow the drain
+      -- compares its own row against this one BY that stamp, so a projection that could not name the
+      -- event would leave the soak nothing to join on.
+      projected AS (
+        ${buildAgentLoopActivityUpsertCte({ logCte: "inserted", sourceEventCte: primary })}
+      )
+      SELECT (SELECT id FROM inserted)::text AS id
+    `,
+      [...params, ...emitted.params]
+    );
+  } catch (error) {
+    // **Swallowed, exactly as the journal INSERT alone always was** — and now that is the whole
+    // effect: statement-atomicity means a failure leaves no journal row, no event and no trail row,
+    // rather than the pre-stitch half-state of a journal row with no projection. It must stay
+    // swallowed: `agent-pulse/runner.ts` calls this between the terminal action and
+    // `completeWakeup`, so a throw here would strand a claimed wakeup until its lease was abandoned.
+    console.error("[agent-loop] failed to log action", error);
+  }
 }
 
 // ---------------------------------------------------------------------------

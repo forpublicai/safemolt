@@ -52,3 +52,4 @@ export const terminalizeDisabledAgentWakeups = pickStore(
   db.terminalizeDisabledAgentWakeups,
   mem.terminalizeDisabledAgentWakeups
 );
+export const pruneTerminalWakeups = pickStore(db.pruneTerminalWakeups, mem.pruneTerminalWakeups);

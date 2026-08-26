@@ -27,6 +27,7 @@ import {
   completeWakeup,
   enqueueWakeup,
   listWakeupsForAgent,
+  pruneTerminalWakeups,
   renewWakeupLease,
   terminalizeDisabledAgentWakeups,
 } from "@/lib/store/wakeups/memory";
@@ -291,5 +292,80 @@ describe("terminalizeDisabledAgentWakeups", () => {
     await terminalizeDisabledAgentWakeups();
 
     expect(wakeupQueue.rows.get(claimed.id)!.completedAt).toBeNull();
+  });
+});
+
+/**
+ * M11-2 u6 stitch item 4 — P2.2's retention policy, the wakeup queue's share.
+ *
+ * The property that matters is the EXCLUSION, not the deletion: pending and claimed rows must survive
+ * at any age. A pending row far in the future is legitimate, and a claimed row owns its agent's
+ * one-inflight slot — deleting either behind a runner's back is the failure this duty must not
+ * introduce.
+ */
+describe("pruneTerminalWakeups", () => {
+  /** Backdate the completion clock — the only field this duty reads. */
+  function completeLongAgo(id: number, daysAgo: number): void {
+    const row = wakeupQueue.rows.get(id)!;
+    row.completedAt = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+    row.result = "acted";
+  }
+
+  it("deletes a completed wakeup older than the window, and keeps a recent one", async () => {
+    const agent = nextId("agent");
+    await setLoopEnabled(agent, true);
+    await enqueueWakeup(internalInput(agent, "idle", null));
+    const old = await claimFor(agent, "tok");
+    await completeWakeup(old.id, "tok", "acted");
+    completeLongAgo(old.id, 45);
+
+    await enqueueWakeup(internalInput(agent, "comment_on_my_post", 4001));
+    const recent = await claimFor(agent, "tok2");
+    await completeWakeup(recent.id, "tok2", "acted");
+
+    expect(await pruneTerminalWakeups(30, 1000)).toBe(1);
+    expect(wakeupQueue.rows.has(old.id)).toBe(false);
+    expect(wakeupQueue.rows.has(recent.id)).toBe(true);
+  });
+
+  it("NEVER deletes a pending row or a claimed row, however old", async () => {
+    const pendingAgent = nextId("agent");
+    await enqueueWakeup(internalInput(pendingAgent, "idle", null));
+    const pending = (await listWakeupsForAgent(pendingAgent))[0];
+
+    const claimingAgent = nextId("agent");
+    await setLoopEnabled(claimingAgent, true);
+    await enqueueWakeup(internalInput(claimingAgent, "idle", null));
+    const claimed = await claimFor(claimingAgent, "tok");
+    // Old by every clock the row carries — and still not this duty's business.
+    const claimedRow = wakeupQueue.rows.get(claimed.id)!;
+    claimedRow.claimedAt = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    claimedRow.leaseExpiresAt = new Date(Date.now() - 89 * 24 * 60 * 60 * 1000).toISOString();
+
+    expect(await pruneTerminalWakeups(30, 1000)).toBe(0);
+    expect(wakeupQueue.rows.has(pending.id)).toBe(true);
+    expect(wakeupQueue.rows.has(claimed.id)).toBe(true);
+  });
+
+  it("is bounded by its limit, oldest first, and the remainder waits for the next run", async () => {
+    const agent = nextId("agent");
+    await setLoopEnabled(agent, true);
+    const ids: number[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      await enqueueWakeup(internalInput(agent, "comment_on_my_post", 5000 + i));
+      const claimed = await claimFor(agent, `tok_${i}`);
+      await completeWakeup(claimed.id, `tok_${i}`, "acted");
+      // Descending age, so "oldest first" is a claim the ORDER has to earn.
+      completeLongAgo(claimed.id, 90 - i);
+      ids.push(claimed.id);
+    }
+
+    expect(await pruneTerminalWakeups(30, 2)).toBe(2);
+    expect(wakeupQueue.rows.has(ids[0])).toBe(false);
+    expect(wakeupQueue.rows.has(ids[1])).toBe(false);
+    expect(wakeupQueue.rows.has(ids[2])).toBe(true);
+
+    expect(await pruneTerminalWakeups(30, 2)).toBe(1);
+    expect(wakeupQueue.rows.has(ids[2])).toBe(false);
   });
 });

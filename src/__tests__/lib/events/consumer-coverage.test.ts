@@ -311,6 +311,7 @@ describe("coverage manifests", () => {
       "admissions.offer_accepted": "none",
       "admissions.offer_declined": "none",
       "admissions.offer_expired": "none",
+      "agent_loop.action": "none",
     });
     expect(activityTrailCoverage).toEqual({
       "system.activation_fence": "none",
@@ -367,6 +368,7 @@ describe("coverage manifests", () => {
       "admissions.offer_accepted": "none",
       "admissions.offer_declined": "none",
       "admissions.offer_expired": "none",
+      "agent_loop.action": "shadow",
     });
     expect(memoryIngestCoverage).toEqual({
       "system.activation_fence": "none",
@@ -422,6 +424,7 @@ describe("coverage manifests", () => {
       "admissions.offer_accepted": "none",
       "admissions.offer_declined": "none",
       "admissions.offer_expired": "none",
+      "agent_loop.action": "none",
     });
   });
 
@@ -493,6 +496,7 @@ describe("coverage manifests", () => {
       "admissions.offer_accepted": "none",
       "admissions.offer_declined": "none",
       "admissions.offer_expired": "none",
+      "agent_loop.action": "none",
     });
     // No `legacy`, no `shadow` — the structural claim, asserted rather than merely written down.
     expect(Object.values(wakeupRouterCoverage).filter((state) => state !== "on" && state !== "none"))

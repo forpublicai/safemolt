@@ -88,6 +88,7 @@ describe("kind vocabulary", () => {
     "admissions.offer_accepted": true,
     "admissions.offer_declined": true,
     "admissions.offer_expired": true,
+    "agent_loop.action": true,
   } satisfies Record<EventKind, true>;
 
   it("ships the substrate kind plus trains a1 and a2's groups, playground, evaluations and lifecycle, and the runtime list matches the type union", () => {
@@ -110,6 +111,10 @@ describe("kind vocabulary", () => {
       "agent.unfollowed",
       "agent.vetted",
       "agent.vetting_started",
+      // Train a4's one MIGRATED kind (u6 stitch): the autonomous loop's structured journal entry.
+      // It enters at `shadow` on activity-trail, together with its producer — `logAction`, which
+      // this stitch made Tier 1.
+      "agent_loop.action",
       // Train a2's u3f classes family — agent-branch only; the professor/TA branch is class-ops
       // territory and emits nothing.
       "class.dropped",

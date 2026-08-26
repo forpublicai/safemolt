@@ -471,3 +471,19 @@ export async function terminalizeDisabledAgentWakeups(): Promise<number> {
   }
   return count;
 }
+
+/**
+ * See `db.ts`. The same two exclusions, stated the same way: a row with no `completedAt` is either
+ * pending (legitimately future-dated, or the queue's backlog) or claimed (its slot is somebody's),
+ * and neither is garbage at any age.
+ */
+export async function pruneTerminalWakeups(retentionDays: number, limit: number): Promise<number> {
+  const cutoff = Date.now() - Math.max(1, Math.floor(retentionDays)) * 24 * 60 * 60 * 1000;
+  const batch = Math.max(1, Math.floor(limit));
+  const doomed = rows()
+    .filter((row) => row.completedAt !== null && Date.parse(row.completedAt) < cutoff)
+    .sort((a, b) => Date.parse(a.completedAt!) - Date.parse(b.completedAt!))
+    .slice(0, batch);
+  for (const row of doomed) wakeupQueue.rows.delete(row.id);
+  return doomed.length;
+}

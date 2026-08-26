@@ -224,6 +224,7 @@ afterAll(async () => {
     [like]
   );
   await pgPool().query(`DELETE FROM activity_events WHERE actor_id LIKE $1`, [like]);
+  await pgPool().query(`DELETE FROM agent_loop_action_log WHERE agent_id LIKE $1`, [like]);
   await pgPool().query(`DELETE FROM notifications WHERE agent_id LIKE $1`, [like]);
   await pgPool().query(`DELETE FROM following WHERE follower_id LIKE $1 OR followee_id LIKE $1`, [like]);
   await pgPool().query(`DELETE FROM agent_rate_limits WHERE agent_id LIKE $1`, [like]);
@@ -614,6 +615,118 @@ describe("activity trail: legacy inline writer vs consumer", () => {
     // Unlike the follow row, the group-derived half is STRUCTURAL and stays compared: a group's
     // canonical name has no rename path, so `href` and the whole of `metadata` must match exactly.
     expect([applied!.href, applied!.metadata]).toEqual([legacy!.href, legacy!.metadata]);
+  });
+
+  /**
+   * `agent_loop.action` — u6 stitch item 3 (e), the a4 kind.
+   *
+   * The REAL producer is `logAction`, which since this stitch renders ONE statement holding the
+   * journal INSERT, the event and the transitional trail projection. So the legacy row here was
+   * written by the same statement that emitted the event it is compared against — which is precisely
+   * what makes it comparable: the projection carries `source_event_id`, so the drain can tell "this
+   * event's own row" from "a later event rewrote it" (the u4prep2 three-answer rule).
+   *
+   * `occurred_at` takes `post.created`'s route, not the follow's: both writers project the JOURNAL
+   * ROW's own `created_at` through one shared SELECT, so they already share a clock and stamping the
+   * event's would have INTRODUCED a mismatch.
+   */
+  it("produces the identical agent_loop projection, and both writers share the journal row's clock", async () => {
+    const actor = await seedAgent();
+    const owner = await seedAgent();
+    const group = await seedGroup(owner.id);
+    const postId = nextId("post");
+    await pgPool().query(
+      `INSERT INTO posts (id, group_id, author_id, title, content, upvotes, downvotes, comment_count, created_at)
+       VALUES ($1, $2, $3, 'a target post', 'body', 0, 0, 0, NOW())`,
+      [postId, group, owner.id]
+    );
+    const marker = await maxEventId();
+
+    const { logAction } = await import("@/lib/agent-loop");
+    await logAction(actor.id, "create_comment", "post", postId, "a snippet the trail shows");
+
+    const { rows: logRows } = await pgPool().query<{ id: string; created_at: Date }>(
+      `SELECT id, created_at FROM agent_loop_action_log WHERE agent_id = $1`,
+      [actor.id]
+    );
+    expect(logRows).toHaveLength(1);
+    const logId = logRows[0].id;
+
+    const legacy = await readActivity("agent_loop", logId);
+    expect(legacy).not.toBeNull();
+
+    const { rows: emittedRows } = await pgPool().query<{ id: string; payload: Record<string, unknown> }>(
+      `SELECT id, payload FROM events WHERE id > $1 AND kind = 'agent_loop.action' ORDER BY id`,
+      [marker]
+    );
+    expect(emittedRows).toHaveLength(1);
+    // The store-assigned id was FILLED by the statement — a payload still carrying the marker would
+    // dead-letter at consume time.
+    expect(emittedRows[0].payload).toEqual({
+      log_id: logId,
+      action: "create_comment",
+      target_type: "post",
+      target_id: postId,
+    });
+    const event = (await getEventById(Number(emittedRows[0].id)))!;
+
+    // The projection this statement wrote names the event the same statement emitted.
+    const { rows: stamped } = await pgPool().query<{ source_event_id: string }>(
+      `SELECT source_event_id FROM activity_events WHERE kind = 'agent_loop' AND entity_id = $1`,
+      [logId]
+    );
+    expect(Number(stamped[0].source_event_id)).toBe(event.id);
+
+    await pgPool().query(`DELETE FROM activity_events WHERE kind = 'agent_loop' AND entity_id = $1`, [logId]);
+
+    const described = (await activityTrailEffects.describe(event))[0];
+    await activityTrailEffects.apply(event);
+    const applied = await readActivity("agent_loop", logId);
+
+    expect(described.key).toBe(`agent_loop:${logId}`);
+    expect(described.payload).toEqual(applied);
+    // The journal row's own clock, on both sides — no event stamp involved.
+    expect(applied!.occurred_at).toBe(legacy!.occurred_at);
+    expect(applied!.occurred_at).toBe(logRows[0].created_at.toISOString());
+    expect(stripActivity(applied!, "agent_loop.action")).toEqual(
+      stripActivity(legacy!, "agent_loop.action")
+    );
+    // `metadata` is fully structural for this kind — the action, both target columns, and the target
+    // post's title, none of which a rename can move.
+    expect(applied!.metadata).toEqual(legacy!.metadata);
+  });
+
+  /**
+   * The journal row's agent withdraws before the event drains.
+   *
+   * `agent_loop_action_log.agent_id` cascades, so the journal row is gone and the consumer's locked
+   * subject is empty — it describes nothing and applies nothing. That is the correct agreement for an
+   * absent subject, and it is what keeps a withdrawal from reading as a soak anomaly.
+   */
+  it("describes nothing once the journal row's agent has withdrawn", async () => {
+    const actor = await seedAgent();
+    const marker = await maxEventId();
+
+    const { logAction } = await import("@/lib/agent-loop");
+    await logAction(actor.id, "create_post", undefined, undefined, "gone soon");
+
+    const { rows: emittedRows } = await pgPool().query<{ id: string }>(
+      `SELECT id FROM events WHERE id > $1 AND kind = 'agent_loop.action' ORDER BY id`,
+      [marker]
+    );
+    expect(emittedRows).toHaveLength(1);
+    const event = (await getEventById(Number(emittedRows[0].id)))!;
+
+    await pgPool().query(`DELETE FROM activity_events WHERE actor_id = $1`, [actor.id]);
+    await pgPool().query(`DELETE FROM agents WHERE id = $1`, [actor.id]);
+
+    expect(await activityTrailEffects.describe(event)).toEqual([]);
+    await activityTrailEffects.apply(event);
+    const { rows } = await pgPool().query(
+      `SELECT 1 FROM activity_events WHERE kind = 'agent_loop' AND entity_id = $1`,
+      [String((event.payload as { log_id: string }).log_id)]
+    );
+    expect(rows).toHaveLength(0);
   });
 });
 

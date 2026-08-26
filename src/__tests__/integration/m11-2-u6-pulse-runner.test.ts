@@ -21,10 +21,12 @@ import {
   claimNextWakeup,
   completeWakeup,
   enqueueWakeup,
+  pruneTerminalWakeups,
   renewWakeupLease,
   terminalizeDisabledAgentWakeups,
 } from "@/lib/store/wakeups/db";
 import { createCommentWithOutcome } from "@/lib/store/comments/db";
+import { submitPlaygroundActionGated } from "@/lib/store/playground/db";
 import type { ExecutionGuard } from "@/lib/store/execution-guard";
 
 const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
@@ -94,6 +96,33 @@ async function seedGroupAndPost(authorId: string): Promise<{ groupId: string; po
   return { groupId, postId };
 }
 
+/** An ACTIVE session on round 1 with `agentId` listed as an active participant — the one shape the
+ *  gated insert admits, so anything it refuses came from the guard and nothing else. Each fixture
+ *  gets a school of its own, because `idx_pg_sessions_one_live_per_school` admits one live session
+ *  per school and these tests seed several at once. */
+async function seedPlaygroundSession(agentId: string): Promise<string> {
+  const sessionId = nextId("session");
+  await pgPool().query(
+    `INSERT INTO playground_sessions (id, game_id, school_id, status, participants, transcript,
+                                      current_round, current_round_prompt, max_rounds, created_at, started_at)
+     VALUES ($1, 'u6pr-game', $3, 'active', $2::jsonb, '[]'::jsonb, 1, 'your move', 4, NOW(), NOW())`,
+    [
+      sessionId,
+      JSON.stringify([{ agentId, agentName: agentId, status: "active", missedRounds: 0 }]),
+      `school_${sessionId}`,
+    ]
+  );
+  return sessionId;
+}
+
+async function countActions(sessionId: string): Promise<number> {
+  const { rows } = await pgPool().query(
+    `SELECT count(*)::int AS n FROM playground_actions WHERE session_id = $1`,
+    [sessionId]
+  );
+  return Number(rows[0].n);
+}
+
 let baselineEventId = 0;
 
 /**
@@ -105,11 +134,23 @@ let baselineEventId = 0;
  * left behind.
  */
 beforeAll(async () => {
+  await pgPool().query(`DELETE FROM playground_actions WHERE session_id LIKE 'u6pr_session_%'`);
+  await pgPool().query(`DELETE FROM playground_sessions WHERE id LIKE 'u6pr_session_%'`);
+  // One-per-scope index orphan neutralization: `idx_pg_sessions_one_live_per_school` admits one live
+  // session per school regardless of id, so a run-unique suffix cannot dodge a leftover — and an
+  // interrupted prior run skips afterAll and leaves exactly that. Each fixture seeds its own school,
+  // so only same-named orphans and genuinely stale live rows can be in the way.
+  await pgPool().query(
+    `UPDATE playground_sessions SET status = 'cancelled', completed_at = NOW()
+     WHERE status IN ('pending', 'active')
+       AND (id LIKE 'u6pr%' OR created_at < NOW() - INTERVAL '1 hour')`
+  );
   await pgPool().query(`DELETE FROM notifications WHERE agent_id LIKE 'u6pr_agent_%' OR actor->>'id' LIKE 'u6pr_agent_%'`);
   await pgPool().query(`DELETE FROM comments WHERE author_id LIKE 'u6pr_agent_%'`);
   await pgPool().query(`DELETE FROM posts WHERE author_id LIKE 'u6pr_agent_%'`);
   await pgPool().query(`DELETE FROM groups WHERE owner_id LIKE 'u6pr_agent_%'`);
   await pgPool().query(`DELETE FROM agent_rate_limits WHERE agent_id LIKE 'u6pr_agent_%'`);
+  await pgPool().query(`DELETE FROM activity_events WHERE actor_id LIKE 'u6pr_agent_%'`);
   await pgPool().query(`DELETE FROM agent_wakeups WHERE agent_id LIKE 'u6pr_agent_%'`);
   await pgPool().query(`DELETE FROM pulse_budget_counters WHERE agent_id LIKE 'u6pr_agent_%'`);
   await pgPool().query(`DELETE FROM agent_loop_state WHERE agent_id LIKE 'u6pr_agent_%'`);
@@ -129,6 +170,9 @@ afterAll(async () => {
   await pgPool().query(`DELETE FROM posts WHERE author_id LIKE $1`, [`u6pr_agent_${RUN}%`]);
   await pgPool().query(`DELETE FROM groups WHERE owner_id LIKE $1`, [`u6pr_agent_${RUN}%`]);
   await pgPool().query(`DELETE FROM agent_rate_limits WHERE agent_id LIKE $1`, [`u6pr_agent_${RUN}%`]);
+  await pgPool().query(`DELETE FROM playground_actions WHERE session_id LIKE $1`, [`u6pr_session_${RUN}%`]);
+  await pgPool().query(`DELETE FROM playground_sessions WHERE id LIKE $1`, [`u6pr_session_${RUN}%`]);
+  await pgPool().query(`DELETE FROM activity_events WHERE actor_id LIKE $1`, [`u6pr_agent_${RUN}%`]);
   await pgPool().query(`DELETE FROM agent_wakeups WHERE agent_id LIKE $1`, [`u6pr_agent_${RUN}%`]);
   await pgPool().query(`DELETE FROM pulse_budget_counters WHERE agent_id LIKE $1`, [`u6pr_agent_${RUN}%`]);
   await pgPool().query(`DELETE FROM agent_loop_state WHERE agent_id LIKE $1`, [`u6pr_agent_${RUN}%`]);
@@ -429,5 +473,192 @@ describe("the execution guard — a real FOR SHARE lock against a real disable",
     const outcome = await createCommentWithOutcome(postId, commenter, "should not land either", undefined, [], guard);
     expect(outcome.guardPassed).toBe(false);
     expect(outcome.comment).toBeNull();
+  });
+});
+
+/**
+ * u6 stitch item 1 (d): the SAME guard, on the playground turn. `submitPlaygroundActionGated` is the
+ * `playground_round` reason's terminal mutation, so without this the kill switch was a
+ * statement-level guarantee for social actions and a racing check for playground ones.
+ *
+ * Everything except the guard is deliberately admissible here — active session, current round, active
+ * participant, no duplicate, no resolution lease — so a refusal can only have come from the guard.
+ */
+describe("the execution guard — the playground turn (u6 stitch)", () => {
+  async function claimFor(agentId: string): Promise<ExecutionGuard> {
+    await seedIdleWakeup(agentId);
+    const claim = await claimNextWakeup({
+      claimToken: nextId("token"),
+      leaseMs: 600_000,
+      generalCap: 50,
+      playgroundCap: 50,
+    });
+    if (claim.candidates !== 1 || !claim.claimed) throw new Error("expected a successful claim");
+    return { agentId, wakeupId: claim.claimed.id, claimToken: claim.claimed.claimToken! };
+  }
+
+  it("passes for an enabled agent with a live claim — the action row lands", async () => {
+    const actor = await seedAgent();
+    await seedLoopState(actor, true);
+    const sessionId = await seedPlaygroundSession(actor);
+    const guard = await claimFor(actor);
+
+    const outcome = await submitPlaygroundActionGated(
+      { id: nextId("action"), sessionId, agentId: actor, round: 1, content: "a guarded move" },
+      [],
+      guard
+    );
+    expect(outcome.ok).toBe(true);
+    expect(await countActions(sessionId)).toBe(1);
+  });
+
+  it("refuses — no action row, no event — once the agent is disabled before the guarded statement runs", async () => {
+    const actor = await seedAgent();
+    await seedLoopState(actor, true);
+    const sessionId = await seedPlaygroundSession(actor);
+    const guard = await claimFor(actor);
+    // The human disables autonomy AFTER the claim (and its lease renewal, in a real tick) but BEFORE
+    // the guarded mutation reaches its statement — the exact gap the plan names.
+    await setEnabled(actor, false);
+
+    const { rows: before } = await pgPool().query(`SELECT count(*)::int AS n FROM events`);
+    const outcome = await submitPlaygroundActionGated(
+      { id: nextId("action"), sessionId, agentId: actor, round: 1, content: "should not land" },
+      [
+        {
+          kind: "playground.action_submitted",
+          actorAgentId: actor,
+          subjectType: "playground_session",
+          subjectId: sessionId,
+          schoolId: null,
+          idemKey: `u6pr_guard_refused:${sessionId}:1:${actor}`,
+          payload: { session_id: sessionId, round: 1, agent_id: actor },
+        },
+      ],
+      guard
+    );
+    expect(outcome).toEqual({ ok: false, reason: "execution_guard_failed" });
+    expect(await countActions(sessionId)).toBe(0);
+    const { rows: after } = await pgPool().query(`SELECT count(*)::int AS n FROM events`);
+    expect(after[0].n).toBe(before[0].n);
+  });
+
+  it("refuses once the claim token no longer matches (superseded by a re-arm)", async () => {
+    const actor = await seedAgent();
+    await seedLoopState(actor, true);
+    const sessionId = await seedPlaygroundSession(actor);
+    const guard = await claimFor(actor);
+
+    const outcome = await submitPlaygroundActionGated(
+      { id: nextId("action"), sessionId, agentId: actor, round: 1, content: "should not land either" },
+      [],
+      { ...guard, claimToken: "stale-superseded-token" }
+    );
+    expect(outcome).toEqual({ ok: false, reason: "execution_guard_failed" });
+    expect(await countActions(sessionId)).toBe(0);
+  });
+
+  it("a caller that supplies NO guard is unaffected — the REST/tool path still writes", async () => {
+    const actor = await seedAgent();
+    // No `agent_loop_state` row at all: an ordinary REST caller has never had one, and the guard
+    // fragment must not be rendered for them (it would refuse every such call).
+    const sessionId = await seedPlaygroundSession(actor);
+    const outcome = await submitPlaygroundActionGated({
+      id: nextId("action"),
+      sessionId,
+      agentId: actor,
+      round: 1,
+      content: "an unguarded REST move",
+    });
+    expect(outcome.ok).toBe(true);
+    expect(await countActions(sessionId)).toBe(1);
+  });
+});
+
+/**
+ * u6 stitch item 4 (b) — P2.2's retention policy, the wakeup queue's share, against a real database.
+ *
+ * Memory-mode semantics live in `src/__tests__/lib/store/wakeups/claim.test.ts`. What only Postgres
+ * shows: the statement PARSES (its `make_interval(days => …)` and its bounded candidate subquery),
+ * and the exclusion holds against real rows rather than a JS filter.
+ */
+describe("pruneTerminalWakeups — the retention duty against real rows", () => {
+  it("deletes a completed row past the window and leaves the pending, claimed and recent ones", async () => {
+    const agent = await seedAgent();
+    await seedLoopState(agent, true);
+
+    // Completed 45 days ago — the only row this duty may take.
+    await seedIdleWakeup(agent);
+    const claim = await claimNextWakeup({
+      claimToken: nextId("token"),
+      leaseMs: 600_000,
+      generalCap: 50,
+      playgroundCap: 50,
+    });
+    if (claim.candidates !== 1 || !claim.claimed) throw new Error("expected a successful claim");
+    const staleId = claim.claimed.id;
+    await completeWakeup(staleId, claim.claimed.claimToken!, "acted");
+    await pgPool().query(
+      `UPDATE agent_wakeups SET completed_at = now() - INTERVAL '45 days' WHERE id = $1`,
+      [staleId]
+    );
+
+    // Completed just now — inside the window.
+    await enqueueWakeup({
+      agentId: agent,
+      reason: "comment_on_my_post",
+      eventId: nextEventId(),
+      payload: { run: RUN },
+      delivery: "internal",
+    });
+    const second = await claimNextWakeup({
+      claimToken: nextId("token"),
+      leaseMs: 600_000,
+      generalCap: 50,
+      playgroundCap: 50,
+    });
+    if (second.candidates !== 1 || !second.claimed) throw new Error("expected a second successful claim");
+    const recentId = second.claimed.id;
+    await completeWakeup(recentId, second.claimed.claimToken!, "acted");
+
+    // Pending, and deliberately backdated far past the window: age is not this duty's predicate.
+    const pendingAgent = await seedAgent();
+    await seedIdleWakeup(pendingAgent);
+    const { rows: pendingRows } = await pgPool().query<{ id: string }>(
+      `SELECT id FROM agent_wakeups WHERE agent_id = $1`,
+      [pendingAgent]
+    );
+    const pendingId = Number(pendingRows[0].id);
+    await pgPool().query(`UPDATE agent_wakeups SET due_at = now() - INTERVAL '99 days' WHERE id = $1`, [
+      pendingId,
+    ]);
+
+    // Claimed and long past its lease — still owns its agent's one-inflight slot.
+    const claimedAgent = await seedAgent();
+    await seedLoopState(claimedAgent, true);
+    await seedIdleWakeup(claimedAgent);
+    const third = await claimNextWakeup({
+      claimToken: nextId("token"),
+      leaseMs: 600_000,
+      generalCap: 50,
+      playgroundCap: 50,
+    });
+    if (third.candidates !== 1 || !third.claimed) throw new Error("expected a third successful claim");
+    const claimedId = third.claimed.id;
+    await pgPool().query(
+      `UPDATE agent_wakeups SET claimed_at = now() - INTERVAL '99 days',
+                                lease_expires_at = now() - INTERVAL '98 days' WHERE id = $1`,
+      [claimedId]
+    );
+
+    expect(await pruneTerminalWakeups(30, 1000)).toBe(1);
+
+    const { rows: survivors } = await pgPool().query<{ id: string }>(
+      `SELECT id FROM agent_wakeups WHERE id = ANY($1::bigint[]) ORDER BY id`,
+      [[staleId, recentId, pendingId, claimedId]]
+    );
+    expect(survivors.map((r) => Number(r.id)).sort((a, b) => a - b)).toEqual(
+      [recentId, pendingId, claimedId].sort((a, b) => a - b)
+    );
   });
 });

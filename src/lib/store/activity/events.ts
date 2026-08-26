@@ -1641,7 +1641,8 @@ export type ActivityTwinSubject =
   | { type: "agent"; id: string }
   | { type: "group"; id: string }
   | { type: "playground_session"; id: string }
-  | { type: "playground_action"; id: string };
+  | { type: "playground_action"; id: string }
+  | { type: "agent_loop"; id: string };
 
 /** What a twin read answers: the row, no row, or no SUBJECT to have written one for. */
 export type ActivityLegacyRead =
@@ -1666,6 +1667,8 @@ const ACTIVITY_TWIN_SUBJECT_SQL: Record<ActivityTwinSubject["type"], string> = {
   group: `SELECT id AS subject_id FROM groups WHERE id = $3::text FOR KEY SHARE`,
   playground_session: `SELECT id AS subject_id FROM playground_sessions WHERE id = $3::text FOR SHARE`,
   playground_action: `SELECT id AS subject_id FROM playground_actions WHERE id = $3::text FOR SHARE`,
+  // The journal row itself — the same row `agentLoopActivitySelectSql`'s standalone form locks.
+  agent_loop: `SELECT id AS subject_id FROM agent_loop_action_log WHERE id = $3::text FOR SHARE`,
 };
 
 /** The projection's column list, qualified — the twin read joins the row to its locked subject. */
@@ -1694,6 +1697,10 @@ function activityTwinSubjectAlive(subject: ActivityTwinSubject): boolean {
       return playgroundSessions.has(subject.id);
     case "playground_action":
       return playgroundActions.has(subject.id);
+    case "agent_loop":
+      // `agent_loop_action_log` is DB-only, so in memory mode there is no journal row to be alive —
+      // and no producer either, which is why this branch is unreachable rather than merely false.
+      return false;
   }
 }
 
@@ -2132,15 +2139,31 @@ export async function applyGroupJoinActivityFromEvent(
   }
 }
 
-export async function recordAgentLoopActivityEvent(logId: string): Promise<void> {
-  // The autonomous loop is DB-backed; memory mode has no agent_loop_action_log source row.
-  if (!hasDatabase()) return;
-
-  try {
-    await upsertActivityEventFromSelect(
-      "agent_loop",
-      logId,
-      `
+/**
+ * The agent-loop activity SELECT — **one definition, four callers** (M11-2 u6 stitch, item 3): the
+ * standalone inline writer below, the CTE form `logAction` splices into its own insert statement,
+ * the consumer's `apply`, and the shadow soak's `describe`. Forking a copy would make the two
+ * writers of one row produce different rows, and the soak would read a formatting drift as a payload
+ * mismatch on every event.
+ *
+ * `occurred_at` is the LOG ROW's own `created_at` on every path, so this kind needs no event-clock
+ * stamp — `post.created`'s and `comment.created`'s route through `OCCURRED_AT_STAMP_PENDING_KINDS`,
+ * and the opposite of `agent.followed`, whose row carries no clock of its own.
+ *
+ * `logCte` is the spliced form's row source: inside `logAction`'s statement the
+ * `agent_loop_action_log` TABLE cannot see the row being inserted beside it, because a CTE reads the
+ * statement's snapshot. `lockLog` is the standalone form's liveness lock — the same `FOR SHARE` on
+ * the subject every cached-projection writer takes.
+ */
+function agentLoopActivitySelectSql(options: {
+  sourceEventSql: string | null;
+  lockLog?: boolean;
+  logCte?: string;
+}): string {
+  const rowSource = options.logCte
+    ? requireActivityCteName(options.logCte)
+    : `(SELECT * FROM agent_loop_action_log WHERE id = $1${options.lockLog ? " FOR SHARE" : ""})`;
+  return `
       SELECT
         'agent_loop',
         al.created_at,
@@ -2153,17 +2176,66 @@ export async function recordAgentLoopActivityEvent(logId: string): Promise<void>
         (${actorDisplaySql("al.agent_id")} || ' ' || al.action || ': ' || COALESCE(al.content_snippet, target_post.title, al.target_id, 'activity recorded'))::text,
         COALESCE(al.content_snippet, '')::text,
         concat_ws(' ', ${actorDisplaySql("al.agent_id")}, a.name, al.action, al.target_type, target_post.title, al.target_id, al.content_snippet)::text,
-        jsonb_build_object('target_type', al.target_type, 'target_id', al.target_id, 'target_title', target_post.title, 'action', al.action)
-      FROM agent_loop_action_log al
+        jsonb_build_object('target_type', al.target_type, 'target_id', al.target_id, 'target_title', target_post.title, 'action', al.action)${
+          options.sourceEventSql ? `,\n        ${options.sourceEventSql}::bigint` : ""
+        }
+      FROM ${rowSource} al
       LEFT JOIN agents a ON a.id = al.agent_id
       LEFT JOIN posts target_post ON al.target_type = 'post' AND target_post.id = al.target_id
-      WHERE al.id = $1
-    `,
-      [logId]
-    );
-  } catch (error) {
-    logActivityEventFailure("agent_loop", error);
-  }
+    `;
+}
+
+/**
+ * The agent-loop activity upsert as a **CTE body**, for `logAction`'s own statement (u6 stitch).
+ *
+ * The u3b/u4prep2 rule: a transitional projection must be written by the statement that emitted its
+ * event, because `source_event_id` names an id that exists only inside that statement and batch
+ * elements cannot read one another's `RETURNING`. `logCte` is the CTE holding the freshly inserted
+ * journal row; `sourceEventCte` is the event arm whose id this projection stamps. `null` there is
+ * the no-event form (no caller renders it today, and it keeps the builder honest for one).
+ */
+export function buildAgentLoopActivityUpsertCte(options: {
+  logCte: string;
+  sourceEventCte: string | null;
+}): string {
+  const sourceEventSql =
+    options.sourceEventCte === null
+      ? null
+      : `(SELECT id FROM ${requireActivityCteName(options.sourceEventCte)})`;
+  return `
+      INSERT INTO activity_events (
+        ${activityEventColumns(sourceEventSql !== null)}
+      )
+      ${agentLoopActivitySelectSql({ sourceEventSql, logCte: options.logCte })}
+      ${activityEventOnConflict(sourceEventSql)}
+      RETURNING entity_id
+    `;
+}
+
+/** The consumer's `describe`: the canonical row, read under the subject's own `FOR SHARE` lock. */
+export async function describeAgentLoopActivityProjection(
+  logId: string
+): Promise<ActivityProjection | null> {
+  // DB-only by construction: `agent_loop_action_log` has no memory twin, so in memory mode there is
+  // no journal row to project and no producer that could have emitted this kind either.
+  if (!hasDatabase()) return null;
+  return describeActivityProjection(agentLoopActivitySelectSql({ sourceEventSql: null, lockLog: true }), [
+    logId,
+  ]);
+}
+
+export async function applyAgentLoopActivityFromEvent(
+  logId: string,
+  sourceEventId: number
+): Promise<void> {
+  if (!hasDatabase()) return;
+  await upsertActivityEventFromSelect(
+    "agent_loop",
+    logId,
+    ACTIVITY_CONSUMER_RACE_MARKER + agentLoopActivitySelectSql({ sourceEventSql: "$2", lockLog: true }),
+    [logId, sourceEventId],
+    "$2"
+  );
 }
 
 export async function listActivityEvents(options: StoredActivityFeedOptions = {}): Promise<StoredActivityFeedItem[]> {

@@ -12,7 +12,13 @@
 import { createAgent, getAgentById, setAgentVetted } from "@/lib/store/agents/memory";
 import { createGroup } from "@/lib/store/groups/memory";
 import { setLoopEnabled } from "@/lib/agent-loop";
-import { resetAgentLoopState, resetPulseBudgetCounters, resetWakeupState } from "@/lib/store/_memory-state";
+import {
+  playgroundActions,
+  playgroundSessions,
+  resetAgentLoopState,
+  resetPulseBudgetCounters,
+  resetWakeupState,
+} from "@/lib/store/_memory-state";
 import { enqueueWakeup, getWakeupByAgentReasonEvent } from "@/lib/store/wakeups";
 import { listComments } from "@/lib/store/comments/memory";
 import { seedPost } from "@/__tests__/helpers/store-fixtures";
@@ -203,6 +209,162 @@ describe("runPulseBatch — e2e comment ⇒ reply, no cron", () => {
     expect(result.results[0].outcome).toBe("skip");
     const comments = await listComments(post.id);
     expect(comments.some((c) => c.content === "should never land")).toBe(false);
+  });
+});
+
+/**
+ * u6 stitch item 2 (g) — P3.2's "terminal tool invoked" must never be read as "acted".
+ *
+ * The runtime ends a narrow turn on a terminal call REGARDLESS of that call's `success` flag, and it
+ * converts executor exceptions into `{success: false}` results. So for `playground_round` the runner
+ * needs two additional facts before it may write `result = 'acted'`: the submit actually succeeded,
+ * and it succeeded FOR THE ROUND this wakeup was armed for. Everything short of that completes as
+ * re-armable `error`, so the deadline sweep hands the turn back rather than forfeiting it — the
+ * zero-forfeit gate. The code path existed from lane D; this is its test.
+ *
+ * Real memory store throughout: real session, real gated insert (including its execution-guard twin,
+ * which the runner now populates for this reason too — u6 stitch item 1), real wakeup bookkeeping.
+ */
+describe("runPulseBatch — playground_round: a refused or mismatched submit is never 'acted'", () => {
+  beforeEach(() => {
+    jest.resetModules();
+    // The memory store enforces the same one-live-session-per-school rule Postgres does
+    // (`idx_pg_sessions_one_live_per_school`), and every fixture below has to live in `foundation`
+    // — the session's OWN school decides who may act in it (`sessionSchoolAccessDenial`), so a
+    // per-fixture school would refuse the acting agent instead of testing the round rule. Clearing
+    // between cases is what frees the slot.
+    playgroundSessions.clear();
+    playgroundActions.clear();
+  });
+
+  /** Two ACTIVE participants, so the one submission below never trips `tryAdvanceRound` into
+   *  buying a GM call — this suite mocks inference, not the game engine. */
+  async function seedSession(
+    actorId: string,
+    currentRound: number
+  ): Promise<{ sessionId: string }> {
+    const { createPlaygroundSession } = await import("@/lib/store/playground/memory");
+    const sessionId = nextName("sess");
+    await createPlaygroundSession({
+      id: sessionId,
+      gameId: "pub-debate",
+      schoolId: "foundation",
+      status: "active",
+      participants: [
+        { agentId: actorId, agentName: actorId, status: "active", missedRounds: 0 },
+        { agentId: `${actorId}_peer`, agentName: `${actorId}_peer`, status: "active", missedRounds: 0 },
+      ],
+      currentRound,
+      currentRoundPrompt: "make your move",
+      maxRounds: 6,
+      startedAt: new Date().toISOString(),
+    });
+    return { sessionId };
+  }
+
+  async function armRoundWakeup(agentId: string, sessionId: string, round: number, eventId: number) {
+    const { PLAYGROUND_ROUND_REASON } = await import("@/lib/store/wakeups");
+    const enq = await enqueueWakeup({
+      agentId,
+      reason: PLAYGROUND_ROUND_REASON,
+      eventId,
+      payload: { session_id: sessionId, round },
+      delivery: "internal",
+    });
+    expect(enq.created).toBe(true);
+    return PLAYGROUND_ROUND_REASON;
+  }
+
+  it("a successful submit for the armed round completes 'acted' and the action row lands", async () => {
+    const actor = await agent("pg1");
+    await setLoopEnabled(actor.id, true);
+    const { sessionId } = await seedSession(actor.id, 1);
+    const reason = await armRoundWakeup(actor.id, sessionId, 1, 910001);
+
+    const callLLM = jest.fn().mockResolvedValueOnce({
+      content: null,
+      toolCalls: [
+        { id: "call_1", name: "submit_playground_action", arguments: { session_id: sessionId, content: "I open with a question" } },
+      ],
+    });
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(1);
+
+    expect(result.results[0]).toMatchObject({ agentId: actor.id, reason, outcome: "acted" });
+    expect((await getWakeupByAgentReasonEvent(actor.id, reason, 910001))?.result).toBe("acted");
+
+    // A REAL action row — which also proves the execution guard's memory twin PASSES for an enabled
+    // agent holding a live claim (the runner supplies one for this reason since u6 stitch item 1);
+    // a wrong twin would have refused this submit and the outcome would read `error`.
+    const { getPlaygroundActions } = await import("@/lib/store/playground/memory");
+    const actions = await getPlaygroundActions(sessionId, 1);
+    expect(actions.map((a) => a.agentId)).toContain(actor.id);
+  });
+
+  it("a REFUSED submit (already acted this round) completes re-armable 'error', never 'acted'", async () => {
+    const actor = await agent("pg2");
+    await setLoopEnabled(actor.id, true);
+    const { sessionId } = await seedSession(actor.id, 1);
+    // The agent already has this round's action — the gated insert's duplicate refusal, which the
+    // tool surfaces as `{success: false}` and the runtime still treats as a terminal call.
+    const { submitPlaygroundActionGated } = await import("@/lib/store/playground/memory");
+    const seeded = await submitPlaygroundActionGated({
+      id: nextName("act"),
+      sessionId,
+      agentId: actor.id,
+      round: 1,
+      content: "already said my piece",
+    });
+    expect(seeded.ok).toBe(true);
+
+    const reason = await armRoundWakeup(actor.id, sessionId, 1, 910002);
+    const callLLM = jest.fn().mockResolvedValueOnce({
+      content: null,
+      toolCalls: [
+        { id: "call_1", name: "submit_playground_action", arguments: { session_id: sessionId, content: "a second move" } },
+      ],
+    });
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(1);
+
+    expect(result.results[0].outcome).toBe("error");
+    const row = await getWakeupByAgentReasonEvent(actor.id, reason, 910002);
+    expect(row?.result).toBe("error");
+    // Re-armable per P3.2's predicate: completed, and NOT 'acted'.
+    expect(row?.completedAt).not.toBeNull();
+    expect(row?.result).not.toBe("acted");
+
+    // And no second action row was created for the round.
+    const { getPlaygroundActions } = await import("@/lib/store/playground/memory");
+    expect((await getPlaygroundActions(sessionId, 1)).length).toBe(1);
+  });
+
+  it("a submit that SUCCEEDS for a different round than the wakeup was armed for completes 'error'", async () => {
+    const actor = await agent("pg3");
+    await setLoopEnabled(actor.id, true);
+    // The session has already moved to round 2; the wakeup was armed for round 1. The submit lands
+    // (the service reads the CURRENT round), so the tool returns success — and `acted` would strand
+    // round 1's turn as answered when it never was.
+    const { sessionId } = await seedSession(actor.id, 2);
+    const reason = await armRoundWakeup(actor.id, sessionId, 1, 910003);
+
+    const callLLM = jest.fn().mockResolvedValueOnce({
+      content: null,
+      toolCalls: [
+        { id: "call_1", name: "submit_playground_action", arguments: { session_id: sessionId, content: "late to the party" } },
+      ],
+    });
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(1);
+
+    expect(result.results[0].outcome).toBe("error");
+    expect((await getWakeupByAgentReasonEvent(actor.id, reason, 910003))?.result).toBe("error");
   });
 });
 

@@ -659,3 +659,40 @@ export async function terminalizeDisabledAgentWakeups(): Promise<number> {
   `;
   return rows.length;
 }
+
+/**
+ * P2.2 retention, the wakeup queue's share (M11-2 u6 stitch item 4).
+ *
+ * A completed wakeup is history: the runner has finished with it, the re-arm predicate only ever
+ * looks at rows a domain sweep names, and nothing reads a month-old terminal row. Left alone the
+ * table grows without bound in BOTH topologies — the drain pass owns this duty precisely so the
+ * supported Vercel-only deployment prunes it too, not just the worker.
+ *
+ * **`completed_at IS NOT NULL` is the whole predicate, and it is deliberately not "and old enough to
+ * be claimed".** A pending row has no age bound that is safe to delete on: a wakeup due far in the
+ * future is legitimate, and a pending row that is merely old is the queue's own backlog, not
+ * garbage. A CLAIMED row is likewise never touched — its claim is either live or waiting for
+ * `abandonExpiredWakeupLeases` to terminalize it, and deleting it would free the one-inflight slot
+ * behind a runner's back. The `completed_at IS NOT NULL` predicate excludes both by construction.
+ *
+ * Bounded by `limit` for `pruneEventLedgers`' reason: retention shares an invocation with a drain, so
+ * an unbounded `DELETE` after a backlog is a latency bomb. Whatever a pass leaves waits for the next
+ * hourly run.
+ */
+export async function pruneTerminalWakeups(retentionDays: number, limit: number): Promise<number> {
+  const days = Math.max(1, Math.floor(retentionDays));
+  const batch = Math.max(1, Math.floor(limit));
+  const rows = await sql!(
+    `DELETE FROM agent_wakeups
+     WHERE id IN (
+       SELECT w.id FROM agent_wakeups w
+       WHERE w.completed_at IS NOT NULL
+         AND w.completed_at < now() - make_interval(days => $1::int)
+       ORDER BY w.completed_at
+       LIMIT $2
+     )
+     RETURNING id`,
+    [days, batch]
+  );
+  return rows.length;
+}

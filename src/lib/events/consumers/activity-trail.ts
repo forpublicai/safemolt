@@ -11,6 +11,7 @@
  * documented exception) and have no event kind at all, so nothing here touches them.
  */
 import {
+  applyAgentLoopActivityFromEvent,
   applyCommentActivityFromEvent,
   applyFollowActivityFromEvent,
   applyGroupJoinActivityFromEvent,
@@ -18,6 +19,7 @@ import {
   applyPlaygroundSessionActivityFromEvent,
   applyPostActivityFromEvent,
   deletePostActivityProjections,
+  describeAgentLoopActivityProjection,
   describeCommentActivityProjection,
   describeFollowActivityProjection,
   describeGroupJoinActivityProjection,
@@ -241,6 +243,30 @@ async function planPlaygroundActionActivity(event: StoredEvent): Promise<Planned
   };
 }
 
+/**
+ * The agent-loop journal projection, keyed on the log row the payload's store-assigned `log_id`
+ * names (u6 stitch item 3).
+ *
+ * The subject COLUMN is the agent — a journal row is not an addressable domain object, and the
+ * durable identity a loop action belongs to is the agent that took it (`agent.profile_updated`'s
+ * shape). So the trail row's entity id rides the payload, exactly as `evaluation.session_message`'s
+ * `message_id` does, and `payloadId` refuses the store-assigned marker if a producer ever stops
+ * filling it. Resolving the row from the other payload fields is not an option:
+ * `(agent, action, target_type, target_id)` is not unique.
+ *
+ * A journal row that is gone (its agent withdrew, and `agent_loop_action_log.agent_id` cascades)
+ * describes as nothing and applies nothing — the drain receipts it, the right answer for an absent
+ * subject.
+ */
+async function planAgentLoopActivity(event: StoredEvent): Promise<PlannedActivity | null> {
+  const logId = payloadId(event, eventPayload(event), "log_id");
+  return {
+    key: activityEffectKey("agent_loop", logId),
+    describe: () => describeAgentLoopActivityProjection(logId) as Promise<Record<string, unknown> | null>,
+    apply: (sourceEventId) => applyAgentLoopActivityFromEvent(logId, sourceEventId),
+  };
+}
+
 async function plan(event: StoredEvent): Promise<PlannedActivity | null> {
   switch (event.kind) {
     case "post.created":
@@ -260,6 +286,8 @@ async function plan(event: StoredEvent): Promise<PlannedActivity | null> {
       return planPlaygroundSessionActivity(event);
     case "playground.action_submitted":
       return planPlaygroundActionActivity(event);
+    case "agent_loop.action":
+      return planAgentLoopActivity(event);
     default:
       return null;
   }
@@ -293,6 +321,10 @@ function twinSubject(event: StoredEvent, entityId: string): ActivityTwinSubject 
       return { type: "playground_session", id: entityId };
     case "playground.action_submitted":
       return { type: "playground_action", id: entityId };
+    // The entity id IS the journal row's id (it rides the payload, not the subject column), and the
+    // journal row is exactly what this kind's projection SELECT locks.
+    case "agent_loop.action":
+      return { type: "agent_loop", id: entityId };
     default:
       return null;
   }
@@ -374,6 +406,26 @@ export const activityTrailEffects: ConsumerEffects = {
       "search_text",
       "title",
       "summary",
+    ],
+    /**
+     * A journal row's `title` is `"{display} {action}"` and its `summary` is
+     * `"{display} {action}: {snippet|target title|…}"` — both open with the actor's display name,
+     * re-read from the live `agents` row by whichever writer runs, so both move on a rename while
+     * nothing about the action changed. `href` moves too, and only for a rename: its non-post branch
+     * is `/u/{name}`.
+     *
+     * What stays compared is the whole structural content: `kind`, `entity_id` (the journal row's
+     * id), `actor_id`, `occurred_at` (the journal row's own clock), `context_hint` (the content
+     * snippet) and the whole `metadata` object — `action`, `target_type`, `target_id` and the
+     * target post's title.
+     */
+    "agent_loop.action": [
+      "actor_name",
+      "actor_canonical_name",
+      "search_text",
+      "title",
+      "summary",
+      "href",
     ],
   },
 

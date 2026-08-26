@@ -99,6 +99,9 @@ expected_pairs(consumer, event_kind, family) AS (
     ('activity-trail', 'playground.session_completed', 'compare'),
     ('activity-trail', 'playground.session_cancelled', 'compare'),
     ('activity-trail', 'playground.session_expired', 'compare'),
+    -- u6 stitch (P3.3, train a4): the autonomous loop's journal entry. 'compare' — its legacy writer
+    -- is a CTE of `logAction`'s own statement, so every row it writes carries `source_event_id`.
+    ('activity-trail', 'agent_loop.action', 'compare'),
     ('activity-trail', 'post.deleted', 'deletion'),
     ('notifications', 'comment.created', 'compare'),
     ('notifications', 'agent.followed', 'compare'),
@@ -118,7 +121,8 @@ kind_map(event_kind, activity_kind) AS (
          ('playground.session_completed', 'playground_session'),
          ('playground.session_cancelled', 'playground_session'),
          ('playground.session_expired', 'playground_session'),
-         ('playground.action_submitted', 'playground_action')
+         ('playground.action_submitted', 'playground_action'),
+         ('agent_loop.action', 'agent_loop')
 ),
 notif_type_map(notif_type, event_kind) AS (
   VALUES ('comment_on_my_post', 'comment.created'), ('reply_to_my_comment', 'comment.created'),

@@ -38,9 +38,11 @@ import {
   createPendingSession as domainCreatePendingSession,
   joinSession as domainJoinSession,
   submitAction as domainSubmitAction,
+  SUBMIT_REFUSAL_MESSAGES,
 } from "@/lib/playground/session-manager";
 import type { CancelPlaygroundOutcome, PlaygroundSession, SessionAction } from "@/lib/playground/types";
 import type { StoredAgent } from "@/lib/store-types";
+import type { ExecutionGuard } from "@/lib/store/execution-guard";
 
 import { playgroundSessionCreatedEvent, playgroundSubjects } from "./playground-events";
 import { actionError, actionOk, type ActionResult } from "./types";
@@ -169,6 +171,13 @@ export interface SubmitActionInput extends PlaygroundActionInput {
    * Nothing is written when it is set, and no event is emitted.
    */
   refuseWith?: string;
+  /**
+   * M11-2 P3.3 (u6 stitch): the runner's statement-level execution guard, threaded to the gated
+   * insert. Populated ONLY by `agent-pulse/runner.ts` (through the `submit_playground_action` tool's
+   * executor context); REST callers never supply one — see `ExecutionGuard` and `actions/types.ts`'s
+   * `execution_guard_failed` code.
+   */
+  executionGuard?: ExecutionGuard;
 }
 
 export interface SubmitActionResult {
@@ -210,10 +219,16 @@ export async function submitAction(input: SubmitActionInput): Promise<ActionResu
         idemKey: `playground_action:${input.sessionId}:${round}:${input.agent.id}`,
         payload: { session_id: input.sessionId, round, agent_id: input.agent.id },
       } satisfies PreparedEvent<"playground.action_submitted">,
-    ]);
+    ], input.executionGuard);
     return actionOk(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to submit action";
+    // M11-2 P3.3 (u6 stitch): the ONE refusal this domain service raises that is not a caller error.
+    // Matched by identity against the service's own constant, not a copied literal. The runner is the
+    // only caller that can ever see it, and it reads the CODE, not the copy.
+    if (message === SUBMIT_REFUSAL_MESSAGES.execution_guard_failed) {
+      return actionError("execution_guard_failed", message);
+    }
     return actionError("bad_request", message);
   }
 }

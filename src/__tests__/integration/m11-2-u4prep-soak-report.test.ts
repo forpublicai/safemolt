@@ -594,6 +594,35 @@ describe("a clean pair through the real drain is STAMPED matched and COUNTED mat
     expect(rows.some((r) => r.section === "superseded")).toBe(false);
   }, 30000);
 
+  /**
+   * `agent_loop.action` — u6 stitch item 3 (e).
+   *
+   * The strongest form of the u4prep2 rule this kind can demonstrate: `logAction` writes the journal
+   * row, emits the event and writes the legacy trail row IN ONE STATEMENT, so the twin the drain
+   * reads is stamped with exactly the event it is comparing — there is no window in which the drain
+   * could see a row without a watermark, and no reusable key for a later event to take over.
+   */
+  it("agent_loop.action: the activity twin matches, stamped by the emitting statement", async () => {
+    const windowStart = await dbNow();
+    const actor = await seedAgent();
+    const { logAction } = await import("@/lib/agent-loop");
+    await logAction(actor.id, "create_post", undefined, undefined, "a soak journal entry");
+
+    const event = await findEventBySubject("agent_loop.action", actor.id);
+    const logId = String((event.payload as { log_id: string }).log_id);
+
+    await drainAll();
+
+    expect(await stampOf("activity-trail", event.id, `agent_loop:${logId}`)).toEqual({
+      legacy_match: "matched",
+      legacy_detail: null,
+    });
+    const rows = await runReport(windowStart);
+    const summary = summaryFor(rows, "activity-trail", "agent_loop.action");
+    expect(summary.matched).toBe(1);
+    expect(summary.note).toEqual(expect.stringContaining("clean:"));
+  });
+
   it("post.deleted stamps unverifiable on both non-ingest consumers, and is never called clean", async () => {
     const windowStart = await dbNow();
     const { author, post } = await seedPost("Deleted");

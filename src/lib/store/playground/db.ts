@@ -1,6 +1,7 @@
 import { sql } from "@/lib/db";
 import type { StoredRecentPlaygroundAction } from "@/lib/store-types";
 import type { PreparedEvent } from "@/lib/events/kinds";
+import { buildExecutionGuardCte, type ExecutionGuard } from "../execution-guard";
 import type {
     CancelPlaygroundOutcome,
     PlaygroundSession,
@@ -872,13 +873,23 @@ function isUniqueViolation(error: unknown): boolean {
  * taken FOR UPDATE, so the insert serializes against a resolver's claim or terminal CAS on the
  * same row. The `NOT EXISTS` plus the unique index close the duplicate race from both sides.
  *
- * Zero rows is a refusal; the follow-up read classifies which, for the caller's error copy. The
- * classification is advisory — the statement already refused — so its read racing another writer
- * costs accuracy of the message, never correctness of the state.
+ * A null `id` in the projection is a refusal; the follow-up read classifies which, for the caller's
+ * error copy. The classification is advisory — the statement already refused — so its read racing
+ * another writer costs accuracy of the message, never correctness of the state. The ONE flag that is
+ * not advisory is `guard_passed`, which the statement projects itself (below).
+ *
+ * **M11-2 P3.3 (u6 stitch): the optional execution guard.** `agent-pulse/runner.ts` is the only
+ * caller that supplies one — REST routes and external tool calls pass none, the fragment then
+ * renders nothing, and this statement is byte-identical to what it was. With a guard, the
+ * `agent_loop_state` row is locked `FOR SHARE` and the decisive INSERT additionally requires it, so
+ * a disable landing in the gap between the runner's lease renewal and this write makes the insert
+ * match zero rows: no action, no event, no trail row. Same fragment, same placement rule and same
+ * `EXISTS (SELECT 1 FROM guard)` gate the comment statement uses (`store/comments/db.ts`).
  */
 export async function submitPlaygroundActionGated(
     input: CreateActionInput,
-    events?: readonly PreparedEvent[]
+    events?: readonly PreparedEvent[],
+    executionGuard?: ExecutionGuard
 ): Promise<SubmitActionOutcome> {
     const params: unknown[] = [
         input.id,
@@ -896,11 +907,16 @@ export async function submitPlaygroundActionGated(
         actionCte: "inserted",
         sourceEventCtes: emitted.names.slice(0, 1),
     });
+    // Rendered LAST in the parameter order — after the base params and after every event param — so
+    // its placeholder numbering never has to move when `emitted.params` grows or shrinks. The CTE
+    // itself must be FIRST in the WITH list, because `inserted` references it and a CTE may only
+    // reference one defined earlier.
+    const guard = buildExecutionGuardCte(executionGuard, params.length + 1 + emitted.params.length);
     let rows: Record<string, unknown>[];
     try {
         rows = (await sql!(
             `
-      WITH inserted AS (
+      WITH ${guard.cte ? `${guard.cte},\n      ` : ""}inserted AS (
         INSERT INTO playground_actions (id, session_id, agent_id, round, content, created_at)
         SELECT $1::text, s.id, $3::text, $4::int, $5::text, NOW()
         FROM (
@@ -915,23 +931,42 @@ export async function submitPlaygroundActionGated(
         WHERE NOT EXISTS (
           SELECT 1 FROM playground_actions a
           WHERE a.session_id = $2::text AND a.round = $4::int AND a.agent_id = $3::text
-        )
+        )${guard.cte ? "\n        AND EXISTS (SELECT 1 FROM guard)" : ""}
         -- **The duplicate-race loser inserts nothing and emits nothing** (P1.4's pinned mechanic).
         -- Before u3d the same race raised 23505, which rolled the whole statement back — harmless
         -- while the statement held only the insert, and a lost event the moment it also holds one.
         ON CONFLICT (session_id, agent_id, round) DO NOTHING
         RETURNING id, session_id, agent_id, round, content, created_at
       )${spliceCtes(emitted.ctes)}${spliceCtes(trail)}
-      SELECT inserted.* FROM inserted
+      -- **A scalar SELECT with no FROM** (the comment statement's shape, and for its reason): with
+      -- \`FROM inserted\` a refusal returned zero rows, so the guard flag below — the one refusal
+      -- this statement decides that no later read can honestly reconstruct — had nowhere to be
+      -- projected. With no FROM there is always exactly one row, and \`id IS NULL\` is the refusal.
+      -- The column names match the INSERT's own, so \`rowToSessionAction\` reads it unchanged.
+      SELECT (SELECT id FROM inserted) AS id,
+             (SELECT session_id FROM inserted) AS session_id,
+             (SELECT agent_id FROM inserted) AS agent_id,
+             (SELECT round FROM inserted) AS round,
+             (SELECT content FROM inserted) AS content,
+             (SELECT created_at FROM inserted) AS created_at${
+                 guard.cte ? `,\n             (SELECT count(*) FROM guard)::int AS guard_passed` : ""
+             }
     `,
-            [...params, ...emitted.params]
+            [...params, ...emitted.params, ...guard.params]
         )) as Record<string, unknown>[];
     } catch (error) {
         if (isUniqueViolation(error)) return { ok: false, reason: 'duplicate' };
         throw error;
     }
 
-    if (rows.length > 0) return { ok: true, action: rowToSessionAction(rows[0]) };
+    if (rows[0]?.id) return { ok: true, action: rowToSessionAction(rows[0]) };
+    // Checked FIRST, and from the STATEMENT's own flag rather than a later read: a guard failure and,
+    // say, a stale round can both be true at once, and the guard is the one the runner needs named.
+    // No column is projected at all when no guard was supplied, so this reads the outer parameter to
+    // decide whether the flag means anything (`undefined > 0` is `false` in JS).
+    if (executionGuard && Number(rows[0]?.guard_passed ?? 0) === 0) {
+        return { ok: false, reason: 'execution_guard_failed' };
+    }
 
     const session = await getPlaygroundSession(input.sessionId);
     if (!session) return { ok: false, reason: 'not_found' };

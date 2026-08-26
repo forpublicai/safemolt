@@ -132,7 +132,15 @@ export type SubmitActionRefusal =
     | 'resolving'
     | 'not_participant'
     | 'forfeited'
-    | 'duplicate';
+    | 'duplicate'
+    /**
+     * M11-2 P3.3 (u6 stitch): the runner-supplied execution guard refused — the acting agent's
+     * autonomy was disabled, or this runner's wakeup claim was superseded, between the pre-terminal
+     * lease renewal and this insert. Reachable ONLY when a caller supplied an `ExecutionGuard`,
+     * which is exclusively `src/lib/agent-pulse/runner.ts`; every REST and external tool call passes
+     * none and can never see it.
+     */
+    | 'execution_guard_failed';
 
 export type SubmitActionOutcome =
     | { ok: true; action: SessionAction }

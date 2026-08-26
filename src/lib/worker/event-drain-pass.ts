@@ -9,6 +9,7 @@ import {
   drainEventConsumer,
   eventDrainPhaseBudgetMs,
   pruneEventLedgers,
+  pruneTerminalWakeups,
   recordEventDrainHeartbeat,
   sweepEventConsumer,
   type DrainCounts,
@@ -24,6 +25,17 @@ import {
 /** Bounded per consumer per run, so one backlogged consumer cannot starve the others. */
 const BATCH_SIZE = 100;
 
+/** P2.2: a completed wakeup is history after this many days. */
+const DEFAULT_WAKEUP_RETENTION_DAYS = 30;
+
+/** Rows one hourly wakeup prune may delete — `pruneEventLedgers`' own bound, for its reason. */
+const WAKEUP_PRUNE_BATCH_SIZE = 1_000;
+
+function wakeupRetentionDays(): number {
+  const raw = Number(process.env.WAKEUP_RETENTION_DAYS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_WAKEUP_RETENTION_DAYS;
+}
+
 export interface ConsumerReport {
   name: string;
   processed: number;
@@ -37,11 +49,20 @@ export interface MaintenanceCounts {
   autonomyDisabled: number;
 }
 
+/** The hourly duties' own results, so a caller can see that retention actually ran. */
+export interface HourlyReport {
+  swept: ConsumerReport[];
+  pruned: PruneCounts;
+  /** M11-2 u6 stitch item 4: completed wakeups older than the retention window. */
+  prunedWakeups: number;
+  maintenance: MaintenanceCounts;
+}
+
 export interface EventDrainPassResult {
   contractHash: string;
   consumers: ConsumerReport[];
   hourlyRan: boolean;
-  hourly: { swept: ConsumerReport[]; pruned: PruneCounts; maintenance: MaintenanceCounts } | null;
+  hourly: HourlyReport | null;
 }
 
 function report(name: string, counts: DrainCounts): ConsumerReport {
@@ -67,8 +88,9 @@ async function activateAll(): Promise<void> {
 }
 
 /**
- * The hourly duties: the below-floor sweep for every consumer, retention pruning, and Lane D's
- * `runPulseMaintenance` (abandoned leases; a disabled agent's still-pending wakeups).
+ * The hourly duties: the below-floor sweep for every consumer, retention pruning (the event ledgers
+ * AND the wakeup queue), and Lane D's `runPulseMaintenance` (abandoned leases; a disabled agent's
+ * still-pending wakeups).
  *
  * Without the retention duty here the supported Vercel-only (cron-only) topology would accumulate
  * every ledger indefinitely — the worker's timer is not available in degraded mode. Same reasoning
@@ -77,16 +99,19 @@ async function activateAll(): Promise<void> {
  * marks it `abandoned`; nothing else in the degraded topology ever will. Delegated to
  * `runPulseMaintenance` rather than calling the two store writers directly, so there is one
  * implementation of "maintain the wakeup queue" shared with the worker's own wakeup duty.
+ *
+ * `pruneTerminalWakeups` runs AFTER `runPulseMaintenance`, and the order earns its keep: maintenance
+ * is what turns an expired lease into a terminal `abandoned` row, so a row it terminalizes this hour
+ * becomes prunable in a later one rather than sitting claimed-forever outside both duties.
  */
-async function runHourlyDuties(
-  deadline: number
-): Promise<{ swept: ConsumerReport[]; pruned: PruneCounts; maintenance: MaintenanceCounts }> {
+async function runHourlyDuties(deadline: number): Promise<HourlyReport> {
   const swept = await Promise.all(
     eventConsumers.map(async (consumer) => report(consumer.name, await sweepEventConsumer(consumer, { deadline })))
   );
   const pruned = await pruneEventLedgers({ deadline });
   const maintenance = await runPulseMaintenance();
-  return { swept, pruned, maintenance };
+  const prunedWakeups = await pruneTerminalWakeups(wakeupRetentionDays(), WAKEUP_PRUNE_BATCH_SIZE);
+  return { swept, pruned, prunedWakeups, maintenance };
 }
 
 /**

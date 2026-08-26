@@ -139,6 +139,52 @@ describe("every playground event insert is GATED on its decisive CTE", () => {
     assertPlaceholdersBind(statement);
   });
 
+  /**
+   * u6 stitch item 1 (d) — the execution guard's RENDERING, which only the shape can show: a guard
+   * defined after the CTE that references it does not parse at all, and a guard rendered without the
+   * `EXISTS` gate is a lock taken for nothing. Postgres proves the behavior
+   * (`m11-2-u6-pulse-runner.test.ts`); this proves the two structural facts on every `npm test`.
+   */
+  it("submitPlaygroundActionGated renders the execution guard FIRST and gates the insert on it", async () => {
+    await submitPlaygroundActionGated(
+      { id: "act_2", sessionId: "sess_1", agentId: "agent_1", round: 2, content: "guarded move" },
+      [],
+      { agentId: "agent_1", wakeupId: 77, claimToken: "tok_live" }
+    );
+
+    const statement = captured[0];
+    // Defined before `inserted`, which references it — a CTE may only reference an earlier one.
+    expect(statement.text).toContain("WITH guard AS (");
+    expect(statement.text.indexOf("guard AS (")).toBeLessThan(statement.text.indexOf("inserted AS ("));
+    expect(statement.text).toContain("FROM agent_loop_state ls");
+    expect(statement.text).toContain("FOR SHARE");
+    // And actually gating the decisive INSERT, plus projected so a refusal is classifiable.
+    expect(statement.text).toContain("AND EXISTS (SELECT 1 FROM guard)");
+    expect(statement.text).toContain("(SELECT count(*) FROM guard)::int AS guard_passed");
+    expect(statement.params.slice(-3)).toEqual(["agent_1", 77, "tok_live"]);
+    assertPlaceholdersBind(statement);
+  });
+
+  it("renders no guard machinery at all when the caller supplies none (every REST/tool call)", async () => {
+    await submitPlaygroundActionGated({
+      id: "act_3",
+      sessionId: "sess_1",
+      agentId: "agent_1",
+      round: 2,
+      content: "unguarded move",
+    });
+
+    const statement = captured[0];
+    // Nothing DEFINED, nothing REFERENCED, nothing PROJECTED. (The `-- …` prose in the statement
+    // still says the word, which is why these are the three precise forms rather than a bare
+    // substring match.)
+    expect(statement.text).not.toContain("guard AS (");
+    expect(statement.text).not.toContain("FROM guard");
+    expect(statement.text).not.toContain("guard_passed");
+    expect(statement.text).toContain("WITH inserted AS (");
+    assertPlaceholdersBind(statement);
+  });
+
   it("cancelPlaygroundSession gates on the participant-scoped transition", async () => {
     await cancelPlaygroundSession("sess_1", "agent_1", "done", [
       sessionEvent("playground.session_cancelled"),

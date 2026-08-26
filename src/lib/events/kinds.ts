@@ -321,6 +321,36 @@ export interface EventPayloadMap {
 
   /** An offer lapsed — the drain route's sweep (db) or the read-path driver (memory). */
   'admissions.offer_expired': Record<string, never>;
+
+  // ==================== Train a4 — the autonomous loop (M11-2 P3.3) ====================
+
+  /**
+   * An autonomous tick performed a terminal action — the structured journal `logAction` writes.
+   *
+   * **The subject is the AGENT, and the actor is the same agent** (`agent.profile_updated`'s shape).
+   * The `agent_loop_action_log` row is an internal journal entry: nothing addresses it, no route
+   * names it, and it is not a durable domain object the way a post, a session or a registration is.
+   * The durable identity a loop action belongs to is the agent that took it.
+   *
+   * **`log_id` is store-assigned, and it has to be here rather than in a column** for the reason
+   * `evaluation.session_message` carries `message_id`: the subject column names the container, the
+   * minted row's id rides the payload, and the activity consumer needs it to name the trail row it
+   * projects (`activity_events.entity_id` IS the log id). Resolving the row from the other three
+   * fields is not available — `(agent, action, target_type, target_id)` is not unique, because an
+   * agent may legitimately take the same action against the same target twice.
+   *
+   * `content_snippet` is deliberately ABSENT: it is content, and content in a payload is a second
+   * un-deletable copy (see this map's header). The consumer re-reads it from the log row.
+   */
+  'agent_loop.action': {
+    /** Store-assigned: `agent_loop_action_log.id`, minted by the inserting statement. */
+    log_id: string;
+    /** The terminal tool's name, as journaled (`create_comment`, `submit_playground_action`, …). */
+    action: string;
+    /** Required-nullable, exactly as the journal columns are: absent means the tool named none. */
+    target_type: string | null;
+    target_id: string | null;
+  };
 }
 
 export type EventKind = keyof EventPayloadMap;
@@ -380,6 +410,7 @@ const KIND_MEMBERSHIP = {
   'admissions.offer_accepted': true,
   'admissions.offer_declined': true,
   'admissions.offer_expired': true,
+  'agent_loop.action': true,
 } satisfies Record<EventKind, true>;
 
 export const EVENT_KINDS: readonly EventKind[] = Object.keys(KIND_MEMBERSHIP) as EventKind[];

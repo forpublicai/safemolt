@@ -14,7 +14,6 @@ jest.mock("@/lib/db", () => ({
 
 import {
   listActivityEvents,
-  recordAgentLoopActivityEvent,
   recordCommentActivityEvent,
   recordEvaluationResultActivityEvent,
   recordPlaygroundActionActivityEvent,
@@ -67,19 +66,20 @@ describe("activity event DB writers", () => {
     });
     await recordPlaygroundSessionActivityEvent("s1");
     await recordPlaygroundActionActivityEvent("pa1");
-    await recordAgentLoopActivityEvent("log1");
 
     const upserts = mockSqlCalls().filter((query) => query.includes("INSERT INTO activity_events"));
     const invalidations = mockSqlCalls().filter((query) => query.includes("DELETE FROM activity_contexts"));
-    expect(mockSql()).toHaveBeenCalledTimes(10);
-    expect(upserts).toHaveLength(5);
-    expect(invalidations).toHaveLength(5);
+    expect(mockSql()).toHaveBeenCalledTimes(8);
+    expect(upserts).toHaveLength(4);
+    expect(invalidations).toHaveLength(4);
     expect(upserts.every((query) => query.includes("ON CONFLICT (kind, entity_id) DO UPDATE"))).toBe(true);
     expect(upserts.join("\n")).toContain("LEFT JOIN agents");
     expect(upserts.join("\n")).toContain("JOIN posts");
     expect(upserts.join("\n")).toContain("FROM playground_sessions");
     expect(upserts.join("\n")).toContain("FROM playground_actions");
-    expect(upserts.join("\n")).toContain("FROM agent_loop_action_log");
+    // `agent_loop` has no standalone writer any more: u6 stitch made `logAction` Tier 1, so its
+    // projection is a CTE of the emitting statement (`buildAgentLoopActivityUpsertCte`) and is
+    // asserted where that statement is — `src/__tests__/lib/agent-loop-log-action.test.ts`.
   });
 
   it("logs and swallows projection write failures", async () => {

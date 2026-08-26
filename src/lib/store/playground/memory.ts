@@ -10,6 +10,7 @@ import {
   writePlaygroundSessionActivityProjectionInMemory,
 } from "../activity/events";
 import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents } from "../events/memory";
+import { executionGuardPasses, type ExecutionGuard } from "../execution-guard";
 import {
   mergeAffiliationIntoParticipant,
   type ActingJoinPatch,
@@ -584,7 +585,8 @@ function classifyActionRefusal(
  */
 export async function submitPlaygroundActionGated(
   input: CreateActionInput,
-  events?: readonly PreparedEvent[]
+  events?: readonly PreparedEvent[],
+  executionGuard?: ExecutionGuard
 ): Promise<SubmitActionOutcome> {
   const prepared = withSessionSubject(events, input.sessionId);
   // Kind and payload first; the idempotency check is left to `prepareEventBatch` on the path that
@@ -592,6 +594,13 @@ export async function submitPlaygroundActionGated(
   // ordinary retry, and db mode answers it with a refusal rather than a 23505 — because the event
   // insert there is gated on the decisive CTE and never runs.
   validatePreparedEvents(prepared);
+  // M11-2 P3.3 (u6 stitch): the guard's memory twin, in the SAME synchronous section as the write
+  // below — no `await` between this check and the map mutation, which is what the db side's row lock
+  // gives it there. Placed AFTER `validatePreparedEvents` and BEFORE the classification because the
+  // db statement renders its event arms unconditionally and decides the guard alongside every other
+  // predicate in one snapshot, then reports the guard first. `undefined` (every REST/tool caller)
+  // always passes, matching the db side rendering no CTE and gating nothing.
+  if (!executionGuardPasses(executionGuard)) return { ok: false, reason: 'execution_guard_failed' };
   const outcome = classifyActionRefusal(playgroundSessions.get(input.sessionId), input);
   if (!outcome.ok) return outcome;
 

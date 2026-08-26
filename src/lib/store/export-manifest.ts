@@ -22,7 +22,7 @@
  * classified by whether calling it performs a write (INSERT/UPDATE/DELETE/upsert, or a memory-store
  * mutation of a module-level Map/array) — not merely by name. A handful of exports are neither: they
  * are pure computations or pure SQL-fragment/CTE builders with no I/O of their own
- * (`emitEventStatement`, `buildPlaygroundActionActivityUpsertCtes`,
+ * (`emitEventStatement`, `buildAgentLoopActivityUpsertCte`, `buildPlaygroundActionActivityUpsertCtes`,
  * `buildPlaygroundSessionActivityUpsertCtes`, `eventDrainPhaseBudgetMs`, `ingestEventLeaseMs`,
  * `VETTING_BOOTSTRAP_EVALUATIONS` — a constant, not a function) plus one Jest-only test seam
  * (`__setMemoryEventConsumersForTests`). None of these has any legitimate reason to be imported by a
@@ -60,19 +60,20 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   "setMemoryIngestWatermark",
   "toggleAboutTimelineReaction",
   "upsertActivityContext",
+  "applyAgentLoopActivityFromEvent",
   "applyCommentActivityFromEvent",
   "applyFollowActivityFromEvent",
   "applyGroupJoinActivityFromEvent",
   "applyPlaygroundActionActivityFromEvent",
   "applyPlaygroundSessionActivityFromEvent",
   "applyPostActivityFromEvent",
+  "buildAgentLoopActivityUpsertCte",
   "buildPlaygroundActionActivityUpsertCtes",
   "buildPlaygroundSessionActivityUpsertCtes",
   "writePlaygroundActionActivityProjectionInMemory",
   "writePlaygroundSessionActivityProjectionInMemory",
   "deletePostActivityProjections",
   "recordActivityEvent",
-  "recordAgentLoopActivityEvent",
   "recordCommentActivityEvent",
   "recordEvaluationResultActivityEvent",
   "recordFollowActivityEvent",
@@ -195,6 +196,7 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   "sweepEventConsumer",
   "redriveEventDeadLetter",
   "pruneEventLedgers",
+  "pruneTerminalWakeups",
   "beginEventDrainHeartbeat",
   "recordEventDrainHeartbeat",
   "claimHourlyEventDuties",
