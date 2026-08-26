@@ -13,11 +13,13 @@ import { createAgent, getAgentById, setAgentVetted } from "@/lib/store/agents/me
 import { createGroup } from "@/lib/store/groups/memory";
 import { setLoopEnabled } from "@/lib/agent-loop";
 import {
+  agentLoopState,
   playgroundActions,
   playgroundSessions,
   resetAgentLoopState,
   resetPulseBudgetCounters,
   resetWakeupState,
+  wakeupQueue,
 } from "@/lib/store/_memory-state";
 import { enqueueWakeup, getWakeupByAgentReasonEvent } from "@/lib/store/wakeups";
 import { listComments } from "@/lib/store/comments/memory";
@@ -365,6 +367,196 @@ describe("runPulseBatch — playground_round: a refused or mismatched submit is 
 
     expect(result.results[0].outcome).toBe("error");
     expect((await getWakeupByAgentReasonEvent(actor.id, reason, 910003))?.result).toBe("error");
+  });
+});
+
+/**
+ * u6 D fix round 1, finding 1 — an `idle` tick is fenced and guarded like every other reason.
+ *
+ * `idle` is the one reason the runner dispatches through the legacy `tickAgent`, and it used to run
+ * its terminal tool with NEITHER the lease-renewal fence NOR the execution guard: a claimed idle
+ * wakeup whose agent was disabled mid-tick could still post, vote, follow or comment, on the
+ * highest-volume reason there is. `tickAgent` now takes the runner's pulse bundle and threads both
+ * into its domain-stage turn.
+ *
+ * Real memory store throughout, exactly like the reply cases above — only inference and the RSS fetch
+ * are mocked.
+ */
+describe("runPulseBatch — idle: the fence and the guard reach the legacy tick", () => {
+  beforeEach(() => {
+    jest.resetModules();
+    // The `idle` focus gathers EVERY sense, including headlines a real `getNewsItems` would fetch
+    // over the network. Mocked to keep this suite offline; nothing below asserts news.
+    jest.doMock("@/lib/rss", () => ({ getNewsItems: jest.fn(async () => []) }));
+  });
+
+  /** Two LLM rounds: the discovery stage declares a domain, the domain stage asks for the tool. */
+  function idleLlm(postId: string, content: string, beforeTerminalCall?: () => Promise<void>) {
+    return jest
+      .fn()
+      .mockImplementationOnce(async () => ({ content: "DOMAIN: discussion", toolCalls: [] }))
+      .mockImplementationOnce(async () => {
+        if (beforeTerminalCall) await beforeTerminalCall();
+        return {
+          content: null,
+          toolCalls: [{ id: "call_1", name: "create_comment", arguments: { post_id: postId, content } }],
+        };
+      });
+  }
+
+  /**
+   * Arms the idle row through the plain `enqueueWakeup` path — the same event-less shape
+   * `enqueueIdleWakeup` produces. Deliberately NOT through the runner: importing that module here
+   * would load it (and its inference adapter) before `mockInference` gets to replace the adapter.
+   */
+  async function seedIdleAgent(label: string) {
+    const author = await agent(label);
+    await setLoopEnabled(author.id, true);
+    const group = await createGroup(nextName("grp"), "u6 group", "", author.id);
+    const post = await seedPost(author.id, group.id, "an idle tick will find this");
+    const enq = await enqueueWakeup({
+      agentId: author.id,
+      reason: "idle",
+      eventId: null,
+      payload: {},
+      delivery: "internal",
+    });
+    expect(enq.created).toBe(true);
+    return { author, post };
+  }
+
+  it("an enabled idle tick still acts — the guard the runner now supplies passes for a live claim", async () => {
+    const { author, post } = await seedIdleAgent("idle1");
+    const callLLM = idleLlm(post.id, "an idle thought");
+    mockInference(callLLM);
+
+    const { runPulseBatch, IDLE_WAKEUP_REASON } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(1);
+
+    expect(result.results[0]).toMatchObject({ agentId: author.id, reason: IDLE_WAKEUP_REASON, outcome: "acted" });
+    // A REAL comment, written through the guarded action: a guard that did not pass would have
+    // refused this write and the outcome would read `error`.
+    const comments = await listComments(post.id);
+    expect(comments.some((c) => c.authorId === author.id && c.content === "an idle thought")).toBe(true);
+  });
+
+  it("a disable landing mid-tick stops the terminal mutation and writes no loop state", async () => {
+    const { author, post } = await seedIdleAgent("idle2");
+    const before = { ...agentLoopState.get(author.id)! };
+
+    // "Mid-tick" is the moment the domain-stage LLM call resolves: by then a human has turned this
+    // agent's autonomy off. The fence must refuse before `create_comment` executes.
+    const callLLM = idleLlm(post.id, "should never land", async () => {
+      await setLoopEnabled(author.id, false);
+    });
+    mockInference(callLLM);
+
+    const { runPulseBatch, IDLE_WAKEUP_REASON } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(1);
+
+    // No terminal mutation.
+    const comments = await listComments(post.id);
+    expect(comments.some((c) => c.content === "should never land")).toBe(false);
+
+    // A fenced, re-armable, non-`acted` outcome.
+    expect(result.results[0].outcome).toBe("skip");
+    // The idle row carries no event id (`enqueueIdleWakeup` is the event-less producer), so it is
+    // read from the queue directly rather than through the event-keyed lookup the cases above use.
+    const row = [...wakeupQueue.rows.values()].find(
+      (w) => w.agentId === author.id && w.reason === IDLE_WAKEUP_REASON
+    )!;
+    expect(row.completedAt).not.toBeNull();
+    expect(row.result).not.toBe("acted");
+
+    // And nothing was written about an agent this tick no longer owned: `enabled` is the ONE field
+    // the human's disable moved, and every other field — the `next_eligible_at` cooldown above all —
+    // is byte-identical to what it was before the tick.
+    const after = agentLoopState.get(author.id)!;
+    expect({ ...after, enabled: before.enabled }).toEqual(before);
+  });
+});
+
+/**
+ * u6 D fix round 1, finding 2 — fence loss ends the tick with NO further unfenced writes.
+ *
+ * A failed pre-terminal renewal used to fall through to the ordinary "the model declined" branch,
+ * which calls `recordSkip` — an `agent_loop_state` write (`next_eligible_at`, `last_seen_at`) made
+ * under ownership the runner had just been told it lost. A later re-enable, or the claim's new owner,
+ * then inherited that stale cooldown.
+ */
+describe("runPulseBatch — fence loss writes no loop state", () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  async function seedReplyWakeup(label: string, eventId: number) {
+    const author = await agent(label);
+    await setLoopEnabled(author.id, true);
+    const group = await createGroup(nextName("grp"), "u6 group", "", author.id);
+    const post = await seedPost(author.id, group.id, "a post whose reply never lands");
+    await enqueueWakeup({
+      agentId: author.id,
+      reason: "comment_on_my_post",
+      eventId,
+      payload: { post_id: post.id, comment_id: `seed_${eventId}`, parent_comment_id: null },
+      delivery: "internal",
+    });
+    const row = await getWakeupByAgentReasonEvent(author.id, "comment_on_my_post", eventId);
+    return { author, post, wakeupId: row!.id };
+  }
+
+  it("a disable before the renewal leaves agent_loop_state byte-identical — no cooldown bump", async () => {
+    const { author, post } = await seedReplyWakeup("fence1", 900101);
+    const before = { ...agentLoopState.get(author.id)! };
+
+    const callLLM = jest.fn().mockImplementationOnce(async () => {
+      await setLoopEnabled(author.id, false);
+      return {
+        content: null,
+        toolCalls: [{ id: "call_1", name: "create_comment", arguments: { post_id: post.id, content: "no" } }],
+      };
+    });
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    await runPulseBatch(1);
+
+    const after = agentLoopState.get(author.id)!;
+    expect({ ...after, enabled: before.enabled }).toEqual(before);
+
+    // The token was still ours here — the renewal failed on `enabled`, not on ownership — so the one
+    // completion this path attempts lands, freeing the agent's one-inflight slot, and stays re-armable.
+    const row = await getWakeupByAgentReasonEvent(author.id, "comment_on_my_post", 900101);
+    expect(row?.result).toBe("skip");
+  });
+
+  it("a claim superseded mid-tick writes nothing at all — the new owner's row is untouched", async () => {
+    const { author, post, wakeupId } = await seedReplyWakeup("fence2", 900102);
+    const before = { ...agentLoopState.get(author.id)! };
+
+    // Abandonment + re-arm + re-claim by another runner, compressed into one line: the row now
+    // carries somebody else's token, so this runner's renewal AND its completion both match zero rows.
+    const callLLM = jest.fn().mockImplementationOnce(async () => {
+      wakeupQueue.rows.get(wakeupId)!.claimToken = "another-runners-token";
+      return {
+        content: null,
+        toolCalls: [{ id: "call_1", name: "create_comment", arguments: { post_id: post.id, content: "no" } }],
+      };
+    });
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    await runPulseBatch(1);
+
+    // The superseded runner completed nothing: the new owner's claim is exactly as it left it.
+    const row = wakeupQueue.rows.get(wakeupId)!;
+    expect(row.claimToken).toBe("another-runners-token");
+    expect(row.completedAt).toBeNull();
+    expect(row.result).toBeNull();
+
+    // No comment, and no loop-state write either.
+    expect((await listComments(post.id)).some((c) => c.content === "no")).toBe(false);
+    expect(agentLoopState.get(author.id)!).toEqual(before);
   });
 });
 

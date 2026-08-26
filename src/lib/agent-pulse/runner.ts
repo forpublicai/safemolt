@@ -14,20 +14,23 @@
  * that makes "no terminal mutation after the human disabled this agent's autonomy" a database
  * guarantee rather than a racing check (`src/lib/store/execution-guard.ts`).
  *
- * **Scope, recorded plainly.** `idle` wakeups are dispatched to the EXISTING `tickAgent` unchanged —
- * its two-tier discovery/domain router, `logAction`, `storeActionMemory` and cooldown bookkeeping are
- * all reused as-is, which is this chunk's "loop-surface minimal resolver" for that reason (`idle`
- * keeps exactly the inference-provider selection and tool routing it has always had; nothing here
- * reinvents it). Consequently `idle` ticks get the SAME protection they always had — none — from the
- * lease-renewal fence and the execution guard; those are new machinery `runReplyWakeup` and
- * `runPlaygroundRoundWakeup` below actually exercise. The execution guard itself is wired into
- * `create_comment` only; `submit_playground_action` gets the lease-renewal fence (closing the same
- * check-then-act gap `renewWakeupLease` closes everywhere) but not the statement-level guard — see
- * `runPlaygroundRoundWakeup`'s own doc comment for why that is a deliberately smaller, and still
- * honestly bounded, residual than the one `create_comment` closes completely. Every OTHER terminal
- * tool `idle` can reach (posts, votes, groups, classes, evaluations, follow, memory) is unguarded at
- * the statement level, protected only by the lease-renewal fence `tickAgent` still lacks entirely —
- * recorded as this train's deferred work, not silently assumed complete.
+ * **Scope, recorded plainly.** `idle` wakeups are dispatched to the EXISTING `tickAgent` — its
+ * two-tier discovery/domain router, `logAction`, `storeActionMemory` and cooldown bookkeeping are all
+ * reused as-is, which is this chunk's "loop-surface minimal resolver" for that reason (`idle` keeps
+ * exactly the inference-provider selection and tool routing it has always had; nothing here reinvents
+ * it). What is NOT reused as-is any more is its protection: `tickAgent` takes an optional pulse bundle
+ * (`PulseTickBundle`, `agent-loop.ts`) and the idle path passes the same fence and the same execution
+ * guard the narrow reasons use, so every reason this runner drives renews its lease immediately before
+ * the terminal tool executes and carries the guard into whatever executor reads one. (u6 D fix round
+ * 1, finding 1: an idle tick used to run terminal tools with NEITHER, which left the highest-volume
+ * reason as the one hole in the kill switch this machinery exists to close.)
+ *
+ * The guard reaches the WIRED actions only — `create_comment` and `submit_playground_action` thread
+ * it into their gated statements today. Every other terminal tool an `idle` tick can reach (posts,
+ * votes, groups, classes, evaluations, follow, memory) now sits behind the lease-renewal fence but
+ * still has no statement-level guard, so a disable landing in the seconds between the renewal and the
+ * write is a real residual there — recorded as this train's deferred work, not silently assumed
+ * complete.
  */
 import { randomUUID } from "node:crypto";
 
@@ -65,9 +68,9 @@ import {
   summarizeArgs,
   summarizeResult,
   tickAgent,
+  type PulseTickBundle,
 } from "@/lib/agent-loop";
 import { listRecentLoopActions } from "@/lib/agent-loop-actions";
-import type { ExecutionGuard } from "@/lib/store/execution-guard";
 import type { StoredAgent } from "@/lib/store-types";
 
 // ---------------------------------------------------------------------------
@@ -208,17 +211,74 @@ async function claimOneWakeup(maxAttempts = 1000): Promise<{ wakeup: StoredWakeu
 // Dispatch
 // ---------------------------------------------------------------------------
 
-/** `idle`: unchanged delegation to `tickAgent` — see this module's header for what that means. */
+/**
+ * The pre-terminal protection ONE claimed wakeup carries, built once and used by every reason this
+ * runner drives (u6 D fix round 1, finding 1 — before it, only the two narrow paths had any).
+ *
+ * Two halves, both already existing primitives:
+ *  - the FENCE: a token-fenced `renewWakeupLease` with `agent_loop_state.enabled` baked into the
+ *    statement (P3.2), run immediately before the terminal tool executes. Zero rows back means this
+ *    runner no longer owns the claim — superseded, abandoned, or the human disabled the agent — and
+ *    the turn ends without invoking the tool.
+ *  - the GUARD: the claim's identity, forwarded to every `executeTool` call, which the wired actions
+ *    render as a CTE their decisive mutation gates on (`store/execution-guard.ts`). That is what
+ *    closes the seconds between the fence and the write.
+ *
+ * `fenceLost()` is the distinct outcome finding 2 asks for: it separates "the model declined to act"
+ * (the hook never fired) from "ownership is gone" (the hook fired and refused), which the caller
+ * cannot otherwise tell apart — both leave the turn with no terminal tool executed.
+ */
+function createPulseFence(wakeup: StoredWakeup, claimToken: string): PulseTickBundle {
+  let lost = false;
+  return {
+    beforeTerminalTool: async (_call: NormalizedToolCall) => {
+      const renewed = await renewWakeupLease(wakeup.id, claimToken, pulseLeaseMs());
+      if (!renewed) lost = true;
+      return renewed;
+    },
+    executionGuard: { agentId: wakeup.agentId, wakeupId: wakeup.id, claimToken },
+    fenceLost: () => lost,
+  };
+}
+
+/**
+ * End a tick that lost its fence (u6 D fix round 1, finding 2).
+ *
+ * ONE token-fenced completion attempt and nothing else: no `recordSkip`, no `recordError`, no other
+ * `agent_loop_state` writer, no journal and no memory write. Under lost ownership every one of those
+ * is an unfenced write about an agent this runner no longer speaks for — `recordSkip` in particular
+ * stamps a `next_eligible_at` cooldown that a re-enable, or the claim's new owner, then inherits.
+ *
+ * The completion itself is safe to attempt because it is token-fenced too: a claim superseded by an
+ * abandon + re-arm no longer matches, so it writes nothing and the new owner's row is untouched. When
+ * the fence failed on the DISABLE instead, the token is still ours and the row completes as a
+ * re-armable `skip`, which frees the agent's one-inflight slot instead of holding it until the lease
+ * expires.
+ */
+async function completeAfterFenceLoss(wakeup: StoredWakeup, claimToken: string): Promise<WakeupOutcome> {
+  await completeWakeup(wakeup.id, claimToken, "skip").catch(() => {});
+  return "skip";
+}
+
+/**
+ * `idle`: delegation to `tickAgent`, now carrying the same fence and guard every other reason gets —
+ * see this module's header. The tick's own routing, journalling and cooldown bookkeeping are still
+ * `tickAgent`'s, unchanged.
+ */
 async function runIdleWakeup(agent: StoredAgent, wakeup: StoredWakeup, claimToken: string): Promise<WakeupOutcome> {
+  const fence = createPulseFence(wakeup, claimToken);
   let outcome: WakeupOutcome;
   try {
-    const result = await tickAgent(agent.id);
+    const result = await tickAgent(agent.id, fence);
     outcome = result.action === "skip" ? "skip" : "acted";
   } catch {
     // `tickAgent` already applied its own `recordError` bookkeeping before rethrowing (see
     // `agent-loop.ts`'s catch block) — nothing further to record here.
     outcome = "error";
   }
+  // Checked after both arms and BEFORE the completion below: a fenced-off tick returns
+  // `FENCE_LOST_ACTION`, which the classification above would otherwise read as `acted`.
+  if (fence.fenceLost()) return completeAfterFenceLoss(wakeup, claimToken);
   await completeWakeup(wakeup.id, claimToken, outcome);
   return outcome;
 }
@@ -226,11 +286,6 @@ async function runIdleWakeup(agent: StoredAgent, wakeup: StoredWakeup, claimToke
 interface NarrowWakeupConfig {
   toolNames: ReadonlySet<string>;
   domain: LoopDomain;
-  /**
-   * Populate the execution guard for the terminal call. Read today by `create_comment` and by
-   * `submit_playground_action` — i.e. by every terminal tool either narrow reason can reach.
-   */
-  withExecutionGuard: boolean;
   /** playground_round only: the successful result's `round` must equal this or the tick errors. */
   expectedRound?: number;
 }
@@ -273,9 +328,9 @@ async function runNarrowWakeup(
     domain: config.domain,
   });
 
-  const guard: ExecutionGuard | undefined = config.withExecutionGuard
-    ? { agentId: agent.id, wakeupId: wakeup.id, claimToken }
-    : undefined;
+  // The same bundle the idle path hands to `tickAgent` — one builder, so no reason this runner
+  // drives can be fenced differently from another (u6 D fix round 1, finding 1).
+  const fence = createPulseFence(wakeup, claimToken);
 
   let turn;
   try {
@@ -287,13 +342,12 @@ async function runNarrowWakeup(
       maxToolCalls: 1,
       requireFinalText: false,
       terminalToolNames: config.toolNames,
-      executionGuard: guard,
+      executionGuard: fence.executionGuard,
       // The fence: renew the lease, token-checked, with the `agent_loop_state.enabled` EXISTS
       // predicate baked into `renewWakeupLease` itself (P3.2 semantics). A `false` return here ends
-      // the turn as a `skip` (no tool invoked) — see `beforeTerminalTool`'s own doc comment in
+      // the turn without invoking the tool — see `beforeTerminalTool`'s own doc comment in
       // `agent-runtime/index.ts` for exactly what that means for `turn.terminalToolExecuted` below.
-      beforeTerminalTool: async (_call: NormalizedToolCall) =>
-        renewWakeupLease(wakeup.id, claimToken, pulseLeaseMs()),
+      beforeTerminalTool: fence.beforeTerminalTool,
     });
   } catch (e) {
     await recordError(agent.id, e instanceof Error ? e.message : "runner turn failed").catch(() => {});
@@ -301,19 +355,23 @@ async function runNarrowWakeup(
     return "error";
   }
 
+  // The fence refused: ownership is gone, so this tick writes nothing but its own token-fenced
+  // completion (u6 D fix round 1, finding 2). Checked BEFORE the `!terminal` branch, which used to
+  // treat a fenced-off turn as an ordinary decline and stamp `recordSkip`'s cooldown on an agent this
+  // runner no longer owned.
+  if (fence.fenceLost()) return completeAfterFenceLoss(wakeup, claimToken);
+
   const terminal = turn.terminalToolExecuted;
   if (!terminal) {
-    // Either nothing worth doing (the model declined to call the one tool it had), or the
-    // lease-renewal fence refused. Both are re-armable declines, not failures — see P3.2's re-arm
-    // predicate (`result IS DISTINCT FROM 'acted'`).
+    // Nothing worth doing: the model declined to call the one tool it had. A re-armable decline, not
+    // a failure — see P3.2's re-arm predicate (`result IS DISTINCT FROM 'acted'`).
     await recordSkip(agent.id, cooldownMinutesFor(agent)).catch(() => {});
     await completeWakeup(wakeup.id, claimToken, "skip");
     return "skip";
   }
   if (!terminal.result.success) {
-    // Covers BOTH an ordinary action refusal (e.g. the comment cooldown) AND, when `withExecutionGuard`
-    // is set, `execution_guard_failed` — the statement-level guard catching a disable that landed in
-    // the fence-to-mutation gap. The plan's own words: "the runner completes the wakeup as `error`".
+    // Covers BOTH an ordinary action refusal (e.g. the comment cooldown) AND `execution_guard_failed`
+    // — the statement-level guard catching a disable that landed in the fence-to-mutation gap. The plan's own words: "the runner completes the wakeup as `error`".
     await recordError(agent.id, terminal.result.error ?? `${terminal.call.name} failed`).catch(() => {});
     await completeWakeup(wakeup.id, claimToken, "error");
     return "error";
@@ -356,7 +414,6 @@ async function runReplyWakeup(agent: StoredAgent, wakeup: StoredWakeup, claimTok
   return runNarrowWakeup(agent, wakeup, claimToken, focusForWakeup(wakeup), {
     toolNames: REPLY_TOOL_NAMES,
     domain: "discussion",
-    withExecutionGuard: true,
   });
 }
 
@@ -383,7 +440,6 @@ async function runPlaygroundRoundWakeup(
   return runNarrowWakeup(agent, wakeup, claimToken, focusForWakeup(wakeup), {
     toolNames: PLAYGROUND_ROUND_TOOL_NAMES,
     domain: "playground",
-    withExecutionGuard: true,
     expectedRound: round,
   });
 }

@@ -54,6 +54,10 @@ import {
   type PlaygroundPendingItem,
 } from "@/lib/agent-senses";
 import type { StoredAgent } from "@/lib/store-types";
+// Type-only, and deliberately so: `store/execution-guard.ts` reaches `_memory-state` the moment it
+// LOADS, and this module is imported by tests that mock `@/lib/db` with nothing but `{ sql }` (see
+// the lazy-import note above). A type import is erased at compile time, so it adds no such edge.
+import type { ExecutionGuard } from "@/lib/store/execution-guard";
 import { buildAgentLoopActivityUpsertCte } from "@/lib/store/activity/events";
 import { emitEventCtes, sqlColumn, sqlPayloadObject } from "@/lib/store/events/statement";
 import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
@@ -866,7 +870,43 @@ function parseDiscoveryDomain(finalContent: string | null): LoopDomain | null {
 // Single agent tick
 // ---------------------------------------------------------------------------
 
-export async function tickAgent(agentId: string): Promise<{ action: string; detail?: string }> {
+/**
+ * M11-2 u6 D fix round 1, finding 1 — the runner's pre-terminal FENCE and its statement-level
+ * EXECUTION GUARD, threaded into a legacy tick.
+ *
+ * `idle` is the one wakeup reason `agent-pulse/runner.ts` dispatches through this function instead of
+ * through one of its own narrow paths, and until this bundle existed that made `idle` the ONE claimed
+ * wakeup whose terminal tool ran with neither protection: a human disabling the agent's autonomy
+ * mid-tick could still watch its post, vote, follow or comment land afterwards — exactly what
+ * `ai/PLAN_M11_2.md` P3.2 forbids ("a wakeup queued or claimed before disablement must never execute
+ * a terminal mutation after it"), on the highest-volume reason there is.
+ *
+ * The bundle is OPTIONAL and populated only by the runner. Every other caller passes nothing, and
+ * each `pulse?.…` below then renders `undefined` — byte-identically what `runAgenticTurn` and
+ * `executeTool` already received from this function before the parameter existed.
+ *
+ * `fenceLost()` is what makes fence loss a DISTINCT outcome rather than one more silent skip (finding
+ * 2). The hook returns `false` for exactly one reason — the token-fenced lease renewal came back
+ * empty, so the claim was superseded or the agent was disabled — and a tick that has lost its fence
+ * must write nothing further, least of all the `agent_loop_state` cooldown `recordSkip` would stamp
+ * under ownership it no longer holds.
+ */
+export interface PulseTickBundle {
+  /** `runAgenticTurn`'s pre-execution seam: `false` ends the turn WITHOUT invoking the tool. */
+  beforeTerminalTool: (call: NormalizedToolCall) => Promise<boolean>;
+  /** Forwarded to every `executeTool` call this tick makes; read by the wired executors only. */
+  executionGuard: ExecutionGuard;
+  /** True once `beforeTerminalTool` has refused a call during this tick. */
+  fenceLost: () => boolean;
+}
+
+/** `tickAgent`'s reported action when the pulse fence refused mid-tick (see `PulseTickBundle`). */
+export const FENCE_LOST_ACTION = "fence_lost";
+
+export async function tickAgent(
+  agentId: string,
+  pulse?: PulseTickBundle
+): Promise<{ action: string; detail?: string }> {
   // M11-2 P0.4: journal one row per processed tick so the skip-tick inference share
   // (ai/validation/m11-baseline.md section 4) has an honest denominator. `inferenceConsumed` flips
   // true only right before a runAgenticTurn call is actually made; `terminalActionLanded` flips true
@@ -880,6 +920,20 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
   // line in this function changes.
   let inferenceConsumed = false;
   let terminalActionLanded = false;
+
+  /**
+   * u6 D fix, finding 2: the pulse fence refused, so ownership is gone — the claim was superseded, or
+   * the human disabled this agent's autonomy mid-tick. End the tick writing NOTHING further: no
+   * `recordSkip`, so the cooldown a new owner (or a later re-enable) inherits is never stamped by a
+   * tick that no longer owns this agent. The P0.4 tick journal is still written, and deliberately: it
+   * is instrumentation keyed to the TICK rather than to ownership, and the inference this tick really
+   * did consume has to stay in the skip-share denominator (`agent-loop/state.ts`).
+   */
+  const fenceLostTick = (): { action: string; detail?: string } => {
+    void recordAgentLoopTick({ agentId, outcome: "skipped", inferenceConsumed, terminalAction: false });
+    return { action: FENCE_LOST_ACTION, detail: "pulse fence refused the terminal call" };
+  };
+
   try {
     const agent = await getAgentById(agentId);
     if (!agent) throw new Error("Agent not found");
@@ -964,7 +1018,14 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
         callLLM,
         maxToolCalls: LOOP_DISCOVERY_MAX_TOOL_CALLS,
         terminalToolNames: LOOP_TERMINAL_TOOLS,
+        // u6 D fix, finding 1. `undefined` for every caller that passes no bundle — identical to
+        // omitting both fields, which is what this call site did before.
+        beforeTerminalTool: pulse?.beforeTerminalTool,
+        executionGuard: pulse?.executionGuard,
       });
+      // Today's discovery slice is read-only, so no call here is terminal and the hook cannot fire.
+      // Checked anyway: the fence must hold for whatever the slice becomes, not for what it is.
+      if (pulse?.fenceLost()) return fenceLostTick();
       discoveryCallsUsed = discoveryResult.toolCallsExecuted.length;
 
       const chosen = parseDiscoveryDomain(discoveryResult.finalContent);
@@ -995,7 +1056,14 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
       maxToolCalls: remainingCalls,
       requireFinalText: false,
       terminalToolNames: LOOP_TERMINAL_TOOLS,
+      // u6 D fix, finding 1: the domain stage is where every terminal tool an idle tick can reach
+      // actually executes, so this is the call site the fence and the guard exist for.
+      beforeTerminalTool: pulse?.beforeTerminalTool,
+      executionGuard: pulse?.executionGuard,
     });
+    // BEFORE the `!terminal` branch below, which would otherwise read a fenced-off turn as an
+    // ordinary decline and stamp a cooldown under lost ownership (finding 2).
+    if (pulse?.fenceLost()) return fenceLostTick();
 
     const terminal = domainResult.terminalToolExecuted;
     if (!terminal) {

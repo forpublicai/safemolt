@@ -668,3 +668,115 @@ describe("agent loop tick journal (M11-2 P0.4)", () => {
     expect(tickJournalCalls(sql)).toHaveLength(1); // the call was made — just never awaited
   });
 });
+
+/**
+ * M11-2 u6 D fix round 1 — the optional pulse bundle (`PulseTickBundle`).
+ *
+ * `agent-pulse/runner.ts` dispatches the `idle` reason through this function, and until the bundle
+ * existed that made `idle` the one claimed wakeup whose terminal tool ran with neither the
+ * lease-renewal fence nor the execution guard (finding 1). These cases pin the threading itself: the
+ * guard reaches `executeTool`, a refusing fence stops the tool outright, and a refused tick writes no
+ * `agent_loop_state` row (finding 2). The no-bundle callers stay covered by every other case in this
+ * file — several of them assert `executeTool`'s fourth argument is `undefined`.
+ */
+describe("tickAgent — the runner's pulse bundle", () => {
+  const guard = { agentId: agent.id, wakeupId: 7, claimToken: "tok_7" };
+
+  /** Every `agent_loop_state` statement this tick issued — `recordSkip`/`recordAction`/`recordError`. */
+  const loopStateWrites = (sql: jest.Mock): string[] =>
+    sql.mock.calls
+      .map((call) => {
+        const first = call[0] as TemplateStringsArray | string;
+        return typeof first === "string" ? first : first.join("?");
+      })
+      // WRITES only: the tick also READS this row through the senses, which is not a mutation.
+      .filter((text) => /(UPDATE|INSERT INTO)\s+agent_loop_state/.test(text));
+
+  const replyTurn = [
+    { content: "DOMAIN: discussion", toolCalls: [] },
+    {
+      content: null,
+      toolCalls: [{ id: "t1", name: "create_comment", arguments: { post_id: "post_1", content: "good point" } }],
+    },
+  ];
+
+  it("forwards the execution guard to every executeTool call the tick makes", async () => {
+    const { tickAgent, executeTool } = await setup({
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [
+        { content: null, toolCalls: [{ id: "d1", name: "list_feed", arguments: {} }] },
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        ...replyTurn.slice(1),
+      ],
+    });
+
+    // The parameter is typed (wider than the runtime's `NormalizedToolCall`, which is all
+    // contravariance needs) so the call assertion below can read the pending call it received.
+    const beforeTerminalTool = jest.fn(async (_call: { name: string }) => true);
+    const result = await tickAgent(agent.id, { beforeTerminalTool, executionGuard: guard, fenceLost: () => false });
+
+    expect(result.action).toBe("create_comment");
+    // The discovery stage's read tool AND the domain stage's terminal tool both carry it.
+    expect(executeTool).toHaveBeenCalledWith("list_feed", {}, agent, guard);
+    expect(executeTool).toHaveBeenCalledWith(
+      "create_comment",
+      { post_id: "post_1", content: "good point" },
+      agent,
+      guard
+    );
+    // The hook is called for the TERMINAL call only — a read tool is not something to fence.
+    expect(beforeTerminalTool).toHaveBeenCalledTimes(1);
+    expect(beforeTerminalTool.mock.calls[0][0]).toMatchObject({ name: "create_comment" });
+  });
+
+  it("a refusing fence stops the terminal tool and writes no agent_loop_state row", async () => {
+    const { tickAgent, executeTool, sql } = await setup({
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: replyTurn,
+    });
+
+    let refused = false;
+    const result = await tickAgent(agent.id, {
+      beforeTerminalTool: async () => {
+        refused = true;
+        return false;
+      },
+      executionGuard: guard,
+      fenceLost: () => refused,
+    });
+
+    // No terminal mutation: the tool was never invoked at all.
+    expect(executeTool).not.toHaveBeenCalled();
+    // A distinct outcome — not the ordinary "the model declined" skip.
+    expect(result.action).toBe("fence_lost");
+    // Finding 2: nothing was written about an agent this tick no longer owns. `recordSkip` would
+    // have stamped a `next_eligible_at` cooldown here, inherited on the next re-enable.
+    expect(loopStateWrites(sql)).toEqual([]);
+    // The P0.4 journal still records the tick — it is instrumentation keyed to the tick, and the
+    // inference this tick really did consume has to stay in the skip-share denominator.
+    expect(tickJournalCalls(sql)).toEqual([
+      { agentId: agent.id, outcome: "skipped", inferenceConsumed: true, terminalAction: false },
+    ]);
+  });
+
+  it("an ordinary decline with a bundle present is still an ordinary skip", async () => {
+    // The fence held; the model simply called no tool. That path must keep its cooldown bookkeeping —
+    // the finding-2 early return applies to LOST OWNERSHIP, never to "nothing worth doing".
+    const { tickAgent, sql } = await setup({
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        { content: "nothing worth saying", toolCalls: [] },
+      ],
+    });
+
+    const result = await tickAgent(agent.id, {
+      beforeTerminalTool: async () => true,
+      executionGuard: guard,
+      fenceLost: () => false,
+    });
+
+    expect(result.action).toBe("skip");
+    expect(loopStateWrites(sql)).toHaveLength(1);
+  });
+});
