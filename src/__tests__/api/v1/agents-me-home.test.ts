@@ -26,6 +26,15 @@ jest.mock("@/lib/store", () => ({
   getPlaygroundActions: jest.fn().mockResolvedValue([]),
   getGroupMemberCount: jest.fn().mockResolvedValue(0),
   getFollowingCount: jest.fn().mockResolvedValue(0),
+  // M11-2 P4.2: the classes section stopped being an `unavailable_reason` stub and now reads
+  // through `gatherClasses`. Unmocked, those reads throw and the section degrades on every case,
+  // which would leave the new payload untested rather than tested.
+  getAgentClasses: jest.fn().mockResolvedValue([]),
+  getClassById: jest.fn().mockResolvedValue(null),
+  listClassSessions: jest.fn().mockResolvedValue([]),
+  listClassEvaluations: jest.fn().mockResolvedValue([]),
+  getStudentClassResults: jest.fn().mockResolvedValue([]),
+  listClasses: jest.fn().mockResolvedValue([]),
 }));
 
 jest.mock("@/lib/human-users", () => ({
@@ -40,10 +49,22 @@ jest.mock("@/lib/rss", () => ({
   getNewsItems: jest.fn().mockResolvedValue([]),
 }));
 
+// P4.2's other two new sections. `@/lib/admissions/config` (the gate flag the next-action tests
+// read) is a different module and stays real.
+jest.mock("@/lib/admissions", () => ({
+  getAdmissionsStatusForAgent: jest.fn().mockResolvedValue(null),
+}));
+
+jest.mock("@/lib/memory/memory-service", () => ({
+  recallMemoryForAgent: jest.fn().mockResolvedValue([]),
+}));
+
 const store = require("@/lib/store");
 const humanUsers = require("@/lib/human-users");
 const loopStateMod = require("@/lib/agent-loop/state");
 const rss = require("@/lib/rss");
+const admissions = require("@/lib/admissions");
+const memoryService = require("@/lib/memory/memory-service");
 
 import { GET as getHome } from "@/app/api/v1/agents/me/home/route";
 
@@ -80,9 +101,17 @@ describe("GET /api/v1/agents/me/home", () => {
     store.getPlaygroundActions.mockResolvedValue([]);
     store.getGroupMemberCount.mockResolvedValue(0);
     store.getFollowingCount.mockResolvedValue(0);
+    store.getAgentClasses.mockResolvedValue([]);
+    store.getClassById.mockResolvedValue(null);
+    store.listClassSessions.mockResolvedValue([]);
+    store.listClassEvaluations.mockResolvedValue([]);
+    store.getStudentClassResults.mockResolvedValue([]);
+    store.listClasses.mockResolvedValue([]);
     humanUsers.listUserIdsLinkedToAgent.mockResolvedValue([]);
     loopStateMod.readLoopStateSafely.mockResolvedValue(null);
     rss.getNewsItems.mockResolvedValue([]);
+    admissions.getAdmissionsStatusForAgent.mockResolvedValue(null);
+    memoryService.recallMemoryForAgent.mockResolvedValue([]);
   });
 
   it("401 when no Authorization header", async () => {
@@ -409,6 +438,71 @@ describe("GET /api/v1/agents/me/home", () => {
     expect(serialized).not.toContain("hu_super_secret_user_id");
     expect(serialized).not.toContain("leaked@example.com");
     expect(serialized).not.toContain("leaked_sub");
+  });
+
+  // M11-2 P4.2: classes, admissions and memory shipped as `{items: [], unavailable_reason}` stubs
+  // and now project the same gatherers the loop and /agents/me/context read. The two cases below
+  // pin both halves of that: real data when the reads answer, and an explicit reason when they do
+  // not — the section must never go quietly empty.
+  it("projects classes, admissions and memory from the shared senses gatherers", async () => {
+    store.getAgentClasses.mockResolvedValue([{ classId: "class_1" }]);
+    store.getClassById.mockResolvedValue({ id: "class_1", name: "Rhetoric" });
+    store.listClassSessions.mockResolvedValue([
+      { id: "sess_1", status: "active", title: "Opening arguments" },
+    ]);
+    store.listClassEvaluations.mockResolvedValue([
+      { id: "eval_1", status: "active", title: "Essay one" },
+    ]);
+    admissions.getAdmissionsStatusForAgent.mockResolvedValue({
+      is_admitted: true,
+      next_action: { code: "none", message: "Nothing to do" },
+      criteria_progress: [{ code: "vetted", label: "Vetted", complete: true }],
+      public_ai_eligibility: { status: "eligible", reason: "vetted" },
+      admission_source: "application",
+      state_source: "application",
+    });
+    memoryService.recallMemoryForAgent.mockResolvedValue([
+      { id: "m1", text: "I argued about incentives", score: 1, metadata: {} },
+    ]);
+
+    const res = await getHome(makeReq());
+    const body = await res.json();
+    const data = (body as { data: Record<string, unknown> }).data;
+
+    const classes = data.classes as { items: Array<Record<string, unknown>>; unavailable_reason?: string };
+    expect(classes.unavailable_reason).toBeUndefined();
+    expect(classes.items).toEqual([
+      {
+        class_id: "class_1",
+        class_name: "Rhetoric",
+        active_sessions: [{ id: "sess_1", title: "Opening arguments" }],
+        pending_evals: [{ id: "eval_1", title: "Essay one" }],
+      },
+    ]);
+
+    const admissionsSection = data.admissions as Record<string, unknown>;
+    expect(admissionsSection.unavailable_reason).toBeUndefined();
+    expect(admissionsSection.is_admitted).toBe(true);
+    expect(admissionsSection.admission_source).toBe("application");
+    expect(admissionsSection.state_source).toBe("application");
+    expect(admissionsSection.next_action).toEqual({ code: "none", message: "Nothing to do" });
+
+    const memory = data.memory as { items: Array<{ text: string }>; unavailable_reason?: string };
+    expect(memory.unavailable_reason).toBeUndefined();
+    expect(memory.items).toEqual([{ text: "I argued about incentives" }]);
+  });
+
+  it("says so when the classes or memory read fails rather than reporting an empty section", async () => {
+    store.getAgentClasses.mockRejectedValue(new Error("classes down"));
+    memoryService.recallMemoryForAgent.mockRejectedValue(new Error("memory down"));
+
+    const res = await getHome(makeReq());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const data = (body as { data: Record<string, unknown> }).data;
+
+    expect(data.classes).toEqual({ items: [], unavailable_reason: "classes_summary_unavailable" });
+    expect(data.memory).toEqual({ items: [], unavailable_reason: "memory_summary_unavailable" });
   });
 
   it("unvetted agent still receives onboarding next_actions (vetting-exempt)", async () => {

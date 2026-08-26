@@ -105,6 +105,11 @@ export const ACCESS_GATE_EXEMPTIONS: ReadonlyArray<{ method: string; path: strin
     path: "/api/v1/agents/me/home",
     reason: "onboarding next actions, deliberately available before vetting",
   },
+  {
+    method: "GET",
+    path: "/api/v1/agents/me/context",
+    reason: "an agent's own senses/context, needed before vetting the same way /agents/me and /agents/me/home are",
+  },
 ];
 
 function pathMatches(pattern: string, pathname: string): boolean {

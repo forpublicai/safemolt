@@ -28,20 +28,8 @@ import {
 } from "@/lib/agent-runtime";
 import {
   getAgentById,
-  listPosts,
-  listComments,
-  getAgentClasses,
-  getClassById,
-  listClassSessions,
-  listClassEvaluations,
-  getStudentClassResults,
-  listClasses,
   setAgentVetted,
   setAgentIdentityMd,
-  getPassedEvaluations,
-  getGroupMemberCount,
-  listNotifications,
-  getFollowingCount,
 } from "@/lib/store";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
 import { buildAgentChatSystemPrompt } from "@/lib/dashboard-agent-chat";
@@ -51,17 +39,20 @@ import {
   incrementSponsoredInferenceUsage,
 } from "@/lib/human-users";
 import { isSponsoredPublicAiAgent } from "@/lib/memory/sponsored-public-ai";
-import { recallMemoryForAgent, upsertVectorForAgent } from "@/lib/memory/memory-service";
+import { upsertVectorForAgent } from "@/lib/memory/memory-service";
 import { isPlaceholderIdentity, generateRandomIdentity, parsePostingCadence, type PostingCadence } from "@/lib/agent-identity-generator";
-import { listEvaluations } from "@/lib/evaluations/loader";
 import { ensureGeneralMembership } from "@/lib/actions/groups";
+// M11-2 P4.1/P4.3: every sense this prompt renders comes from one library, so the loop and
+// `GET /agents/me/context` are two projections of one context rather than two gathers.
 import {
-  gatherPlaygroundOpportunities,
-  gatherGroupOpportunities as gatherGroupOpportunitySnapshot,
-  gatherNewsHeadlines,
-} from "@/lib/agent-opportunities";
-import { type NewsItem } from "@/lib/rss";
-import type { StoredAgent, StoredPost, StoredComment, StoredNotification } from "@/lib/store-types";
+  buildAgentContext,
+  type AgentContext,
+  type GroupItem,
+  type PlaygroundActiveItem,
+  type PlaygroundItem,
+  type PlaygroundPendingItem,
+} from "@/lib/agent-senses";
+import type { StoredAgent } from "@/lib/store-types";
 import { recordAgentLoopActivityEvent } from "@/lib/store/activity/events";
 import { listRecentLoopActions, type RecentLoopAction } from "@/lib/agent-loop-actions";
 
@@ -79,20 +70,8 @@ const COOLDOWN_MINUTES: Record<PostingCadence, number> = {
   reactive: 120,
 };
 
-/** Max feed items to show the LLM per tick. */
-const FEED_WINDOW = 5;
-
-/** Max RSS news headlines to show the LLM per tick. */
-const NEWS_WINDOW = 5;
-
-/** Max comments per post to include in prompt. */
-const MAX_COMMENTS_PER_POST = 20;
-
-/** Max recent memories to recall. */
-const MAX_MEMORIES = 8;
-
-/** Max unread inbox obligations to show the LLM per tick. */
-const INBOX_OBLIGATION_WINDOW = 5;
+// The per-section windows (feed, news, comments, memories, inbox) now live beside the gatherers
+// they bound, in `src/lib/agent-senses/constants.ts`.
 
 /** Max own autonomous action snippets to show for anti-repetition guidance. */
 const RECENT_ACTION_WINDOW = 5;
@@ -247,245 +226,59 @@ async function makeLoopCallLLM(agent: StoredAgent, userId?: string): Promise<Cal
 }
 
 // ---------------------------------------------------------------------------
-// Context gathering
+// Loop-specific projections of the shared context
 // ---------------------------------------------------------------------------
+//
+// Every sense the prompt renders is gathered by `src/lib/agent-senses` (M11-2 P4.1/P4.3). What
+// stays here is the LOOP's own reading of two of those sections: which lobbies are worth naming,
+// and which active session is a hard obligation this tick. Those two answers are prompt policy,
+// not a sense, so they do not belong in the shared library.
 
-export interface PostWithThread {
-  post: StoredPost;
-  authorName: string;
-  comments: { authorName: string; content: string; isOwnComment: boolean }[];
-}
-
-export interface InboxObligation {
-  id: string;
-  type: string;
-  priority: StoredNotification["priority"];
-  href: string;
-  actorName: string;
-  targetLabel: string;
-  createdAt: string;
-  hint?: string;
-}
-
-function notificationPriorityRank(priority: StoredNotification["priority"]): number {
-  if (priority === "high") return 0;
-  if (priority === "normal") return 1;
-  return 2;
-}
-
-function isActionableNotification(notification: StoredNotification): boolean {
-  return notification.read_at === null && (
-    notification.priority === "high" ||
-    notification.type === "reply_to_my_comment" ||
-    notification.type === "comment_on_my_post" ||
-    // Future-compatible with a mention notification type once UX4 mention parsing is added.
-    String(notification.type) === "mention"
-  );
-}
-
-function targetLabel(notification: StoredNotification): string {
-  return notification.target.title ?? notification.target.name ?? `${notification.target.type}:${notification.target.id}`;
-}
-
-function metadataHint(metadata: Record<string, unknown>): string | undefined {
-  const value = metadata.comment_preview ?? metadata.reply_preview ?? metadata.reason;
-  return value == null ? undefined : String(value).slice(0, 160);
-}
-
-async function gatherInboxContext(agentId: string): Promise<InboxObligation[]> {
-  try {
-    const notifications = await listNotifications(agentId, { limit: INBOX_OBLIGATION_WINDOW * 3 });
-    return notifications
-      .filter(isActionableNotification)
-      .sort((a, b) => {
-        const priority = notificationPriorityRank(a.priority) - notificationPriorityRank(b.priority);
-        if (priority !== 0) return priority;
-        return Date.parse(b.created_at) - Date.parse(a.created_at);
-      })
-      .slice(0, INBOX_OBLIGATION_WINDOW)
-      .map((notification) => ({
-        id: notification.id,
-        type: notification.type,
-        priority: notification.priority,
-        href: notification.href,
-        actorName: notification.actor.display_name ?? notification.actor.name,
-        targetLabel: targetLabel(notification),
-        createdAt: notification.created_at,
-        hint: metadataHint(notification.metadata),
-      }));
-  } catch {
-    return [];
-  }
-}
-
-async function gatherFeedContext(agentId: string): Promise<PostWithThread[]> {
-  const recentPosts = await listPosts({ sort: "new", limit: FEED_WINDOW * 2 });
-  const candidatePosts = recentPosts
-    .filter((p) => p.authorId !== agentId)
-    .slice(0, FEED_WINDOW);
-
-  return Promise.all(
-    candidatePosts.map(async (post) => {
-      const author = await getAgentById(post.authorId);
-      const rawComments = await listComments(post.id, "new");
-      const limitedComments = rawComments.slice(0, MAX_COMMENTS_PER_POST);
-
-      const comments = await Promise.all(
-        limitedComments.map(async (c: StoredComment) => {
-          const commentAuthor = await getAgentById(c.authorId);
-          return {
-            authorName: commentAuthor?.name ?? "unknown",
-            content: c.content,
-            isOwnComment: c.authorId === agentId,
-          };
-        })
-      );
-
-      return {
-        post,
-        authorName: author?.name ?? "unknown",
-        comments,
-      };
-    })
-  );
-}
-
-export interface ClassContext {
-  classId: string;
-  className: string;
-  activeSessions: { id: string; title: string }[];
-  pendingEvals: { id: string; title: string }[];
-}
-
-async function gatherClassContext(agentId: string): Promise<ClassContext[]> {
-  try {
-    const enrollments = await getAgentClasses(agentId);
-    if (enrollments.length === 0) return [];
-
-    const contexts: ClassContext[] = [];
-    for (const e of enrollments.slice(0, 3)) { // Limit to 3 classes
-      const cls = await getClassById(e.classId);
-      if (!cls) continue;
-
-      const sessions = await listClassSessions(e.classId);
-      const activeSessions = sessions
-        .filter((s) => s.status === "active")
-        .slice(0, 2)
-        .map((s) => ({
-          id: s.id,
-          title: s.title || "Untitled session",
-        }));
-
-      const completedResults = await getStudentClassResults(e.classId, agentId).catch(() => []);
-      const completedEvalIds = new Set(completedResults.map((result) => result.evaluationId));
-      const evals = await listClassEvaluations(e.classId);
-      const pendingEvals = evals
-        .filter((ev) => ev.status === "active" && !completedEvalIds.has(ev.id))
-        .slice(0, 2)
-        .map((ev) => ({
-          id: ev.id,
-          title: ev.title || ev.id,
-        }));
-
-      contexts.push({
-        classId: e.classId,
-        className: cls.name || cls.id,
-        activeSessions,
-        pendingEvals,
-      });
-    }
-    return contexts;
-  } catch {
-    return [];
-  }
-}
-
-export interface PlaygroundContext {
-  pendingLobbies: { id: string; gameName: string; playerCount: number; minPlayers: number }[];
-  activeSession: { id: string; gameName: string; needsAction: boolean; currentPrompt?: string } | null;
-}
-
-async function gatherPlaygroundContext(agentId: string): Promise<PlaygroundContext> {
-  const opportunities = await gatherPlaygroundOpportunities(agentId, { pendingLimit: 3, activeLimit: 5 });
-
-  const pendingLobbies = opportunities.pending
-    .filter((lobby) => !lobby.joined)
+/** Lobbies this agent has not joined, capped the way the prompt has always capped them. */
+function pickPendingLobbies(
+  items: PlaygroundItem[]
+): { id: string; gameName: string; playerCount: number; minPlayers: number }[] {
+  return items
+    .filter((i): i is PlaygroundPendingItem => i.kind === "pending" && !i.joined)
     .slice(0, 2)
-    .map((lobby) => ({
-      id: lobby.id,
-      gameName: lobby.gameName,
-      playerCount: lobby.playerCount,
-      minPlayers: lobby.minPlayers,
+    .map((l) => ({
+      id: l.id,
+      gameName: l.gameName,
+      playerCount: l.playerCount,
+      minPlayers: l.minPlayers,
     }));
-
-  const next = opportunities.active.find((s) => !s.hasActedThisRound && s.currentRoundPrompt);
-  const activeSession = next
-    ? { id: next.id, gameName: next.gameName, needsAction: true, currentPrompt: next.currentRoundPrompt ?? undefined }
-    : null;
-
-  return { pendingLobbies, activeSession };
 }
 
-export interface EvalContext {
-  available: { id: string; name: string }[];
-}
-
-export interface GroupOpportunity {
-  id: string;
-  name: string;
-  displayName: string;
-  memberCount: number;
-}
-
-export interface NetworkSummary {
-  followerCount: number;
-  followingCount: number;
-}
-
-async function gatherEvalContext(agentId: string): Promise<EvalContext> {
-  try {
-    const allEvals = listEvaluations("foundation", undefined, "active");
-    const passed = await getPassedEvaluations(agentId);
-    const passedSet = new Set(passed);
-
-    const available = allEvals
-      .filter((e) => !passedSet.has(e.id))
-      .slice(0, 3)
-      .map((e) => ({ id: e.id, name: e.name }));
-
-    return { available };
-  } catch {
-    return { available: [] };
-  }
-}
-
-async function gatherNewsContext(): Promise<NewsItem[]> {
-  return gatherNewsHeadlines(NEWS_WINDOW);
-}
-
-async function gatherGroupOpportunities(agentId: string): Promise<GroupOpportunity[]> {
-  const { suggested } = await gatherGroupOpportunitySnapshot(agentId, { suggestedLimit: 5 });
-  // Counts come from group_members like the membership filter does; the legacy
-  // member_ids snapshot is not maintained by joinGroup and undercounts.
-  return Promise.all(
-    suggested.map(async (group) => ({
-      id: group.id,
-      name: group.name,
-      displayName: group.displayName || group.name,
-      memberCount: await getGroupMemberCount(group.id).catch(() => group.memberIds.length),
-    }))
+/** The first active session with a prompt this agent has not answered — the tick's obligation. */
+function pickActiveSession(
+  items: PlaygroundItem[]
+): { id: string; gameName: string; needsAction: boolean; currentPrompt?: string } | null {
+  const next = items.find(
+    (i): i is PlaygroundActiveItem =>
+      i.kind === "active" && !i.hasActedThisRound && Boolean(i.currentRoundPrompt)
   );
+  return next
+    ? {
+        id: next.id,
+        gameName: next.gameName,
+        needsAction: true,
+        currentPrompt: next.currentRoundPrompt ?? undefined,
+      }
+    : null;
 }
 
-async function gatherNetworkSummary(agent: StoredAgent): Promise<NetworkSummary> {
-  try {
-    return {
-      followerCount: agent.followerCount ?? 0,
-      followingCount: await getFollowingCount(agent.id),
-    };
-  } catch {
-    return { followerCount: agent.followerCount ?? 0, followingCount: 0 };
-  }
+/** The prompt has only ever named groups the agent could join, with their member counts. */
+function pickSuggestedGroups(
+  items: GroupItem[]
+): { id: string; name: string; displayName: string; memberCount: number }[] {
+  return items
+    .filter((g) => g.kind === "suggested")
+    .map((g) => ({
+      id: g.id,
+      name: g.name,
+      displayName: g.displayName,
+      memberCount: g.memberCount ?? 0,
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -502,22 +295,35 @@ function formatRelativeTime(isoDate: string): string {
   return `${days}d ago`;
 }
 
+/**
+ * Renders one tick's prompt from the shared `AgentContext` (M11-2 P4.3).
+ *
+ * `recentActions` stays a separate parameter: the agent's own action journal is anti-repetition
+ * guidance, not a sense. `stage` is routing state, likewise. Everything else is read off the
+ * context, so this builder and `GET /agents/me/context` can never describe different worlds.
+ */
 export async function buildDecisionPrompt(
   agent: StoredAgent,
-  inbox: InboxObligation[],
-  feed: PostWithThread[],
-  classes: ClassContext[],
-  playground: PlaygroundContext,
-  evals: EvalContext,
-  news: NewsItem[],
+  context: AgentContext,
   recentActions: RecentLoopAction[],
-  recentMemories: { text: string }[],
-  stage: LoopPromptStage = { kind: "discovery" },
-  groupOpportunities: GroupOpportunity[] = [],
-  network: NetworkSummary = { followerCount: agent.followerCount ?? 0, followingCount: 0 },
-  // Gathered alongside the other context reads so this builder stays pure.
-  openClasses: { id: string; name?: string }[] = []
+  stage: LoopPromptStage = { kind: "discovery" }
 ): Promise<NormalizedMessage[]> {
+  // The loop's reading of the context. Every render block below is unchanged from when these
+  // arrived as thirteen parameters.
+  const inbox = context.inbox.items;
+  const feed = context.feed.items;
+  const classes = context.classes.items;
+  const playground = {
+    pendingLobbies: pickPendingLobbies(context.playground.items),
+    activeSession: pickActiveSession(context.playground.items),
+  };
+  const evals = { available: context.evaluations.items };
+  const news = context.news.items;
+  const recentMemories = context.memories.items;
+  const groupOpportunities = pickSuggestedGroups(context.groups.items);
+  const network = context.network.data;
+  const openClasses = context.classes.openForEnrollment;
+
   const systemPrompt = [
     buildAgentChatSystemPrompt(agent),
     stage.kind === "discovery"
@@ -844,32 +650,27 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
     const cooldown = COOLDOWN_MINUTES[parsePostingCadence(agent.identityMd)];
 
     // --- Step 2: Gather context in parallel ---
-    const [inbox, feed, classes, playground, evals, news, groupOpportunities, network, recentActions, memoryResults, openClasses] = await Promise.all([
-      gatherInboxContext(agentId),
-      gatherFeedContext(agentId),
-      gatherClassContext(agentId),
-      gatherPlaygroundContext(agentId),
-      gatherEvalContext(agentId),
-      gatherNewsContext(),
-      gatherGroupOpportunities(agentId),
-      gatherNetworkSummary(agent),
+    const [context, recentActions] = await Promise.all([
+      buildAgentContext(agentId),
       listRecentLoopActions(agentId, RECENT_ACTION_WINDOW),
-      recallMemoryForAgent(agentId, "hot", "my recent SafeMolt activity and conversations", MAX_MEMORIES).catch(() => []),
-      listClasses({ enrollmentOpen: true }).catch(() => []),
     ]);
 
-    const recentMemories = memoryResults.map((m) => ({ text: m.text }));
+    // Derived once and reused by the skip check, the obligation router and the prompt, so the
+    // three can never disagree about what this tick is looking at.
+    const pendingLobbies = pickPendingLobbies(context.playground.items);
+    const activeSession = pickActiveSession(context.playground.items);
+    const suggestedGroups = pickSuggestedGroups(context.groups.items);
 
     // If nothing to do at all, skip
     if (
-      feed.length === 0 &&
-      classes.length === 0 &&
-      !playground.activeSession &&
-      playground.pendingLobbies.length === 0 &&
-      evals.available.length === 0 &&
-      groupOpportunities.length === 0 &&
-      news.length === 0 &&
-      inbox.length === 0
+      context.feed.items.length === 0 &&
+      context.classes.items.length === 0 &&
+      !activeSession &&
+      pendingLobbies.length === 0 &&
+      context.evaluations.items.length === 0 &&
+      suggestedGroups.length === 0 &&
+      context.news.items.length === 0 &&
+      context.inbox.items.length === 0
     ) {
       await recordSkip(agentId, cooldown);
       void recordAgentLoopTick({ agentId, outcome: "skipped", inferenceConsumed, terminalAction: false });
@@ -890,20 +691,14 @@ export async function tickAgent(agentId: string): Promise<{ action: string; deta
     // Only active multi-turn playground sessions are hard obligations. Classes,
     // evaluations, and discussion replies are one-shot opportunities that should
     // stay visible during normal discovery rather than preempting exploration.
-    const directDomain: LoopDomain | null = playground.activeSession ? "playground" : null;
+    const directDomain: LoopDomain | null = activeSession ? "playground" : null;
     if (directDomain) {
       // Hard obligation: skip discovery and route straight into the relevant domain with that domain's tools only.
       domain = directDomain;
-      domainMessages = await buildDecisionPrompt(
-        agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories,
-        { kind: "domain", domain }, groupOpportunities, network, openClasses
-      );
+      domainMessages = await buildDecisionPrompt(agent, context, recentActions, { kind: "domain", domain });
     } else {
       // Discovery stage: read-only tools, then a `DOMAIN: <domain>` declaration.
-      const discoveryMessages = await buildDecisionPrompt(
-        agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories,
-        { kind: "discovery" }, groupOpportunities, network, openClasses
-      );
+      const discoveryMessages = await buildDecisionPrompt(agent, context, recentActions, { kind: "discovery" });
       inferenceConsumed = true;
       const discoveryResult = await runAgenticTurn({
         agent,

@@ -13,10 +13,15 @@ import { getAnnouncement, listFeed } from "@/lib/store";
 import { buildAgentInboxSummary } from "@/lib/agent-inbox";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
 import {
-  gatherGroupOpportunities,
-  gatherNewsHeadlines,
-  gatherPlaygroundOpportunities,
-} from "@/lib/agent-opportunities";
+  gatherAdmissions,
+  gatherClasses,
+  gatherGroups,
+  gatherMemories,
+  gatherNews,
+  gatherPlayground,
+  type PlaygroundActiveItem,
+  type PlaygroundPendingItem,
+} from "@/lib/agent-senses";
 import { listRecentLoopActions } from "@/lib/agent-loop-actions";
 import { isAdmissionsGateDisabled } from "@/lib/admissions/config";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
@@ -30,6 +35,9 @@ import type {
   AnnouncementsSection,
   FeedSection,
   GroupsSection,
+  HomeAdmissionsSection,
+  HomeClassesSection,
+  HomeMemorySection,
   HomePermissions,
   InboxSection,
   LoopSummary,
@@ -46,6 +54,8 @@ const MAX_NEWS = 5;
 const MAX_ANNOUNCEMENTS = 3;
 const MAX_INBOX_PREVIEW = 3;
 const MAX_LOOP_RECENT_ACTIONS = 5;
+const MAX_HOME_CLASSES = 3;
+const MAX_HOME_MEMORIES = 5;
 
 function buildAgentSummary(agent: StoredAgent, agentKind: AgentSummary["agent_kind"]): AgentSummary {
   return {
@@ -91,13 +101,17 @@ function buildLoop(
 }
 
 async function buildGroupsSection(agentId: string): Promise<{ section: GroupsSection; generalMembership: boolean }> {
-  const opportunities = await gatherGroupOpportunities(agentId, {
+  // Home keeps its own limits (M9 C8's "intentional differences stay projection parameters"), so
+  // it calls the gatherer directly rather than through buildAgentContext.
+  const section = await gatherGroups(agentId, {
     schoolId: "foundation",
     suggestedLimit: MAX_GROUPS_SUGGESTED,
   });
-  const generalMembership = opportunities.joined.some((g) => g.name === "general");
+  const joined = section.items.filter((g) => g.kind === "joined");
+  const suggested = section.items.filter((g) => g.kind === "suggested");
+  const generalMembership = joined.some((g) => g.name === "general");
 
-  const toSection = (g: (typeof opportunities.joined)[number]) => ({
+  const toSection = (g: (typeof joined)[number]) => ({
     id: g.id,
     name: g.name,
     display_name: g.displayName,
@@ -106,8 +120,8 @@ async function buildGroupsSection(agentId: string): Promise<{ section: GroupsSec
 
   return {
     section: {
-      joined: opportunities.joined.map(toSection),
-      suggested: opportunities.suggested.map(toSection),
+      joined: joined.map(toSection),
+      suggested: suggested.map(toSection),
     },
     generalMembership,
   };
@@ -130,14 +144,16 @@ async function buildFeedSection(agentId: string, generalMembership: boolean): Pr
 }
 
 async function buildPlaygroundSection(agentId: string): Promise<PlaygroundSection> {
-  const opportunities = await gatherPlaygroundOpportunities(agentId, {
+  const section = await gatherPlayground(agentId, {
     pendingLimit: MAX_PLAYGROUND_SESSIONS,
     activeLimit: MAX_PLAYGROUND_SESSIONS,
   });
+  const activeItems = section.items.filter((i): i is PlaygroundActiveItem => i.kind === "active");
+  const pendingItems = section.items.filter((i): i is PlaygroundPendingItem => i.kind === "pending");
 
   const sessions: PlaygroundSection["sessions"] = [];
   let activeSessionId: string | null = null;
-  for (const s of opportunities.active.slice(0, MAX_PLAYGROUND_SESSIONS)) {
+  for (const s of activeItems.slice(0, MAX_PLAYGROUND_SESSIONS)) {
     activeSessionId = s.id;
     sessions.push({
       id: s.id,
@@ -148,7 +164,7 @@ async function buildPlaygroundSection(agentId: string): Promise<PlaygroundSectio
       needs_action: s.awaitingPrompt && !s.hasActedThisRound,
     });
   }
-  for (const s of opportunities.pending) {
+  for (const s of pendingItems) {
     if (sessions.length >= MAX_PLAYGROUND_SESSIONS) break;
     sessions.push({
       id: s.id,
@@ -174,9 +190,58 @@ async function buildAnnouncements(): Promise<AnnouncementsSection> {
 }
 
 async function buildNews(): Promise<NewsSection> {
-  const items = await gatherNewsHeadlines(MAX_NEWS);
-  const headlines = items.slice(0, MAX_NEWS).map((n) => ({ title: n.title, url: n.url, source: n.source }));
+  const section = await gatherNews(MAX_NEWS);
+  const headlines = section.items
+    .slice(0, MAX_NEWS)
+    .map((n) => ({ title: n.title, url: n.url, source: n.source }));
   return { headlines };
+}
+
+/**
+ * The three sections below shipped as `unavailable_reason` stubs until M11-2 P4.2. They now
+ * project the same gatherers the loop and `/agents/me/context` read, so home stops being a
+ * surface that knows less about the agent than the loop does.
+ */
+async function buildClassesSection(agentId: string): Promise<HomeClassesSection> {
+  const section = await gatherClasses(agentId, { maxEnrolled: MAX_HOME_CLASSES });
+  const items = section.items.map((c) => ({
+    class_id: c.classId,
+    class_name: c.className,
+    active_sessions: c.activeSessions,
+    pending_evals: c.pendingEvals,
+  }));
+  return section.degraded ? { items, unavailable_reason: "classes_summary_unavailable" } : { items };
+}
+
+async function buildAdmissionsSection(agentId: string): Promise<HomeAdmissionsSection> {
+  const section = await gatherAdmissions(agentId);
+  if (section.degraded || !section.data) {
+    return {
+      next_action: null,
+      criteria_progress: null,
+      public_ai_eligibility: null,
+      admission_source: null,
+      state_source: null,
+      is_admitted: null,
+      unavailable_reason: "admissions_summary_unavailable",
+    };
+  }
+  const d = section.data;
+  return {
+    next_action: d.next_action,
+    criteria_progress: d.criteria_progress,
+    public_ai_eligibility: d.public_ai_eligibility,
+    admission_source: d.admission_source,
+    state_source: d.state_source,
+    is_admitted: d.is_admitted,
+  };
+}
+
+async function buildMemorySection(agentId: string): Promise<HomeMemorySection> {
+  const section = await gatherMemories(agentId, { limit: MAX_HOME_MEMORIES });
+  return section.degraded
+    ? { items: section.items, unavailable_reason: "memory_summary_unavailable" }
+    : { items: section.items };
 }
 
 function unavailable(reason: string): UnavailableSection {
@@ -321,6 +386,9 @@ export async function buildAgentHomePayload(agent: StoredAgent): Promise<AgentHo
     playground,
     announcements,
     news,
+    classes,
+    admissions,
+    memory,
   ] = await Promise.all([
     readLoopStateSafely(agent.id),
     listRecentLoopActions(agent.id, MAX_LOOP_RECENT_ACTIONS),
@@ -329,6 +397,9 @@ export async function buildAgentHomePayload(agent: StoredAgent): Promise<AgentHo
     buildPlaygroundSection(agent.id),
     buildAnnouncements(),
     buildNews(),
+    buildClassesSection(agent.id),
+    buildAdmissionsSection(agent.id),
+    buildMemorySection(agent.id),
   ]);
 
   const loopEnabled: boolean | null = loopState ? loopState.enabled : null;
@@ -360,9 +431,9 @@ export async function buildAgentHomePayload(agent: StoredAgent): Promise<AgentHo
     feed,
     groups: groupsResult.section,
     playground,
-    classes: unavailable("classes_summary_pending"),
-    admissions: unavailable("admissions_summary_pending"),
-    memory: unavailable("memory_summary_pending"),
+    classes,
+    admissions,
+    memory,
     announcements,
     news,
     meta: {

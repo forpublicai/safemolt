@@ -1,4 +1,5 @@
 import type { StoredAgent } from "@/lib/store-types";
+import type { AgentContext } from "@/lib/agent-senses";
 
 jest.mock("@/lib/db", () => ({ sql: jest.fn() }));
 jest.mock("@/lib/agent-tools", () => ({
@@ -14,14 +15,20 @@ jest.mock("@/lib/store", () => ({
   getFollowingCount: jest.fn(async () => 0),
   getAgentById: jest.fn(),
   listPosts: jest.fn(),
+  listFeed: jest.fn(),
+  getPost: jest.fn(),
   listComments: jest.fn(),
   getAgentClasses: jest.fn(),
   getClassById: jest.fn(),
   listClassSessions: jest.fn(),
   listClassEvaluations: jest.fn(),
+  getStudentClassResults: jest.fn(),
+  getGroupMemberCount: jest.fn(),
+  isGroupMember: jest.fn(),
   setAgentVetted: jest.fn(),
   setAgentIdentityMd: jest.fn(),
   listPlaygroundSessions: jest.fn(),
+  getPlaygroundSession: jest.fn(),
   getPlaygroundActions: jest.fn(),
   getPassedEvaluations: jest.fn(),
   ensureGeneralGroup: jest.fn(),
@@ -41,6 +48,7 @@ jest.mock("@/lib/human-users", () => ({
 }));
 jest.mock("@/lib/memory/sponsored-public-ai", () => ({ isSponsoredPublicAiAgent: jest.fn() }));
 jest.mock("@/lib/memory/memory-service", () => ({ recallMemoryForAgent: jest.fn(), upsertVectorForAgent: jest.fn() }));
+jest.mock("@/lib/admissions", () => ({ getAdmissionsStatusForAgent: jest.fn() }));
 jest.mock("@/lib/agent-identity-generator", () => ({ isPlaceholderIdentity: jest.fn(), generateRandomIdentity: jest.fn() }));
 jest.mock("@/lib/evaluations/loader", () => ({ listEvaluations: jest.fn(() => []) }));
 jest.mock("@/lib/playground/games", () => ({ listGames: jest.fn(() => []) }));
@@ -59,28 +67,58 @@ const agent = {
 const userText = (messages: { role: string; content: string }[]): string =>
   messages.find((message) => message.role === "user")?.content ?? "";
 
+/**
+ * M11-2 P4.3: `buildDecisionPrompt` renders one `AgentContext` instead of thirteen positional
+ * parameters. The sections below are the empty context; each case overrides only what it asserts
+ * on, and every assertion in this file is unchanged from the pre-P4.3 version.
+ */
+function makeContext(overrides: Partial<AgentContext> = {}): AgentContext {
+  return {
+    feed: { items: [], degraded: false, mode: "personalized" },
+    inbox: { items: [], degraded: false },
+    classes: { items: [], degraded: false, openForEnrollment: [] },
+    evaluations: { items: [], degraded: false },
+    playground: { items: [], degraded: false },
+    groups: { items: [], degraded: false },
+    network: { data: { followerCount: 0, followingCount: 0 }, degraded: false },
+    news: { items: [], degraded: false },
+    memories: { items: [], degraded: false },
+    admissions: { data: null, degraded: false },
+    limits: {
+      data: {
+        postCooldownMs: 30000,
+        commentCooldownMs: 20000,
+        maxCommentsPerDay: 50,
+        loopNextEligibleAt: null,
+      },
+      degraded: false,
+    },
+    ...overrides,
+  };
+}
+
 describe("agent-loop prompt builder", () => {
   it("discovery prompt prioritizes inbox obligations and asks for a DOMAIN choice", async () => {
     const { buildDecisionPrompt } = await import("@/lib/agent-loop");
     const messages = await buildDecisionPrompt(
       agent,
-      [
-        {
-          id: "notif_1",
-          type: "reply_to_my_comment",
-          priority: "high",
-          href: "/post/post_1#comment_2",
-          actorName: "critic",
-          targetLabel: "A real discussion",
-          createdAt: new Date().toISOString(),
-          hint: "Can you clarify this claim?",
+      makeContext({
+        inbox: {
+          items: [
+            {
+              id: "notif_1",
+              type: "reply_to_my_comment",
+              priority: "high",
+              href: "/post/post_1#comment_2",
+              actorName: "critic",
+              targetLabel: "A real discussion",
+              createdAt: new Date().toISOString(),
+              hint: "Can you clarify this claim?",
+            },
+          ],
+          degraded: false,
         },
-      ],
-      [],
-      [],
-      { pendingLobbies: [], activeSession: null },
-      { available: [] },
-      [],
+      }),
       [
         {
           action: "create_comment",
@@ -89,8 +127,7 @@ describe("agent-loop prompt builder", () => {
           contentSnippet: "Honestly, the key issue is incentives",
           createdAt: new Date().toISOString(),
         },
-      ],
-      []
+      ]
     );
 
     const user = userText(messages);
@@ -111,17 +148,23 @@ describe("agent-loop prompt builder", () => {
     const { buildDecisionPrompt } = await import("@/lib/agent-loop");
     const messages = await buildDecisionPrompt(
       agent,
+      makeContext({
+        groups: {
+          items: [
+            {
+              kind: "suggested",
+              id: "group_1",
+              name: "builders",
+              displayName: "Builders",
+              memberCount: 3,
+            },
+          ],
+          degraded: false,
+        },
+        network: { data: { followerCount: 2, followingCount: 1 }, degraded: false },
+      }),
       [],
-      [],
-      [],
-      { pendingLobbies: [], activeSession: null },
-      { available: [] },
-      [],
-      [],
-      [],
-      { kind: "discovery" },
-      [{ id: "group_1", name: "builders", displayName: "Builders", memberCount: 3 }],
-      { followerCount: 2, followingCount: 1 }
+      { kind: "discovery" }
     );
 
     const user = userText(messages);
@@ -143,17 +186,7 @@ describe("agent-loop prompt builder", () => {
       createdAt: new Date(now - i * 60_000).toISOString(),
     }));
 
-    const messages = await buildDecisionPrompt(
-      agent,
-      [],
-      [],
-      [],
-      { pendingLobbies: [], activeSession: null },
-      { available: [] },
-      [],
-      recentActions,
-      []
-    );
+    const messages = await buildDecisionPrompt(agent, makeContext(), recentActions);
 
     const user = userText(messages);
     expect(user).toContain("target_id=post_1");
@@ -163,18 +196,10 @@ describe("agent-loop prompt builder", () => {
 
   it("domain-stage prompt scopes guidance to one terminal action in the chosen domain", async () => {
     const { buildDecisionPrompt } = await import("@/lib/agent-loop");
-    const messages = await buildDecisionPrompt(
-      agent,
-      [],
-      [],
-      [],
-      { pendingLobbies: [], activeSession: null },
-      { available: [] },
-      [],
-      [],
-      [],
-      { kind: "domain", domain: "playground" }
-    );
+    const messages = await buildDecisionPrompt(agent, makeContext(), [], {
+      kind: "domain",
+      domain: "playground",
+    });
 
     const user = userText(messages);
     expect(user).toContain("Domain action stage: playground");
@@ -187,48 +212,52 @@ describe("agent-loop prompt builder", () => {
     const { buildDecisionPrompt } = await import("@/lib/agent-loop");
     const messages = await buildDecisionPrompt(
       agent,
-      [],
-      [
-        {
-          post: {
-            id: "post_best",
-            title: "Agents discuss regulation",
-            content: "Thread context",
-            authorId: "agent_2",
-            groupId: "group_1",
-            upvotes: 7,
-            downvotes: 0,
-            commentCount: 4,
-            createdAt: "2026-05-13T10:00:00.000Z",
-          },
-          authorName: "poster",
-          comments: [{ authorName: "loopster", content: "Earlier take", isOwnComment: true }],
-        },
-      ],
-      [],
-      { pendingLobbies: [], activeSession: null },
-      { available: [] },
-      [
-        {
-          title: "Agents discuss regulation",
-          url: "https://example.com/raw",
-          canonicalUrl: "https://example.com/story",
-          storyId: "news_abc",
-          canonicalizationConfidence: "normalized",
-          source: "example.com",
-          existingDiscussions: [
+      makeContext({
+        feed: {
+          items: [
             {
-              postId: "post_best",
-              title: "Agents discuss regulation",
-              groupId: "group_1",
-              commentCount: 4,
-              upvotes: 7,
-              createdAt: "2026-05-13T10:00:00.000Z",
+              post: {
+                id: "post_best",
+                title: "Agents discuss regulation",
+                content: "Thread context",
+                authorId: "agent_2",
+                groupId: "group_1",
+                upvotes: 7,
+                downvotes: 0,
+                commentCount: 4,
+                createdAt: "2026-05-13T10:00:00.000Z",
+              },
+              authorName: "poster",
+              comments: [{ authorName: "loopster", content: "Earlier take", isOwnComment: true }],
             },
           ],
+          degraded: false,
+          mode: "personalized",
         },
-      ],
-      [],
+        news: {
+          items: [
+            {
+              title: "Agents discuss regulation",
+              url: "https://example.com/raw",
+              canonicalUrl: "https://example.com/story",
+              storyId: "news_abc",
+              canonicalizationConfidence: "normalized",
+              source: "example.com",
+              existingDiscussions: [
+                {
+                  postId: "post_best",
+                  title: "Agents discuss regulation",
+                  groupId: "group_1",
+                  commentCount: 4,
+                  upvotes: 7,
+                  createdAt: "2026-05-13T10:00:00.000Z",
+                },
+              ],
+            },
+          ],
+          degraded: false,
+        },
+      }),
       []
     );
 
@@ -242,23 +271,22 @@ describe("agent-loop prompt builder", () => {
     const { buildDecisionPrompt } = await import("@/lib/agent-loop");
     const messages = await buildDecisionPrompt(
       agent,
-      [],
-      [],
-      [],
-      { pendingLobbies: [], activeSession: null },
-      { available: [] },
-      [
-        {
-          title: "Fresh agent infrastructure story",
-          url: "https://example.com/fresh",
-          canonicalUrl: "https://example.com/fresh",
-          storyId: "news_fresh",
-          canonicalizationConfidence: "normalized",
-          source: "example.com",
-          existingDiscussions: [],
+      makeContext({
+        news: {
+          items: [
+            {
+              title: "Fresh agent infrastructure story",
+              url: "https://example.com/fresh",
+              canonicalUrl: "https://example.com/fresh",
+              storyId: "news_fresh",
+              canonicalizationConfidence: "normalized",
+              source: "example.com",
+              existingDiscussions: [],
+            },
+          ],
+          degraded: false,
         },
-      ],
-      [],
+      }),
       []
     );
 

@@ -40,7 +40,18 @@ function baseStore(overrides: Record<string, unknown> = {}) {
     getAgentById: jest.fn(async (id: string) =>
       id === agent.id ? agent : ({ id, name: `agent_${id}` } as StoredAgent)
     ),
+    // M11-2 P4.3: the tick gathers through `buildAgentContext`, so every store function the
+    // senses gatherers reach must exist here. An absent one throws inside its gatherer, which
+    // degrades that section to empty — and an all-empty context is indistinguishable from
+    // "nothing to do", so the whole suite would silently become skip assertions.
+    // `listFeed` empty + `listPosts` seeded is the global-fallback path, which is the feed these
+    // cases have always described.
+    listFeed: jest.fn(async () => []),
     listPosts: jest.fn(async () => []),
+    getPost: jest.fn(async () => null),
+    isGroupMember: jest.fn(async () => false),
+    getGroupMemberCount: jest.fn(async () => 0),
+    getPlaygroundSession: jest.fn(async () => null),
     listComments: jest.fn(async () => []),
     getAgentClasses: jest.fn(async () => []),
     getClassById: jest.fn(),
@@ -125,6 +136,9 @@ async function setup(opts: {
   jest.doMock("@/lib/evaluations/loader", () => ({ listEvaluations: jest.fn(() => opts.evaluations ?? []) }));
   jest.doMock("@/lib/playground/games", () => ({ listGames: jest.fn(() => []) }));
   jest.doMock("@/lib/rss", () => ({ getNewsItems: jest.fn(async () => []) }));
+  // Reached through `gatherAdmissions`; unmocked it loads the real module, which asks the store
+  // for functions this fixture does not carry.
+  jest.doMock("@/lib/admissions", () => ({ getAdmissionsStatusForAgent: jest.fn(async () => null) }));
   jest.doMock("@/lib/store/activity/events", () => ({
     recordAgentLoopActivityEvent: opts.recordAgentLoopActivityEvent ?? jest.fn(),
   }));

@@ -498,6 +498,8 @@ describe("exemption list", () => {
         expect(entries).toEqual(
             [
                 "GET /api/v1/agents/me",
+                // M11-2 P4.2: the agent's own senses, exempt for the same reason /me/home is.
+                "GET /api/v1/agents/me/context",
                 "GET /api/v1/agents/me/home",
                 "GET /api/v1/agents/status",
                 "GET /api/v1/agents/vetting/challenge/:challengeId",
