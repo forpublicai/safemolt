@@ -1252,12 +1252,20 @@ async function activateEligiblePendings(
  */
 async function repairRound1Prompt(
     store: Awaited<ReturnType<typeof getStore>>,
-    session: PlaygroundSession
+    session: PlaygroundSession,
+    stop: ShouldStop
 ): Promise<void> {
     try {
         const game = resolvePlaygroundGame(session.schoolId, session.gameId);
         if (!game) return;
         const roundPrompt = await generateRoundPrompt(session, game);
+        // Re-checked AFTER the GM call and immediately before the publish (codex u6-E r3 BLOCKER):
+        // prompt generation is the LONGEST window in the whole sweep, and the conditional write's
+        // `current_round_prompt IS NULL` predicate protects against a racing WRITER, not against
+        // this worker publishing (and emitting `round_opened`) under a lock it lost mid-inference —
+        // the new owner may simply not have written yet. The generated prompt is discarded; the
+        // row stays a candidate for whichever worker holds the lock next.
+        if (stop()) return;
         const stored = await store.storeRound1PromptIfMissing(session.id, roundPrompt, ACTION_TIMEOUT_MS, [
             playgroundRoundOpenedEvent({ sessionId: session.id, round: 1, schoolId: session.schoolId ?? null }),
         ]);
@@ -1300,7 +1308,7 @@ async function repairStuckRound1Prompts(
                 // `generateRoundPrompt` is an inference call — a claim, checked before each one.
                 if (stop()) return;
                 attemptedThisPass.add(session.id);
-                await repairRound1Prompt(store, session);
+                await repairRound1Prompt(store, session, stop);
             }
             if (stuck.length < ROUND1_REPAIR_PAGE_SIZE) return;
         }

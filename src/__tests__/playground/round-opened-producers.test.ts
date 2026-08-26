@@ -361,6 +361,34 @@ describe("the round-1 prompt repair sweep", () => {
     expect(opened[0].idemKey).toBeNull();
   });
 
+  /**
+   * **The codex u6-E r3 BLOCKER**: prompt generation is the LONGEST window in the sweep, and the
+   * conditional write's `current_round_prompt IS NULL` predicate protects against a racing WRITER,
+   * not against this worker publishing under a lock it lost mid-inference — the new owner may not
+   * have written yet. The re-check after the GM call is what discards the stolen prompt.
+   */
+  it("discards a prompt generated across a LOST lock: no store, no deadline, no event", async () => {
+    const participants = [seedAgent(), seedAgent(), seedAgent()];
+    const session = await seedSession({
+      status: "active",
+      participants,
+      startedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+    });
+    let lockLost = false;
+    const since = marker();
+
+    const sweep = runDeadlineProgressionUnlocked(() => lockLost);
+    await settle();
+    lockLost = true; // the lock is lost while the GM call is in flight
+    await deliverPrompt("stolen prompt");
+    await sweep;
+
+    const after = (await getPlaygroundSession(session.id))!;
+    expect(after.currentRoundPrompt).toBeUndefined();
+    expect(after.roundDeadline).toBeUndefined();
+    expect(roundOpenedSince(since)).toEqual([]);
+  });
+
   it("leaves a session inside the grace alone", async () => {
     const participants = [seedAgent(), seedAgent(), seedAgent()];
     const session = await seedSession({
