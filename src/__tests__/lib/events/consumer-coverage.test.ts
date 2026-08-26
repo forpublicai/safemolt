@@ -232,8 +232,16 @@ describe("coverage manifests", () => {
    * batch commits — so neither can stamp `source_event_id`, and a soak with nothing to order the
    * two writers by would compare noise. That is the second recorded deviation from Protocol M
    * step 1, checkable the same way: the declared writers below name all four invocations.
+   *
+   * **P3.2 deploy 1 adds train a4's `playground.round_opened`, and it is the table's first and only
+   * `on` entry.** Protocol M does not apply to it: nothing writes a round-open notification inline
+   * today, so there is no legacy writer to shadow against and `legacy` would claim one that does not
+   * exist. A kind whose projection is BORN in the consumer starts `on` — and it starts there one
+   * deploy before any producer emits, which is the new-kind protocol's whole point. It must NOT
+   * appear in `DECLARED_LEGACY_WRITERS`; the `none`/`legacy` rules above already enforce that from
+   * the other direction.
    */
-  it("ships the u3e state table", () => {
+  it("ships the u3e state table, plus a4's new kind", () => {
     expect(notificationsCoverage).toEqual({
       "system.activation_fence": "none",
       "post.created": "none",
@@ -253,10 +261,13 @@ describe("coverage manifests", () => {
       "group.moderator_removed": "none",
       "group.subscribed": "none",
       "group.unsubscribed": "none",
-      // Nothing notifies on a playground mutation today; `playground.round_open` is a4's.
+      // Nothing notifies on any other playground mutation.
       "playground.session_created": "none",
       "playground.session_joined": "none",
       "playground.participant_affiliation_updated": "none",
+      // The one `on` entry in the whole table — a4's new kind, born in the consumer with no inline
+      // writer to cut over from. See this test's header.
+      "playground.round_opened": "on",
       "playground.action_submitted": "none",
       "playground.session_completed": "none",
       "playground.session_cancelled": "none",
@@ -311,6 +322,8 @@ describe("coverage manifests", () => {
       "playground.session_created": "shadow",
       "playground.session_joined": "shadow",
       "playground.participant_affiliation_updated": "shadow",
+      // No trail row per round (Decision 5): the session's own row already moves.
+      "playground.round_opened": "none",
       "playground.action_submitted": "shadow",
       "playground.session_completed": "shadow",
       "playground.session_cancelled": "shadow",
@@ -363,6 +376,8 @@ describe("coverage manifests", () => {
       // A `legacy` entry — see this test's header for why, and for what has to happen before it
       // becomes `shadow`.
       "playground.action_submitted": "legacy",
+      // Ingest rides what participants DID, not the prompt that opened the round.
+      "playground.round_opened": "none",
       "playground.session_created": "none",
       "playground.session_joined": "none",
       "playground.participant_affiliation_updated": "none",
@@ -480,7 +495,10 @@ describe("consumer contract hash over the real manifests", () => {
   });
 
   it("moves when a kind enters the union", () => {
-    expect(computeConsumerContractHash([...EVENT_KINDS, "playground.round_opened"], realContractInputs())).not.toBe(
+    // A kind this build does NOT have, deliberately: `round_opened` was the example until P3.2
+    // deploy 1 admitted it, and a "new" kind that is already in the union proves nothing about the
+    // barrier — it only proves that `canonicalize` does not deduplicate.
+    expect(computeConsumerContractHash([...EVENT_KINDS, "playground.round_resolved"], realContractInputs())).not.toBe(
       computeConsumerContractHash()
     );
   });

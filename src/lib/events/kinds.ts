@@ -122,10 +122,19 @@ export interface EventPayloadMap {
   // are session-scoped or session-resolvable, and a payload copy of the id would be a second place
   // for the two to disagree — the rule `agent.followed` and the group kinds already follow.
   //
-  // `playground.round_opened` and `playground.round_resolved` are deliberately ABSENT: the first is
-  // train a4's (P3.2, and it rides the prompt-storing write rather than the status flip), and the
-  // second belongs to the round-resolution CAS, which u3d does not migrate. A kind may not enter
-  // this union before every consumer has a manifest entry for it, and neither has a producer here.
+  // **`playground.round_opened` has entered the union, in THIS deploy** (M11-2 P3.2, train a4). It
+  // arrives the way the u1 rule requires — with every consumer's manifest entry in the same change —
+  // and deliberately WITHOUT its producer: this is deploy 1 of the new-kind protocol, so the
+  // prompt-storing writes that emit it land only after the deployment-version barrier. A kind whose
+  // producer shipped first would emit events the consumers' activation fence then classifies as
+  // pre-activation, which is a permanently lost turn for every participant.
+  //
+  // `playground.round_resolved` is still ABSENT, for the reason it always was: it belongs to the
+  // round-resolution CAS, and this build carries no event for that transition — `advanceToNextRound`
+  // and `applyPlaygroundResolution`'s advance branch still pass no events. Only `round_opened` rides
+  // the prompt-storing writes; a session's ENDING already has its own kind
+  // (`playground.session_completed`), which is why the resolution CAS's completion branch is not
+  // waiting on `round_resolved` either.
 
   /** Session creation — `sessions/trigger`, the daily cron, and the create-and-start family. */
   'playground.session_created': Record<string, never>;
@@ -141,6 +150,19 @@ export interface EventPayloadMap {
    * empty in a recorded event. Sorted, so two identical refreshes produce byte-identical history.
    */
   'playground.participant_affiliation_updated': { fields: string[] };
+
+  /**
+   * A round's prompt was durably stored — the event that starts the round's clock and the wakeup
+   * queue's trigger (M11-2 P3.2, train a4). Emitted by the write that STORES THE PROMPT, never by a
+   * promptless status flip, so a wakeup can never exist for a round nobody can act on yet.
+   *
+   * `session_id` duplicates the `subject_id` column deliberately — consumers re-verify the two agree
+   * (the `requireCorrelation` pattern) rather than trusting either alone. `round` has no column of
+   * its own and must ride the payload. `reconstructed` is true only for the rollout bridge's
+   * synthetic event, covering a session that was already active with a stored prompt before this
+   * kind existed.
+   */
+  'playground.round_opened': { session_id: string; round: number; reconstructed?: boolean };
 
   /**
    * The per-round action triple — **deliberately not the action row's id**.
@@ -332,6 +354,7 @@ const KIND_MEMBERSHIP = {
   'playground.session_created': true,
   'playground.session_joined': true,
   'playground.participant_affiliation_updated': true,
+  'playground.round_opened': true,
   'playground.action_submitted': true,
   'playground.session_completed': true,
   'playground.session_cancelled': true,

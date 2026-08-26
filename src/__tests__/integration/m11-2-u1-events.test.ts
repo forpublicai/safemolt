@@ -124,9 +124,10 @@ describe("emit primitives", () => {
     const before = await maxEventId();
     // A kind that enters the union with its own consumer coverage in a LATER train. Emitting one
     // this build cannot describe would wedge every consumer's scan floor at that id, because a
-    // drain skips an unknown kind without a receipt.
+    // drain skips an unknown kind without a receipt. (`round_opened` played this role until P3.2
+    // deploy 1 admitted it; `round_resolved` still has no event anywhere in this build.)
     await expect(
-      emitEvent({ kind: "playground.round_opened" as never, payload: {} as never })
+      emitEvent({ kind: "playground.round_resolved" as never, payload: {} as never })
     ).rejects.toThrow(/unknown kind/);
     expect(await maxEventId()).toBe(before);
   });

@@ -159,13 +159,31 @@ export const notificationsCoverage = {
   "group.moderator_removed": "none",
   "group.subscribed": "none",
   "group.unsubscribed": "none",
-  // Nothing notifies on a playground mutation today: the 3-type union has no member for one, and no
-  // inline writer produces one. The kind that WILL notify is `playground.round_open`, which is train
-  // a4's (P3.2 deploy 1 extends the union) and is deliberately absent from this build's kind union.
-  // `none`, never `legacy` — `legacy` claims a writer that does not exist.
+  // Nothing notifies on any OTHER playground mutation: the 3-type union has no member for one, and
+  // no inline writer produces one. `none`, never `legacy` — `legacy` claims a writer that does not
+  // exist.
   "playground.session_created": "none",
   "playground.session_joined": "none",
   "playground.participant_affiliation_updated": "none",
+  /**
+   * **`on` at birth — the NEW-KIND protocol, and it is never `shadow`.**
+   *
+   * Protocol M (`legacy → shadow → on`) exists to cut a projection over from an inline writer to a
+   * consumer without a window where both write or neither does. There is no such writer here: no
+   * code anywhere produces a round-open notification today, so `shadow` would soak against nothing
+   * and `legacy` would claim a writer that does not exist — the configuration error the manifest
+   * test rejects. A kind whose projection is born in the consumer starts `on`.
+   *
+   * **This deploy wires the STATE, not the effect** (P3.2 rollout deploy 1). No producer emits
+   * `playground.round_opened` yet — the prompt-storing writes land after the deployment-version
+   * barrier — so `plan()` falling through to its `null` default is the correct and reachable
+   * behavior for now, and `describe`/`apply` no-op on this kind. The `playground_round_open`
+   * projection itself is a later deliverable of this same lane, and it belongs HERE rather than in
+   * the router: one owner per projection is what keeps per-kind cutover and retry ownership
+   * unambiguous, so the notifications consumer writes the markable row and the router writes only
+   * wakeups.
+   */
+  "playground.round_opened": "on",
   "playground.action_submitted": "none",
   "playground.session_completed": "none",
   "playground.session_cancelled": "none",
@@ -241,6 +259,13 @@ export const activityTrailCoverage = {
   "playground.session_created": "shadow",
   "playground.session_joined": "shadow",
   "playground.participant_affiliation_updated": "shadow",
+  // **No new public activity kind for a round opening** (Decision 5), which is the same answer the
+  // pins and the votes got. A round is a step INSIDE a session, and the session's own trail row —
+  // the one projection the six kinds above already drive — is what the public sees move; adding a
+  // row per round would multiply a long session into a trail of near-identical entries for a state
+  // change the session row already reflects. `none`, never `legacy`: no inline writer produces a
+  // per-round trail row either.
+  "playground.round_opened": "none",
   "playground.action_submitted": "shadow",
   "playground.session_completed": "shadow",
   "playground.session_cancelled": "shadow",
@@ -337,6 +362,12 @@ export const memoryIngestCoverage = {
    * The other six schedule no ingest anywhere — `legacy` would claim a writer that does not exist.
    */
   "playground.action_submitted": "legacy",
+  // Nothing schedules memory ingest from a round OPENING, and nothing should: the ingestible content
+  // of a playground round is what the participants did, which arrives on
+  // `playground.action_submitted` above and is already scheduled from the submit site. A prompt has
+  // no author and no audience of its own. `none`, never `legacy` — there is no scheduler here to
+  // claim.
+  "playground.round_opened": "none",
   "playground.session_created": "none",
   "playground.session_joined": "none",
   "playground.participant_affiliation_updated": "none",

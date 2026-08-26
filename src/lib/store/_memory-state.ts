@@ -1,6 +1,9 @@
 import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredActivityContext, StoredActivityFeedItem, StoredActivityFeedOptions, StoredEvent, StoredNotification, AtprotoIdentity, AtprotoBlob, StoredSchool, StoredSchoolProfessor } from "@/lib/store-types";
 import type { CertificationJob, EvaluationRegistration } from '@/lib/evaluations/types';
 import type { AgentMemory, PlaygroundSession, SessionAction } from '@/lib/playground/types';
+// Type-only, and therefore erased: the wakeup row shape is defined beside the statement that
+// produces it (the `rate-windows` precedent), and this file only needs it to type the map below.
+import type { StoredWakeup } from './wakeups/db';
 
 /** Shared in-memory state and private helpers for domain memory stores. */
 
@@ -33,6 +36,7 @@ export const globalStore = globalThis as typeof globalThis & {
   __safemolt_rateWindows?: Map<string, RateWindowEntry>;  // keyed by "key" (window alignment inside the entry)
   __safemolt_playgroundAgentMemories?: Map<string, AgentMemory>;  // keyed by "agentId:sessionId" (M11-1b D5)
   __safemolt_eventLog?: { rows: StoredEvent[]; nextId: number };  // M11-2 u1 append-only event log
+  __safemolt_wakeups?: { rows: Map<number, StoredWakeup>; nextId: number };  // M11-2 P3.2 wakeup queue
 };
 
 export interface NewsletterSubscriberRow {
@@ -253,6 +257,36 @@ export const eventLog = globalStore.__safemolt_eventLog ??= { rows: [] as Stored
 
 /** Oldest-first drop bound for `eventLog.rows`. */
 export const EVENT_LOG_CAP = 10_000;
+
+/**
+ * M11-2 P3.2 — the memory-mode wakeup queue: `agent_wakeups` rows, keyed by their own id.
+ *
+ * The id counter lives beside the rows in ONE object, the shape `eventLog` above uses and for a
+ * related reason: `agent_wakeups.id` is BIGSERIAL, so it must climb independently of how many rows
+ * the map currently holds. Deriving it from `rows.size` would reissue an id as soon as anything was
+ * removed, and an id is exactly what `reArmWakeupById` identifies a row by.
+ *
+ * Uncapped, unlike the event log, and that is not an oversight: the queue is bounded by its own
+ * dedup indexes — at most one row per `(agent, reason, event)`, at most one PENDING idle row per
+ * `(agent, reason)` — so it cannot grow the way an append-only log can.
+ */
+export const wakeupQueue = globalStore.__safemolt_wakeups ??= {
+  rows: new Map<number, StoredWakeup>(),
+  nextId: 1,
+};
+
+/**
+ * Reset the wakeup queue — **both halves**, which is why it is a helper rather than a line.
+ *
+ * `resetGroupState`'s reason applies here. A fixture that cleared `rows` alone would leave `nextId`
+ * carrying the previous file's high-water mark, so a suite that seeds a row and then asserts on its
+ * id — or that computes an id to hand to `reArmWakeupById` — answers differently depending on what
+ * ran before it. One helper is the only form of that rule a new fixture cannot get half-right.
+ */
+export function resetWakeupState(): void {
+  wakeupQueue.rows.clear();
+  wakeupQueue.nextId = 1;
+}
 
 // Imported and re-exported from the one definition both stores share, so a window cannot be raised
 // in db mode and left alone in memory mode (M11-1 C16). Imported rather than only re-exported

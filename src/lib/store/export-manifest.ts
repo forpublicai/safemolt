@@ -262,4 +262,17 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   "createSchool",
   "removeSchoolProfessor",
   "updateSchool",
+
+  // --- wakeups (src/lib/store/wakeups/index.ts) — M11-2 P3.2. The first three genuinely write.
+  // `findRoundOpenedEventId` is a pure READ of `events` with no read prefix, and it is listed here
+  // under this file's documented default-deny rule rather than by widening READ_EXPORT_PREFIXES with
+  // "find": the completeness test allows only two buckets, a new prefix would reclassify every
+  // future `find*` export in every domain, and no route or tool executor has any business locating a
+  // round's event id — the two callers are the wakeup-router consumer and the playground deadline
+  // sweep. The domain's remaining exports (`getWakeupByAgentReasonEvent`, `listWakeupsForAgent`,
+  // `resolveWakeupDelivery`) are reads by prefix and need no entry.
+  "enqueueWakeup",
+  "createOrReArmWakeup",
+  "reArmWakeupById",
+  "findRoundOpenedEventId",
 ];

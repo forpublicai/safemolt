@@ -62,6 +62,7 @@ describe("kind vocabulary", () => {
     "playground.session_created": true,
     "playground.session_joined": true,
     "playground.participant_affiliation_updated": true,
+    "playground.round_opened": true,
     "playground.action_submitted": true,
     "playground.session_completed": true,
     "playground.session_cancelled": true,
@@ -137,12 +138,13 @@ describe("kind vocabulary", () => {
       // u3f's memory-context pair (Tier 1). The raw-vector routes are Tier B and event-less.
       "memory.context_deleted",
       "memory.context_written",
-      // Train a2's playground family, added by u3d (P1.4) with all three manifests. `round_opened`
-      // and `round_resolved` are deliberately NOT here: the first is a4's and the second belongs to
-      // the round-resolution CAS, which u3d does not migrate — and a kind may not enter the union
-      // before every consumer has an entry for it.
+      // Train a2's playground family, added by u3d (P1.4) with all three manifests, plus
+      // `round_opened` — train a4's (P3.2 deploy 1), which enters here with all three manifests and
+      // deliberately without its producer. `round_resolved` is still NOT here: it belongs to the
+      // round-resolution CAS, which nothing in this build emits an event for.
       "playground.action_submitted",
       "playground.participant_affiliation_updated",
+      "playground.round_opened",
       "playground.session_cancelled",
       "playground.session_completed",
       "playground.session_created",
@@ -162,7 +164,9 @@ describe("kind vocabulary", () => {
     expect(isKnownEventKind("post.created")).toBe(true);
     // A kind that lands with its own consumer coverage in a later train. Unknown today means "skip
     // without a receipt", never "handled" — which is what keeps a mixed-version rollout lossless.
-    expect(isKnownEventKind("playground.round_opened")).toBe(false);
+    // (`round_opened` was this example until P3.2 deploy 1 admitted it; `round_resolved` is the one
+    // still waiting on the round-resolution CAS to carry an event at all.)
+    expect(isKnownEventKind("playground.round_resolved")).toBe(false);
     expect(isKnownEventKind("")).toBe(false);
   });
 
