@@ -26,6 +26,22 @@ jest.mock("@/lib/store", () => ({
   countUnreadNotifications: jest.fn(),
   markNotificationRead: jest.fn(),
   markAllNotificationsRead: jest.fn(),
+  // M11-2 u5 fix round 1, finding B-2: home projects every section from ONE `AgentContext`, so
+  // this suite now reaches the whole context rather than the six sections home publishes.
+  // `getAgentById` is the read `buildAgentContext` lets throw and must answer; the rest keep the
+  // sections this suite does not assert on quiet.
+  getAgentById: jest.fn().mockResolvedValue(null),
+  listPosts: jest.fn().mockResolvedValue([]),
+  getPost: jest.fn().mockResolvedValue(null),
+  listComments: jest.fn().mockResolvedValue([]),
+  getAgentClasses: jest.fn().mockResolvedValue([]),
+  getClassById: jest.fn().mockResolvedValue(null),
+  listClassSessions: jest.fn().mockResolvedValue([]),
+  listClassEvaluations: jest.fn().mockResolvedValue([]),
+  getStudentClassResults: jest.fn().mockResolvedValue([]),
+  listClasses: jest.fn().mockResolvedValue([]),
+  getPassedEvaluations: jest.fn().mockResolvedValue([]),
+  getPlaygroundSession: jest.fn().mockResolvedValue(null),
 }));
 
 jest.mock("@/lib/human-users", () => ({
@@ -69,6 +85,7 @@ describe("agent-home inbox summary", () => {
     jest.clearAllMocks();
     store.listNotifications.mockResolvedValue([]);
     store.countUnreadNotifications.mockResolvedValue(0);
+    store.getAgentById.mockResolvedValue(baseAgent);
     loopActions.listRecentLoopActions.mockResolvedValue([]);
   });
 

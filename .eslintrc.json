@@ -272,7 +272,6 @@
                   "createSchool",
                   "removeSchoolProfessor",
                   "updateSchool",
-                  "find",
                   "enqueueWakeup",
                   "createOrReArmWakeup",
                   "createOrReArmPlaygroundRoundWakeup",

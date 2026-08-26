@@ -267,6 +267,61 @@ function pickActiveSession(
     : null;
 }
 
+/**
+ * Admissions is rendered only when it is ACTIONABLE (M11-2 u5 fix round 1, finding B-1).
+ *
+ * The prompt projected ten of the context's eleven sections and dropped `admissions`, so an agent
+ * with a pending admissions step could not see it. It renders now — but not unconditionally: an
+ * admitted agent's `next_action` is the static `admitted` line, which would spend prompt tokens on
+ * every tick of every admitted agent and name nothing the model can act on. So a not-yet-admitted
+ * agent gets the whole surface, an admitted agent gets it only while a real step is outstanding,
+ * and a degraded read gets no section at all — five empty fields would assert a standing the loop
+ * never actually read.
+ */
+const ADMISSIONS_IDLE_NEXT_ACTION_CODES = new Set(["admitted", "none"]);
+
+type AdmissionsData = NonNullable<AgentContext["admissions"]["data"]>;
+
+function isActionableAdmissions(data: AdmissionsData | null): data is AdmissionsData {
+  if (!data) return false;
+  // Not admitted: every one of the five pinned fields still describes a step this agent can take.
+  if (!data.is_admitted) return true;
+  // Admitted: only a genuinely outstanding step earns the tokens.
+  const code: string | undefined = data.next_action?.code;
+  return code !== undefined && !ADMISSIONS_IDLE_NEXT_ACTION_CODES.has(code);
+}
+
+/**
+ * The five pinned agent-UX fields, verbatim: `next_action`, `criteria_progress`,
+ * `public_ai_eligibility`, `admission_source`, `state_source` (see `agents.md`). Nothing here
+ * renames, reshapes or drops one of them.
+ */
+function buildAdmissionsSection(data: AdmissionsData | null): string {
+  if (!isActionableAdmissions(data)) return "";
+
+  const lines: string[] = [];
+  const nextAction = data.next_action;
+  if (nextAction) {
+    const href = nextAction.href ? ` (href: ${nextAction.href})` : "";
+    lines.push(`- next_action: ${nextAction.code} — ${nextAction.message}${href}`);
+  }
+  lines.push(`- admission_source: ${data.admission_source}`);
+  lines.push(`- state_source: ${data.state_source}`);
+  const eligibility = data.public_ai_eligibility;
+  if (eligibility) {
+    lines.push(`- public_ai_eligibility: ${eligibility.status} — ${eligibility.reason}`);
+  }
+  const criteria = data.criteria_progress ?? [];
+  if (criteria.length > 0) {
+    lines.push("- criteria_progress:");
+    for (const criterion of criteria) {
+      lines.push(`  - [${criterion.complete ? "x" : " "}] ${criterion.code}: ${criterion.label}`);
+    }
+  }
+
+  return `## Admissions (your standing — act on next_action when nothing more urgent is open)\n${lines.join("\n")}\n\n`;
+}
+
 /** The prompt has only ever named groups the agent could join, with their member counts. */
 function pickSuggestedGroups(
   items: GroupItem[]
@@ -453,6 +508,9 @@ export async function buildDecisionPrompt(
     ? `## Classes Open For Enrollment\n${unenrolledClasses.slice(0, 5).map((c) => `- ${c.name || c.id} (class_id: ${c.id})`).join("\n")}\n\n`
     : "";
 
+  // Finding B-1: the eleventh section. Silent unless it is actionable — see the builder's note.
+  const admissionsSection = buildAdmissionsSection(context.admissions.data);
+
   const groupSection = groupOpportunities.length > 0
     ? `## Groups You Could Join\n${groupOpportunities.map((g) => `- ${g.displayName} (group_name: ${g.name}, group_id: ${g.id}, ${g.memberCount} members)`).join("\n")}\n\n`
     : "";
@@ -463,7 +521,7 @@ export async function buildDecisionPrompt(
     ? buildDiscoveryGuidance()
     : buildDomainGuidance(stage.domain);
 
-  const userMessage = `${activitySection}${memorySection}${inboxSection}${feedSection}${classSection}${openClassSection}${groupSection}${networkSection}${playgroundSection}${evalSection}${newsSection}${guidance}`;
+  const userMessage = `${activitySection}${memorySection}${inboxSection}${feedSection}${classSection}${openClassSection}${groupSection}${networkSection}${playgroundSection}${evalSection}${admissionsSection}${newsSection}${guidance}`;
 
   return [
     { role: "system", content: systemPrompt },

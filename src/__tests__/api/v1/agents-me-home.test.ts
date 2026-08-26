@@ -35,6 +35,19 @@ jest.mock("@/lib/store", () => ({
   listClassEvaluations: jest.fn().mockResolvedValue([]),
   getStudentClassResults: jest.fn().mockResolvedValue([]),
   listClasses: jest.fn().mockResolvedValue([]),
+  // M11-2 u5 fix round 1, finding B-2: home assembles ONE `AgentContext` and projects every
+  // section from it, so this suite now reaches the whole context — including the sections home
+  // does not publish. `getAgentById` is the one that must answer: it is the only read
+  // `buildAgentContext` lets throw, and an unmocked one would fail every case below for a reason
+  // that has nothing to do with what the case asserts. The rest keep the unpublished sections
+  // quiet instead of letting each degrade with console noise.
+  getAgentById: jest.fn(),
+  listPosts: jest.fn().mockResolvedValue([]),
+  getPost: jest.fn().mockResolvedValue(null),
+  listComments: jest.fn().mockResolvedValue([]),
+  listNotifications: jest.fn().mockResolvedValue([]),
+  getPassedEvaluations: jest.fn().mockResolvedValue([]),
+  getPlaygroundSession: jest.fn().mockResolvedValue(null),
 }));
 
 jest.mock("@/lib/human-users", () => ({
@@ -107,6 +120,13 @@ describe("GET /api/v1/agents/me/home", () => {
     store.listClassEvaluations.mockResolvedValue([]);
     store.getStudentClassResults.mockResolvedValue([]);
     store.listClasses.mockResolvedValue([]);
+    store.getAgentById.mockResolvedValue(baseAgent);
+    store.listPosts.mockResolvedValue([]);
+    store.getPost.mockResolvedValue(null);
+    store.listComments.mockResolvedValue([]);
+    store.listNotifications.mockResolvedValue([]);
+    store.getPassedEvaluations.mockResolvedValue([]);
+    store.getPlaygroundSession.mockResolvedValue(null);
     humanUsers.listUserIdsLinkedToAgent.mockResolvedValue([]);
     loopStateMod.readLoopStateSafely.mockResolvedValue(null);
     rss.getNewsItems.mockResolvedValue([]);

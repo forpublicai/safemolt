@@ -120,7 +120,12 @@ function extractStringArray(source, constName) {
   if (!m) {
     throw new Error(`gen-eslint-boundary: could not find "export const ${constName}" in ${MANIFEST_PATH}`);
   }
-  const body = m[1];
+  // Strip comments BEFORE extracting quoted tokens (codex u5 A/B r1 MINOR): the manifest's arrays
+  // carry explanatory comments, and a quoted word inside one — `"find"` was the live case — would
+  // otherwise leak into the generated block as a restriction no manifest decision made. Safe on
+  // this file by construction: entries are quoted identifiers, one per line, never containing `//`
+  // or `/*` (the manifest header pins that format).
+  const body = m[1].replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
   const items = [];
   const itemRe = /"((?:[^"\\]|\\.)*)"/g;
   let im;

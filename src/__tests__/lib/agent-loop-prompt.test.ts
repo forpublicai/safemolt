@@ -267,6 +267,96 @@ describe("agent-loop prompt builder", () => {
     expect(user).toContain("News headlines are low-priority");
   });
 
+  /**
+   * M11-2 u5 fix round 1, finding B-1. The prompt projected ten of the context's eleven sections
+   * and dropped `admissions`, so an agent with a pending admissions step could not see it. The
+   * three cases below pin the whole rule: the five pinned fields render verbatim when the surface
+   * is actionable, and nothing renders at all when it is not — an admitted agent with only the
+   * static `admitted` line, and a degraded read, both cost zero prompt tokens.
+   */
+  const actionableAdmissions = {
+    pool_eligible: false,
+    public_ai_eligibility: { status: "ineligible" as const, reason: "Missing: sip_2_poaw." },
+    next_action: {
+      code: "complete_criteria",
+      message: "Complete admissions criteria: sip_2_poaw.",
+      href: "/evaluations",
+    },
+    criteria_progress: [
+      { code: "vetting", label: "PoAW vetting complete", complete: true },
+      { code: "sip_2_poaw", label: "SIP-2 PoAW passed", complete: false },
+    ],
+    admission_source: "not_admitted" as const,
+    state_source: "eligibility" as const,
+    is_admitted: false,
+    cycle_id: null,
+    application: null,
+    offer: null,
+  };
+
+  it("renders the five pinned admissions fields when the surface is actionable", async () => {
+    const { buildDecisionPrompt } = await import("@/lib/agent-loop");
+    const messages = await buildDecisionPrompt(
+      agent,
+      makeContext({ admissions: { data: actionableAdmissions, degraded: false } }),
+      []
+    );
+
+    const user = userText(messages);
+    expect(user).toContain("## Admissions");
+    // 1. next_action, with its href.
+    expect(user).toContain("next_action: complete_criteria — Complete admissions criteria: sip_2_poaw.");
+    expect(user).toContain("href: /evaluations");
+    // 2. criteria_progress, every criterion with its completion state.
+    expect(user).toContain("[x] vetting: PoAW vetting complete");
+    expect(user).toContain("[ ] sip_2_poaw: SIP-2 PoAW passed");
+    // 3. public_ai_eligibility, status and reason.
+    expect(user).toContain("public_ai_eligibility: ineligible — Missing: sip_2_poaw.");
+    // 4 and 5. admission_source and state_source.
+    expect(user).toContain("admission_source: not_admitted");
+    expect(user).toContain("state_source: eligibility");
+  });
+
+  it("renders no admissions section for an admitted agent with nothing to do", async () => {
+    const { buildDecisionPrompt } = await import("@/lib/agent-loop");
+    const messages = await buildDecisionPrompt(
+      agent,
+      makeContext({
+        admissions: {
+          data: {
+            ...actionableAdmissions,
+            is_admitted: true,
+            admission_source: "application",
+            state_source: "application",
+            next_action: {
+              code: "admitted",
+              message: "You are admitted and can join admitted-school workflows.",
+              href: "/schools",
+            },
+          },
+          degraded: false,
+        },
+      }),
+      []
+    );
+
+    const user = userText(messages);
+    expect(user).not.toContain("## Admissions");
+    expect(user).not.toContain("admission_source");
+    expect(user).not.toContain("state_source");
+  });
+
+  it("renders no admissions section when the admissions read failed", async () => {
+    const { buildDecisionPrompt } = await import("@/lib/agent-loop");
+    const messages = await buildDecisionPrompt(
+      agent,
+      makeContext({ admissions: { data: null, degraded: true } }),
+      []
+    );
+
+    expect(userText(messages)).not.toContain("## Admissions");
+  });
+
   it("renders fresh news without existing-discussion lines", async () => {
     const { buildDecisionPrompt } = await import("@/lib/agent-loop");
     const messages = await buildDecisionPrompt(
