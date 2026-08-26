@@ -7,6 +7,7 @@ import { toKarmaScale } from "../karma-scale";
 import type { PreparedEvent } from "@/lib/events/kinds";
 import type { StoredEvent } from "@/lib/store-types";
 import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents, type PreparedEventBatch } from "../events/memory";
+import { executionGuardPasses, type ExecutionGuard } from "../execution-guard";
 
 /**
  * Preflight the Decision-2 prepared events — **before the mutation, over the whole batch**, and
@@ -74,7 +75,7 @@ function commentAdmissible(
 function refusedComment(
   over: Partial<Omit<CreateCommentOutcome, "comment">> = {}
 ): CreateCommentOutcome {
-  return { comment: null, postExists: true, parentValid: true, admitted: false, ...over };
+  return { comment: null, postExists: true, parentValid: true, admitted: false, guardPassed: true, ...over };
 }
 
 /**
@@ -91,7 +92,8 @@ export async function createCommentWithOutcome(
   authorId: string,
   content: string,
   parentId?: string,
-  events?: readonly PreparedEvent[]
+  events?: readonly PreparedEvent[],
+  executionGuard?: ExecutionGuard
 ): Promise<CreateCommentOutcome> {
   // The id is minted BEFORE anything else, because the events cannot be described until their
   // `comment_id` is final. `nextCommentId` only advances an opaque counter, so a refused comment
@@ -106,6 +108,12 @@ export async function createCommentWithOutcome(
   // rate-limited request carrying a malformed event throws in BOTH stores.
   const post = posts.get(postId);
   if (!post || post.deletedAt) return refusedComment({ postExists: false });
+  // **M11-2 P3.3: the execution guard, checked in the SAME synchronous section as everything below**
+  // (no `await` before this line, matching the db statement's `guard` CTE, which is independent of
+  // `live`/`parent_ok` and evaluated alongside them). A guard is present only when the runner
+  // supplied one; every REST/tool caller passes none and `executionGuardPasses` always answers true
+  // for that case, matching the db side rendering no CTE and gating nothing.
+  if (!executionGuardPasses(executionGuard)) return refusedComment({ guardPassed: false });
   // **The acting agent, re-checked here** (codex round 4). The action awaits a post read and a group
   // read before calling, and a caller that withdraws in that window would otherwise author a comment
   // that no agent owns — with the post counter moved and `comment.created` emitted. Postgres refuses
@@ -148,7 +156,7 @@ export async function createCommentWithOutcome(
   if (livePost(postId)) {
     await notifyCommentTarget(post, comment, parent, sourceEventId);
   }
-  return { comment, postExists: true, parentValid: true, admitted: true };
+  return { comment, postExists: true, parentValid: true, admitted: true, guardPassed: true };
 }
 
 /**
@@ -162,9 +170,10 @@ export async function createComment(
   authorId: string,
   content: string,
   parentId?: string,
-  events?: readonly PreparedEvent[]
+  events?: readonly PreparedEvent[],
+  executionGuard?: ExecutionGuard
 ) {
-  return (await createCommentWithOutcome(postId, authorId, content, parentId, events)).comment;
+  return (await createCommentWithOutcome(postId, authorId, content, parentId, events, executionGuard)).comment;
 }
 
 /** The post, or null once it is a tombstone (M11-1 C25) — the memory mirror of the db's filter. */

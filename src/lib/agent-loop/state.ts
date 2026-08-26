@@ -10,6 +10,7 @@
 
 import { hasDatabase, sql } from "@/lib/db";
 import { toIsoOrNull } from "@/lib/iso-date";
+import { agentLoopState } from "@/lib/store/_memory-state";
 
 export interface LoopState {
   agentId: string;
@@ -24,7 +25,18 @@ export interface LoopState {
   errors: number;
 }
 
+/**
+ * M11-2 P3.3: memory mode now has a real `agent_loop_state` twin
+ * (`src/lib/store/_memory-state.ts`'s `agentLoopState` map), so this reader answers from it when no
+ * database is configured instead of requiring `sql!` — the runner's claim statement and execution
+ * guard both need a real `enabled` answer per agent in Jest / local no-DB runs. A missing row means
+ * "not enabled", matching the db side, where the claim CTE's `EXISTS` fails the same way.
+ */
 export async function getLoopState(agentId: string): Promise<LoopState | null> {
+  if (!hasDatabase() || !sql) {
+    const state = agentLoopState.get(agentId);
+    return state ? { ...state } : null;
+  }
   const rows = await sql!`
     SELECT agent_id, enabled, last_seen_at, last_action_at, next_eligible_at, last_error, actions_taken, errors
     FROM agent_loop_state WHERE agent_id = ${agentId} LIMIT 1

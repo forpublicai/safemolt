@@ -47,7 +47,7 @@ jest.mock("@/lib/playground/engine", () => ({
   generateSummary: jest.fn(async () => "summary"),
 }));
 
-import { checkDeadlines } from "@/lib/playground/session-manager";
+import { runDeadlineProgressionUnlocked } from "@/lib/playground/session-manager";
 import { createPlaygroundSession, getPlaygroundSession } from "@/lib/store";
 import {
   agents,
@@ -102,7 +102,7 @@ function seedAgent(): StoredAgent {
 
 /**
  * A session in Foundation running `pub-debate` — the one game whose `minPlayers` (3) the
- * auto-activation step in `checkDeadlines` reads, so a fixture that wants activation seeds three.
+ * auto-activation step in `runDeadlineProgressionUnlocked` reads, so a fixture that wants activation seeds three.
  */
 async function seedSession(options: {
   status?: PlaygroundSession["status"];
@@ -183,8 +183,8 @@ describe("activation and the round-1 prompt write", () => {
     const session = await seedSession({ participants });
     const since = marker();
 
-    // Auto-activation (`checkDeadlines` step 1b) flips the session and schedules the prompt.
-    await checkDeadlines();
+    // Auto-activation (`runDeadlineProgressionUnlocked` step 1b) flips the session and schedules the prompt.
+    await runDeadlineProgressionUnlocked();
 
     const activated = (await getPlaygroundSession(session.id))!;
     expect(activated.status).toBe("active");
@@ -230,11 +230,11 @@ describe("activation and the round-1 prompt write", () => {
     const participants = [seedAgent(), seedAgent(), seedAgent()];
     const session = await seedSession({ participants });
 
-    await checkDeadlines(); // activation; its generation is deferral #1
+    await runDeadlineProgressionUnlocked(); // activation; its generation is deferral #1
     ageSession(session.id, 5 * 60 * 1000); // past the repair grace
     const since = marker();
 
-    const sweep = checkDeadlines(); // the repair's generation is deferral #2
+    const sweep = runDeadlineProgressionUnlocked(); // the repair's generation is deferral #2
     await settle();
     expect(promptDeferrals).toHaveLength(2);
 
@@ -263,7 +263,7 @@ describe("the round-1 prompt repair sweep", () => {
     });
     const since = marker();
 
-    const sweep = checkDeadlines();
+    const sweep = runDeadlineProgressionUnlocked();
     await settle();
     await deliverPrompt("repaired prompt");
     await sweep;
@@ -289,7 +289,7 @@ describe("the round-1 prompt repair sweep", () => {
     });
     const since = marker();
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     expect(promptDeferrals).toHaveLength(0);
     expect((await getPlaygroundSession(session.id))!.currentRoundPrompt).toBeUndefined();
@@ -309,7 +309,7 @@ describe("the round-1 prompt repair sweep", () => {
       startedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
     });
 
-    const sweep = checkDeadlines();
+    const sweep = runDeadlineProgressionUnlocked();
     await settle();
     await deliverPrompt("repaired prompt");
     const result = await sweep;
@@ -337,7 +337,7 @@ describe("the rollout bridge", () => {
     });
     const since = marker();
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     const opened = roundOpenedSince(since);
     expect(opened).toHaveLength(1);
@@ -354,7 +354,7 @@ describe("the rollout bridge", () => {
     // either guard alone still converges here — what a lost locator check actually costs is a second
     // event for every OTHER active prompted session on every pass, which the repair gates above see.
     const afterFirst = marker();
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
     expect(roundOpenedSince(afterFirst)).toEqual([]);
   });
 
@@ -367,7 +367,7 @@ describe("the rollout bridge", () => {
     });
     const since = marker();
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     expect(roundOpenedSince(since)).toEqual([]);
   });
@@ -393,7 +393,7 @@ describe("the sweep's wakeup arming", () => {
     const since = marker();
 
     // Pass one: the bridge mints the round's event, then the arming keys off it.
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     const eventId = roundOpenedSince(since)[0].id;
     const armed = wakeupsFor(session.id);
@@ -406,7 +406,7 @@ describe("the sweep's wakeup arming", () => {
 
     // Pass two adds nothing: the `(agent, reason, event_id)` dedup holds and a still-pending row is
     // not re-armable.
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
     expect(wakeupsFor(session.id)).toHaveLength(2);
   });
 
@@ -420,14 +420,14 @@ describe("the sweep's wakeup arming", () => {
       roundDeadline: new Date(Date.now() + 3_600_000).toISOString(),
     });
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
     const target = wakeupsFor(session.id).find((row) => row.agentId === first.id)!;
     // A tick that ran and failed — the only state P3.3 can produce, seeded directly because no
     // production code here writes a completion yet.
     target.completedAt = new Date().toISOString();
     target.result = "error";
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     const reArmed = wakeupsFor(session.id).find((row) => row.id === target.id)!;
     expect(reArmed.completedAt).toBeNull();
@@ -444,7 +444,7 @@ describe("the sweep's wakeup arming", () => {
       startedAt: new Date(Date.now() - 30_000).toISOString(),
     });
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     expect(wakeupsFor(session.id)).toEqual([]);
   });
@@ -466,7 +466,7 @@ describe("the sweep's wakeup arming", () => {
       ),
     });
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     expect(wakeupsFor(session.id).map((row) => row.agentId).sort()).toEqual(
       [first.id, second.id].sort()

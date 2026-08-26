@@ -37,7 +37,7 @@ import { playgroundSessionCreatedEvent } from "@/lib/actions/playground-events";
 import { activityTrailEffects } from "@/lib/events/consumers/activity-trail";
 import { eventConsumers } from "@/lib/events/consumers/registry";
 import { enforceSessionLifetimeCap } from "@/lib/playground/lifecycle";
-import { checkDeadlines } from "@/lib/playground/session-manager";
+import { runDeadlineProgressionUnlocked } from "@/lib/playground/session-manager";
 import { drainEventConsumer } from "@/lib/store/events/drain-db";
 import {
   createPlaygroundSession,
@@ -592,7 +592,7 @@ describe("the sweeps", () => {
     const fresh = await seedSession();
     const marker = await maxEventId();
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     const emitted = (await eventsSince(marker)).filter((e) => e.kind === "playground.session_expired");
     const mine = emitted.filter((e) => e.subjectId === first.id || e.subjectId === second.id);
@@ -670,7 +670,7 @@ describe("the sweeps", () => {
 
     // Retired now that this gate has finished asserting on them (u5 lane C). Fifty LIVE sessions
     // are this test's fixture, not a state any later test in this file means to inherit — and every
-    // later `checkDeadlines()` pays for them, because the deadline sweep is O(active sessions) in
+    // later `runDeadlineProgressionUnlocked()` pays for them, because the deadline sweep is O(active sessions) in
     // Neon HTTP round trips. Leaving them behind pushed the shadow-parity gates past their per-test
     // budget. `status` is moved directly rather than through a store writer, so nothing is emitted
     // and no gate below sees a fabricated transition.
@@ -824,7 +824,7 @@ describe("shadow parity through the real drain", () => {
           participants: [agent],
           createdAt: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
         });
-        await checkDeadlines();
+        await runDeadlineProgressionUnlocked();
         return session.id;
       },
     ],

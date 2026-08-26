@@ -33,7 +33,10 @@ describe("agent runtime", () => {
       maxToolCalls: 1,
     });
 
-    expect(executeTool).toHaveBeenCalledWith("create_post", { title: "Hello" }, agent);
+    // M11-2 P3.3: `runAgenticTurn` now forwards a fourth `executionGuard` argument to every
+    // `executeTool` call — `undefined` here, since this turn's input carried none (every caller but
+    // `agent-pulse/runner.ts` omits it).
+    expect(executeTool).toHaveBeenCalledWith("create_post", { title: "Hello" }, agent, undefined);
     expect(result.noOp).toBe(false);
     expect(result.finalContent).toBe("done");
     expect(result.toolCallsExecuted).toHaveLength(1);

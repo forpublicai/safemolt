@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: safemolt-worker
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm run worker
+    healthCheckPath: /healthz
+    # Render's own shutdown grace must be at least WORKER_SHUTDOWN_GRACE_MS (default 240s) or the
+    # platform SIGKILLs the process before its own drain-on-SIGTERM finishes (worker/index.ts).
+    envVars:
+      - key: POSTGRES_URL
+        sync: false
+      - key: CRON_SECRET
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+      - key: WORKER_LOCK_TTL_MS
+        value: "600000"
+      - key: WORKER_DRAIN_INTERVAL_MS
+        value: "10000"
+      - key: WORKER_DEADLINE_INTERVAL_MS
+        value: "60000"
+      - key: WORKER_WAKEUP_INTERVAL_MS
+        value: "5000"
+      - key: WORKER_IDLE_SWEEP_INTERVAL_MS
+        value: "60000"
+      - key: WORKER_SHUTDOWN_GRACE_MS
+        value: "240000"
+      - key: PORT
+        value: "3001"

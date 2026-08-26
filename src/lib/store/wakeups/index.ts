@@ -3,14 +3,17 @@ import * as db from "./db";
 import * as mem from "./memory";
 
 /**
- * M11-2 P3.2 (train a4, lane C) — the wakeup queue's store facade.
+ * M11-2 P3.2 (train a4, lane C) + P3.3 — the wakeup queue's store facade.
  *
- * Two callers of this lane write through it and neither is in this file: the wakeup-router consumer
- * and the playground deadline sweep. Nothing here claims, leases or completes a wakeup — that is
- * P3.3, explicitly deferred — so no such function is exported, deliberately.
+ * P3.2's two callers write through the enqueue/re-arm exports below: the wakeup-router consumer and
+ * the playground deadline sweep. **P3.3 adds the claim/lease/completion/housekeeping exports** —
+ * store-layer primitives only; the runner (tick loop, context building, tool execution) that drives
+ * them is a different lane's territory.
  */
 
 export type {
+  ClaimNextWakeupInput,
+  ClaimNextWakeupResult,
   CreateOrReArmPlaygroundRoundWakeupInput,
   CreateOrReArmWakeupInput,
   CreateOrReArmWakeupResult,
@@ -36,3 +39,16 @@ export const getWakeupByAgentReasonEvent = pickStore(
 export const listWakeupsForAgent = pickStore(db.listWakeupsForAgent, mem.listWakeupsForAgent);
 export const findRoundOpenedEventId = pickStore(db.findRoundOpenedEventId, mem.findRoundOpenedEventId);
 export const resolveWakeupDelivery = pickStore(db.resolveWakeupDelivery, mem.resolveWakeupDelivery);
+
+// M11-2 P3.3 — the claim/lease/completion/housekeeping writers.
+export const claimNextWakeup = pickStore(db.claimNextWakeup, mem.claimNextWakeup);
+export const renewWakeupLease = pickStore(db.renewWakeupLease, mem.renewWakeupLease);
+export const completeWakeup = pickStore(db.completeWakeup, mem.completeWakeup);
+export const abandonExpiredWakeupLeases = pickStore(
+  db.abandonExpiredWakeupLeases,
+  mem.abandonExpiredWakeupLeases
+);
+export const terminalizeDisabledAgentWakeups = pickStore(
+  db.terminalizeDisabledAgentWakeups,
+  mem.terminalizeDisabledAgentWakeups
+);

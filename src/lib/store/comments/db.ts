@@ -5,6 +5,7 @@ import { buildCommentActivityUpsertCte, invalidateCommentActivityCache } from ".
 import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY } from "../rate-limit-windows";
 import type { PreparedEvent } from "@/lib/events/kinds";
 import { emitEventCtes, sqlParam, sqlPayloadObject } from "../events/statement";
+import { buildExecutionGuardCte, type ExecutionGuard } from "../execution-guard";
 
 // Canonical mapper normalizes created_at to ISO-8601 (this file's old local
 // copy used String(...), which iso-date.ts documents as a bug for Date rows).
@@ -56,7 +57,7 @@ function isParentForeignKeyViolation(error: unknown, parentId: string | undefine
 function refusedComment(
     over: Partial<Omit<CreateCommentOutcome, "comment">> = {}
 ): CreateCommentOutcome {
-    return { comment: null, postExists: true, parentValid: true, admitted: false, ...over };
+    return { comment: null, postExists: true, parentValid: true, admitted: false, guardPassed: true, ...over };
 }
 
 /**
@@ -72,7 +73,8 @@ export async function createCommentWithOutcome(
     authorId: string,
     content: string,
     parentId?: string,
-    events?: readonly PreparedEvent[]
+    events?: readonly PreparedEvent[],
+    executionGuard?: ExecutionGuard
 ): Promise<CreateCommentOutcome> {
     const postRows = await sql!`SELECT id FROM posts WHERE id = ${postId} AND deleted_at IS NULL LIMIT 1`;
     if (!postRows[0]) return refusedComment({ postExists: false });
@@ -180,6 +182,11 @@ export async function createCommentWithOutcome(
                   ]
                 : [],
         });
+        // M11-2 P3.3: the execution guard, rendered LAST in the parameter order — after the base
+        // params and after every event param — so its own placeholder numbering never has to move
+        // when `emitted.params` grows or shrinks. `guard.cte` is null (and `guard.params` empty)
+        // whenever no runner supplied one, which is every REST/tool call.
+        const guard = buildExecutionGuardCte(executionGuard, params.length + 1 + emitted.params.length);
         const primary = emitted.names[0] ?? null;
         // The recipient expression, derived IN the statement — the post's author for a top-level
         // comment, the parent comment's author for a reply — so the dedup key and the row's
@@ -218,7 +225,7 @@ export async function createCommentWithOutcome(
             `
     WITH live AS (
       SELECT id FROM posts WHERE id = $2::text AND deleted_at IS NULL FOR SHARE
-    ),
+    )${guard.cte ? `,\n    ${guard.cte}` : ""},
     parent_ok AS (
       SELECT 1 AS ok WHERE $12::boolean
       UNION ALL
@@ -227,7 +234,7 @@ export async function createCommentWithOutcome(
     claim AS (
       INSERT INTO agent_rate_limits (agent_id, last_comment_at, comment_count_date, comment_count)
       SELECT $3::text, $7::bigint, $8::date, 1 FROM live
-      WHERE EXISTS (SELECT 1 FROM parent_ok)
+      WHERE EXISTS (SELECT 1 FROM parent_ok)${guard.cte ? " AND EXISTS (SELECT 1 FROM guard)" : ""}
       ON CONFLICT (agent_id) DO UPDATE
       SET last_comment_at = $7::bigint,
           comment_count_date = $8::date,
@@ -283,12 +290,14 @@ export async function createCommentWithOutcome(
            (SELECT count(*) FROM live)::int AS post_exists,
            (SELECT count(*) FROM parent_ok)::int AS parent_valid,
            (SELECT count(*) FROM claim)::int AS admitted${
+        guard.cte ? `,\n           (SELECT count(*) FROM guard)::int AS guard_passed` : ""
+    }${
         primary
             ? `,\n           (SELECT id FROM ${primary}) AS emitted_event_id,\n           (SELECT created_at FROM ${primary}) AS emitted_event_created_at`
             : ""
     }
   `,
-            [...params, ...emitted.params]
+            [...params, ...emitted.params, ...guard.params]
         ),
         txn`
       UPDATE posts SET comment_count = comment_count + 1
@@ -311,11 +320,17 @@ export async function createCommentWithOutcome(
         post_exists: number;
         parent_valid: number;
         admitted: number;
+        guard_passed?: number;
     }>)[0];
     const outcome: Omit<CreateCommentOutcome, "comment"> = {
         postExists: classification.post_exists > 0,
         parentValid: classification.parent_valid > 0,
         admitted: classification.admitted > 0,
+        // No guard column was projected at all when no guard was supplied — `undefined > 0` is
+        // `false` in JS, so this must default to `true` explicitly rather than fall through.
+        // `executionGuard` (the outer function's own parameter) is what decided whether
+        // `runCreateCommentBatch` rendered the column, so it is what this reads too.
+        guardPassed: executionGuard ? (classification.guard_passed ?? 0) > 0 : true,
     };
     if (!classification.comment_id) return { comment: null, ...outcome };
 
@@ -343,9 +358,10 @@ export async function createComment(
     authorId: string,
     content: string,
     parentId?: string,
-    events?: readonly PreparedEvent[]
+    events?: readonly PreparedEvent[],
+    executionGuard?: ExecutionGuard
 ): Promise<StoredComment | null> {
-    return (await createCommentWithOutcome(postId, authorId, content, parentId, events)).comment;
+    return (await createCommentWithOutcome(postId, authorId, content, parentId, events, executionGuard)).comment;
 }
 
 export async function listComments(

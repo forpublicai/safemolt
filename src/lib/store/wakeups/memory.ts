@@ -1,8 +1,17 @@
-import { eventLog, playgroundActions, playgroundSessions, wakeupQueue } from "../_memory-state";
+import {
+  agentLoopState,
+  eventLog,
+  playgroundActions,
+  playgroundSessions,
+  pulseBudgetCounters,
+  wakeupQueue,
+} from "../_memory-state";
 import {
   PLAYGROUND_ROUND_REASON,
   ROUND_OPENED_KIND,
   normalizeListLimit,
+  type ClaimNextWakeupInput,
+  type ClaimNextWakeupResult,
   type CreateOrReArmPlaygroundRoundWakeupInput,
   type CreateOrReArmWakeupInput,
   type CreateOrReArmWakeupResult,
@@ -12,7 +21,7 @@ import {
 } from "./db";
 
 /**
- * M11-2 P3.2 — the memory-mode wakeup queue (the pinned Jest / no-DB path).
+ * M11-2 P3.2 + P3.3 — the memory-mode wakeup queue (the pinned Jest / no-DB path).
  *
  * Semantically identical to `db.ts`, which means reproducing the three partial unique indexes and
  * the normative re-arm predicate rather than approximating them. Each function below is ONE
@@ -26,10 +35,13 @@ import {
  * only production can see. The import is inert in a no-DB run — `@/lib/db` tolerates a missing
  * connection string, and nothing in this file touches `sql`.
  *
- * Deliberately absent, exactly as in db mode: any writer of `claimed_at`, `claim_token`,
- * `lease_expires_at`, `completed_at` or `result`. Claiming, leasing and completion are P3.3. A test
- * that needs a completed row seeds one directly through `wakeupQueue`, which is honest about the
- * fact that no production code here can produce that state yet.
+ * **P3.3 adds the claim/lease/completion/housekeeping twins near the bottom of this file.** They are
+ * the first writers here of `claimed_at`, `claim_token`, `lease_expires_at`, `completed_at` or
+ * `result` outside a re-arm — before P3.3 those columns were production-unreachable in memory mode,
+ * and tests seeded a completed row by reaching into `wakeupQueue` directly (still true for the OLDER
+ * tests in this domain's suite, which predate a real completion writer and are unaffected by this
+ * addition). See that section's own doc comment for how "one synchronous section, no `await`" stands
+ * in for the db side's `FOR UPDATE SKIP LOCKED`.
  */
 
 /**
@@ -325,4 +337,137 @@ export async function resolveWakeupDelivery(agentId: string): Promise<"internal"
   // arguments, and the db twin reads it. This mode deliberately does not.
   void agentId;
   return "internal";
+}
+
+/**
+ * M11-2 P3.3 — the memory twin of the claim, lease-renewal, completion and housekeeping writers in
+ * `db.ts`. Same semantics throughout: claim order (earliest due, loop-enabled, not already in
+ * flight), budget-then-claim sequencing (a refused claim spends nothing), and the same token-fenced
+ * lease/completion writes.
+ *
+ * **No true parallelism stands in for `FOR UPDATE SKIP LOCKED` here, and that IS the whole
+ * guarantee.** `claimNextWakeup` below has no `await` between its scan and its write — this file's
+ * house style, stated at the top ("one synchronous section, no `await` between the check and the
+ * write") — so two "concurrent" calls in a test (e.g. `Promise.all([claimNextWakeup(...),
+ * claimNextWakeup(...)])`) still run their synchronous bodies to completion one at a time: JS has one
+ * event loop, and neither call yields until it returns. That is exactly the guarantee the db side
+ * gets from row locking, reproduced by construction rather than approximated.
+ */
+
+/** The memory twin of the `(agent_id, day, bucket)` primary key, flattened into one string key. */
+function budgetCounterKey(agentId: string, day: string, bucket: "general" | "playground"): string {
+  return `${agentId}:${day}:${bucket}`;
+}
+
+/**
+ * See `db.ts`'s `claimNextWakeup` for the full contract. One synchronous section end to end: the
+ * scan, the budget check-and-spend, and the claim write happen with no `await` between them — this
+ * store's substitute for the db statement's row lock (see the section doc comment above).
+ *
+ * `candidates` mirrors the db shape exactly — `0`, or `1` with `claimed` either `null` (a budget
+ * refusal, terminalized in place) or the claimed row — because the db statement's `cand` CTE is
+ * `LIMIT 1` and this scan picks exactly one winner the same way.
+ *
+ * **The tiebreak (ascending `id`) is a MEMORY-ONLY addition.** The db statement's `ORDER BY w.due_at`
+ * names no explicit tiebreaker — Postgres's own tie order is unspecified — but a deterministic memory
+ * twin needs one for reproducible tests, so ties are broken by the memory queue's own insertion order
+ * (ascending `id`).
+ */
+export async function claimNextWakeup(input: ClaimNextWakeupInput): Promise<ClaimNextWakeupResult> {
+  const allRows = rows();
+  const inFlightAgents = new Set(
+    allRows.filter((row) => row.claimedAt !== null && row.completedAt === null).map((row) => row.agentId)
+  );
+  const nowMs = Date.now();
+  const candidates = allRows.filter((row) => {
+    if (row.completedAt !== null || row.claimedAt !== null) return false;
+    if (row.delivery !== "internal") return false;
+    if (Date.parse(row.dueAt) > nowMs) return false;
+    if (agentLoopState.get(row.agentId)?.enabled !== true) return false;
+    if (inFlightAgents.has(row.agentId)) return false;
+    return true;
+  });
+
+  if (candidates.length === 0) return { candidates: 0 };
+
+  candidates.sort((a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt) || a.id - b.id);
+  // `rows()` hands out the live map references, so `candidates[0]` IS the stored row — mutating it
+  // below mutates `wakeupQueue` directly, with no extra lookup.
+  const row = candidates[0];
+
+  const nowIso = new Date(nowMs).toISOString();
+  const bucket: "general" | "playground" = row.reason === PLAYGROUND_ROUND_REASON ? "playground" : "general";
+  const cap = bucket === "playground" ? input.playgroundCap : input.generalCap;
+  const key = budgetCounterKey(row.agentId, utcDay(nowIso), bucket);
+  const spent = pulseBudgetCounters.get(key) ?? 0;
+
+  // Matches the db statement's `b` CTE: a refused claim is terminalized in place and the counter is
+  // NOT incremented — "a blocked claim spends nothing" is the plan's own wording for this.
+  if (spent >= cap) {
+    row.completedAt = nowIso;
+    row.result = "budget_exhausted";
+    return { candidates: 1, claimed: null };
+  }
+
+  pulseBudgetCounters.set(key, spent + 1);
+  row.claimedAt = nowIso;
+  row.claimToken = input.claimToken;
+  row.leaseExpiresAt = new Date(nowMs + input.leaseMs).toISOString();
+  return { candidates: 1, claimed: cloneWakeup(row) };
+}
+
+/** See `db.ts`: token-fenced lease renewal, re-checking `enabled` in the same synchronous section. */
+export async function renewWakeupLease(id: number, claimToken: string, leaseMs: number): Promise<boolean> {
+  const row = wakeupQueue.rows.get(id);
+  if (!row || row.claimToken !== claimToken || row.completedAt !== null) return false;
+  if (agentLoopState.get(row.agentId)?.enabled !== true) return false;
+  row.leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString();
+  return true;
+}
+
+/** See `db.ts`: token-fenced completion. `false` (the zero-rows-back equivalent) means ownership was already lost. */
+export async function completeWakeup(
+  id: number,
+  claimToken: string,
+  result: "acted" | "skip" | "error"
+): Promise<boolean> {
+  const row = wakeupQueue.rows.get(id);
+  if (!row || row.claimToken !== claimToken || row.completedAt !== null) return false;
+  row.completedAt = new Date().toISOString();
+  row.result = result;
+  return true;
+}
+
+/** See `db.ts`: NOT token-fenced — a system sweep for rows whose owning runner is presumed gone. */
+export async function abandonExpiredWakeupLeases(): Promise<number> {
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  let count = 0;
+  for (const row of rows()) {
+    if (row.claimedAt === null || row.completedAt !== null) continue;
+    if (row.leaseExpiresAt === null || Date.parse(row.leaseExpiresAt) >= nowMs) continue;
+    row.completedAt = nowIso;
+    row.result = "abandoned";
+    count += 1;
+  }
+  return count;
+}
+
+/**
+ * See `db.ts`: NOT token-fenced. A missing `agentLoopState` entry and an `enabled: false` entry are
+ * treated alike — `!== true` covers both — matching the claim CTE's `EXISTS`, which also fails for an
+ * agent with no `agent_loop_state` row at all.
+ */
+export async function terminalizeDisabledAgentWakeups(): Promise<number> {
+  const nowIso = new Date().toISOString();
+  let count = 0;
+  for (const row of rows()) {
+    if (row.completedAt !== null || row.claimedAt !== null) continue;
+    if (row.delivery !== "internal") continue;
+    if (agentLoopState.get(row.agentId)?.enabled === true) continue;
+    row.completedAt = nowIso;
+    row.result = "autonomy_disabled";
+    count += 1;
+  }
+  return count;
 }

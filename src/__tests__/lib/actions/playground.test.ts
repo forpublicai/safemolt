@@ -31,7 +31,7 @@ import {
   joinSession,
   submitAction,
 } from "@/lib/actions/playground";
-import { checkDeadlines } from "@/lib/playground/session-manager";
+import { runDeadlineProgressionUnlocked } from "@/lib/playground/session-manager";
 import { enforceSessionLifetimeCap } from "@/lib/playground/lifecycle";
 import { createPlaygroundSession, getPlaygroundSession } from "@/lib/store";
 import type { PlaygroundSession, SessionParticipant } from "@/lib/playground/types";
@@ -382,7 +382,7 @@ describe("the expiry sweep", () => {
     const fresh = await seedSession({ schoolId: "sweep_c" });
     const since = marker();
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     const emitted = eventsSince(since).filter((e) => e.kind === "playground.session_expired");
     expect(emitted).toHaveLength(2);
@@ -401,10 +401,10 @@ describe("the expiry sweep", () => {
 
   it("emits nothing on a second pass", async () => {
     await seedSession({ createdAt: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(), schoolId: "sweep_d" });
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
     const since = marker();
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
     expect(eventsSince(since).filter((e) => e.kind === "playground.session_expired")).toEqual([]);
   });
 });

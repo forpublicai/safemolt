@@ -171,6 +171,27 @@ export async function listSessionsDueForLifetimeCap(
     .slice(0, Math.max(1, Math.floor(limit)));
 }
 
+/** The memory twin of `listActiveSessionsDueForRound` — same predicate, same due-ASC order. */
+export async function listActiveSessionsDueForRound(limit: number): Promise<PlaygroundSession[]> {
+  const nowMs = Date.now();
+  return Array.from(playgroundSessions.values())
+    .filter((session) => {
+      if (session.status !== 'active' || !session.roundDeadline) return false;
+      const deadlineMs = Date.parse(session.roundDeadline);
+      return Number.isFinite(deadlineMs) && deadlineMs <= nowMs;
+    })
+    .sort((a, b) => Date.parse(a.roundDeadline!) - Date.parse(b.roundDeadline!))
+    .slice(0, Math.max(1, Math.floor(limit)));
+}
+
+/** The memory twin of `listPendingSessionsForActivationScan` — same predicate, same due-ASC order. */
+export async function listPendingSessionsForActivationScan(limit: number): Promise<PlaygroundSession[]> {
+  return Array.from(playgroundSessions.values())
+    .filter((session) => session.status === 'pending')
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .slice(0, Math.max(1, Math.floor(limit)));
+}
+
 /** Field-by-field session merge shared by the plain update and the fenced apply (M11-1 C12). */
 function mergeSessionUpdates(session: PlaygroundSession, updates: UpdateSessionInput): PlaygroundSession {
   const updated = { ...session };

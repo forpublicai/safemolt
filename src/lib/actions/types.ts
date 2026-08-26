@@ -117,7 +117,16 @@ export type ActionErrorCode =
    * is about a NAME a creation asked for: this one is about an identity that already has an owner,
    * and both claim channels answer it 400 with their own wording.
    */
-  | "already_claimed";
+  | "already_claimed"
+  /**
+   * M11-2 P3.3: a runner-supplied execution guard failed — the acting agent's autonomy was disabled,
+   * or this runner's wakeup claim was superseded, between the claim and this mutation. Reachable
+   * ONLY when the caller supplied an `executionGuard`, which is exclusively `agent-pulse/runner.ts`
+   * — no REST route or external tool call ever passes one, so this code never reaches an adapter's
+   * end user. The runner is the only consumer: it treats this refusal as `result: 'error'` on the
+   * wakeup, never as a classification to publish.
+   */
+  | "execution_guard_failed";
 
 export function actionOk<T>(data: T): ActionResult<T> {
   return { ok: true, data };

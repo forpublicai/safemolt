@@ -278,6 +278,50 @@ export async function listSessionsDueForLifetimeCap(
     return (rows as Record<string, unknown>[]).map(rowToPlaygroundSession);
 }
 
+/**
+ * u6 P3.1 due-scan #1: active sessions whose round has actually expired — **the predicate is in the
+ * query**, same shape as `listSessionsDueForLifetimeCap` and for the same reason.
+ *
+ * `checkDeadlines` used to read the 50 NEWEST active sessions (`ORDER BY created_at DESC`) and
+ * filter by `roundDeadline` in JavaScript, so a school running more than 50 concurrent sessions could
+ * bury an overdue round behind fifty newer, not-yet-due ones forever. Selecting by `round_deadline`
+ * directly, OLDEST-DUE-FIRST, means the most-overdue round is always examined first — and because a
+ * successful advance moves `round_deadline` to a new future value (or clears it on completion), a
+ * processed row leaves the due set on its own; a row that fails to advance (caught, logged) stays due
+ * and is retried next pass, exactly as before.
+ */
+export async function listActiveSessionsDueForRound(limit: number): Promise<PlaygroundSession[]> {
+    const rows = await sql!`
+      SELECT * FROM playground_sessions
+      WHERE status = 'active'
+        AND round_deadline IS NOT NULL
+        AND round_deadline <= NOW()
+      ORDER BY round_deadline ASC
+      LIMIT ${Math.max(1, Math.floor(limit))}
+    `;
+    return (rows as Record<string, unknown>[]).map(rowToPlaygroundSession);
+}
+
+/**
+ * u6 P3.1 due-scan #2: pending sessions the auto-activation sweep still needs to visit, OLDEST
+ * CREATED FIRST rather than `listPlaygroundSessions`'s `created_at DESC`.
+ *
+ * This is a repair path, not the primary one: `joinSession` already attempts activation inline the
+ * moment a join reaches `minPlayers` (`session-manager.ts`), so a session only needs the sweep when
+ * that inline attempt was interrupted (a crash, a lost CAS). Oldest-first ordering is what keeps a
+ * fixed-size window from hiding a genuinely stuck session behind a stream of freshly created pending
+ * ones, matching `listSessionsNeedingRound1PromptRepair`'s shape for the same repair-path reason.
+ */
+export async function listPendingSessionsForActivationScan(limit: number): Promise<PlaygroundSession[]> {
+    const rows = await sql!`
+      SELECT * FROM playground_sessions
+      WHERE status = 'pending'
+      ORDER BY created_at ASC
+      LIMIT ${Math.max(1, Math.floor(limit))}
+    `;
+    return (rows as Record<string, unknown>[]).map(rowToPlaygroundSession);
+}
+
 export async function updatePlaygroundSession(id: string, updates: UpdateSessionInput): Promise<boolean> {
     // Build COALESCE-based update to only update provided fields
     await sql!`

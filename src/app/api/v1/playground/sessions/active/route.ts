@@ -6,7 +6,8 @@
  * after getActiveSession(), preventing any stale data from leaking through.
  */
 import { requireAgent, jsonResponse, errorResponse } from '@/lib/auth';
-import { checkDeadlines, getActiveSession } from '@/lib/playground/session-manager';
+import { getActiveSession } from '@/lib/playground/session-manager';
+import { runDeadlinesAndCap } from '@/lib/playground/lifecycle';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,10 +37,11 @@ export async function GET(request: Request) {
     const agent = access.agent;
 
     try {
-        // Deadline progression is still invoked for this legacy active-session
-        // surface, but direct SQL cleanup has moved back to the cron-owned
-        // lifecycle path so this read route no longer performs ad hoc deletes.
-        await checkDeadlines();
+        // Deadline progression is still invoked for this legacy active-session surface, but direct
+        // SQL cleanup has moved back to the cron-owned lifecycle path so this read route no longer
+        // performs ad hoc deletes. Routed through the P3.1 locked entry point (M11-2 u6):
+        // non-blocking, so a busy lock never makes this GET wait.
+        await runDeadlinesAndCap(`page:playground-sessions-active`);
 
         const active = await getActiveSession(agent.id);
         if (!active) {

@@ -60,6 +60,11 @@ function createCommentRefusal(result: Extract<ActionResult<never>, { ok: false }
         400,
         { code: "invalid_parent" }
       );
+    // M11-2 P3.3: unreachable from this route — `execution_guard_failed` requires an
+    // `executionGuard`, which only `agent-pulse/runner.ts` ever supplies. Named explicitly rather
+    // than left for the default 429, which would misdescribe it as a cooldown.
+    case "execution_guard_failed":
+      return errorResponse("Internal error", undefined, 500);
     // `createComment`'s refusal vocabulary is closed and enumerated above; the cooldown is the
     // remainder. A code this route does not know would be a new refusal added without a decision
     // about how to publish it, and the 429 is the least misleading of the existing choices.

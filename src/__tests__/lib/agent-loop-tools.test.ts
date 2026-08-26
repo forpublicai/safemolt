@@ -227,10 +227,14 @@ describe("agent loop two-tier router (ADR-0001)", () => {
 
     expect(result.action).toBe("submit_playground_action");
     expect(callLLM).toHaveBeenCalledTimes(1);
+    // M11-2 P3.3: `runAgenticTurn` now forwards a fourth `executionGuard` argument to every
+    // `executeTool` call — `undefined` here, since `tickAgent` never sets one (only
+    // `agent-pulse/runner.ts` does).
     expect(executeTool).toHaveBeenCalledWith(
       "submit_playground_action",
       { session_id: "sess_1", content: "explore the ridge" },
-      agent
+      agent,
+      undefined
     );
     // The single round is scoped to the playground domain slice — never the full surface.
     const offered = toolNames(callLLM.mock.calls[0][1]);

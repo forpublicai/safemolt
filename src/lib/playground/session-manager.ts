@@ -80,6 +80,13 @@ const PENDING_TIMEOUT_MS = 24 * 60 * 60 * 1000;
  */
 const ROUND1_PROMPT_REPAIR_GRACE_MS = 2 * 60 * 1000;
 
+/** How many due sessions one round-advance query returns, and how many such queries one sweep makes. */
+const ROUND_ADVANCE_PAGE_SIZE = 50;
+const ROUND_ADVANCE_MAX_PAGES = 20;
+
+/** Bound on the pending-activation repair scan (u6 P3.1). A repair path, so one bounded call is enough. */
+const PENDING_ACTIVATION_SCAN_LIMIT = 50;
+
 /** Agents must have been active within this many days to be eligible */
 const ACTIVITY_WINDOW_DAYS = 7;
 
@@ -1033,15 +1040,43 @@ export async function getActiveSession(
  * Check all active sessions for expired deadlines and advance them.
  * Called periodically (e.g., on any playground API hit or via cron).
  */
-export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
+/**
+ * `isLockLost`, threaded from `runDeadlinesAndCap`'s renewal timer: when it starts returning `true`
+ * mid-sweep, the lock has already been reclaimed by a contender (a TTL this pass ran past), and
+ * every phase below checks it between steps and stops claiming further work immediately — returning
+ * whatever completed so far, since every phase here is independently resumable from its own
+ * due-state predicate on the next sweep.
+ */
+async function checkDeadlines(isLockLost?: () => boolean): Promise<PlaygroundDeadlineRunResult> {
     const store = await getStore();
     let advanced = 0;
     const advanceStartedAt = performance.now();
+    const lockLost = () => isLockLost?.() ?? false;
 
-    // 1. Advance active sessions
-    const activeSessions = await store.listPlaygroundSessions({ status: 'active', limit: 50 });
-    for (const session of activeSessions) {
-        if (session.roundDeadline && new Date(session.roundDeadline).getTime() <= Date.now()) {
+    // 1. Advance active sessions whose round has expired — **due-ASC, exhaustive, never a fixed
+    // newest-first window** (u6 P3.1, replacing the `listPlaygroundSessions({status:'active',
+    // limit:50})` + JS filter this used to run: with 51+ concurrent sessions the oldest overdue one
+    // sat outside that window forever). `listActiveSessionsDueForRound` orders by `round_deadline`
+    // ascending, so the most-overdue session is always examined first, and a successful advance moves
+    // the deadline forward — which is what lets the row drop out of the next page on its own, the same
+    // shrinking-predicate shape `enforceSessionLifetimeCap` uses.
+    //
+    // **`attemptedThisPass` is the one thing this loop needs that the lifetime cap's doesn't.** A
+    // completion is nearly always successful or racily lost to a concurrent writer — either way the
+    // row leaves the due set. A round advance can fail for a real reason (a broken game state, an
+    // inference error) and leave `round_deadline` untouched, so re-querying "due, oldest first" without
+    // tracking what this pass already tried would hand the same stuck session every page, forever
+    // re-appearing at the front and starving every other due session behind it. Tracking attempted ids
+    // makes a stuck session cost exactly one attempt per invocation, same as before this fix, while
+    // still reaching every other due session within the pass.
+    const attemptedThisPass = new Set<string>();
+    for (let page = 0; page < ROUND_ADVANCE_MAX_PAGES; page += 1) {
+        if (lockLost()) break;
+        const due = await store.listActiveSessionsDueForRound(ROUND_ADVANCE_PAGE_SIZE);
+        const fresh = due.filter((session) => !attemptedThisPass.has(session.id));
+        if (fresh.length === 0) break;
+        for (const session of fresh) {
+            attemptedThisPass.add(session.id);
             try {
                 await tryAdvanceRound(session.id);
                 advanced += 1;
@@ -1049,16 +1084,29 @@ export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
                 console.error(`[playground] Error advancing session ${session.id}:`, err);
             }
         }
+        if (due.length < ROUND_ADVANCE_PAGE_SIZE) break;
     }
     const advanceDurationMs = performance.now() - advanceStartedAt;
+    if (lockLost()) {
+        console.error('[playground] Deadline lock lost mid-sweep after round advancement; stopping further claims.');
+        return { advanced, capped: 0, advanceDurationMs, capDurationMs: 0 };
+    }
 
     const capStartedAt = performance.now();
     const { completed: capped } = await enforceSessionLifetimeCap();
     const capDurationMs = performance.now() - capStartedAt;
+    if (lockLost()) {
+        console.error('[playground] Deadline lock lost mid-sweep after the lifetime cap; stopping further claims.');
+        return { advanced, capped, advanceDurationMs, capDurationMs };
+    }
 
-    // 1b. Auto-activate pending sessions that have reached minPlayers
+    // 1b. Auto-activate pending sessions that have reached minPlayers. This is a repair path — the
+    // primary path is `joinSession`'s inline activation attempt the moment a join reaches
+    // `minPlayers` — so `listPendingSessionsForActivationScan`'s oldest-created-first order (u6 P3.1)
+    // exists to keep a fixed window from hiding a session whose inline attempt was interrupted behind
+    // a stream of freshly created pending ones, same reasoning as the round1-prompt repair below.
     try {
-        const pendingToConsider = await store.listPlaygroundSessions({ status: 'pending', limit: 50 });
+        const pendingToConsider = await store.listPendingSessionsForActivationScan(PENDING_ACTIVATION_SCAN_LIMIT);
         for (const pending of pendingToConsider) {
             try {
                 const fresh = await store.getPlaygroundSession(pending.id);
@@ -1077,6 +1125,10 @@ export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
         }
     } catch (err) {
         console.error('[playground] Error scanning pending sessions for activation:', err);
+    }
+    if (lockLost()) {
+        console.error('[playground] Deadline lock lost mid-sweep after pending activation; stopping further claims.');
+        return { advanced, capped, advanceDurationMs, capDurationMs };
     }
 
     // 1c. Repair active round-1 sessions whose prompt never landed (a crashed activation write).
@@ -1099,6 +1151,10 @@ export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
         }
     } catch (err) {
         console.error('[playground] Error scanning for round-1 prompt repairs:', err);
+    }
+    if (lockLost()) {
+        console.error('[playground] Deadline lock lost mid-sweep after round-1 prompt repair; stopping further claims.');
+        return { advanced, capped, advanceDurationMs, capDurationMs };
     }
 
     // 1d + 1e. The rollout bridge, then create-or-re-arm — ONE pass over ONE list.
@@ -1188,6 +1244,10 @@ export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
     } catch (err) {
         console.error('[playground] Error scanning active sessions for round_opened reconstruction and wakeup arming:', err);
     }
+    if (lockLost()) {
+        console.error('[playground] Deadline lock lost mid-sweep after wakeup arming; stopping further claims.');
+        return { advanced, capped, advanceDurationMs, capDurationMs };
+    }
 
     // 2. Expire stale pending sessions — a system TRANSITION to 'cancelled' (NULL actor +
     // sentinel reason), never a delete (M11-1 C3). The store's single conditional statement
@@ -1208,6 +1268,24 @@ export async function checkDeadlines(): Promise<PlaygroundDeadlineRunResult> {
     }
 
     return { advanced, capped, advanceDurationMs, capDurationMs };
+}
+
+/**
+ * The ONE export through which deadline progression runs (M11-2 u6 P3.1).
+ *
+ * `checkDeadlines` above is deliberately not exported — every caller that used to import it directly
+ * (three playground GET routes, `agent-inbox.ts`'s inbox/context assembly — `ai/validation/
+ * m11-inventory.md` §6a) now goes through `playground/lifecycle.ts`'s `runDeadlinesAndCap`, which is
+ * the only file that may import this function: it holds the `worker_locks` singleton for the whole
+ * call and threads its renewal-loss signal in as `isLockLost`. Importing this from anywhere else
+ * would run deadline progression unlocked, defeating the lock the same way the direct
+ * `checkDeadlines()` calls used to — `src/__tests__/lib/playground-deadline-lock-discipline.test.ts`
+ * scans the tree for a second importer.
+ */
+export async function runDeadlineProgressionUnlocked(
+    isLockLost?: () => boolean
+): Promise<PlaygroundDeadlineRunResult> {
+    return checkDeadlines(isLockLost);
 }
 
 // ============================================

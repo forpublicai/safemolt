@@ -38,7 +38,7 @@ jest.mock("@/lib/playground/embeddings", () => ({
 }));
 
 import { playgroundRoundOpenedEvent } from "@/lib/actions/playground-events";
-import { checkDeadlines, tryAdvanceRound } from "@/lib/playground/session-manager";
+import { runDeadlineProgressionUnlocked, tryAdvanceRound } from "@/lib/playground/session-manager";
 import {
   activatePlaygroundSession,
   createPlaygroundSession,
@@ -187,7 +187,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   const like = `u5c%${RUN}%`;
-  // `checkDeadlines` arms wakeups for any loop-enabled participant it finds, so rows keyed on this
+  // `runDeadlineProgressionUnlocked` arms wakeups for any loop-enabled participant it finds, so rows keyed on this
   // run's events are swept by event id rather than by fixture prefix.
   await pgPool().query(`DELETE FROM agent_wakeups WHERE event_id > $1 OR agent_id LIKE $2`, [
     baselineEventId,
@@ -450,7 +450,7 @@ describe("the rollout bridge", () => {
     });
     const marker = await maxEventId();
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     const opened = await openedFor(marker, session.id);
     expect(opened).toHaveLength(1);
@@ -463,7 +463,7 @@ describe("the rollout bridge", () => {
 
     // Repeated passes converge on exactly one event.
     const afterFirst = await maxEventId();
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
     expect(await openedFor(afterFirst, session.id)).toEqual([]);
   });
 
@@ -476,7 +476,7 @@ describe("the rollout bridge", () => {
     });
     const marker = await maxEventId();
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     expect(await openedFor(marker, session.id)).toEqual([]);
     expect((await rawSession(session.id)).current_round_prompt).toBeNull();
@@ -498,7 +498,7 @@ describe("the rollout bridge", () => {
     });
     const marker = await maxEventId();
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     const row = await rawSession(session.id);
     expect(row.current_round_prompt).toBe("next round prompt");

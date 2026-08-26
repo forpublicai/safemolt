@@ -17,10 +17,37 @@ jest.mock("next/cache", () => ({
 // asks for the sessions that are DUE, oldest first, and pages. The age/`completed_at` predicate is
 // therefore asserted against the real store in `playground-cap-eligibility.test.ts`; what is left
 // here is the orchestration: the cutoff, the paging, and the revalidation.
-jest.mock("@/lib/store", () => ({
-  listSessionsDueForLifetimeCap: jest.fn(),
-  completePlaygroundSessionAtLifetimeCap: jest.fn(),
-}));
+// M11-2 u6 P3.1: `runDeadlinesAndCap` now acquires a real singleton lock before running deadline
+// progression. The mock below is a faithful (if tiny) re-implementation of the memory-mode
+// semantics (`src/lib/store/worker-locks/memory.ts`) — a plain per-`name` map, so contention,
+// renewal and release behave exactly as they would with the real memory store, and these tests can
+// assert on lock BEHAVIOR rather than needing to import the real module (which would pull in
+// `hasDatabase()` / env-var branching this file has no reason to depend on).
+jest.mock("@/lib/store", () => {
+  const locks = new Map<string, { holder: string; expiresAt: number }>();
+  return {
+    listSessionsDueForLifetimeCap: jest.fn(),
+    completePlaygroundSessionAtLifetimeCap: jest.fn(),
+    acquireWorkerLock: jest.fn(async (name: string, holder: string, ttlMs: number) => {
+      const now = Date.now();
+      const existing = locks.get(name);
+      if (existing && existing.expiresAt > now) return false;
+      locks.set(name, { holder, expiresAt: now + ttlMs });
+      return true;
+    }),
+    renewWorkerLock: jest.fn(async (name: string, holder: string, ttlMs: number) => {
+      const existing = locks.get(name);
+      if (!existing || existing.holder !== holder) return false;
+      existing.expiresAt = Date.now() + ttlMs;
+      return true;
+    }),
+    releaseWorkerLock: jest.fn(async (name: string, holder: string) => {
+      const existing = locks.get(name);
+      if (existing && existing.holder === holder) locks.delete(name);
+    }),
+    __resetLocksForTests: () => locks.clear(),
+  };
+});
 
 import { revalidateTag } from "next/cache";
 import {
@@ -29,6 +56,11 @@ import {
 } from "@/lib/store";
 import { enforceSessionLifetimeCap, runDeadlinesAndCap } from "@/lib/playground/lifecycle";
 import type { PlaygroundSession } from "@/lib/playground/types";
+
+// Not a real store export — the mock factory above adds it as a test-only lock reset hook.
+// `require`d rather than statically imported so the real module's type declarations (which have no
+// such export) don't fail the build.
+const { __resetLocksForTests } = require("@/lib/store") as { __resetLocksForTests: () => void };
 
 const mockedListDueSessions = jest.mocked(listSessionsDueForLifetimeCap);
 const mockedUpdatePlaygroundSession = jest.mocked(completePlaygroundSessionAtLifetimeCap);
@@ -59,6 +91,7 @@ function staleSession(id: string, now: number): PlaygroundSession {
 describe("playground lifecycle", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    __resetLocksForTests();
   });
 
   afterEach(() => {
@@ -195,7 +228,13 @@ describe("playground lifecycle", () => {
     );
   });
 
-  it("dedupes concurrent deadline runs with the same label", async () => {
+  // M11-2 u6 P3.1: the process-local, label-keyed `inflightDeadlineRuns` Set this used to guard is
+  // gone. The guard is now the `worker_locks` singleton (memory-mode: a process-wide map keyed by
+  // lock NAME only — see the `@/lib/store` mock above), so two concurrent calls serialize whatever
+  // label either one passes — same label or different, worker or cron or page render, it makes no
+  // difference any more. That is the P0-inventory gap this closes: distinct labels used to let two
+  // different-label callers overlap even inside one process.
+  it("serializes two concurrent runs sharing a label — one runs, the other returns busy immediately", async () => {
     const runDeadlineCheck = jest.fn();
     let resolveRun: (value: { advanced: number; capped: number }) => void = () => {};
     runDeadlineCheck.mockImplementation(
@@ -212,5 +251,58 @@ describe("playground lifecycle", () => {
     await expect(first).resolves.toMatchObject({ advanced: 2, capped: 1 });
     expect(second).toEqual({ advanced: 0, capped: 0 });
     expect(runDeadlineCheck).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes two concurrent runs under DIFFERENT labels too — the lock is keyed by name, not by label", async () => {
+    const runDeadlineCheck = jest.fn();
+    let resolveRun: (value: { advanced: number; capped: number }) => void = () => {};
+    runDeadlineCheck.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRun = resolve;
+        })
+    );
+
+    const worker = runDeadlinesAndCap("worker", runDeadlineCheck);
+    const cron = await runDeadlinesAndCap("cron:playground-deadlines", runDeadlineCheck);
+    resolveRun({ advanced: 3, capped: 0 });
+
+    await expect(worker).resolves.toMatchObject({ advanced: 3, capped: 0 });
+    expect(cron).toEqual({ advanced: 0, capped: 0 });
+    expect(runDeadlineCheck).toHaveBeenCalledTimes(1);
+  });
+
+  it("a second run acquires once the first releases the lock on completion", async () => {
+    const runDeadlineCheck = jest.fn().mockResolvedValue({ advanced: 1, capped: 0 });
+    await runDeadlinesAndCap("first", runDeadlineCheck);
+    await expect(runDeadlinesAndCap("second", runDeadlineCheck)).resolves.toMatchObject({
+      advanced: 1,
+      capped: 0,
+    });
+    expect(runDeadlineCheck).toHaveBeenCalledTimes(2);
+  });
+
+  it("a second run acquires once the first releases the lock after throwing", async () => {
+    const runDeadlineCheck = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce({ advanced: 1, capped: 0 });
+    await expect(runDeadlinesAndCap("first", runDeadlineCheck)).rejects.toThrow("boom");
+    await expect(runDeadlinesAndCap("second", runDeadlineCheck)).resolves.toMatchObject({
+      advanced: 1,
+      capped: 0,
+    });
+  });
+
+  it("passes an isLockLost callback the injected runner can read", async () => {
+    let seenIsLockLost: (() => boolean) | undefined;
+    const runDeadlineCheck = jest.fn((isLockLost?: () => boolean) => {
+      seenIsLockLost = isLockLost;
+      return Promise.resolve({ advanced: 0, capped: 0 });
+    });
+    await runDeadlinesAndCap("label", runDeadlineCheck);
+    expect(typeof seenIsLockLost).toBe("function");
+    // Nothing has failed a renewal yet, so it must read false.
+    expect(seenIsLockLost!()).toBe(false);
   });
 });

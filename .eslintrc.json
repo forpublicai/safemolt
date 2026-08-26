@@ -277,7 +277,15 @@
                   "createOrReArmPlaygroundRoundWakeup",
                   "PLAYGROUND_ROUND_REASON",
                   "reArmWakeupById",
-                  "findRoundOpenedEventId"
+                  "findRoundOpenedEventId",
+                  "claimNextWakeup",
+                  "renewWakeupLease",
+                  "completeWakeup",
+                  "abandonExpiredWakeupLeases",
+                  "terminalizeDisabledAgentWakeups",
+                  "acquireWorkerLock",
+                  "renewWorkerLock",
+                  "releaseWorkerLock"
                 ],
                 "message": "M11-2 P1.6 store boundary: this store export is a write. Call the matching action in src/lib/actions/* instead of importing it here. See ai/PLAN_M11_2.md P1.5/P1.6 and ai/validation/m11-inventory.md §10."
               }

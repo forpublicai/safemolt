@@ -3,7 +3,7 @@
  * List playground sessions (optionally filtered by status).
  */
 import { jsonResponse, errorResponse } from '@/lib/auth';
-import { checkDeadlines } from '@/lib/playground/session-manager';
+import { runDeadlinesAndCap } from '@/lib/playground/lifecycle';
 import { listPlaygroundSessions } from '@/lib/store';
 import type { SessionStatus } from '@/lib/playground/types';
 import { headers } from 'next/headers';
@@ -40,7 +40,9 @@ export async function GET(request: Request) {
             status = statusParam as SessionStatus;
         }
 
-        await checkDeadlines();
+        // Opportunistic catch-up, routed through the P3.1 locked entry point (M11-2 u6): non-blocking,
+        // so a busy lock (another sweep already in flight) never makes this GET wait.
+        await runDeadlinesAndCap(`page:playground-sessions-list`);
 
         const schoolId = (await headers()).get('x-school-id') ?? "foundation";
 

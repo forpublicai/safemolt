@@ -35,6 +35,13 @@ export const listPlaygroundSessions = pickStore(db.listPlaygroundSessions, mem.l
 // u3d fix round, finding 4: cap-eligible sessions, oldest first — the query the lifetime-cap sweep
 // pages through so a fixed newest-N window can no longer strand an overdue session.
 export const listSessionsDueForLifetimeCap = pickStore(db.listSessionsDueForLifetimeCap, mem.listSessionsDueForLifetimeCap);
+// u6 P3.1: due-ASC scans replacing checkDeadlines' newest-first-50 windows for round advancement
+// and pending-session activation. See db.ts for why each is a repair-path/oldest-due-first query.
+export const listActiveSessionsDueForRound = pickStore(db.listActiveSessionsDueForRound, mem.listActiveSessionsDueForRound);
+export const listPendingSessionsForActivationScan = pickStore(
+    db.listPendingSessionsForActivationScan,
+    mem.listPendingSessionsForActivationScan
+);
 // M11-2 P3.2: the round-1 prompt publication both round-1 writers share, and the query that finds a
 // session whose activation continuation crashed before it could run.
 export const storeRound1PromptIfMissing = pickStore(db.storeRound1PromptIfMissing, mem.storeRound1PromptIfMissing);

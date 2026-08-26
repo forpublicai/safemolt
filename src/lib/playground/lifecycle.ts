@@ -1,7 +1,15 @@
+import { randomUUID } from "crypto";
+
 import { waitUntil } from "@vercel/functions";
 import { revalidateTag } from "next/cache";
 
-import { completePlaygroundSessionAtLifetimeCap, listSessionsDueForLifetimeCap } from "@/lib/store";
+import {
+  acquireWorkerLock,
+  completePlaygroundSessionAtLifetimeCap,
+  listSessionsDueForLifetimeCap,
+  releaseWorkerLock,
+  renewWorkerLock,
+} from "@/lib/store";
 import { playgroundSessionCompletedEvent } from "@/lib/actions/playground-events";
 
 const DEFAULT_SESSION_MAX_LIFETIME_MS = 6 * 60 * 60 * 1000;
@@ -12,7 +20,12 @@ const SESSION_CAP_SUMMARY =
 const LIFETIME_CAP_PAGE_SIZE = 50;
 const LIFETIME_CAP_MAX_PAGES = 20;
 
-type DeadlineRunner = () => Promise<Partial<PlaygroundDeadlineRunResult> | void>;
+/**
+ * `isLockLost`, when supplied, lets a long-running implementation check — cheaply, synchronously —
+ * whether the lock's background renewal has already failed, and stop claiming further work rather
+ * than run to completion unguarded. See `runDeadlinesAndCap`.
+ */
+type DeadlineRunner = (isLockLost?: () => boolean) => Promise<Partial<PlaygroundDeadlineRunResult> | void>;
 
 export interface PlaygroundDeadlineRunResult {
   advanced: number;
@@ -26,7 +39,35 @@ export const PLAYGROUND_SESSION_MAX_LIFETIME_MS = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SESSION_MAX_LIFETIME_MS;
 })();
 
-const inflightDeadlineRuns = new Set<string>();
+/**
+ * u6 P3.1 — the one shared lock name every deadline-progression caller contends for.
+ *
+ * Replaces `inflightDeadlineRuns`, the process-local, caller-label-keyed `Set` this used to be:
+ * distinct labels (`page:{schoolId}` from render-time catch-up, `cron:playground-deadlines` from the
+ * scheduled route) meant two different-label callers overlapped even inside one process, and nothing
+ * here ever protected the four opportunistic request-path callers that invoked `checkDeadlines`
+ * directly, bypassing this file altogether. One shared name — held via `worker_locks` in db mode,
+ * via a process-wide `Map` in memory mode (`store/worker-locks/memory.ts`) — closes both gaps: every
+ * caller, whatever label it passes, now contends for the same lock, and the lock lives inside the
+ * one progression entry point below rather than around a caller-chosen name.
+ */
+const DEADLINE_LOCK_NAME = "playground-deadlines";
+
+const DEFAULT_LOCK_TTL_MS = 10 * 60 * 1000;
+
+/** `WORKER_LOCK_TTL_MS` — shared with any other duty that later claims a `worker_locks` row. */
+const WORKER_LOCK_TTL_MS = (() => {
+  const raw = Number(process.env.WORKER_LOCK_TTL_MS ?? DEFAULT_LOCK_TTL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_LOCK_TTL_MS;
+})();
+
+/**
+ * How often the holder renews while a sweep is in flight — comfortably inside the TTL, so an
+ * ordinary sweep never loses its own lock to the clock. Deadline work makes GM inference calls, so a
+ * large backlog can run past a single TTL window; renewal is what lets it keep going instead of
+ * losing the lock mid-sweep to nothing (no contender is waiting, the row would just sit expired).
+ */
+const LOCK_RENEW_INTERVAL_MS = Math.floor(WORKER_LOCK_TTL_MS / 3);
 
 export function safeWaitUntil(promise: Promise<unknown>, label: string): void {
   const tagged = promise.catch((error) => {
@@ -115,19 +156,48 @@ export async function enforceSessionLifetimeCap(): Promise<{ completed: number }
   return { completed };
 }
 
+/**
+ * The one locked deadline-progression entry point (M11-2 u6 P3.1).
+ *
+ * `label` is kept for logging only — it no longer scopes anything; every caller (worker timer, the
+ * every-5-minutes cron, the playground page's render-time catch-up, and every opportunistic request-path site
+ * `session-manager.ts` used to call `checkDeadlines()` from directly) now contends for the SAME
+ * `worker_locks` row. **Non-blocking**: a busy lock makes this call return immediately with a
+ * zero result rather than wait, so a request path calling this never blocks on someone else's sweep.
+ *
+ * `checkDeadlines` itself has no exported name any more — see
+ * `session-manager.ts`'s `runDeadlineProgressionUnlocked`, importable only from here.
+ */
 export async function runDeadlinesAndCap(
   label: string,
   runDeadlineCheck?: DeadlineRunner
 ): Promise<PlaygroundDeadlineRunResult> {
-  if (inflightDeadlineRuns.has(label)) {
+  const holder = randomUUID();
+  const acquired = await acquireWorkerLock(DEADLINE_LOCK_NAME, holder, WORKER_LOCK_TTL_MS);
+  if (!acquired) {
     return { advanced: 0, capped: 0 };
   }
 
-  inflightDeadlineRuns.add(label);
+  // Renewed on a timer rather than at fixed points inside the runner, so the runner's own logic
+  // never has to await a network round trip just to check whether it still holds the lock — it only
+  // reads a plain boolean, cheaply, wherever it chooses to check.
+  let lockLost = false;
+  const renewTimer = setInterval(() => {
+    renewWorkerLock(DEADLINE_LOCK_NAME, holder, WORKER_LOCK_TTL_MS)
+      .then((renewed) => {
+        if (!renewed) lockLost = true;
+      })
+      .catch(() => {
+        lockLost = true;
+      });
+  }, LOCK_RENEW_INTERVAL_MS);
+
   try {
     const result = runDeadlineCheck
-      ? await runDeadlineCheck()
-      : await import("@/lib/playground/session-manager").then(({ checkDeadlines }) => checkDeadlines());
+      ? await runDeadlineCheck(() => lockLost)
+      : await import("@/lib/playground/session-manager").then(({ runDeadlineProgressionUnlocked }) =>
+          runDeadlineProgressionUnlocked(() => lockLost)
+        );
     return {
       advanced: result?.advanced ?? 0,
       capped: result?.capped ?? 0,
@@ -135,6 +205,11 @@ export async function runDeadlinesAndCap(
       capDurationMs: result?.capDurationMs,
     };
   } finally {
-    inflightDeadlineRuns.delete(label);
+    clearInterval(renewTimer);
+    try {
+      await releaseWorkerLock(DEADLINE_LOCK_NAME, holder);
+    } catch (error) {
+      console.error(`[playground/lifecycle] Failed to release the deadline lock (label=${label})`, error);
+    }
   }
 }

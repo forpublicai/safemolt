@@ -281,4 +281,21 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   "PLAYGROUND_ROUND_REASON",
   "reArmWakeupById",
   "findRoundOpenedEventId",
+  // P3.3's claim/lease/completion/housekeeping writers: the runner claims a wakeup, renews its
+  // lease and completes it through the first three; the last two are system sweeps (abandon an
+  // expired lease, terminalize a disabled agent's still-pending wakeups). No route or tool executor
+  // has any business calling any of these directly — only the runner (a different lane's territory).
+  "claimNextWakeup",
+  "renewWakeupLease",
+  "completeWakeup",
+  "abandonExpiredWakeupLeases",
+  "terminalizeDisabledAgentWakeups",
+
+  // --- worker-locks (src/lib/store/worker-locks/index.ts) — M11-2 u6 P3.1, new domain. The
+  // generic singleton-lock upsert/renew/expire around `worker_locks`, wrapped by
+  // `playground/lifecycle.ts`'s locked deadline-progression entry point. No route or tool executor
+  // has any business acquiring a worker lock directly.
+  "acquireWorkerLock",
+  "renewWorkerLock",
+  "releaseWorkerLock",
 ];

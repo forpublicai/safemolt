@@ -230,6 +230,20 @@ export interface CreateCommentOutcome {
   parentValid: boolean;
   /** Did the quota claim admit this comment (cooldown and daily cap both)? */
   admitted: boolean;
+  /**
+   * M11-2 P3.3: `false` ONLY when a runner-supplied execution guard was evaluated and failed — the
+   * agent's autonomy was disabled, or this runner's claim was superseded — in which case nothing else
+   * in this outcome (`admitted`, `parentValid`) can be true either, because the statement never
+   * reached its claim. Checked FIRST by the action, ahead of every other refusal, because it
+   * precedes them causally.
+   *
+   * **Optional, and `undefined` means the same thing as `true`.** No execution guard was supplied
+   * (every REST/tool caller, and every producer of this shape written before P3.3) is the overwhelming
+   * common case, and treating an absent field as "passed" — rather than requiring every existing and
+   * future hand-built literal of this shape to spell out a field that essentially never applies to it
+   * — is what keeps this addition non-breaking.
+   */
+  guardPassed?: boolean;
 }
 
 /**

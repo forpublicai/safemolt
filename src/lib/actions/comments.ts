@@ -27,6 +27,7 @@ import {
 import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
 import { scheduleCommentMemoryIngest } from "@/lib/memory/platform-ingest";
 import { groupSchoolAccessDenial, groupSchoolId } from "@/lib/school-context";
+import type { ExecutionGuard } from "@/lib/store/execution-guard";
 import type { StoredAgent, StoredComment, StoredGroup, StoredPost } from "@/lib/store-types";
 
 import { actionError, actionOk, type ActionResult } from "./types";
@@ -46,6 +47,11 @@ export interface CreateCommentInput {
   /** Already trimmed and validated as non-empty by the adapter that parsed the request body. */
   content: string;
   parentId?: string;
+  /**
+   * M11-2 P3.3: populated ONLY by `agent-pulse/runner.ts`. REST routes and the `create_comment` tool
+   * never supply one — see `ExecutionGuard` and `actions/types.ts`'s `execution_guard_failed` code.
+   */
+  executionGuard?: ExecutionGuard;
 }
 
 export interface CreatedComment {
@@ -111,30 +117,45 @@ export async function createComment(
   // quota (`cap`) itself, and P1.2's precedence is only meaningful if one snapshot decides all
   // three. So the statement is ALWAYS reached, and the only thing read afterwards is the rate-limit
   // WINDOW, for `retry_after_seconds` garnish.
-  const outcome = await storeCreateComment(input.postId, input.agent.id, input.content, input.parentId, [
-    {
-      kind: "comment.created",
-      actorAgentId: input.agent.id,
-      subjectType: "comment",
-      // Store-assigned: the comment id is minted inside the store, after this event was decided.
-      subjectId: STORE_ASSIGNED_PAYLOAD_ID,
-      secondarySubjectId: input.postId,
-      schoolId: eventSchoolId(group),
-      payload: {
-        comment_id: STORE_ASSIGNED_PAYLOAD_ID,
-        post_id: input.postId,
-        // Required-nullable: `null` means "top level" and routes the notification to the POST's
-        // author, so the key must be present rather than absent.
-        parent_id: input.parentId ?? null,
-      },
-    } satisfies PreparedEvent<"comment.created">,
-  ]);
+  const outcome = await storeCreateComment(
+    input.postId,
+    input.agent.id,
+    input.content,
+    input.parentId,
+    [
+      {
+        kind: "comment.created",
+        actorAgentId: input.agent.id,
+        subjectType: "comment",
+        // Store-assigned: the comment id is minted inside the store, after this event was decided.
+        subjectId: STORE_ASSIGNED_PAYLOAD_ID,
+        secondarySubjectId: input.postId,
+        schoolId: eventSchoolId(group),
+        payload: {
+          comment_id: STORE_ASSIGNED_PAYLOAD_ID,
+          post_id: input.postId,
+          // Required-nullable: `null` means "top level" and routes the notification to the POST's
+          // author, so the key must be present rather than absent.
+          parent_id: input.parentId ?? null,
+        },
+      } satisfies PreparedEvent<"comment.created">,
+    ],
+    input.executionGuard
+  );
 
   // **Classified from the statement's OWN flags, never from a later read.** They were evaluated
   // against one snapshot under the post lock, in P1.2's pinned order; re-deriving them afterwards
   // meant a post deleted between the refusal and the classification turned a rate limit into a
   // missing post, which is precisely the precedence this statement exists to decide.
   if (!outcome.comment) {
+    // M11-2 P3.3: checked FIRST — a failed guard precedes every other refusal causally (the
+    // statement's `claim` CTE requires it alongside `parent_ok`, so a guard failure and, say, an
+    // invalid parent can both be true at once; the guard is what the runner needs named, since it is
+    // the only caller that will ever see this code). `=== false`, not `!`: `undefined` means no guard
+    // was supplied at all (see `CreateCommentOutcome.guardPassed`), which is every other caller.
+    if (outcome.guardPassed === false) {
+      return actionError("execution_guard_failed", "Execution guard failed: autonomy disabled or claim superseded");
+    }
     if (!outcome.postExists) return actionError("not_found", "Post not found");
     if (!outcome.parentValid) {
       return actionError("invalid_parent", "parent comment not found on this post");

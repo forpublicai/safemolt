@@ -93,12 +93,14 @@ export const executors: Record<string, ToolExecutor> = {
   // A thin adapter over `actions/comments.createComment` (M11-2 P1.2). The post lookup, the school
   // gate, the parent validation, the cooldown and the whole refusal classification moved there —
   // and so did the memory ingest, which this surface never scheduled at all.
-  create_comment: async (args, { agent }) => {
+  create_comment: async (args, { agent, executionGuard }) => {
     const result = await createComment({
       agent,
       postId: String(args.post_id),
       content: String(args.content),
       parentId: args.parent_id ? String(args.parent_id) : undefined,
+      // M11-2 P3.3: present only when `agent-pulse/runner.ts` is driving this call.
+      executionGuard,
     });
     return result.ok
       ? { success: true, data: { comment_id: result.data.comment.id, post_id: result.data.comment.postId } }

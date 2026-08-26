@@ -12,7 +12,8 @@
  * Designed to run in a Vercel Cron function (~300s budget).
  */
 
-import { sql } from "@/lib/db";
+import { hasDatabase, sql } from "@/lib/db";
+import { agentLoopState } from "@/lib/store/_memory-state";
 import { PLATFORM_TOOLS, type ToolCallResult, type ToolDefinition } from "@/lib/agent-tools";
 import { makeHfRouterCallLLM, makeOpenAiCallLLM } from "@/lib/agent-runtime/adapters/openai-compatible";
 import {
@@ -55,6 +56,15 @@ import {
 import type { StoredAgent } from "@/lib/store-types";
 import { recordAgentLoopActivityEvent } from "@/lib/store/activity/events";
 import { listRecentLoopActions, type RecentLoopAction } from "@/lib/agent-loop-actions";
+// M11-2 P3.3: the wakeup runner `runAgentLoopBatch` degrades into. Imported LAZILY, inside
+// `runAgentLoopBatch` itself, rather than at this file's top level — `agent-pulse/runner.ts` reaches
+// `src/lib/store/wakeups` at ITS top level, and that module calls `hasDatabase()` the moment it
+// loads (`pickStore` is eager, not a lazy dispatcher — `src/lib/store/pick-store.ts`). A static
+// import here would make EVERY caller of `agent-loop.ts` — including tests that only need
+// `buildDecisionPrompt` or `tickAgent` and mock `@/lib/db` with nothing but `{ sql }` — pull that
+// chain in and crash on a missing `hasDatabase`. Deferring the import to the one function that
+// actually needs the wakeup store keeps that cost scoped to callers of `runAgentLoopBatch`, which is
+// the only thing in this file that touches wakeups at all.
 
 // ---------------------------------------------------------------------------
 // Config
@@ -70,11 +80,21 @@ const COOLDOWN_MINUTES: Record<PostingCadence, number> = {
   reactive: 120,
 };
 
+/**
+ * M11-2 P3.3: the one place that derives an agent's cooldown minutes from its identity, so the
+ * runner's own reply/mention/playground_round bookkeeping (`agent-pulse/runner.ts`) applies the SAME
+ * cooldown `tickAgent` always has, rather than a second copy of `COOLDOWN_MINUTES` + a second
+ * `parsePostingCadence` call.
+ */
+export function cooldownMinutesFor(agent: StoredAgent): number {
+  return COOLDOWN_MINUTES[parsePostingCadence(agent.identityMd)];
+}
+
 // The per-section windows (feed, news, comments, memories, inbox) now live beside the gatherers
 // they bound, in `src/lib/agent-senses/constants.ts`.
 
 /** Max own autonomous action snippets to show for anti-repetition guidance. */
-const RECENT_ACTION_WINDOW = 5;
+export const RECENT_ACTION_WINDOW = 5;
 
 /** ADR-0001: total tool calls allowed across the whole staged tick. */
 const LOOP_MAX_TOOL_CALLS = parseInt(process.env.AGENT_LOOP_MAX_TOOL_CALLS || "4", 10);
@@ -106,7 +126,27 @@ export type LoopPromptStage = { kind: "discovery" } | { kind: "domain"; domain: 
 export { getLoopState } from "./agent-loop/state";
 import { recordAgentLoopTick } from "./agent-loop/state";
 
+/**
+ * M11-2 P3.3: memory mode writes the same `agentLoopState` map `getLoopState` now reads
+ * (`agent-loop/state.ts`), so an agent's loop can be enabled/disabled the same way in Jest / local
+ * no-DB runs as in production — the fixture path the runner's own tests use to arm and disarm the
+ * kill switch.
+ */
 export async function setLoopEnabled(agentId: string, enabled: boolean): Promise<void> {
+  if (!hasDatabase() || !sql) {
+    const existing = agentLoopState.get(agentId);
+    agentLoopState.set(agentId, {
+      agentId,
+      enabled,
+      lastSeenAt: existing?.lastSeenAt ?? null,
+      lastActionAt: existing?.lastActionAt ?? null,
+      nextEligibleAt: existing?.nextEligibleAt ?? null,
+      lastError: existing?.lastError ?? null,
+      actionsTaken: existing?.actionsTaken ?? 0,
+      errors: existing?.errors ?? 0,
+    });
+    return;
+  }
   await sql!`
     INSERT INTO agent_loop_state (agent_id, enabled)
     VALUES (${agentId}, ${enabled})
@@ -114,7 +154,27 @@ export async function setLoopEnabled(agentId: string, enabled: boolean): Promise
   `;
 }
 
+/**
+ * M11-2 P3.3: candidates for the IDLE SWEEP (`runAgentLoopBatch`'s idle-sweep half), not a batch of
+ * agents to tick directly any more — `listEligibleAgents`'s old callers ticked each id in the
+ * returned list; the sweep instead ENQUEUES an idle wakeup per id (`agent-pulse/runner.ts`'s
+ * `enqueueIdleWakeup`) and lets `runPulseBatch`'s claim statement decide who actually runs. The query
+ * itself is unchanged — same predicate, same `BATCH_SIZE` cap, same ordering — and gained a memory
+ * branch so the sweep works in Jest / local no-DB runs too.
+ */
 async function listEligibleAgents(now: string): Promise<string[]> {
+  if (!hasDatabase() || !sql) {
+    const nowMs = Date.parse(now);
+    return Array.from(agentLoopState.values())
+      .filter((state) => state.enabled && (!state.nextEligibleAt || Date.parse(state.nextEligibleAt) <= nowMs))
+      .sort((a, b) => {
+        const at = a.nextEligibleAt ? Date.parse(a.nextEligibleAt) : 0;
+        const bt = b.nextEligibleAt ? Date.parse(b.nextEligibleAt) : 0;
+        return at - bt;
+      })
+      .slice(0, BATCH_SIZE)
+      .map((state) => state.agentId);
+  }
   const rows = await sql!`
     SELECT agent_id FROM agent_loop_state
     WHERE enabled = TRUE AND next_eligible_at <= ${now}::timestamptz
@@ -124,8 +184,27 @@ async function listEligibleAgents(now: string): Promise<string[]> {
   return (rows as { agent_id: string }[]).map((r) => r.agent_id);
 }
 
-async function recordAction(agentId: string, cooldownMinutes: number): Promise<void> {
+/**
+ * M11-2 P3.3: exported (was module-private) and given a memory branch, so `agent-pulse/runner.ts`
+ * can apply the SAME cooldown bookkeeping `tickAgent` always has for its own reply/mention/
+ * playground_round ticks — without it, idle-sweep would have no reason to skip an agent who just
+ * acted a moment ago via an event-driven wakeup, and would hand the runner a fresh idle row for
+ * every sweep cycle in between.
+ */
+export async function recordAction(agentId: string, cooldownMinutes: number): Promise<void> {
   const next = new Date(Date.now() + cooldownMinutes * 60_000).toISOString();
+  if (!hasDatabase() || !sql) {
+    const existing = agentLoopState.get(agentId);
+    if (!existing) return;
+    agentLoopState.set(agentId, {
+      ...existing,
+      actionsTaken: existing.actionsTaken + 1,
+      lastActionAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      nextEligibleAt: next,
+    });
+    return;
+  }
   await sql!`
     UPDATE agent_loop_state
     SET actions_taken = actions_taken + 1,
@@ -136,8 +215,14 @@ async function recordAction(agentId: string, cooldownMinutes: number): Promise<v
   `;
 }
 
-async function recordSkip(agentId: string, cooldownMinutes: number): Promise<void> {
+export async function recordSkip(agentId: string, cooldownMinutes: number): Promise<void> {
   const next = new Date(Date.now() + cooldownMinutes * 60_000).toISOString();
+  if (!hasDatabase() || !sql) {
+    const existing = agentLoopState.get(agentId);
+    if (!existing) return;
+    agentLoopState.set(agentId, { ...existing, lastSeenAt: new Date().toISOString(), nextEligibleAt: next });
+    return;
+  }
   await sql!`
     UPDATE agent_loop_state
     SET last_seen_at = NOW(),
@@ -146,8 +231,19 @@ async function recordSkip(agentId: string, cooldownMinutes: number): Promise<voi
   `;
 }
 
-async function recordError(agentId: string, message: string): Promise<void> {
+export async function recordError(agentId: string, message: string): Promise<void> {
   const next = new Date(Date.now() + 10 * 60_000).toISOString(); // 10 min backoff
+  if (!hasDatabase() || !sql) {
+    const existing = agentLoopState.get(agentId);
+    if (!existing) return;
+    agentLoopState.set(agentId, {
+      ...existing,
+      errors: existing.errors + 1,
+      lastError: message,
+      nextEligibleAt: next,
+    });
+    return;
+  }
   await sql!`
     UPDATE agent_loop_state
     SET errors = errors + 1,
@@ -161,7 +257,14 @@ async function recordError(agentId: string, message: string): Promise<void> {
 // Action log (structured journal)
 // ---------------------------------------------------------------------------
 
-async function logAction(
+/**
+ * M11-2 P3.3: exported (was module-private) so `agent-pulse/runner.ts` journals its own
+ * reply/mention/playground_round terminal actions through the SAME structured journal `tickAgent`
+ * always has, rather than a second copy. DB-only (`agent_loop_action_log` has no memory twin — see
+ * `agent-loop-actions.ts`'s `listRecentLoopActions`, which answers `[]` with no DB); the surrounding
+ * try/catch already makes a no-DB call a harmless no-op, exactly as it always has for `tickAgent`.
+ */
+export async function logAction(
   agentId: string,
   action: string,
   targetType?: string,
@@ -189,7 +292,7 @@ async function logAction(
 // Inference
 // ---------------------------------------------------------------------------
 
-async function makeLoopCallLLM(agent: StoredAgent, userId?: string): Promise<CallLLM> {
+export async function makeLoopCallLLM(agent: StoredAgent, userId?: string): Promise<CallLLM> {
   const sponsored = await isSponsoredPublicAiAgent(agent.id);
   if (sponsored && userId) {
     const override = await getUserInferenceTokenOverride(userId);
@@ -223,6 +326,18 @@ async function makeLoopCallLLM(agent: StoredAgent, userId?: string): Promise<Cal
   if (platform) return makeHfRouterCallLLM({ apiKey: platform, billToPublicAi: true });
 
   throw new Error("No inference provider configured for unlinked agent");
+}
+
+/**
+ * M11-2 P3.3: `makeLoopCallLLM` plus the owner lookup `tickAgent` always does first —
+ * `agent-pulse/runner.ts`'s "loop-surface minimal resolver" for every reason it drives directly
+ * (reply/mention/playground_round; `idle` still goes through `tickAgent`, which does this inline).
+ * One function so the runner never re-derives `listUserIdsLinkedToAgent`'s result differently from
+ * how `tickAgent` does.
+ */
+export async function resolveLoopCallLLM(agent: StoredAgent): Promise<CallLLM> {
+  const userIds = await listUserIdsLinkedToAgent(agent.id);
+  return makeLoopCallLLM(agent, userIds[0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -573,11 +688,11 @@ const TOOL_TARGET_TYPES = new Map(
   PLATFORM_TOOLS.filter((tool) => tool.targetType).map((tool) => [tool.function.name, tool.targetType!])
 );
 
-function inferTargetType(call: NormalizedToolCall): string | undefined {
+export function inferTargetType(call: NormalizedToolCall): string | undefined {
   return TOOL_TARGET_TYPES.get(call.name);
 }
 
-function inferTargetId(call: NormalizedToolCall, result: ToolCallResult): string | undefined {
+export function inferTargetId(call: NormalizedToolCall, result: ToolCallResult): string | undefined {
   const data = toolResultData(result);
   const value =
     data.post_id ??
@@ -600,7 +715,7 @@ function inferTargetId(call: NormalizedToolCall, result: ToolCallResult): string
   return value == null ? undefined : String(value);
 }
 
-function summarizeArgs(args: Record<string, unknown>): string | undefined {
+export function summarizeArgs(args: Record<string, unknown>): string | undefined {
   const value =
     args.content ??
     args.title ??
@@ -613,7 +728,7 @@ function summarizeArgs(args: Record<string, unknown>): string | undefined {
   return value == null ? undefined : String(value);
 }
 
-function summarizeResult(call: NormalizedToolCall, result: ToolCallResult): string {
+export function summarizeResult(call: NormalizedToolCall, result: ToolCallResult): string {
   if (!result.success) return `${call.name} failed: ${result.error ?? "unknown error"}`;
   const data = toolResultData(result);
   const id = inferTargetId(call, result);
@@ -624,7 +739,8 @@ function summarizeResult(call: NormalizedToolCall, result: ToolCallResult): stri
 // Store action as memory
 // ---------------------------------------------------------------------------
 
-async function storeActionMemory(agentId: string, action: string, detail: string): Promise<void> {
+/** M11-2 P3.3: exported (was module-private) for `agent-pulse/runner.ts` to reuse unchanged. */
+export async function storeActionMemory(agentId: string, action: string, detail: string): Promise<void> {
   try {
     const memoryId = `loop_${agentId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const text = `[Agent Loop] ${action}: ${detail}`;
@@ -852,23 +968,48 @@ export interface AgentLoopResult {
   results: { agentId: string; action: string; detail?: string; error?: string }[];
 }
 
+/**
+ * M11-2 P3.3: `runAgentLoopBatch` becomes the DEGRADED wrapper — idle-sweep, then run due wakeups up
+ * to the old batch size. It no longer ticks an agent directly at all: `listEligibleAgents`'s
+ * candidates each get an `idle` wakeup ENQUEUED (`enqueueIdleWakeup`, deduped by
+ * `idx_wakeups_dedup_idle` — an agent that already has a pending idle row gets a no-op, not a second
+ * one), and `runPulseBatch` claims and runs up to `BATCH_SIZE` due wakeups of ANY reason — idle ones
+ * from this very sweep, but also any reply/mention/playground_round wakeup the event pipeline armed
+ * since the last pass. This is the "degraded" half of P3.4's eventual worker/cron split: the worker
+ * (when it exists) drains the queue continuously and this cron path exists only as its bounded
+ * fallback, preserving `AGENT_LOOP_BATCH_SIZE`'s existing meaning as a per-invocation cap.
+ *
+ * The public shape (`AgentLoopResult.processed`/`.results`) is unchanged, because
+ * `internal/agent-loop/route.ts` (a different lane's territory) serializes it verbatim as this cron
+ * route's JSON response. `results[].action` now holds the wakeup outcome (`acted`/`skip`/`error`)
+ * rather than the specific tool name a successful `tickAgent` call used to report — a narrower but
+ * still honest summary for what is, in production, a monitoring/debug payload rather than a published
+ * API contract.
+ */
 export async function runAgentLoopBatch(): Promise<AgentLoopResult> {
+  const { enqueueIdleWakeup, runPulseBatch, runPulseMaintenance } = await import("@/lib/agent-pulse/runner");
   const now = new Date().toISOString();
+
+  // Housekeeping first, so an agent whose autonomy was disabled since the last pass has its
+  // still-pending internal wakeups terminalized BEFORE this pass's idle-sweep or claim can touch
+  // them, and so an expired lease frees its agent's one-inflight slot before anything tries to claim
+  // for that agent again.
+  await runPulseMaintenance();
+
   const eligible = await listEligibleAgents(now);
-
-  const results: AgentLoopResult["results"] = [];
-
   for (const agentId of eligible) {
-    try {
-      const result = await tickAgent(agentId);
-      results.push({ agentId, ...result });
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "unknown error";
-      console.error(`[agent-loop] agent ${agentId} error:`, message);
-      await recordError(agentId, message).catch(() => {});
-      results.push({ agentId, action: "error", error: message });
-    }
+    await enqueueIdleWakeup(agentId).catch((e) => {
+      console.error(`[agent-loop] idle-sweep enqueue failed for ${agentId}:`, e);
+    });
   }
 
-  return { processed: eligible.length, results };
+  const batch = await runPulseBatch(BATCH_SIZE);
+  const results: AgentLoopResult["results"] = batch.results.map((r) => ({
+    agentId: r.agentId,
+    action: r.outcome,
+    detail: r.reason,
+    error: r.outcome === "error" ? `wakeup ${r.wakeupId} (${r.reason}) errored` : undefined,
+  }));
+
+  return { processed: batch.claimed, results };
 }

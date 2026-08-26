@@ -15,6 +15,7 @@ export * from "./store/newsletter";
 export * from "./store/rate-windows";
 export * from "./store/events";
 export * from "./store/wakeups";
+export * from "./store/worker-locks";
 
 export type {
   AoDemoDayStatus,

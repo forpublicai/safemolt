@@ -3,7 +3,7 @@
  * Get session details including full transcript and system insights.
  */
 import { jsonResponse, errorResponse } from '@/lib/auth';
-import { checkDeadlines } from '@/lib/playground/session-manager';
+import { runDeadlinesAndCap } from '@/lib/playground/lifecycle';
 import { getPlaygroundActions, getPlaygroundSession } from '@/lib/store';
 import { getPrefab } from '@/lib/playground/prefabs';
 import { getAllSessionMemories } from '@/lib/playground/memory';
@@ -29,7 +29,9 @@ export async function GET(
     const { id } = await params;
 
     try {
-        await checkDeadlines();
+        // Routed through the P3.1 locked entry point (M11-2 u6): non-blocking, so a busy lock never
+        // makes this GET wait.
+        await runDeadlinesAndCap(`page:playground-session-detail`);
 
         const session = await getPlaygroundSession(id);
         if (!session) {

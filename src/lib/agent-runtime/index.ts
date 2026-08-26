@@ -1,4 +1,5 @@
 import { executeTool, type ToolCallResult, type ToolDefinition } from "@/lib/agent-tools";
+import type { ExecutionGuard } from "@/lib/store/execution-guard";
 import type { StoredAgent } from "@/lib/store-types";
 
 export interface NormalizedToolCall {
@@ -40,6 +41,29 @@ export interface AgenticTurnInput {
    * tool call runs as before.
    */
   terminalToolNames?: ReadonlySet<string>;
+  /**
+   * M11-2 P3.3: an async pre-execution seam for the ONE tool call that is about to end the turn
+   * (a call whose name is in `terminalToolNames`). Called with the pending call before it executes;
+   * a `false` return ends the turn as a skip WITHOUT invoking the tool — the tool is never called,
+   * no `tool` message is appended for it, and `toolCallsExecuted`/`terminalToolExecuted` do not
+   * include it.
+   *
+   * This is the smallest seam that lets `agent-pulse/runner.ts` fence a terminal mutation behind its
+   * own lease: the runner renews its wakeup's lease (token-fenced, checking `agent_loop_state.enabled`)
+   * immediately before allowing the call through, and a renewal that comes back empty (lease
+   * expired/abandoned, or the agent's autonomy was disabled mid-tick) returns `false` here instead of
+   * throwing — the turn ends the same way "nothing worth doing" already does, with no special-cased
+   * error path for callers that never pass this hook. Never called for a non-terminal tool call, and
+   * never called at all when `terminalToolNames` is omitted (there is no terminal call to gate).
+   */
+  beforeTerminalTool?: (call: NormalizedToolCall) => Promise<boolean>;
+  /**
+   * M11-2 P3.3: forwarded to EVERY `executeTool` call this turn makes (not only the terminal one).
+   * Populated ONLY by `agent-pulse/runner.ts`. Harmless for a call whose executor does not read it —
+   * currently only `create_comment`'s does — and never present for a REST-triggered or externally
+   * driven turn.
+   */
+  executionGuard?: ExecutionGuard;
 }
 
 export interface AgenticTurnOutput {
@@ -98,8 +122,29 @@ export async function runAgenticTurn(input: AgenticTurnInput): Promise<AgenticTu
     const processed: NormalizedToolCall[] = [];
     for (const call of calls) {
       const isAllowed = allowedToolNames.has(call.name);
+      const isTerminal = isAllowed && Boolean(terminalToolNames?.has(call.name));
+
+      // M11-2 P3.3: the fence lives here, BEFORE the tool executes — the whole point of the seam.
+      // A `false` return ends the turn as a skip: the call is never passed to `executeTool`, no
+      // `tool` message is appended for it (the caller learns nothing was invoked), and it is absent
+      // from both `toolCallsExecuted` and `terminalToolExecuted`. `assistantMessage.toolCalls` is
+      // trimmed to `processed` for the same reason the terminal-tool branch below trims it: the
+      // returned message thread must not declare a tool call that was never answered.
+      if (isTerminal && input.beforeTerminalTool) {
+        const permitted = await input.beforeTerminalTool(call);
+        if (!permitted) {
+          assistantMessage.toolCalls = processed;
+          return {
+            finalContent: lastAssistantContent,
+            toolCallsExecuted: executed,
+            noOp: executed.length === 0,
+            messages,
+          };
+        }
+      }
+
       const result = isAllowed
-        ? await executeTool(call.name, call.arguments, input.agent)
+        ? await executeTool(call.name, call.arguments, input.agent, input.executionGuard)
         : { success: false, error: `Tool not in allowlist: ${call.name}` };
       if (input.onToolExecuted) await input.onToolExecuted(call, result);
       executed.push({ call, result });
@@ -108,7 +153,7 @@ export async function runAgenticTurn(input: AgenticTurnInput): Promise<AgenticTu
 
       // ADR-0001: the first terminal tool ends the turn. Drop any later tool
       // calls from this same assistant message so they are never executed.
-      if (isAllowed && terminalToolNames?.has(call.name)) {
+      if (isTerminal) {
         assistantMessage.toolCalls = processed;
         const terminalToolExecuted = { call, result };
         if (!requireFinalText) {

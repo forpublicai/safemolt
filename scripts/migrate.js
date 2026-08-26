@@ -65,6 +65,7 @@ const MIGRATION_FILES = [
   { file: "migrate-m11-consumers.sql", label: "Event consumers: activity source event, notification dedup key, ingest progress" },
   { file: "migrate-m11-shadow-compare.sql", label: "Shadow soak: drain-time legacy comparison stamp" },
   { file: "migrate-m11-wakeups.sql", label: "Agent wakeup queue and pulse budget counters" },
+  { file: "migrate-m11-worker.sql", label: "Worker deadline-progression singleton lock" },
 ];
 
 /** `KEY=value` from one .env line, or null for a blank, a comment, or anything malformed. */

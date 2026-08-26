@@ -27,8 +27,13 @@ jest.mock("@/lib/store", () => ({
 }));
 
 jest.mock("@/lib/playground/session-manager", () => ({
-  checkDeadlines: jest.fn().mockResolvedValue(undefined),
   getActiveSession: jest.fn().mockResolvedValue(null),
+}));
+
+// `buildAgentInboxSummary` (in `@/lib/agent-inbox`) now runs deadline progression through the
+// P3.1 locked entry point instead of calling `checkDeadlines` on the session manager directly.
+jest.mock("@/lib/playground/lifecycle", () => ({
+  runDeadlinesAndCap: jest.fn().mockResolvedValue({ advanced: 0, capped: 0 }),
 }));
 
 const store = require("@/lib/store");

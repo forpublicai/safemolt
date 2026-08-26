@@ -3,15 +3,19 @@ import { sql } from "@/lib/db";
 import { toIsoOrEmpty, toIsoOrNull } from "@/lib/iso-date";
 
 /**
- * M11-2 P3.2 (train a4, lane C) — the wakeup queue's data layer.
+ * M11-2 P3.2 (train a4, lane C) + P3.3 — the wakeup queue's data layer.
  *
- * A row in `agent_wakeups` means "agent X has a reason to check in". Two callers write them and
- * neither lives here: the wakeup-router consumer (drains events and creates wakeups) and the
- * playground deadline sweep (creates-or-re-arms defensively). **Nothing in this deploy CLAIMS or
- * RUNS a wakeup** — the claim CTE, the lease fencing and the budget spend belong to P3.3 — so this
- * module deliberately exposes no claim, no lease and no completion writer. `idx_wakeups_one_inflight`
- * therefore has no observable effect on anything here: nothing this module writes ever sets
- * `claimed_at`.
+ * A row in `agent_wakeups` means "agent X has a reason to check in". P3.2 shipped the ARMING side:
+ * two callers write through it and neither lives here — the wakeup-router consumer (drains events and
+ * creates wakeups) and the playground deadline sweep (creates-or-re-arms defensively) — both calling
+ * the enqueue/re-arm exports below. **P3.3 adds the CLAIMING side in this same module**: the claim
+ * statement, lease renewal, the three completion/housekeeping writers. `idx_wakeups_one_inflight` now
+ * has an observable effect here — `claimNextWakeup` is the only writer of `claimed_at`, and it is the
+ * only writer this module has for that column; every other write of `lease_expires_at`/`completed_at`
+ * belongs to `renewWakeupLease`, `completeWakeup`, `abandonExpiredWakeupLeases`,
+ * `terminalizeDisabledAgentWakeups`, or a re-arm. The runner itself — the tick loop, context building,
+ * tool execution — is a different lane's territory; this module exposes only the store-layer
+ * primitives it claims and completes through.
  *
  * **The domain is kind-agnostic on purpose.** It deals in `agentId` / `reason` (a plain string) /
  * `eventId` (a plain number) / `payload`, never in `EventKind` or `PreparedEvent`, and it emits no
@@ -428,4 +432,230 @@ export async function findRoundOpenedEventId(sessionId: string, round: number): 
 export async function resolveWakeupDelivery(agentId: string): Promise<"internal" | null> {
   const state = await getLoopState(agentId);
   return state?.enabled === true ? "internal" : null;
+}
+
+/**
+ * M11-2 P3.3 (train a4) — the wakeup runner's claim, lease-renewal, completion and housekeeping
+ * writers, joining P3.2's enqueue/re-arm exports above in the same module.
+ *
+ * `claimNextWakeup` is `ai/PLAN_M11_2.md`'s P3.3 claim statement, TRANSCRIBED — not redesigned. The
+ * plan writes its four inputs as named placeholders; they became real params here (`$1`=claimToken,
+ * `$2`=leaseMs, `$3`=playgroundCap, `$4`=generalCap) and nothing else about the SQL shape changed.
+ *
+ * Every runner-owned write below is TOKEN-FENCED — `WHERE id = $id AND claim_token = $token AND
+ * completed_at IS NULL` — per CLAUDE.md's documented pattern for this family: lease renewal and every
+ * completion write carry it, so a stale runner that resumed after abandonment + re-arm gets zero rows
+ * back from every one of them and can neither complete the row nor extend its lease out from under
+ * the new claimant. The two housekeeping sweeps at the bottom are deliberately NOT token-fenced: they
+ * are system-driven, hold no runner's token to fence with, and their whole job is to close out rows
+ * whose owning runner is presumed gone (an expired lease) or whose agent went disabled mid-queue.
+ */
+
+export interface ClaimNextWakeupInput {
+  /** A fresh, unguessable token (e.g. `crypto.randomUUID()`), stamped on the claimed row. */
+  claimToken: string;
+  leaseMs: number;
+  generalCap: number;
+  playgroundCap: number;
+}
+
+export type ClaimNextWakeupResult =
+  | { candidates: 0 }
+  | { candidates: 1; claimed: null }
+  | { candidates: 1; claimed: StoredWakeup };
+
+/**
+ * 23505 on `idx_wakeups_one_inflight` — the one constraint `claimNextWakeup`'s statement can violate,
+ * and the only one worth retrying on. Matches the constraint NAME, not just the code, the same
+ * discriminator convention `evaluations/db.ts`'s `isActiveRegistrationViolation` and
+ * `isExpectedResultUniquenessViolation` use — a bare `code === "23505"` would also swallow an
+ * unrelated collision this statement has no business retrying past.
+ */
+function isOneInflightClaimViolation(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const e = error as { code?: string; constraint?: string };
+  return e.code === "23505" && e.constraint === "idx_wakeups_one_inflight";
+}
+
+/**
+ * The claim CTE, verbatim from the plan's P3.3 section. Always exactly one result row:
+ *  - `cand` picks at most one candidate — the earliest-due wakeup for a loop-enabled agent with no
+ *    OTHER row of that agent's currently in flight — locked `FOR UPDATE SKIP LOCKED` so a concurrent
+ *    claimant skips past it instead of blocking behind it;
+ *  - `b` spends the candidate's daily budget bucket ATOMICALLY WITH the claim: a fresh bucket always
+ *    admits (`count = 1` cannot exceed a cap ≥ 1), and an existing bucket only updates — and therefore
+ *    only `RETURNING`s a row — while it is still under its cap;
+ *  - `claimed` stamps `claimed_at`/`claim_token`/`lease_expires_at` on the candidate iff `b` produced
+ *    a row;
+ *  - `refused` terminalizes the SAME candidate `budget_exhausted` iff `b` did not — so a blocked claim
+ *    spends nothing beyond the row it refuses, and no candidate is ever left silently pending.
+ *
+ * A `23505` on `idx_wakeups_one_inflight` aborts the WHOLE statement, budget increment included — see
+ * `claimNextWakeup`'s own doc comment for what the caller does about that.
+ */
+const CLAIM_NEXT_WAKEUP_SQL = `
+  /* p3.3:claim-next-wakeup */
+  WITH cand AS (
+    SELECT w.id, w.agent_id, w.reason
+    FROM agent_wakeups w
+    WHERE w.completed_at IS NULL
+      AND w.claimed_at IS NULL
+      AND w.due_at <= now()
+      AND w.delivery = 'internal'
+      AND EXISTS (SELECT 1 FROM agent_loop_state ls WHERE ls.agent_id = w.agent_id AND ls.enabled)
+      AND NOT EXISTS (
+        SELECT 1 FROM agent_wakeups iw
+        WHERE iw.agent_id = w.agent_id AND iw.claimed_at IS NOT NULL AND iw.completed_at IS NULL
+      )
+    ORDER BY w.due_at
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+  ),
+  b AS (
+    INSERT INTO pulse_budget_counters AS pbc (agent_id, day, bucket, count)
+    SELECT agent_id, CURRENT_DATE, CASE WHEN reason = 'playground_round' THEN 'playground' ELSE 'general' END, 1
+    FROM cand
+    ON CONFLICT (agent_id, day, bucket) DO UPDATE
+      SET count = pbc.count + 1
+      WHERE pbc.count < CASE pbc.bucket WHEN 'playground' THEN $3::int ELSE $4::int END
+    RETURNING agent_id
+  ),
+  claimed AS (
+    UPDATE agent_wakeups w
+    SET claimed_at = now(), claim_token = $1,
+        lease_expires_at = now() + make_interval(secs => $2::double precision / 1000.0)
+    FROM cand
+    WHERE w.id = cand.id AND EXISTS (SELECT 1 FROM b)
+    RETURNING w.*
+  ),
+  refused AS (
+    UPDATE agent_wakeups w
+    SET completed_at = now(), result = 'budget_exhausted'
+    FROM cand
+    WHERE w.id = cand.id AND NOT EXISTS (SELECT 1 FROM b)
+    RETURNING w.id
+  )
+  SELECT (SELECT count(*)::int FROM cand) AS candidates,
+         (SELECT to_jsonb(c.*) FROM claimed c) AS claimed_row
+`;
+
+/** `claimed_row` is `to_jsonb` of an `agent_wakeups` row, so `rowToWakeup` reads it unmodified. */
+function parseClaimResult(rows: unknown[]): ClaimNextWakeupResult {
+  const row = rows[0] as { candidates: number | string; claimed_row: unknown } | undefined;
+  const candidates = Number(row?.candidates ?? 0);
+  if (candidates === 0) return { candidates: 0 };
+  if (row?.claimed_row == null) return { candidates: 1, claimed: null };
+  return { candidates: 1, claimed: rowToWakeup(row.claimed_row) };
+}
+
+/**
+ * Claim one due wakeup for one worker slot, spending its budget bucket atomically with the claim.
+ *
+ * `{ candidates: 0 }` means the queue is empty for this worker right now — end the caller's pass.
+ * `{ candidates: 1, claimed: null }` means a candidate existed but was refused for budget: it was
+ * already terminalized `budget_exhausted` INSIDE this statement, so the caller should retry the claim
+ * immediately (this call consumed nothing else worth waiting on). `{ candidates: 1, claimed: {...} }`
+ * is a successful claim.
+ *
+ * **The bounded single retry on `idx_wakeups_one_inflight`.** A 23505 there means two concurrent
+ * claims picked two DIFFERENT wakeups belonging to the SAME agent — the one race `NOT EXISTS` cannot
+ * see, because both statements read their `cand` snapshot before either committed — and it aborts the
+ * whole statement, budget increment included, so nothing is lost by retrying. One retry is enough: by
+ * the time it runs, the winner's claim is committed and visible, so `NOT EXISTS` now excludes that
+ * agent and this call either claims a DIFFERENT candidate, finds the queue empty, or — a narrower,
+ * still-possible race — collides again. That second collision is left to PROPAGATE rather than
+ * retried again: an unbounded retry loop here would turn a rare double-collision into an unbounded
+ * stall under contention, and the caller (a worker slot looping over free slots, per the plan's own
+ * "retried in a loop per free slot") already retries claim calls at that outer level, so surfacing the
+ * exception simply sends this slot around that loop instead of looping silently inside this function.
+ */
+export async function claimNextWakeup(input: ClaimNextWakeupInput): Promise<ClaimNextWakeupResult> {
+  const params = [input.claimToken, input.leaseMs, input.playgroundCap, input.generalCap];
+  try {
+    return parseClaimResult(await sql!(CLAIM_NEXT_WAKEUP_SQL, params));
+  } catch (error) {
+    if (!isOneInflightClaimViolation(error)) throw error;
+    return parseClaimResult(await sql!(CLAIM_NEXT_WAKEUP_SQL, params));
+  }
+}
+
+/**
+ * Renew a claimed wakeup's lease, immediately before the runner executes a terminal action.
+ *
+ * Token-fenced (`claim_token = $2 AND completed_at IS NULL`) AND re-checks `agent_loop_state.enabled`
+ * in the SAME statement: a dashboard disable landing between the claim and this renewal must never
+ * let the runner proceed to a terminal mutation. Zero rows back means either the claim was lost
+ * (expired, abandoned, or re-armed to another runner) or the agent was disabled mid-tick — either way
+ * the caller aborts the tick without executing anything further (the plan's "aborts the tick if no
+ * row returns").
+ */
+export async function renewWakeupLease(id: number, claimToken: string, leaseMs: number): Promise<boolean> {
+  const rows = await sql!(
+    `UPDATE agent_wakeups
+     SET lease_expires_at = now() + make_interval(secs => $3::double precision / 1000.0)
+     WHERE id = $1 AND claim_token = $2 AND completed_at IS NULL
+       AND EXISTS (SELECT 1 FROM agent_loop_state ls WHERE ls.agent_id = agent_wakeups.agent_id AND ls.enabled)
+     RETURNING id`,
+    [id, claimToken, leaseMs]
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Complete a claimed wakeup with its outcome. Token-fenced per CLAUDE.md's pattern for this family:
+ * an id-only completion would let a stale runner that resumed after abandonment + re-arm complete the
+ * row out from under its new claimant — freeing the one-inflight slot early and breaking per-agent
+ * serialization. Zero rows back means ownership was already lost; the caller must write nothing
+ * further.
+ */
+export async function completeWakeup(
+  id: number,
+  claimToken: string,
+  result: "acted" | "skip" | "error"
+): Promise<boolean> {
+  const rows = await sql!(
+    `UPDATE agent_wakeups
+     SET completed_at = now(), result = $3
+     WHERE id = $1 AND claim_token = $2 AND completed_at IS NULL
+     RETURNING id`,
+    [id, claimToken, result]
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Housekeeping: mark every expired-lease claim `abandoned`, freeing its agent's one-inflight slot.
+ *
+ * NOT token-fenced — this is a system sweep with no runner's token to check against, and that is
+ * exactly its job: a runner that crashed or stalled past its lease left nothing behind that COULD
+ * fence a completion. An abandoned row is never auto-re-run; only a domain-state-driven re-arm
+ * (`reArmWakeupById` / `createOrReArmWakeup` / `createOrReArmPlaygroundRoundWakeup`) resurrects one.
+ */
+export async function abandonExpiredWakeupLeases(): Promise<number> {
+  const rows = await sql!`
+    UPDATE agent_wakeups
+    SET completed_at = now(), result = 'abandoned'
+    WHERE claimed_at IS NOT NULL AND completed_at IS NULL AND lease_expires_at < now()
+    RETURNING id
+  `;
+  return rows.length;
+}
+
+/**
+ * Housekeeping: terminalize every still-pending (never claimed) INTERNAL wakeup whose agent is
+ * disabled — including an agent with no `agent_loop_state` row at all, which the `NOT EXISTS` covers
+ * the same way the claim CTE's `EXISTS` does. Without this sweep, a wakeup queued while its agent was
+ * disabled would sit forever, and re-enabling autonomy would hand the runner a batch of stale queue
+ * state instead of starting clean from the sweeps and scheduler — the P3.2 gate this closes: "pending
+ * never claimed + housekeeping terminalizes as autonomy_disabled".
+ */
+export async function terminalizeDisabledAgentWakeups(): Promise<number> {
+  const rows = await sql!`
+    UPDATE agent_wakeups w
+    SET completed_at = now(), result = 'autonomy_disabled'
+    WHERE w.completed_at IS NULL AND w.claimed_at IS NULL AND w.delivery = 'internal'
+      AND NOT EXISTS (SELECT 1 FROM agent_loop_state ls WHERE ls.agent_id = w.agent_id AND ls.enabled)
+    RETURNING id
+  `;
+  return rows.length;
 }

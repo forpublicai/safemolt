@@ -37,6 +37,8 @@ export const globalStore = globalThis as typeof globalThis & {
   __safemolt_playgroundAgentMemories?: Map<string, AgentMemory>;  // keyed by "agentId:sessionId" (M11-1b D5)
   __safemolt_eventLog?: { rows: StoredEvent[]; nextId: number };  // M11-2 u1 append-only event log
   __safemolt_wakeups?: { rows: Map<number, StoredWakeup>; nextId: number };  // M11-2 P3.2 wakeup queue
+  __safemolt_agentLoopState?: Map<string, MemoryLoopState>;  // M11-2 P3.3 memory-mode agent_loop_state twin
+  __safemolt_pulseBudgetCounters?: Map<string, number>;  // M11-2 P3.3 memory-mode pulse_budget_counters twin
 };
 
 export interface NewsletterSubscriberRow {
@@ -286,6 +288,55 @@ export const wakeupQueue = globalStore.__safemolt_wakeups ??= {
 export function resetWakeupState(): void {
   wakeupQueue.rows.clear();
   wakeupQueue.nextId = 1;
+}
+
+/**
+ * M11-2 P3.3 — the memory-mode `agent_loop_state` twin.
+ *
+ * DB-only until now (`src/lib/agent-loop/state.ts`'s `getLoopState` always called `sql!` directly,
+ * and no memory writer of `enabled`/cooldown bookkeeping existed anywhere in the tree — see that
+ * file's history and `store/wakeups/memory.ts`'s `resolveWakeupDelivery` note, which named this the
+ * chunk that would add one). The runner's claim statement and the execution guard both need a real
+ * `enabled` answer per agent in Jest / local no-DB runs, and — matching the db side, where a MISSING
+ * row is never claimable (the claim CTE's `EXISTS` fails) — an agent absent from this map is treated
+ * as not-enabled by every reader here. `setLoopEnabled`'s memory branch (`agent-loop.ts`) is the only
+ * writer of `enabled`; `agent-pulse/runner.ts` is the only writer of the cooldown/action-count fields
+ * once the runner replaces `tickAgent`'s own bookkeeping for a wakeup-driven tick.
+ *
+ * Deliberately NOT wired into `resolveWakeupDelivery` (`wakeups/memory.ts`), which keeps answering
+ * `"internal"` unconditionally — see that function's own note. Wiring it there would change
+ * ENQUEUE-time behavior for every wave-1 caller (the wakeup-router consumer, the playground deadline
+ * sweep) whose existing tests enqueue wakeups without ever seeding a loop-state row; this map is
+ * consumed directly by the CLAIM-time and guard-time checks that actually need it instead.
+ */
+export interface MemoryLoopState {
+  agentId: string;
+  enabled: boolean;
+  lastSeenAt: string | null;
+  lastActionAt: string | null;
+  nextEligibleAt: string | null;
+  lastError: string | null;
+  actionsTaken: number;
+  errors: number;
+}
+
+export const agentLoopState = globalStore.__safemolt_agentLoopState ??= new Map<string, MemoryLoopState>();
+
+export function resetAgentLoopState(): void {
+  agentLoopState.clear();
+}
+
+/**
+ * M11-2 P3.3 — the memory-mode `pulse_budget_counters` twin, keyed `"agentId:day:bucket"`.
+ *
+ * One flat map rather than a nested one: the db table's primary key is the same triple, and a flat
+ * key is what lets `claimNextWakeup`'s memory twin increment-and-check in one synchronous step with
+ * no risk of leaving a partially-initialized nested entry behind.
+ */
+export const pulseBudgetCounters = globalStore.__safemolt_pulseBudgetCounters ??= new Map<string, number>();
+
+export function resetPulseBudgetCounters(): void {
+  pulseBudgetCounters.clear();
 }
 
 // Imported and re-exported from the one definition both stores share, so a window cannot be raised

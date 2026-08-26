@@ -67,7 +67,7 @@ import { joinSession, submitAction } from "@/lib/actions/playground";
 import { playgroundSessionCompletedEvent } from "@/lib/actions/playground-events";
 import { eventConsumers } from "@/lib/events/consumers/registry";
 import { generateRoundPrompt } from "@/lib/playground/engine";
-import { checkDeadlines, tryAdvanceRound } from "@/lib/playground/session-manager";
+import { runDeadlineProgressionUnlocked, tryAdvanceRound } from "@/lib/playground/session-manager";
 import { emitEvent } from "@/lib/store";
 import { drainEventConsumer } from "@/lib/store/events/drain-db";
 import {
@@ -257,7 +257,7 @@ async function seedSession(options: {
 /**
  * Retire this run's live sessions before seeding the next fixture.
  *
- * `checkDeadlines` sweeps EVERY active session, so a leftover fixture from an earlier test in this
+ * `runDeadlineProgressionUnlocked` sweeps EVERY active session, so a leftover fixture from an earlier test in this
  * file would be bridged and armed by the sweep under test and add rows the assertions are counting.
  * Only this run's rows, and only ever to `completed`.
  */
@@ -439,7 +439,7 @@ afterAll(async () => {
     [REAL_CONSUMERS]
   );
   await pgPool().query(`DELETE FROM event_consumer_shadow WHERE event_id > $1`, [baselineEventId]);
-  // `checkDeadlines` arms wakeups for any loop-enabled participant it finds, so rows keyed on this
+  // `runDeadlineProgressionUnlocked` arms wakeups for any loop-enabled participant it finds, so rows keyed on this
   // run's events are swept by event id as well as by fixture prefix.
   await pgPool().query(`DELETE FROM agent_wakeups WHERE event_id > $1 OR agent_id LIKE $2`, [
     baselineEventId,
@@ -467,7 +467,7 @@ describe("Scenario 1 — a real activation races the real repair sweep", () => {
    *
    * u5c already proves the SQL predicate: four bare `storeRound1PromptIfMissing` calls admit one.
    * What was still owed is the same race through the PRODUCTION call paths — `joinSession` →
-   * `activateSession`'s `safeWaitUntil` continuation against `checkDeadlines`' 1c repair — carried
+   * `activateSession`'s `safeWaitUntil` continuation against `runDeadlineProgressionUnlocked`' 1c repair — carried
    * all the way to the queue and the inbox. A second publication would emit a second event with a
    * distinct id, and a distinct id passes BOTH dedup rules: the wakeup's `(agent, reason, event_id)`
    * index and the notification's `{type}:{recipient}:{event_id}` key. Every participant would then
@@ -513,7 +513,7 @@ describe("Scenario 1 — a real activation races the real repair sweep", () => {
       `UPDATE playground_sessions SET started_at = NOW() - INTERVAL '30 minutes' WHERE id = $1`,
       [session.id]
     );
-    const sweep = checkDeadlines();
+    const sweep = runDeadlineProgressionUnlocked();
     await waitForPromptCalls(session.id, 2);
 
     // 3. Hold the session row so neither can commit, release both at once, and prove from the
@@ -632,7 +632,7 @@ describe("no-wakeup-before-prompt", () => {
     });
     const marker = await maxEventId();
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
     await drainAll();
 
     expect(await openedFor(marker, session.id)).toEqual([]);
@@ -666,7 +666,7 @@ describe("upgrade-bridge", () => {
     });
     const marker = await maxEventId();
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     const opened = await openedFor(marker, session.id);
     expect(opened).toHaveLength(1);
@@ -698,7 +698,7 @@ describe("upgrade-bridge", () => {
     // A second sweep and a second drain add nothing: the idem key absorbs the event, the dedup index
     // absorbs the wakeup and the dedup key absorbs the notification.
     const afterFirst = await maxEventId();
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
     await drainAll();
     expect(await openedFor(afterFirst, session.id)).toEqual([]);
     for (const agent of participants) {
@@ -730,7 +730,7 @@ describe("late-recovery", () => {
     const marker = await maxEventId();
 
     const repairStartedAt = Date.now();
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     const row = await rawSession(session.id);
     expect(row.current_round_prompt).toBe(DEFAULT_PROMPT);
@@ -962,7 +962,7 @@ describe("submit-vs-deadline", () => {
     const submitted = await submitAction({ agent: last, sessionId: session.id, content: "closing move" });
     expect(submitted.ok).toBe(true);
     const advanceFromSubmit = waitUntilMock.mock.calls[waitUntilBefore][0] as Promise<unknown>;
-    const sweep = checkDeadlines();
+    const sweep = runDeadlineProgressionUnlocked();
 
     await Promise.all([advanceFromSubmit, sweep]);
 
@@ -1093,7 +1093,7 @@ describe("the sweep re-arms across rounds without touching a prior round's compl
     });
     const marker = await maxEventId();
 
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     const roundOne = await openedFor(marker, session.id);
     expect(roundOne).toHaveLength(1);
@@ -1113,7 +1113,7 @@ describe("the sweep re-arms across rounds without touching a prior round's compl
       [session.id]
     );
     const secondMarker = await maxEventId();
-    await checkDeadlines();
+    await runDeadlineProgressionUnlocked();
 
     expect((await getPlaygroundSession(session.id))!.currentRound).toBe(2);
     const roundTwo = await openedFor(secondMarker, session.id);

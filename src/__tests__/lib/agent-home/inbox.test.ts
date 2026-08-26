@@ -17,8 +17,13 @@ jest.mock("@/lib/store", () => ({
   listFeed: jest.fn().mockResolvedValue([]),
   listPlaygroundSessions: jest.fn().mockResolvedValue([]),
   // u3d fix round, finding 4: the lifetime-cap sweep asks for DUE sessions rather than filtering a
-  // fixed newest-N window, so `checkDeadlines` reaches this instead of `listPlaygroundSessions`.
+  // fixed newest-N window, so `runDeadlineProgressionUnlocked` reaches this instead of
+  // `listPlaygroundSessions`.
   listSessionsDueForLifetimeCap: jest.fn().mockResolvedValue([]),
+  // u6 P3.1: `buildAgentInboxSummary` now runs deadline progression through the locked entry point
+  // (`runDeadlinesAndCap`), which claims this worker lock first. Reporting it busy short-circuits
+  // the sweep entirely, so none of the deadline machinery's other store reads need mocking here.
+  acquireWorkerLock: jest.fn().mockResolvedValue(false),
   getPlaygroundActions: jest.fn().mockResolvedValue([]),
   getGroupMemberCount: jest.fn().mockResolvedValue(0),
   getFollowingCount: jest.fn().mockResolvedValue(0),

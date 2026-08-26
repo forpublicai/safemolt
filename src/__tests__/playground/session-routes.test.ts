@@ -34,9 +34,14 @@ jest.mock('@/lib/auth', () => {
 });
 
 jest.mock('@/lib/playground/session-manager', () => ({
-  checkDeadlines: jest.fn(),
   getActiveSession: jest.fn(),
   joinSession: jest.fn(),
+}));
+
+// The GET routes now run deadline progression through the P3.1 locked entry point
+// (`runDeadlinesAndCap`) instead of calling `checkDeadlines` on the session manager directly.
+jest.mock('@/lib/playground/lifecycle', () => ({
+  runDeadlinesAndCap: jest.fn(),
 }));
 
 // M11-2 P1.4: the join route is an adapter over the ACTION, which owns the school gate and the
@@ -62,14 +67,15 @@ import { GET as getSessionByIdRoute } from '@/app/api/v1/playground/sessions/[id
 import { POST as joinSessionRoute } from '@/app/api/v1/playground/sessions/[id]/join/route';
 
 const { getAgentFromRequest } = require('@/lib/auth');
-const { checkDeadlines, getActiveSession } = require('@/lib/playground/session-manager');
+const { getActiveSession } = require('@/lib/playground/session-manager');
+const { runDeadlinesAndCap } = require('@/lib/playground/lifecycle');
 const { joinSession } = require('@/lib/actions/playground');
 const { listPlaygroundSessions, getPlaygroundSession, getPlaygroundActions } = require('@/lib/store');
 
 describe('Playground session GET routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    checkDeadlines.mockResolvedValue(undefined);
+    runDeadlinesAndCap.mockResolvedValue({ advanced: 0, capped: 0 });
   });
 
   describe('GET /api/v1/playground/sessions/active', () => {
@@ -96,7 +102,8 @@ describe('Playground session GET routes', () => {
       expect(body.success).toBe(true);
       expect(body.data).toBeNull();
       expect(body.poll_interval_ms).toBe(60000);
-      expect(checkDeadlines).toHaveBeenCalledTimes(1);
+      expect(runDeadlinesAndCap).toHaveBeenCalledTimes(1);
+      expect(runDeadlinesAndCap).toHaveBeenCalledWith('page:playground-sessions-active');
       expect(getActiveSession).toHaveBeenCalledWith('agent_1');
     });
 
@@ -273,7 +280,8 @@ describe('Playground session GET routes', () => {
       const body = await response.json();
 
       expect(response.status).toBe(200);
-      expect(checkDeadlines).toHaveBeenCalledTimes(1);
+      expect(runDeadlinesAndCap).toHaveBeenCalledTimes(1);
+      expect(runDeadlinesAndCap).toHaveBeenCalledWith('page:playground-sessions-list');
       expect(listPlaygroundSessions).toHaveBeenCalledWith({
         status: 'active',
         limit: 50,
@@ -354,7 +362,8 @@ describe('Playground session GET routes', () => {
       const body = await response.json();
 
       expect(response.status).toBe(200);
-      expect(checkDeadlines).toHaveBeenCalledTimes(1);
+      expect(runDeadlinesAndCap).toHaveBeenCalledTimes(1);
+      expect(runDeadlinesAndCap).toHaveBeenCalledWith('page:playground-session-detail');
       expect(getPlaygroundActions).toHaveBeenCalledWith('pg_2', 3);
       expect(body.success).toBe(true);
       expect(body.data.id).toBe('pg_2');
