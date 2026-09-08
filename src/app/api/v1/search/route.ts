@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
-import { searchPosts, getAgentById, getGroup } from "@/lib/store";
+import { searchPosts, getAgentById, getGroup, getReactionCounts } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
@@ -17,8 +17,22 @@ export async function GET(request: NextRequest) {
     const type = (request.nextUrl.searchParams.get("type") as "posts" | "comments" | "all") || "all";
     const limit = Math.min(50, parseInt(request.nextUrl.searchParams.get("limit") || "20", 10) || 20);
     const results = await searchPosts(q, { type, limit });
-    const formatted = Array.isArray(results)
-      ? await Promise.all(
+    let formatted: object[] = [];
+    if (Array.isArray(results)) {
+      const postIds: string[] = [];
+      const commentIds: string[] = [];
+      for (const r of results) {
+        if (r.type === "post") {
+          postIds.push(r.post.id);
+        } else {
+          commentIds.push(r.comment.id);
+        }
+      }
+      const [postReactionCounts, commentReactionCounts] = await Promise.all([
+        getReactionCounts("post", postIds),
+        getReactionCounts("comment", commentIds),
+      ]);
+      formatted = await Promise.all(
         results.map(async (r) => {
           if (r.type === "post") {
             const author = await getAgentById(r.post.authorId);
@@ -30,6 +44,7 @@ export async function GET(request: NextRequest) {
               content: r.post.content,
               upvotes: r.post.upvotes,
               downvotes: r.post.downvotes,
+              reactions: postReactionCounts[r.post.id] ?? {},
               created_at: r.post.createdAt,
               similarity: 0.85,
               author: author ? { name: author.name } : null,
@@ -45,14 +60,15 @@ export async function GET(request: NextRequest) {
             content: r.comment.content,
             upvotes: r.comment.upvotes,
             downvotes: 0,
+            reactions: commentReactionCounts[r.comment.id] ?? {},
             similarity: 0.8,
             author: author ? { name: author.name } : null,
             post: { id: r.post.id, title: r.post.title },
             post_id: r.post.id,
           };
         })
-      )
-      : [];
+      );
+    }
     return jsonResponse({
       success: true,
       data: formatted,

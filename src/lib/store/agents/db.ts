@@ -168,6 +168,18 @@ export async function getAgentByName(name: string): Promise<StoredAgent | null> 
     return r ? rowToAgent(r) : null;
 }
 
+/**
+ * M11b lane M (P6.1) — mention resolution, case-insensitive, over the case-folded unique index
+ * (M11-1 C5). `getAgentByName` above resolves one name at a time; a post/comment names up to 5, so
+ * this resolves the whole batch in one round trip.
+ */
+export async function listAgentsByNamesCaseInsensitive(names: string[]): Promise<StoredAgent[]> {
+    const uniqueLower = Array.from(new Set(names.map((n) => n.toLowerCase()).filter(Boolean)));
+    if (uniqueLower.length === 0) return [];
+    const rows = await sql!`SELECT * FROM agents WHERE LOWER(name) = ANY(${uniqueLower}::text[])`;
+    return (rows as Record<string, unknown>[]).map(rowToAgent);
+}
+
 export async function getAgentByClaimToken(claimToken: string): Promise<StoredAgent | null> {
     // M11-1b: a disabled_-prefixed claim token never resolves (M11-1 C19). The prefix disables
     // the *credential*, and a claim token is a credential — a human who claims the seeded demo
@@ -646,6 +658,21 @@ export async function getFollowingCount(agentId: string): Promise<number> {
 }
 
 /**
+ * Count this agent's followees whose `last_active_at` is within `thresholdMs` (P6.4's
+ * `active_now_count`). One aggregate query rather than fetching followee rows and filtering in JS.
+ */
+export async function countActiveNowFollowees(agentId: string, thresholdMs: number): Promise<number> {
+    const rows = await sql!`
+    SELECT COUNT(*)::int AS c
+    FROM following f
+    JOIN agents a ON a.id = f.followee_id
+    WHERE f.follower_id = ${agentId}
+      AND a.last_active_at >= NOW() - make_interval(secs => ${Math.ceil(thresholdMs / 1000)})
+  `;
+    return Number((rows[0] as { c: number }).c);
+}
+
+/**
  * Update scalar agent fields.
  *
  * **`metadata` is deliberately absent** (M11-1 C7). An earlier design tried to have this function
@@ -653,6 +680,9 @@ export async function getFollowingCount(agentId: string): Promise<number> {
  * copy have identical types and identical runtime shapes, so no assertion can recover the caller's
  * intent. Removing the parameter is the only enforcement that works, and it makes the structural
  * test assert something real. Metadata goes through `mergeAgentMetadata`.
+ *
+ * `lastActiveAt` is deliberately absent too (P6.4): grep confirmed no live caller ever passed it —
+ * the only writers of `last_active_at` are the Tier-B auth touch and the stale-touch helper.
  */
 export async function updateAgent(
     agentId: string,
@@ -660,7 +690,6 @@ export async function updateAgent(
         name?: string;
         description?: string;
         displayName?: string;
-        lastActiveAt?: string;
     }
 ): Promise<StoredAgent | null> {
     const a = await getAgentById(agentId);
@@ -673,8 +702,6 @@ export async function updateAgent(
         await sql!`UPDATE agents SET description = ${updates.description} WHERE id = ${agentId}`;
     if (updates.displayName !== undefined)
         await sql!`UPDATE agents SET display_name = ${updates.displayName.trim() || null} WHERE id = ${agentId}`;
-    if (updates.lastActiveAt !== undefined)
-        await sql!`UPDATE agents SET last_active_at = ${updates.lastActiveAt} WHERE id = ${agentId}`;
     return getAgentById(agentId);
 }
 

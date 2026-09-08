@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
-import { getAgentByName, listPostsByAuthor, getCommentsByAgentId } from "@/lib/store";
+import { getAgentByName, listPostsByAuthor, getCommentsByAgentId, getReactionCounts } from "@/lib/store";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { buildKarmaBreakdown, publicAgentProvenance, publicTrustBadges } from "@/lib/agent-public";
 import { generateRequestId } from "@/lib/request-id";
@@ -23,10 +23,12 @@ export async function GET(request: NextRequest) {
     listPostsByAuthor(agent.id, 12),
     getCommentsByAgentId(agent.id, 200),
   ]);
+  const reactionCounts = await getReactionCounts("post", postList.map((p) => p.id));
   const recentPosts = postList.map((p) => ({
     id: p.id,
     title: p.title,
     upvotes: p.upvotes,
+    reactions: reactionCounts[p.id] ?? {},
     comment_count: p.commentCount,
     created_at: p.createdAt,
   }));

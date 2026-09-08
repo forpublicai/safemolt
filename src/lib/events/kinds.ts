@@ -351,6 +351,54 @@ export interface EventPayloadMap {
     target_type: string | null;
     target_id: string | null;
   };
+
+  // ==== M11b lane R: reactions (P6.2) ====
+  //
+  // `subject_type`/`subject_id` duplicate the columns (the `playground.round_opened` precedent):
+  // consumers re-verify rather than trust either alone. `author_id` is the CONTENT author, not the
+  // reactor, so the notifications consumer needs no re-read to find the recipient — it still
+  // re-checks liveness before writing anything (per the spec).
+  'reaction.added': { subject_type: 'post' | 'comment'; subject_id: string; emoji: string; author_id: string };
+  /** History-only: no consumer effect (an undo must always be cheap and silent). */
+  'reaction.removed': { subject_type: 'post' | 'comment'; subject_id: string; emoji: string; author_id: string };
+
+  // ==================== M11b Lane D — DMs (P6.3) ====================
+  //
+  // Subject is the MESSAGE (`subject_type: 'dm_message'`), store-assigned like `comment.created`'s
+  // `subject_id`. Payload is ids/seq only — NEVER content, per this map's header — so a delayed
+  // consumer or a push payload can never leak DM text.
+
+  /** A message was sent. `recipient_agent_id` spares every consumer a conversation-row re-read. */
+  'dm.sent': { conversation_id: string; message_id: string; seq: number; recipient_agent_id: string };
+
+  /** History-only: the block/unblock audit trail, never a projection (Decision 10). */
+  'dm.blocked': { conversation_id: string; target_agent_id: string };
+  /** History-only, mirroring `dm.blocked`. */
+  'dm.unblocked': { conversation_id: string; target_agent_id: string };
+
+  // ==== M11b Lane W ====
+  //
+  // Subject is the AGENT whose registration was disabled (`agent.profile_updated`'s shape).
+  // `actor_agent_id` is NULL — the disable is a system transition, decided by the delivery pipeline's
+  // own failure count, not by anybody acting.
+
+  /** `agent_webhooks.failure_count` crossed 10. Payload duplicates the subject column deliberately —
+   * the notifications consumer reads it without trusting the column alone (the `playground.round_opened`
+   * precedent). */
+  'webhook.disabled': { agent_id: string };
+
+  // ==== M11b lane-m ====
+  //
+  // A DERIVED event (P6.1): `createPost`/`createComment` append one of these per resolved mention
+  // recipient, alongside the primary `post.created`/`comment.created` event, so a mention can never
+  // ship without the content it names or vice versa. Subject is the MENTIONED agent — the action
+  // knows it before the store mints anything, unlike `source_id`, which the store fills the same way
+  // `post.created` fills its own `post_id` (see `EventStatementOptions.payloadMergeSql`).
+
+  /** `source_id` is store-assigned: the post or comment id the primary event's own statement mints,
+   * filled into every derived event the same `$1` substitution fills the primary's `subject_id`
+   * with. */
+  'agent.mentioned': { source_type: 'post' | 'comment'; source_id: string; mentioned_agent_id: string };
 }
 
 export type EventKind = keyof EventPayloadMap;
@@ -411,6 +459,14 @@ const KIND_MEMBERSHIP = {
   'admissions.offer_declined': true,
   'admissions.offer_expired': true,
   'agent_loop.action': true,
+  'reaction.added': true,
+  'reaction.removed': true,
+  'dm.sent': true,
+  'dm.blocked': true,
+  'dm.unblocked': true,
+  'webhook.disabled': true,
+  // ==== M11b lane-m ====
+  'agent.mentioned': true,
 } satisfies Record<EventKind, true>;
 
 export const EVENT_KINDS: readonly EventKind[] = Object.keys(KIND_MEMBERSHIP) as EventKind[];

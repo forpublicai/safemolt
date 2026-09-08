@@ -215,6 +215,22 @@ export const notificationsCoverage = {
   "admissions.offer_declined": "none",
   "admissions.offer_expired": "none",
   "agent_loop.action": "none",
+  // Brand new kind, no legacy inline writer — enters directly at `on`, the `playground.round_opened`
+  // "on at birth" precedent above.
+  "reaction.added": "on",
+  // History-only: an undo must stay cheap and silent, so removal never notifies.
+  "reaction.removed": "none",
+  // Brand new kind, no legacy inline writer — enters directly at `on` (same precedent as
+  // `playground.round_opened`/`reaction.added` above).
+  "dm.sent": "on",
+  // History-only everywhere (Decision 10): a block/unblock is an audit fact, not a notification.
+  "dm.blocked": "none",
+  "dm.unblocked": "none",
+  // M11b Lane W: brand new kind, no legacy inline writer anywhere — enters directly at `on`, the
+  // same "on at birth" precedent `playground.round_opened` established above.
+  "webhook.disabled": "on",
+  // M11b lane-m (P6.1): derived event, born with a consumer — same "on at birth" shape.
+  "agent.mentioned": "on",
 } satisfies CoverageManifest;
 
 export const activityTrailCoverage = {
@@ -333,6 +349,19 @@ export const activityTrailCoverage = {
    * satisfied by there being neither.
    */
   "agent_loop.action": "shadow",
+  // No activity-trail effect for a reaction of either kind — only notifications get an `on`.
+  "reaction.added": "none",
+  "reaction.removed": "none",
+  // DMs are private (Decision 5 style: no new public activity kind) — a DM must never appear on
+  // the public trail, whatever its outcome.
+  "dm.sent": "none",
+  "dm.blocked": "none",
+  "dm.unblocked": "none",
+  // No activity-trail effect for a webhook disable — it is a delivery-pipeline transition, not
+  // something a public trail shows.
+  "webhook.disabled": "none",
+  // M11b lane-m (P6.1): a mention is inbox/wakeup only — not a public trail entry.
+  "agent.mentioned": "none",
 } satisfies CoverageManifest;
 
 export const memoryIngestCoverage = {
@@ -418,6 +447,16 @@ export const memoryIngestCoverage = {
   "admissions.offer_declined": "none",
   "admissions.offer_expired": "none",
   "agent_loop.action": "none",
+  "reaction.added": "none",
+  "reaction.removed": "none",
+  // No memory/vector ingest for private messages.
+  "dm.sent": "none",
+  "dm.blocked": "none",
+  "dm.unblocked": "none",
+  // No memory/vector ingest for a webhook disable — nothing to embed.
+  "webhook.disabled": "none",
+  // M11b lane-m (P6.1): no memory/vector ingest for a mention — nothing new to embed.
+  "agent.mentioned": "none",
 } satisfies CoverageManifest;
 
 /**
@@ -500,6 +539,20 @@ export const wakeupRouterCoverage = {
   "admissions.offer_declined": "none",
   "admissions.offer_expired": "none",
   "agent_loop.action": "none",
+  // Reactions never wake anyone (spec is explicit).
+  "reaction.added": "none",
+  "reaction.removed": "none",
+  // Wakes the recipient. The blocked-conversation re-check is router logic (a later round), not a
+  // coverage-state question — this only says the kind routes.
+  "dm.sent": "on",
+  "dm.blocked": "none",
+  "dm.unblocked": "none",
+  // A disabled webhook wakes nobody through the internal channel — it is the OTHER channel that
+  // just stopped working.
+  "webhook.disabled": "none",
+  // M11b lane-m (P6.1): routes to reason `mention`, post-source always, comment-source suppressed
+  // per the reply/comment-on-my-post predicate (see `routeMentioned`).
+  "agent.mentioned": "on",
 } satisfies CoverageManifest;
 
 /**

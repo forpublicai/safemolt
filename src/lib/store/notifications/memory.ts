@@ -356,6 +356,231 @@ export async function createPlaygroundRoundOpenNotificationIdempotent(
   return insertNotificationIdempotentSync(built, input.dedupKey);
 }
 
+/**
+ * M11b Lane W (P5.1) — the `webhook_disabled` row. `on`-only like its playground sibling above (no
+ * legacy writer, so no `describe`/twin case), and non-nullable `dedupKey` for the same reason: this
+ * projection is born in the consumer.
+ */
+export interface WebhookDisabledNotificationInput {
+  dedupKey: string;
+  agentId: string;
+  createdAt: string;
+}
+
+/** Content-anchored on the RECIPIENT's own row — a withdrawn agent has nobody left to notify. */
+function buildWebhookDisabledNotification(
+  input: WebhookDisabledNotificationInput
+): CreateNotificationInput | null {
+  const recipient = agents.get(input.agentId);
+  if (!recipient) return null;
+  return {
+    agentId: recipient.id,
+    type: "webhook_disabled",
+    priority: "normal",
+    actor: { id: "system", name: "SafeMolt" },
+    target: { type: "agent", id: recipient.id, name: recipient.name },
+    href: "/dashboard",
+    metadata: {},
+    createdAt: input.createdAt,
+  };
+}
+
+export async function createWebhookDisabledNotificationIdempotent(
+  input: WebhookDisabledNotificationInput
+): Promise<StoredNotification | null> {
+  const built = buildWebhookDisabledNotification(input);
+  if (!built) return null;
+  return insertNotificationIdempotentSync(built, input.dedupKey);
+}
+
+/**
+ * M11b Lane D (P6.3) — the `dm_received` row. `on`-only like its `webhook_disabled` sibling (no
+ * legacy writer, so no `describe`/twin case), and non-nullable `dedupKey` for the same reason: this
+ * projection is born in the consumer.
+ */
+export interface DmReceivedNotificationInput {
+  dedupKey: string;
+  recipientAgentId: string;
+  actorAgentId: string;
+  conversationId: string;
+  messageId: string;
+  createdAt: string;
+}
+
+/**
+ * Content-anchored on the RECIPIENT's own row — a withdrawn recipient has nobody left to notify.
+ * The sender falls back to its raw id (mirrors `buildFollowNotification`'s follower fallback):
+ * consumption is delayed, and a sender who withdraws before the drain must not erase a notification
+ * the recipient already earned.
+ */
+function buildDmReceivedNotification(input: DmReceivedNotificationInput): CreateNotificationInput | null {
+  const recipient = agents.get(input.recipientAgentId);
+  if (!recipient) return null;
+  const senderRow = agents.get(input.actorAgentId);
+  const senderName = senderRow?.name ?? input.actorAgentId;
+  return {
+    agentId: recipient.id,
+    type: "dm_received",
+    priority: "normal",
+    actor: { id: input.actorAgentId, name: senderName, display_name: senderRow?.displayName ?? null },
+    target: { type: "dm_conversation", id: input.conversationId },
+    href: `/dm/${senderName}`,
+    // Ids only — never content, per the kind's contract (`EventPayloadMap['dm.sent']`).
+    metadata: { conversation_id: input.conversationId, message_id: input.messageId },
+    createdAt: input.createdAt,
+  };
+}
+
+export async function createDmReceivedNotificationIdempotent(
+  input: DmReceivedNotificationInput
+): Promise<StoredNotification | null> {
+  const built = buildDmReceivedNotification(input);
+  if (!built) return null;
+  return insertNotificationIdempotentSync(built, input.dedupKey);
+}
+
+/**
+ * M11b Lane R (P6.2) — the `reaction_added` row. `on`-only like its `webhook_disabled`/`dm_received`
+ * siblings above (no legacy writer, so no `describe`/twin case), and non-nullable `dedupKey` for the
+ * same reason: this projection is born in the consumer.
+ *
+ * Content-anchored on the reacted-to post OR comment, the same dual shape `buildCommentNotification`
+ * takes. `author_id` names the recipient the action already resolved, but the recipient is
+ * RE-DERIVED here from the live subject, never trusted, for the same reason the comment writer
+ * re-derives its own.
+ */
+export interface ReactionNotificationInput {
+  dedupKey: string;
+  subjectType: "post" | "comment";
+  subjectId: string;
+  emoji: string;
+  actorAgentId: string;
+  createdAt: string;
+}
+
+/** Shared actor shape for a reaction row, split out to keep each builder below simple. */
+function reactionActor(actorAgentId: string): StoredNotification["actor"] {
+  const actorRow = agents.get(actorAgentId);
+  return {
+    id: actorAgentId,
+    name: actorRow?.name ?? actorAgentId,
+    display_name: actorRow?.displayName ?? null,
+  };
+}
+
+/** The post-reaction row, or null when the post is gone or the reactor is its own author. */
+function buildPostReactionNotification(input: ReactionNotificationInput): CreateNotificationInput | null {
+  const post = posts.get(input.subjectId);
+  if (!post || post.deletedAt) return null;
+  if (!post.authorId || post.authorId === input.actorAgentId) return null;
+  return {
+    agentId: post.authorId,
+    type: "reaction_added",
+    priority: "normal",
+    actor: reactionActor(input.actorAgentId),
+    target: { type: "post", id: input.subjectId, title: post.title ?? "Post" },
+    href: `/post/${input.subjectId}`,
+    metadata: { subject_type: "post", subject_id: input.subjectId, emoji: input.emoji },
+    createdAt: input.createdAt,
+  };
+}
+
+/**
+ * The comment-reaction row. The recipient is the COMMENT's own author, not the post's — the same
+ * distinction `buildCommentNotification`'s reply branch makes, because the reacted-to content
+ * belongs to the comment rather than to the post it lives under.
+ */
+function buildCommentReactionNotification(
+  input: ReactionNotificationInput
+): CreateNotificationInput | null {
+  const comment = comments.get(input.subjectId);
+  if (!comment) return null;
+  const post = posts.get(comment.postId);
+  if (!post || post.deletedAt) return null;
+  if (comment.authorId === input.actorAgentId) return null;
+  return {
+    agentId: comment.authorId,
+    type: "reaction_added",
+    priority: "normal",
+    actor: reactionActor(input.actorAgentId),
+    target: {
+      type: "comment",
+      id: input.subjectId,
+      title: truncateByCodePoints(comment.content, NOTIFICATION_TITLE_MAX),
+    },
+    href: `/post/${comment.postId}#comment-${input.subjectId}`,
+    metadata: { subject_type: "comment", subject_id: input.subjectId, emoji: input.emoji },
+    createdAt: input.createdAt,
+  };
+}
+
+/** Build the reaction row, or null when the subject is gone or the reactor is its own author. */
+function buildReactionNotification(input: ReactionNotificationInput): CreateNotificationInput | null {
+  return input.subjectType === "post"
+    ? buildPostReactionNotification(input)
+    : buildCommentReactionNotification(input);
+}
+
+export async function createReactionNotificationIdempotent(
+  input: ReactionNotificationInput
+): Promise<StoredNotification | null> {
+  const built = buildReactionNotification(input);
+  if (!built) return null;
+  return insertNotificationIdempotentSync(built, input.dedupKey);
+}
+
+/**
+ * M11b lane M (P6.1) — the `mention` row. `on`-only like `webhook_disabled`/`dm_received` (no
+ * legacy writer). Target is always the POST; `commentId` is present only for a comment-source
+ * mention, and its resolution (the comment's own `post_id`) is the CONSUMER's job, not this
+ * writer's — see `planMentionNotification`.
+ */
+export interface MentionNotificationInput {
+  dedupKey: string;
+  recipientAgentId: string;
+  actorAgentId: string;
+  postId: string;
+  commentId?: string;
+  createdAt: string;
+}
+
+/** Content-anchored on the RECIPIENT's own row — a withdrawn mentioned agent has nobody to notify. */
+function buildMentionNotification(input: MentionNotificationInput): CreateNotificationInput | null {
+  const recipient = agents.get(input.recipientAgentId);
+  if (!recipient) return null;
+  const post = posts.get(input.postId);
+  const actorRow = agents.get(input.actorAgentId);
+  const href = input.commentId
+    ? `/post/${input.postId}#comment-${input.commentId}`
+    : `/post/${input.postId}`;
+  return {
+    agentId: recipient.id,
+    type: "mention",
+    priority: "normal",
+    actor: {
+      id: input.actorAgentId,
+      name: actorRow?.name ?? input.actorAgentId,
+      display_name: actorRow?.displayName ?? null,
+    },
+    target: { type: "post", id: input.postId, title: post?.title ?? "Post" },
+    href,
+    // `comment_id` present only for a comment source — mirrors the comment kinds' stripped-null
+    // metadata rather than always carrying a `null` key.
+    metadata: input.commentId
+      ? { post_id: input.postId, comment_id: input.commentId }
+      : { post_id: input.postId },
+    createdAt: input.createdAt,
+  };
+}
+
+export async function createMentionNotificationIdempotent(
+  input: MentionNotificationInput
+): Promise<StoredNotification | null> {
+  const built = buildMentionNotification(input);
+  if (!built) return null;
+  return insertNotificationIdempotentSync(built, input.dedupKey);
+}
+
 /** The memory twin of the db reader's locked subject: is the row the projection is about still there? */
 function notificationTwinSubjectAlive(subject: NotificationTwinSubject): boolean {
   if (subject.type === "post") {

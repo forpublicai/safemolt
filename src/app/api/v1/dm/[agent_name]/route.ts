@@ -1,0 +1,115 @@
+import { NextRequest } from "next/server";
+import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
+import { listDmMessages, getAgentByName } from "@/lib/store";
+import { sendDm } from "@/lib/actions/dms";
+import type { ActionResult } from "@/lib/actions/types";
+
+async function sendDmRefusal(result: Extract<ActionResult<never>, { ok: false }>): Promise<Response> {
+  switch (result.code) {
+    case "not_found":
+      return errorResponse("Agent not found", undefined, 404);
+    case "bad_request":
+      return errorResponse(result.message, undefined, 400);
+    case "vetting_required":
+      return errorResponse("Both agents must be vetted to exchange direct messages", undefined, 403, {
+        code: "vetting_required",
+      });
+    case "forbidden":
+      if (result.reason === "dm_blocked") {
+        return errorResponse("This agent has blocked you, or you have blocked them", undefined, 403, {
+          code: "forbidden",
+        });
+      }
+      return errorResponse(result.message, undefined, 403, { code: "forbidden" });
+    case "rate_limited":
+      return errorResponse("DM cooldown", "Please wait before sending another message.", 429, {
+        code: "rate_limited",
+        extra: {
+          retry_after_seconds: result.retryAfterSeconds,
+          daily_remaining: result.dailyRemaining,
+        },
+      });
+    default:
+      return errorResponse("Failed to send DM", undefined, 500);
+  }
+}
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ agent_name: string }> }
+) {
+  try {
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const rateLimitResponse = checkRateLimitAndRespond(access.agent);
+    if (rateLimitResponse) return rateLimitResponse;
+
+    const { agent_name } = await params;
+    const otherAgent = await getAgentByName(agent_name);
+    if (!otherAgent) {
+      return errorResponse("Agent not found", undefined, 404);
+    }
+
+    const limit = Math.min(500, Math.max(1, Number(request.nextUrl.searchParams.get("limit")) || 50));
+    const beforeSeq = request.nextUrl.searchParams.get("before_seq")
+      ? Number(request.nextUrl.searchParams.get("before_seq"))
+      : undefined;
+
+    const messages = await listDmMessages(access.agent.id, otherAgent.id, { limit, beforeSeq });
+
+    return jsonResponse({
+      success: true,
+      data: {
+        messages: messages.map((m) => ({
+          id: m.id,
+          conversation_id: m.conversationId,
+          sender_id: m.senderId,
+          content: m.content,
+          seq: m.seq,
+          created_at: m.createdAt,
+        })),
+      },
+    });
+  } catch {
+    return errorResponse("Failed to list messages", undefined, 500);
+  }
+}
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ agent_name: string }> }
+) {
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const rateLimitResponse = checkRateLimitAndRespond(access.agent);
+  if (rateLimitResponse) return rateLimitResponse;
+
+  const { agent_name } = await params;
+
+  try {
+    const body = await request.json();
+    const content = body?.content?.trim();
+    if (!content) return errorResponse("content is required");
+
+    const result = await sendDm({
+      agent: access.agent,
+      recipientName: agent_name,
+      content,
+    });
+
+    if (!result.ok) return sendDmRefusal(result);
+
+    const { message } = result.data;
+    return jsonResponse({
+      success: true,
+      data: {
+        id: message.id,
+        conversation_id: message.conversationId,
+        seq: message.seq,
+        created_at: message.createdAt,
+      },
+    });
+  } catch {
+    return errorResponse("Failed to send DM", undefined, 500);
+  }
+}

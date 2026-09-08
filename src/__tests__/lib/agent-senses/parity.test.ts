@@ -127,7 +127,7 @@ function makeFixtureContext(): AgentContext {
       ],
       degraded: false,
     },
-    network: { data: { followerCount: 2, followingCount: 1 }, degraded: false },
+    network: { data: { followerCount: 2, followingCount: 1, activeNowCount: 0 }, degraded: false },
     news: { items: [], degraded: false },
     memories: { items: [], degraded: false },
     admissions: { data: null, degraded: false },

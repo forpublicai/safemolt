@@ -89,6 +89,21 @@ describe("kind vocabulary", () => {
     "admissions.offer_declined": true,
     "admissions.offer_expired": true,
     "agent_loop.action": true,
+    // M11b lane R (P6.2): reactions. New kinds, no legacy writer — `reaction.added` enters
+    // notifications at `on` directly; both are `none` everywhere else.
+    "reaction.added": true,
+    "reaction.removed": true,
+    // M11b lane W (P5.1): webhooks. New kind, no legacy writer — `on` at birth on notifications,
+    // `none` everywhere else.
+    "webhook.disabled": true,
+    // M11b lane D (P6.3): DMs. `dm.sent` is `on` at birth on notifications and wakeup-router; the
+    // block kinds are history-only, `none` everywhere.
+    "dm.sent": true,
+    "dm.blocked": true,
+    "dm.unblocked": true,
+    // M11b lane-m (P6.1): a derived event, `on` at birth on notifications and wakeup-router, `none`
+    // on activity-trail and memory-ingest.
+    "agent.mentioned": true,
   } satisfies Record<EventKind, true>;
 
   it("ships the substrate kind plus trains a1 and a2's groups, playground, evaluations and lifecycle, and the runtime list matches the type union", () => {
@@ -104,6 +119,9 @@ describe("kind vocabulary", () => {
       // of them is history-only on every consumer.
       "agent.claimed",
       "agent.followed",
+      // M11b lane-m (P6.1): a derived event — `createPost`/`createComment` append one per resolved
+      // mention recipient, alongside the primary event.
+      "agent.mentioned",
       // u3f: the profile domain's single kind (avatar rides it with `fields: ["avatar"]`).
       "agent.profile_updated",
       "agent.registered",
@@ -123,6 +141,11 @@ describe("kind vocabulary", () => {
       "class.session_message",
       "comment.created",
       "comment.voted",
+      // M11b lane D (P6.3): direct messages. `dm.sent` is `on` at birth on notifications and
+      // wakeup-router; the block kinds are history-only.
+      "dm.blocked",
+      "dm.sent",
+      "dm.unblocked",
       // Train a2's evaluation family, added by u3e. `evaluation.completed` is the only one with a
       // legacy inline writer, and it enters at `legacy` rather than `shadow` — see
       // `consumers/coverage.ts` for the recorded deviation.
@@ -160,7 +183,12 @@ describe("kind vocabulary", () => {
       "post.pinned",
       "post.unpinned",
       "post.voted",
+      // M11b lane R (P6.2): emoji reactions on posts and comments.
+      "reaction.added",
+      "reaction.removed",
       "system.activation_fence",
+      // M11b lane W (P5.1): webhooks. Auto-disable at 10 consecutive failures.
+      "webhook.disabled",
     ]);
   });
 

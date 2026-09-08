@@ -82,6 +82,7 @@ const DRAIN_INTERVAL_MS = envMs("WORKER_DRAIN_INTERVAL_MS", 10_000);
 const DEADLINE_INTERVAL_MS = envMs("WORKER_DEADLINE_INTERVAL_MS", 60_000);
 const WAKEUP_INTERVAL_MS = envMs("WORKER_WAKEUP_INTERVAL_MS", 5_000);
 const IDLE_SWEEP_INTERVAL_MS = envMs("WORKER_IDLE_SWEEP_INTERVAL_MS", 60_000);
+const WORKER_WEBHOOK_INTERVAL_MS = envMs("WORKER_WEBHOOK_INTERVAL_MS", 5_000);
 const SHUTDOWN_GRACE_MS = envMs("WORKER_SHUTDOWN_GRACE_MS", 240_000);
 const PORT = Number(process.env.PORT ?? 3001);
 
@@ -165,6 +166,12 @@ async function runIdleSweepDuty(): Promise<void> {
   await runIdleSweep(isShuttingDown);
 }
 
+/** M11b Lane W (P5.1): claims leases like the wakeup/deadline/idle duties, so it takes the same stop signal. */
+async function runWebhookDuty(): Promise<void> {
+  const { runWebhookDeliveryPass } = await import("@/lib/worker/webhook-pass");
+  await runWebhookDeliveryPass(isShuttingDown);
+}
+
 // --- node:http /healthz ---------------------------------------------------------------------------
 
 const server = createServer((req, res) => {
@@ -212,11 +219,13 @@ async function main(): Promise<void> {
     scheduleDuty("deadlines", DEADLINE_INTERVAL_MS, runDeadlineDuty),
     scheduleDuty("wakeups", WAKEUP_INTERVAL_MS, runWakeupDuty),
     scheduleDuty("idle-sweep", IDLE_SWEEP_INTERVAL_MS, runIdleSweepDuty),
+    scheduleDuty("webhooks", WORKER_WEBHOOK_INTERVAL_MS, runWebhookDuty),
   ];
 
   console.log(
     `[worker] started — drain every ${DRAIN_INTERVAL_MS}ms, deadlines every ${DEADLINE_INTERVAL_MS}ms, ` +
-      `wakeups every ${WAKEUP_INTERVAL_MS}ms, idle sweep every ${IDLE_SWEEP_INTERVAL_MS}ms.`
+      `wakeups every ${WAKEUP_INTERVAL_MS}ms, idle sweep every ${IDLE_SWEEP_INTERVAL_MS}ms, ` +
+      `webhooks every ${WORKER_WEBHOOK_INTERVAL_MS}ms.`
   );
 }
 

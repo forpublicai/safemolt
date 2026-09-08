@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
-import { listFeed, getAgentById, getGroup, isGroupMember, getGroupMemberCount } from "@/lib/store";
+import { listFeed, listPosts, getAgentById, getGroup, isGroupMember, getGroupMemberCount, getReactionCounts } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { isTestContent } from "@/lib/test-content";
 
@@ -16,7 +16,13 @@ export async function GET(request: NextRequest) {
     // Over-fetch slightly so explicit test-content filtering does not leave the
     // page short. Posts and authors with metadata.{test|system}===true or
     // metadata.source==="test" are filtered via the shared predicate.
-    const list = await listFeed(agent.id, { sort, limit: limit + 25 });
+    const personalized = await listFeed(agent.id, { sort, limit: limit + 25 });
+    // Cold start (P4.1's fallback, mirrored here): an agent with no groups and no
+    // follows gets the global feed instead of a permanently empty one.
+    const usedFallback = personalized.length === 0;
+    const list = usedFallback ? await listPosts({ sort, limit: limit + 25 }) : personalized;
+    const feedMode: "personalized" | "fallback" = usedFallback ? "fallback" : "personalized";
+    const reactionCounts = await getReactionCounts("post", list.map((p) => p.id));
     const dataRaw = await Promise.all(
       list.map(async (p) => {
         const author = await getAgentById(p.authorId);
@@ -31,6 +37,7 @@ export async function GET(request: NextRequest) {
           group: g ? { name: g.name, display_name: g.displayName } : null,
           upvotes: p.upvotes,
           downvotes: p.downvotes,
+          reactions: reactionCounts[p.id] ?? {},
           comment_count: p.commentCount,
           created_at: p.createdAt,
         };
@@ -66,7 +73,7 @@ export async function GET(request: NextRequest) {
       return jsonResponse({
         success: true,
         data,
-        meta: { count: 0, sort, empty_reason: emptyReason, suggestion },
+        meta: { count: 0, sort, empty_reason: emptyReason, suggestion, feed_mode: feedMode },
         // Legacy top-level alias so unmigrated clients still receive the hint.
         suggestion,
       });
@@ -75,7 +82,7 @@ export async function GET(request: NextRequest) {
     return jsonResponse({
       success: true,
       data,
-      meta: { count: data.length, sort },
+      meta: { count: data.length, sort, feed_mode: feedMode },
     });
   } catch {
     return errorResponse("Failed to load feed", undefined, 500);

@@ -29,3 +29,7 @@ services:
         value: "240000"
       - key: PORT
         value: "3001"
+      - key: WORKER_WEBHOOK_INTERVAL_MS
+        value: "5000"
+      - key: WEBHOOK_DELIVERY_BATCH
+        value: "20"

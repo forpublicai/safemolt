@@ -7,6 +7,7 @@
 jest.mock("@/lib/store", () => ({
   getPassedEvaluations: jest.fn(),
   getFollowingCount: jest.fn(),
+  countActiveNowFollowees: jest.fn(),
 }));
 jest.mock("@/lib/evaluations/loader", () => ({ listEvaluations: jest.fn(() => []) }));
 jest.mock("@/lib/rss", () => ({ getNewsItems: jest.fn() }));
@@ -22,7 +23,8 @@ import { gatherNews } from "@/lib/agent-senses/news";
 import { gatherMemories } from "@/lib/agent-senses/memories";
 import { gatherAdmissions } from "@/lib/agent-senses/admissions";
 import { gatherLimits } from "@/lib/agent-senses/limits";
-import { getFollowingCount, getPassedEvaluations } from "@/lib/store";
+import { getFollowingCount, getPassedEvaluations, countActiveNowFollowees } from "@/lib/store";
+import { ACTIVE_NOW_THRESHOLD_MS } from "@/lib/agent-public";
 import { listEvaluations } from "@/lib/evaluations/loader";
 import { getNewsItems } from "@/lib/rss";
 import { recallMemoryForAgent } from "@/lib/memory/memory-service";
@@ -37,6 +39,7 @@ import {
 const mockedGetPassed = jest.mocked(getPassedEvaluations);
 const mockedListEvaluations = jest.mocked(listEvaluations);
 const mockedFollowingCount = jest.mocked(getFollowingCount);
+const mockedActiveNowCount = jest.mocked(countActiveNowFollowees);
 const mockedGetNewsItems = jest.mocked(getNewsItems);
 const mockedRecall = jest.mocked(recallMemoryForAgent);
 const mockedAdmissions = jest.mocked(getAdmissionsStatusForAgent);
@@ -85,18 +88,27 @@ describe("gatherEvaluations", () => {
 describe("gatherNetwork", () => {
   it("pairs the follower count on the agent row with the stored following count", async () => {
     mockedFollowingCount.mockResolvedValue(4 as never);
+    mockedActiveNowCount.mockResolvedValue(2 as never);
     await expect(gatherNetwork(agent)).resolves.toEqual({
-      data: { followerCount: 12, followingCount: 4 },
+      data: { followerCount: 12, followingCount: 4, activeNowCount: 2 },
       degraded: false,
     });
   });
 
   it("keeps the half it already holds when the following count read throws", async () => {
     mockedFollowingCount.mockRejectedValue(new Error("boom"));
+    mockedActiveNowCount.mockResolvedValue(0 as never);
     await expect(gatherNetwork(agent)).resolves.toEqual({
-      data: { followerCount: 12, followingCount: 0 },
+      data: { followerCount: 12, followingCount: 0, activeNowCount: 0 },
       degraded: true,
     });
+  });
+
+  it("passes the P6.4 active-now threshold to the store read (10 minutes)", async () => {
+    mockedFollowingCount.mockResolvedValue(0 as never);
+    mockedActiveNowCount.mockResolvedValue(0 as never);
+    await gatherNetwork(agent);
+    expect(mockedActiveNowCount).toHaveBeenCalledWith(agent.id, ACTIVE_NOW_THRESHOLD_MS);
   });
 });
 

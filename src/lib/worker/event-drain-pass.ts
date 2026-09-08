@@ -2,6 +2,7 @@ import { runAdmissionsExpiryDuty } from "@/lib/admissions";
 import { runPulseMaintenance } from "@/lib/agent-pulse/runner";
 import { computeConsumerContractHash } from "@/lib/events/consumer-contract";
 import { eventConsumers } from "@/lib/events/consumers/registry";
+import type { WebhookDeliveryPassResult } from "@/lib/worker/webhook-pass";
 import {
   activateEventConsumer,
   beginEventDrainHeartbeat,
@@ -63,6 +64,8 @@ export interface EventDrainPassResult {
   consumers: ConsumerReport[];
   hourlyRan: boolean;
   hourly: HourlyReport | null;
+  /** M11b Lane W (P5.1): the degraded-mode bounded delivery pass this invocation ran. */
+  webhookDelivery: WebhookDeliveryPassResult;
 }
 
 function report(name: string, counts: DrainCounts): ConsumerReport {
@@ -153,8 +156,15 @@ export async function runEventDrainPass(workerId?: string): Promise<EventDrainPa
     )
   );
 
+  // Degraded-mode webhook delivery: one bounded pass every invocation (never gated on `hourlyDue` —
+  // a cron-only topology has no worker loop to run this duty otherwise), already bounded by its own
+  // per-pass batch cap. `shouldStop` defaults to "never" — a bounded cron invocation has no shutdown
+  // signal to check.
+  const { runWebhookDeliveryPass } = await import("@/lib/worker/webhook-pass");
+  const webhookDelivery = await runWebhookDeliveryPass();
+
   // Stamped last, so the completion a runtime reports is one it has actually finished a pass for.
   await recordEventDrainHeartbeat(contractHash, workerId);
 
-  return { contractHash, consumers, hourlyRan: hourlyDue, hourly };
+  return { contractHash, consumers, hourlyRan: hourlyDue, hourly, webhookDelivery };
 }

@@ -1,10 +1,12 @@
 import {
   agentLoopState,
+  agentWebhooks,
   eventLog,
   playgroundActions,
   playgroundSessions,
   pulseBudgetCounters,
   wakeupQueue,
+  webhookDeliveries,
 } from "../_memory-state";
 import {
   PLAYGROUND_ROUND_REASON,
@@ -19,6 +21,8 @@ import {
   type EnqueueWakeupResult,
   type StoredWakeup,
 } from "./db";
+// M11b Lane W (P5.1): type-only, same reasoning as `StoredWakeup` above.
+import type { StoredWebhookDelivery } from "../webhooks/db";
 
 /**
  * M11-2 P3.2 + P3.3 — the memory-mode wakeup queue (the pinned Jest / no-DB path).
@@ -165,6 +169,39 @@ function insertRow(
   return row;
 }
 
+/**
+ * M11b Lane W (P5.1) — the memory twin of `db.ts`'s `webhookLedgerCte`: a `webhook_deliveries` row
+ * rides the SAME synchronous section as the wakeup it belongs to, never a second `await`-separated
+ * call. Gated identically: `delivery = 'webhook'` OR a live `mode = 'both'` registration. The linear
+ * scan is this store's `ON CONFLICT (wakeup_id) DO NOTHING` twin — cheap at memory-mode scale, and
+ * the only way to enforce the uniqueness without a second index to keep in sync.
+ */
+function createWebhookLedgerRowIfNeeded(wakeup: StoredWakeup): void {
+  const registration = agentWebhooks.get(wakeup.agentId);
+  const eligible =
+    wakeup.delivery === "webhook" || (registration?.mode === "both" && registration.disabledAt === null);
+  if (!eligible) return;
+  for (const row of webhookDeliveries.rows.values()) {
+    if (row.wakeupId === wakeup.id) return;
+  }
+  const nowIso = new Date().toISOString();
+  const row: StoredWebhookDelivery = {
+    id: webhookDeliveries.nextId++,
+    wakeupId: wakeup.id,
+    agentId: wakeup.agentId,
+    attempts: 0,
+    lastAttemptAt: null,
+    deliveredAt: null,
+    lastStatus: null,
+    claimedAt: null,
+    claimToken: null,
+    leaseExpiresAt: null,
+    terminalReason: null,
+    nextAttemptAt: nowIso,
+  };
+  webhookDeliveries.rows.set(row.id, row);
+}
+
 /** See `db.ts`: a plain insert that never re-arms, deduped by whichever index applies. */
 export async function enqueueWakeup(input: EnqueueWakeupInput): Promise<EnqueueWakeupResult> {
   // Normalized FIRST, so a cyclic payload throws with nothing written — the db store serializes
@@ -173,7 +210,9 @@ export async function enqueueWakeup(input: EnqueueWakeupInput): Promise<EnqueueW
   if (conflictingRow(input.agentId, input.reason, input.eventId)) {
     return { created: false, wakeup: null };
   }
-  return { created: true, wakeup: cloneWakeup(insertRow(input, payload)) };
+  const row = insertRow(input, payload);
+  createWebhookLedgerRowIfNeeded(row);
+  return { created: true, wakeup: cloneWakeup(row) };
 }
 
 /**
@@ -194,11 +233,13 @@ export async function createOrReArmWakeup(
   const payload = normalizePayload(input.payload);
   const existing = conflictingRow(input.agentId, input.reason, input.eventId);
   if (!existing) {
-    insertRow(input, payload);
+    const row = insertRow(input, payload);
+    createWebhookLedgerRowIfNeeded(row);
     return { created: true, reArmed: false };
   }
   if (!reArmable(existing)) return { created: false, reArmed: false };
   clearClaimAndCompletion(existing);
+  createWebhookLedgerRowIfNeeded(existing);
   return { created: false, reArmed: true };
 }
 
@@ -246,11 +287,13 @@ export async function createOrReArmPlaygroundRoundWakeup(
   };
   const existing = conflictingRow(asBase.agentId, asBase.reason, asBase.eventId);
   if (!existing) {
-    insertRow(asBase, payload);
+    const row = insertRow(asBase, payload);
+    createWebhookLedgerRowIfNeeded(row);
     return { created: true, reArmed: false };
   }
   if (!reArmable(existing)) return { created: false, reArmed: false };
   clearClaimAndCompletion(existing);
+  createWebhookLedgerRowIfNeeded(existing);
   return { created: false, reArmed: true };
 }
 
@@ -321,22 +364,15 @@ export async function findRoundOpenedEventId(sessionId: string, round: number): 
 }
 
 /**
- * Memory mode resolves `"internal"` for EVERY agent id, unconditionally — a deliberate, recorded
- * scope decision, not an oversight or a TODO.
- *
- * `agent_loop_state` has no memory-mode store anywhere in this codebase, and `src/lib/agent-loop.ts`
- * — which would own one if it existed — is a different lane's exclusive fence for this milestone, so
- * this module may neither touch it nor import from it. Nothing in this lane's scope reads this value
- * for a decision yet either: the claim/runner that would actually branch on `delivery` is P3.3, and
- * it is explicitly deferred. So there is nothing here for a memory twin to be faithful TO, and
- * inventing one would be inventing state. When P3.3 or P5.1 gives memory mode a loop-state twin,
- * this function is where it lands.
+ * M11b Lane W (P5.1) — the promised landing spot, per this function's own prior note: P3.3 already
+ * gave memory mode a real `agent_loop_state` twin (`agentLoopState`, imported above); this is where
+ * P5.1 adds the webhook half, matching the db precedence exactly: loop-enabled ⇒ `internal`; else a
+ * live (`disabledAt === null`) registration ⇒ `webhook`; else `null`.
  */
-export async function resolveWakeupDelivery(agentId: string): Promise<"internal" | null> {
-  // The parameter stays declared — `pickStore` requires both implementations to take the same
-  // arguments, and the db twin reads it. This mode deliberately does not.
-  void agentId;
-  return "internal";
+export async function resolveWakeupDelivery(agentId: string): Promise<"internal" | "webhook" | null> {
+  if (agentLoopState.get(agentId)?.enabled === true) return "internal";
+  const registration = agentWebhooks.get(agentId);
+  return registration && registration.disabledAt === null ? "webhook" : null;
 }
 
 /**

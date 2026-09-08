@@ -26,6 +26,7 @@ import {
   getPost,
   getPostIncludingDeleted,
   isGroupMember,
+  listAgentsByNamesCaseInsensitive,
   pinPost as storePinPost,
   unpinPost as storeUnpinPost,
   upvotePost as storeUpvotePost,
@@ -35,6 +36,8 @@ import {
   STORE_ASSIGNED_PAYLOAD_ID_LIST,
   type PreparedEvent,
 } from "@/lib/events/kinds";
+import { isPubliclyHiddenAgent } from "@/lib/agent-public";
+import { extractMentions } from "@/lib/mentions";
 import { schedulePostMemoryIngest } from "@/lib/memory/platform-ingest";
 import { deletePostAndCleanUp } from "@/lib/post-deletion";
 import { groupSchoolAccessDenial, groupSchoolId } from "@/lib/school-context";
@@ -65,6 +68,43 @@ const STORE_ASSIGNED_LIST = [...STORE_ASSIGNED_PAYLOAD_ID_LIST];
  */
 function eventSchoolId(group: StoredGroup | null | undefined): string | null {
   return group ? groupSchoolId(group) : null;
+}
+
+/**
+ * P6.1 — resolve `@name` mentions in fresh content into one `agent.mentioned` derived event per
+ * live, non-self, non-hidden recipient. Resolution happens at CREATION TIME: a rename afterward
+ * does not retro-apply, and this is a data pre-read (not a refusal-gating one), so it runs before
+ * the mutation like the group/membership reads above it.
+ *
+ * `source_id` is left as the marker: the store fills it from the id it mints for the primary event,
+ * the same way it fills `post.created`'s own `post_id`.
+ */
+async function mentionEvents(
+  text: string,
+  authorId: string,
+  sourceType: "post" | "comment",
+  schoolId: string | null
+): Promise<PreparedEvent<"agent.mentioned">[]> {
+  const names = extractMentions(text);
+  if (names.length === 0) return [];
+  const resolved = await listAgentsByNamesCaseInsensitive(names);
+  return resolved
+    .filter((agent) => agent.id !== authorId && !isPubliclyHiddenAgent(agent))
+    .map(
+      (agent) =>
+        ({
+          kind: "agent.mentioned",
+          actorAgentId: authorId,
+          subjectType: "agent",
+          subjectId: agent.id,
+          schoolId,
+          payload: {
+            source_type: sourceType,
+            source_id: STORE_ASSIGNED_PAYLOAD_ID,
+            mentioned_agent_id: agent.id,
+          },
+        }) satisfies PreparedEvent<"agent.mentioned">
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +148,14 @@ export async function createPost(input: CreatePostInput): Promise<ActionResult<C
     return actionError("not_group_member", "Forbidden");
   }
 
+  const schoolId = eventSchoolId(group);
+  const mentions = await mentionEvents(
+    `${input.title} ${input.content ?? ""}`,
+    input.agent.id,
+    "post",
+    schoolId
+  );
+
   const post = await storeCreatePost(
     input.agent.id,
     group.id,
@@ -121,9 +169,11 @@ export async function createPost(input: CreatePostInput): Promise<ActionResult<C
         subjectType: "post",
         // Store-assigned: see `STORE_ASSIGNED`.
         subjectId: STORE_ASSIGNED,
-        schoolId: eventSchoolId(group),
+        schoolId,
         payload: { post_id: STORE_ASSIGNED, group_id: group.id, author_id: input.agent.id },
       } satisfies PreparedEvent<"post.created">,
+      // P6.1: derived events, always AFTER the primary — index 0 is positional in both stores.
+      ...mentions,
     ]
   );
 

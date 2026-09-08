@@ -1,5 +1,5 @@
 import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
-import { listPosts, getGroup, getAgentById } from "@/lib/store";
+import { listPosts, getGroup, getAgentById, getReactionCounts } from "@/lib/store";
 import { createPost } from "@/lib/actions/posts";
 import type { ActionResult } from "@/lib/actions/types";
 import { schoolAccessDenialResponse } from "@/lib/school-context";
@@ -19,6 +19,7 @@ export async function GET(request: NextRequest) {
     const schoolId = (await headers()).get('x-school-id') ?? "foundation";
 
     const list = await listPosts({ group, sort, limit, schoolId });
+    const reactionCounts = await getReactionCounts("post", list.map((p) => p.id));
     const data = await Promise.all(
       list.map(async (p) => {
         const author = await getAgentById(p.authorId);
@@ -32,6 +33,7 @@ export async function GET(request: NextRequest) {
           group: g ? { name: g.name, display_name: g.displayName } : null,
           upvotes: p.upvotes,
           downvotes: p.downvotes,
+          reactions: reactionCounts[p.id] ?? {},
           comment_count: p.commentCount,
           created_at: p.createdAt,
         };
@@ -109,6 +111,7 @@ export async function POST(request: NextRequest) {
         url: post.url,
         group: groupName,
         upvotes: post.upvotes,
+        reactions: {},
         comment_count: post.commentCount,
         created_at: post.createdAt,
       },

@@ -15,19 +15,28 @@
  */
 import {
   createCommentNotificationIdempotent,
+  createDmReceivedNotificationIdempotent,
   createFollowNotificationIdempotent,
+  createMentionNotificationIdempotent,
   createPlaygroundRoundOpenNotificationIdempotent,
+  createReactionNotificationIdempotent,
+  createWebhookDisabledNotificationIdempotent,
   deleteNotificationsAnchoredToPost,
   describeCommentNotification,
   describeFollowNotification,
+  getAgentById,
   getComment,
   getPlaygroundActions,
   getPlaygroundSession,
   getPost,
   readNotificationProjectionByDedupKey,
   type CommentNotificationInput,
+  type DmReceivedNotificationInput,
   type FollowNotificationInput,
+  type MentionNotificationInput,
   type NotificationTwinSubject,
+  type ReactionNotificationInput,
+  type WebhookDisabledNotificationInput,
 } from "@/lib/store";
 import type { NotificationType, StoredEvent } from "@/lib/store-types";
 
@@ -74,7 +83,11 @@ function notificationDedupKey(
  */
 type PlannedNotification =
   | { kind: "comment"; input: CommentNotificationInput & { dedupKey: string } }
-  | { kind: "follow"; input: FollowNotificationInput & { dedupKey: string } };
+  | { kind: "follow"; input: FollowNotificationInput & { dedupKey: string } }
+  | { kind: "webhook_disabled"; input: WebhookDisabledNotificationInput }
+  | { kind: "dm"; input: DmReceivedNotificationInput }
+  | { kind: "mention"; input: MentionNotificationInput }
+  | { kind: "reaction"; input: ReactionNotificationInput };
 
 /**
  * Recipients exactly as today's inline writer derives them (`src/lib/store/comments/db.ts`).
@@ -177,12 +190,154 @@ function planFollowNotification(event: StoredEvent): PlannedNotification | null 
   };
 }
 
+/**
+ * `webhook_disabled` to the agent whose registration was disabled (M11b Lane W, P5.1). Unlike
+ * `playground.round_opened`, this kind does NOT fan out — one event, one recipient — so it goes
+ * through `plan()` normally rather than being special-cased in `apply()`.
+ */
+function planWebhookDisabledNotification(event: StoredEvent): PlannedNotification {
+  const agentId = requireColumn(event, "subjectId");
+  return {
+    kind: "webhook_disabled",
+    input: {
+      agentId,
+      createdAt: event.createdAt,
+      dedupKey: notificationDedupKey("webhook_disabled", agentId, event.id),
+    },
+  };
+}
+
+/**
+ * `dm_received` to the recipient (M11b Lane D, P6.3). Both agents come from the event: the actor
+ * column is the sender, the payload's `recipient_agent_id` is the addressee — never re-derived from
+ * a re-fetch, since a DM has no "current" author/recipient to disagree with the event about.
+ */
+function planDmReceivedNotification(event: StoredEvent): PlannedNotification {
+  const payload = eventPayload(event);
+  const recipientId = payloadId(event, payload, "recipient_agent_id");
+  const conversationId = payloadId(event, payload, "conversation_id");
+  const messageId = payloadId(event, payload, "message_id");
+  const senderId = requireColumn(event, "actorAgentId");
+  return {
+    kind: "dm",
+    input: {
+      recipientAgentId: recipientId,
+      actorAgentId: senderId,
+      conversationId,
+      messageId,
+      createdAt: event.createdAt,
+      dedupKey: notificationDedupKey("dm_received", recipientId, event.id),
+    },
+  };
+}
+
+/** `source_type` is a closed union; a value outside it is a malformed producer and dead-letters. */
+function requireMentionSourceType(event: StoredEvent, payload: Record<string, unknown>): "post" | "comment" {
+  const value = payload.source_type;
+  if (value === "post" || value === "comment") return value;
+  throw new PermanentEffectError(
+    `[events] event ${event.id} (${event.kind}) payload 'source_type' is not 'post' or 'comment'`
+  );
+}
+
+/**
+ * `mention` to the mentioned agent (M11b lane M, P6.1). Target is always the POST — a comment
+ * source resolves it from the re-fetched comment's own `post_id`, mirroring
+ * `planCommentNotification`'s liveness-only need. Reply/comment-on-my-post suppression is the
+ * wakeup router's job, not this consumer's: an inbox entry is not a budget spend.
+ */
+async function planMentionNotification(event: StoredEvent): Promise<PlannedNotification | null> {
+  const payload = eventPayload(event);
+  const sourceType = requireMentionSourceType(event, payload);
+  const sourceId = payloadId(event, payload, "source_id");
+  const mentionedAgentId = payloadId(event, payload, "mentioned_agent_id");
+  requireCorrelation(event, "mentioned_agent_id", mentionedAgentId, requireColumn(event, "subjectId"));
+
+  const recipient = await getAgentById(mentionedAgentId);
+  if (!recipient) return null;
+  const actorAgentId = requireColumn(event, "actorAgentId");
+  const dedupKey = notificationDedupKey("mention", mentionedAgentId, event.id);
+
+  if (sourceType === "post") {
+    const post = await getPost(sourceId);
+    if (!post) return null;
+    return {
+      kind: "mention",
+      input: { dedupKey, recipientAgentId: mentionedAgentId, actorAgentId, postId: sourceId, createdAt: event.createdAt },
+    };
+  }
+
+  const comment = await getComment(sourceId);
+  if (!comment) return null;
+  return {
+    kind: "mention",
+    input: {
+      dedupKey,
+      recipientAgentId: mentionedAgentId,
+      actorAgentId,
+      postId: comment.postId,
+      commentId: sourceId,
+      createdAt: event.createdAt,
+    },
+  };
+}
+
+/**
+ * `reaction_added` to the content author (M11b Lane R, P6.2). `author_id` rides the payload (the
+ * action already resolved it), so no re-fetch is needed to find the recipient — but the SUBJECT is
+ * still re-fetched for liveness, the same at-least-once/delayed reason every content-anchored plan
+ * function does it: the store statement re-derives and locks the real recipient, never trusting
+ * this payload field blindly.
+ */
+async function planReactionNotification(event: StoredEvent): Promise<PlannedNotification | null> {
+  const payload = eventPayload(event);
+  const subjectTypeRaw = payloadId(event, payload, "subject_type");
+  if (subjectTypeRaw !== "post" && subjectTypeRaw !== "comment") {
+    throw new PermanentEffectError(
+      `[events] event ${event.id} (${event.kind}) payload 'subject_type' is not 'post' or 'comment'`
+    );
+  }
+  const subjectId = payloadId(event, payload, "subject_id");
+  const emoji = payloadId(event, payload, "emoji");
+  const authorId = payloadId(event, payload, "author_id");
+  const actorId = requireColumn(event, "actorAgentId");
+  if (actorId === authorId) return null;
+
+  // Liveness pre-check only — the store statement re-derives and locks the real recipient.
+  if (subjectTypeRaw === "post") {
+    if (!(await getPost(subjectId))) return null;
+  } else {
+    const comment = await getComment(subjectId);
+    if (!comment || !(await getPost(comment.postId))) return null;
+  }
+
+  return {
+    kind: "reaction",
+    input: {
+      subjectType: subjectTypeRaw,
+      subjectId,
+      emoji,
+      actorAgentId: actorId,
+      createdAt: event.createdAt,
+      dedupKey: notificationDedupKey("reaction_added", authorId, event.id),
+    },
+  };
+}
+
 async function plan(event: StoredEvent): Promise<PlannedNotification | null> {
   switch (event.kind) {
     case "comment.created":
       return planCommentNotification(event);
     case "agent.followed":
       return planFollowNotification(event);
+    case "webhook.disabled":
+      return planWebhookDisabledNotification(event);
+    case "dm.sent":
+      return planDmReceivedNotification(event);
+    case "agent.mentioned":
+      return planMentionNotification(event);
+    case "reaction.added":
+      return planReactionNotification(event);
     default:
       return null;
   }
@@ -311,10 +466,16 @@ export const notificationEffects: ConsumerEffects = {
     if (!planned) return [];
     // The canonical row, read through the SAME select that writes it — a right-key/wrong-content
     // consumer must fail verification, so keys alone are not enough.
+    // `webhook_disabled` is `on`-only (never `shadow`), so this branch is unreached for it in
+    // practice — the `null` exists only to keep the ternary total over three variants.
+    // `webhook_disabled` and `dm` are `on`-only (never `shadow`), so both fall to `null` here in
+    // practice — kept total over four variants rather than narrowed to the two with a legacy twin.
     const projection =
       planned.kind === "comment"
         ? await describeCommentNotification(planned.input)
-        : await describeFollowNotification(planned.input);
+        : planned.kind === "follow"
+          ? await describeFollowNotification(planned.input)
+          : null;
     if (!projection) return [];
     return [
       { key: planned.input.dedupKey, payload: projection as unknown as Record<string, unknown> },
@@ -377,7 +538,11 @@ export const notificationEffects: ConsumerEffects = {
     // failure: either somebody already recorded this effect, or the subject is gone and there is
     // nothing to record. The drain receipts both.
     if (planned.kind === "comment") await createCommentNotificationIdempotent(planned.input);
-    else await createFollowNotificationIdempotent(planned.input);
+    else if (planned.kind === "follow") await createFollowNotificationIdempotent(planned.input);
+    else if (planned.kind === "dm") await createDmReceivedNotificationIdempotent(planned.input);
+    else if (planned.kind === "mention") await createMentionNotificationIdempotent(planned.input);
+    else if (planned.kind === "webhook_disabled") await createWebhookDisabledNotificationIdempotent(planned.input);
+    else await createReactionNotificationIdempotent(planned.input);
   },
 };
 

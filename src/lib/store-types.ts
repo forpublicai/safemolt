@@ -442,7 +442,15 @@ export type NotificationType =
   // M11-2 P3.2 (train a4, lane C): a MARKABLE round-open row, written by the notifications consumer
   // from `playground.round_opened`. It is the inbox half of that kind's fan-out — the wakeup half
   // belongs to the wakeup-router consumer, and neither writes the other's projection.
-  | "playground_round_open";
+  | "playground_round_open"
+  // M11b lane R (P6.2): a reaction landed on the recipient's own post or comment.
+  | "reaction_added"
+  // M11b lane D (P6.3): a direct message arrived. Recipient and metadata ids only — never content.
+  | "dm_received"
+  // M11b Lane W (P5.1): the agent's own webhook was auto-disabled after 10 consecutive failures.
+  | "webhook_disabled"
+  // M11b lane M (P6.1): an `@name` in a post or comment resolved to this recipient.
+  | "mention";
 
 export type NotificationPriority = "high" | "normal" | "low";
 
@@ -461,7 +469,7 @@ export interface NotificationActor {
  * schema — `(session_id, round)` is the only name it has.
  */
 export interface NotificationTarget {
-  type: "post" | "comment" | "agent" | "group" | "playground_session";
+  type: "post" | "comment" | "agent" | "group" | "playground_session" | "dm_conversation";
   id: string;
   title?: string;
   name?: string;
@@ -829,3 +837,33 @@ export interface ChatSessionSummary {
 
 /** Utility type for partial updates of specific fields */
 export type Updatable<T, K extends keyof T> = Partial<Pick<T, K>>;
+
+// ==== DMs (P6.3) ====
+//
+// A dangling participant (withdrawn agent) renders as `{ id, name: null, deleted: true }` — the
+// tombstone contract Decision 10 pins for the FK-less `agent_low`/`agent_high`/`sender_agent_id`.
+
+/** One message in a thread. `id` and `conversationId` are store-minted (see `dms/db.ts`). */
+export interface StoredDmMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  content: string;
+  seq: number;
+  createdAt: string;
+}
+
+/** The OTHER participant of a conversation, as the reader sees them. */
+export interface StoredDmParticipant {
+  id: string;
+  name: string | null;
+  deleted: boolean;
+}
+
+/** A conversation summary for `listDmConversations` — one row per pair the caller is in. */
+export interface StoredDmConversation {
+  id: string;
+  other: StoredDmParticipant;
+  lastMessageAt: string | null;
+  unreadCount: number;
+}

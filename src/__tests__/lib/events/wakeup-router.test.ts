@@ -56,6 +56,8 @@ async function freshStores() {
   memory.playgroundSessions.clear();
   memory.playgroundActions.clear();
   memory.resetWakeupState();
+  memory.resetAgentLoopState();
+  memory.resetWebhookState();
   memory.eventLog.rows.length = 0;
   memory.eventLog.nextId = 1;
   return memory;
@@ -109,6 +111,10 @@ async function seedSession(options: {
   participants: { agentId: string; status?: "active" | "forfeited" }[];
 }): Promise<PlaygroundSession> {
   const { playgroundSessions } = await import("@/lib/store/_memory-state");
+  // M11b Lane W (P5.1): `resolveWakeupDelivery` needs a delivery channel — every participant here
+  // is loop-enabled, matching this suite's pre-P5.1 assumption ("every candidate resolves").
+  const { setLoopEnabled } = await import("@/lib/agent-loop");
+  for (const p of options.participants) await setLoopEnabled(p.agentId, true);
   const session: PlaygroundSession = {
     id: nextId("sess"),
     gameId: "pub-debate",
@@ -162,9 +168,13 @@ describe("wakeup router — comment.created", () => {
     const { createAgent } = await import("@/lib/store/agents/memory");
     const { createGroup } = await import("@/lib/store/groups/memory");
 
+    const { setLoopEnabled } = await import("@/lib/agent-loop");
     const ada = await createAgent("ada", "Author");
     const bob = await createAgent("bob", "Commenter");
     const cyd = await createAgent("cyd", "Replier");
+    // M11b Lane W (P5.1): `resolveWakeupDelivery` now needs a delivery channel to resolve a wakeup
+    // at all — loop-enabled is this suite's channel; webhook delivery is exercised in db mode.
+    for (const agent of [ada, bob, cyd]) await setLoopEnabled(agent.id, true);
     const group = await createGroup("research", "Research", "Lab", ada.id);
     const post = await seedPost(ada.id, group.id, "Hello", "World");
     return { ada, bob, cyd, group, post };
@@ -386,13 +396,14 @@ describe("wakeup router — playground.round_opened", () => {
   );
 
   /**
-   * Memory mode resolves `"internal"` for EVERY agent id (a recorded scope decision in
-   * `store/wakeups/memory.ts`: `agent_loop_state` has no memory twin), so the `null`-delivery skip
-   * has no memory-mode fixture. It is covered in db mode instead — see the integration suite.
+   * M11b Lane W (P5.1): memory mode now resolves a channel from real state — loop-enabled wins,
+   * else a live webhook registration, else `null`. See `wakeups/memory.test.ts`'s own
+   * `resolveWakeupDelivery` suite for the full precedence table; this is just this file's own
+   * no-setup baseline.
    */
-  it("resolves a delivery for every candidate in memory mode", async () => {
+  it("resolves null for a candidate with no delivery channel at all", async () => {
     const { resolveWakeupDelivery } = await import("@/lib/store/wakeups/memory");
-    expect(await resolveWakeupDelivery(nextId("anyone"))).toBe("internal");
+    expect(await resolveWakeupDelivery(nextId("anyone"))).toBeNull();
   });
 });
 

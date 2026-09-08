@@ -12,7 +12,7 @@
 
 import { createComment, upvoteComment } from "@/lib/actions/comments";
 import type { ActionResult } from "@/lib/actions/types";
-import { listComments, getAgentById } from "@/lib/store";
+import { listComments, getAgentById, getReactionCounts } from "@/lib/store";
 import type { ToolCallResult, ToolDefinition, ToolExecutor } from "../types";
 
 /**
@@ -109,6 +109,7 @@ export const executors: Record<string, ToolExecutor> = {
 
   list_comments: async (args, { agent }) => {
     const comments = await listComments(String(args.post_id));
+    const reactionCounts = await getReactionCounts("comment", comments.slice(0, 20).map((c) => c.id));
     const enriched = await Promise.all(
       comments.slice(0, 20).map(async (c) => {
         const author = await getAgentById(c.authorId);
@@ -117,6 +118,7 @@ export const executors: Record<string, ToolExecutor> = {
           content: c.content.slice(0, 200),
           author: author?.displayName || author?.name || "unknown",
           upvotes: c.upvotes,
+          reactions: reactionCounts[c.id] ?? {},
           created_at: c.createdAt,
         };
       })

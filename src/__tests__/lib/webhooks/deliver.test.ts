@@ -1,0 +1,254 @@
+/**
+ * M11b Lane W (P5.1) — characterizes `deliver.ts`'s real behavior: URL hygiene, SSRF-safe address
+ * resolution against an INJECTED resolver (never real DNS), and the signed-POST path against a real
+ * local `node:http` receiver (no mocking of `node:http`/`node:https`).
+ *
+ * @jest-environment node
+ */
+import { createHmac } from "node:crypto";
+import * as http from "node:http";
+import type { AddressInfo } from "node:net";
+
+import {
+  deliverWakeup,
+  resolvePublicAddresses,
+  validateWebhookUrl,
+  type LookupAllFn,
+} from "@/lib/webhooks/deliver";
+
+// Baseline every test to a known env, and never leak into other test files sharing this worker.
+// `NODE_ENV` is a read-only literal on `process.env`'s type (house convention: `cron-auth.test.ts`),
+// so every touch here goes through this index-signature cast.
+const mutableEnv = process.env as Record<string, string | undefined>;
+let savedFlag: string | undefined;
+let savedNodeEnv: string | undefined;
+
+beforeEach(() => {
+  savedFlag = mutableEnv.WEBHOOK_ALLOW_INSECURE_LOCAL;
+  savedNodeEnv = mutableEnv.NODE_ENV;
+  delete mutableEnv.WEBHOOK_ALLOW_INSECURE_LOCAL;
+});
+
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) delete mutableEnv[key];
+  else mutableEnv[key] = value;
+}
+
+afterEach(() => {
+  restoreEnv("WEBHOOK_ALLOW_INSECURE_LOCAL", savedFlag);
+  restoreEnv("NODE_ENV", savedNodeEnv);
+});
+
+describe("validateWebhookUrl — URL hygiene", () => {
+  const cases: [string, string, boolean][] = [
+    ["https + explicit 443", "https://example.com:443/hook", true],
+    ["https, no port", "https://example.com/hook", true],
+    ["https + 8443 (non-443)", "https://example.com:8443/hook", false],
+    ["userinfo present", "https://user:pass@example.com/hook", false],
+    ["empty hostname", "https://", false],
+    ["malformed", "not a url", false],
+  ];
+
+  it.each(cases)("%s", (_label, url, expectOk) => {
+    expect(validateWebhookUrl(url).ok).toBe(expectOk);
+  });
+
+  it("rejects plain http when the insecure-local seam is unset", () => {
+    expect(validateWebhookUrl("http://127.0.0.1:9/hook").ok).toBe(false);
+  });
+
+  it("rejects plain http when the seam flag is explicitly false", () => {
+    process.env.WEBHOOK_ALLOW_INSECURE_LOCAL = "false";
+    expect(validateWebhookUrl("http://127.0.0.1:9/hook").ok).toBe(false);
+  });
+
+  it("accepts plain http only under the insecure-local seam (flag true, non-production)", () => {
+    process.env.WEBHOOK_ALLOW_INSECURE_LOCAL = "true";
+    mutableEnv.NODE_ENV = "development";
+    expect(validateWebhookUrl("http://127.0.0.1:9/hook").ok).toBe(true);
+  });
+
+  it("keeps the seam inert in production even with the flag set", () => {
+    process.env.WEBHOOK_ALLOW_INSECURE_LOCAL = "true";
+    mutableEnv.NODE_ENV = "production";
+    expect(validateWebhookUrl("http://127.0.0.1:9/hook").ok).toBe(false);
+  });
+});
+
+describe("resolvePublicAddresses — rejection table (injected resolver, no real DNS)", () => {
+  function fakeLookup(addresses: { address: string; family: number }[]): LookupAllFn {
+    return async () => addresses;
+  }
+
+  const rejected: [string, string, number][] = [
+    ["loopback v4", "127.0.0.1", 4],
+    ["loopback v6", "::1", 6],
+    ["link-local v4", "169.254.1.1", 4],
+    ["link-local v6", "fe80::1", 6],
+    ["private 10/8", "10.0.0.1", 4],
+    ["private 172.16/12", "172.16.0.1", 4],
+    ["private 192.168/16", "192.168.1.1", 4],
+    ["CGNAT 100.64/10", "100.64.0.1", 4],
+    ["multicast v4", "224.0.0.1", 4],
+    ["multicast v6", "ff02::1", 6],
+    ["unspecified v4", "0.0.0.0", 4],
+    ["unspecified v6", "::", 6],
+    ["ULA fc00::/7", "fc00::1", 6],
+    ["IPv4-mapped private", "::ffff:10.0.0.1", 6],
+  ];
+
+  it.each(rejected)("rejects %s (%s)", async (_label, address, family) => {
+    await expect(
+      resolvePublicAddresses("host.example", fakeLookup([{ address, family }]))
+    ).rejects.toThrow();
+  });
+
+  it("resolves a genuinely public address", async () => {
+    await expect(
+      resolvePublicAddresses("host.example", fakeLookup([{ address: "93.184.216.34", family: 4 }]))
+    ).resolves.toEqual(["93.184.216.34"]);
+  });
+
+  it("rejects a MIXED list as a whole — one private address fails the whole resolution", async () => {
+    await expect(
+      resolvePublicAddresses(
+        "host.example",
+        fakeLookup([
+          { address: "93.184.216.34", family: 4 },
+          { address: "10.0.0.1", family: 4 },
+        ])
+      )
+    ).rejects.toThrow();
+  });
+
+  it("re-resolves fresh per call — no caching across attempts, even when DNS changes", async () => {
+    const lookup: LookupAllFn = jest
+      .fn()
+      .mockResolvedValueOnce([{ address: "93.184.216.34", family: 4 }])
+      .mockResolvedValueOnce([{ address: "10.0.0.1", family: 4 }]);
+    await expect(resolvePublicAddresses("host.example", lookup)).resolves.toEqual(["93.184.216.34"]);
+    await expect(resolvePublicAddresses("host.example", lookup)).rejects.toThrow();
+  });
+});
+
+describe("deliverWakeup — real local receiver (no mocking of node:http/https)", () => {
+  let server: http.Server | null = null;
+  let received: { method: string | undefined; headers: http.IncomingHttpHeaders; body: Buffer }[] = [];
+
+  function startServer(
+    respond: (req: http.IncomingMessage, res: http.ServerResponse) => void
+  ): Promise<number> {
+    return new Promise((resolve) => {
+      server = http.createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (c: Buffer) => chunks.push(c));
+        req.on("end", () => {
+          received.push({ method: req.method, headers: req.headers, body: Buffer.concat(chunks) });
+          respond(req, res);
+        });
+      });
+      server.listen(0, "127.0.0.1", () => resolve((server!.address() as AddressInfo).port));
+    });
+  }
+
+  afterEach(async () => {
+    received = [];
+    if (server) {
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
+      server = null;
+    }
+  });
+
+  function enableSeam(): void {
+    process.env.WEBHOOK_ALLOW_INSECURE_LOCAL = "true";
+    mutableEnv.NODE_ENV = "test";
+  }
+
+  it("delivers a signed POST the receiver can verify end to end", async () => {
+    enableSeam();
+    const port = await startServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("ok");
+    });
+
+    const result = await deliverWakeup({
+      url: `http://127.0.0.1:${port}/hook`,
+      secret: "test-secret",
+      wakeupId: 42,
+      eventId: 7,
+      payload: { reason: "x", wakeup_id: 42, event_id: 7, subject: { a: 1 }, context_href: "/" },
+    });
+
+    expect(result).toEqual({ ok: true, status: 200 });
+    expect(received).toHaveLength(1);
+    const [{ method, headers, body }] = received;
+    expect(method).toBe("POST");
+    expect(headers["x-safemolt-wakeup-id"]).toBe("42");
+    expect(headers["x-safemolt-event-id"]).toBe("7");
+    expect(headers["content-type"]).toBe("application/json");
+    const expectedSignature = `sha256=${createHmac("sha256", "test-secret").update(body).digest("hex")}`;
+    expect(headers["x-safemolt-signature"]).toBe(expectedSignature);
+    // Pinning, proven indirectly: the socket only reaches this 127.0.0.1-only listener, and the
+    // Host header presented matches the hostname used in the URL. A real DNS-rebind defeat needs an
+    // injectable resolver, which `deliverWakeup` deliberately does not expose — see the
+    // "re-resolves fresh per call" case above for the actual mitigation this pins.
+    expect(headers.host).toMatch(/^127\.0\.0\.1(:\d+)?$/);
+  });
+
+  it("omits X-SafeMolt-Event-Id entirely when eventId is null (not an empty string)", async () => {
+    enableSeam();
+    const port = await startServer((_req, res) => {
+      res.writeHead(200);
+      res.end();
+    });
+
+    await deliverWakeup({
+      url: `http://127.0.0.1:${port}/hook`,
+      secret: "s",
+      wakeupId: 1,
+      eventId: null,
+      payload: { reason: "x", wakeup_id: 1, subject: {}, context_href: "/" },
+    });
+
+    expect(received).toHaveLength(1);
+    expect("x-safemolt-event-id" in received[0].headers).toBe(false);
+  });
+
+  it("treats 3xx as a failure and never follows the redirect", async () => {
+    enableSeam();
+    const port = await startServer((_req, res) => {
+      res.writeHead(302, { Location: "http://127.0.0.1:1/nope" });
+      res.end();
+    });
+
+    const result = await deliverWakeup({
+      url: `http://127.0.0.1:${port}/hook`,
+      secret: "s",
+      wakeupId: 1,
+      eventId: null,
+      payload: {},
+    });
+
+    expect(result).toEqual({ ok: false, status: 302 });
+    expect(received).toHaveLength(1); // exactly one request — no chase of Location
+  });
+
+  it("resolves cleanly (does not hang or throw) on a response body over the 64KB cap", async () => {
+    enableSeam();
+    const port = await startServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("x".repeat(100 * 1024));
+    });
+
+    const result = await deliverWakeup({
+      url: `http://127.0.0.1:${port}/hook`,
+      secret: "s",
+      wakeupId: 1,
+      eventId: null,
+      payload: {},
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe(200);
+  });
+});

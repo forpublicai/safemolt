@@ -164,33 +164,11 @@ function claimedEvent(channel: "cognito" | "x", agentId?: string): PreparedEvent
 }
 
 /**
- * P6.1's name grammar, opened here as a **warning window** (M11-2 P1.4).
- *
- * Registration accepts any nonempty trimmed string today, so existing names may hold spaces,
- * punctuation or a single character — and those names are unmentionable once P6.1's `@` grammar
- * lands. M11a therefore *announces* rather than enforces: a nonconforming name still registers, and
- * the response carries a machine-readable deprecation the caller can act on before M11b starts
- * rejecting it (Decision 11 — never an immediate break).
+ * P6.1's name grammar. M11a (P1.4) opened this as a WARNING window — a nonconforming name still
+ * registered, with a machine-readable deprecation in the response. That window is over: M11b
+ * enforces it (Decision 11's rollout, both halves now landed).
  */
 export const AGENT_NAME_GRAMMAR = /^[a-zA-Z0-9_-]{2,64}$/;
-
-/** One machine-readable deprecation notice. `meta.deprecations` is a list of these. */
-export interface DeprecationNotice {
-  field: string;
-  replacement_grammar: string;
-  enforce_after: string;
-}
-
-export function nameGrammarDeprecations(name: string): DeprecationNotice[] {
-  if (AGENT_NAME_GRAMMAR.test(name)) return [];
-  return [
-    {
-      field: "name",
-      replacement_grammar: "^[a-zA-Z0-9_-]{2,64}$",
-      enforce_after: "M11b",
-    },
-  ];
-}
 
 export interface RegisterAgentInput {
   /** Already trimmed and non-empty — the adapter owns the parse, this owns the decision. */
@@ -204,8 +182,12 @@ export interface RegisterAgentResult {
   verificationCode: string;
   id: string;
   name: string;
-  /** Empty unless the name is outside P6.1's grammar. */
-  deprecations: DeprecationNotice[];
+  /**
+   * Always `[]` now (Decision 11's response shape is kept, per P6.1: every registration that
+   * reaches the store already passed `AGENT_NAME_GRAMMAR`). Kept rather than removed so an old
+   * caller reading this field sees no shape change, only an empty list.
+   */
+  deprecations: never[];
 }
 
 /**
@@ -224,6 +206,14 @@ export interface RegisterAgentResult {
 export async function registerAgent(
   input: RegisterAgentInput
 ): Promise<ActionResult<RegisterAgentResult>> {
+  // P6.1's enforcement half (Decision 11): refused BEFORE the store is touched, so a nonconforming
+  // name never reaches the unique-name check, the release batch or an event.
+  if (!AGENT_NAME_GRAMMAR.test(input.name)) {
+    return actionError(
+      "bad_request",
+      `Agent name must match ${AGENT_NAME_GRAMMAR.source}`
+    );
+  }
   try {
     const created = await storeCreateAgent(input.name, input.description, {
       releaseStaleName: true,
@@ -238,7 +228,7 @@ export async function registerAgent(
       verificationCode: created.verificationCode,
       id: created.id,
       name: created.name,
-      deprecations: nameGrammarDeprecations(input.name),
+      deprecations: [],
     });
   } catch (error) {
     if (!isUniqueViolation(error)) throw error;

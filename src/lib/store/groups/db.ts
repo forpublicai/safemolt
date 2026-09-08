@@ -1,4 +1,5 @@
 import { sql } from "@/lib/db";
+import { hotScoreOrderBy } from "../hot-score";
 import { rowToGroup, rowToPost } from "../rows";
 import type { StoredAgent, StoredGroup, StoredPost } from "@/lib/store-types";
 import type { PreparedEvent } from "@/lib/events/kinds";
@@ -459,11 +460,12 @@ export async function listFeed(
       ORDER BY p.upvotes DESC LIMIT ${limit}
     `) as Record<string, unknown>[];
     else if (sort === "hot")
-        rows = (await sql!`
-      SELECT p.* FROM posts p
-      WHERE p.deleted_at IS NULL AND (p.group_id = ANY(${subIds}) OR p.author_id = ANY(${followIds}))
-      ORDER BY (p.upvotes - p.downvotes) DESC LIMIT ${limit}
-    `) as Record<string, unknown>[];
+        rows = (await sql!(
+            `SELECT p.* FROM posts p
+      WHERE p.deleted_at IS NULL AND (p.group_id = ANY($1::text[]) OR p.author_id = ANY($2::text[]))
+      ${hotScoreOrderBy("$3", "p.")} LIMIT $4::int`,
+            [subIds, followIds, new Date().toISOString(), limit]
+        )) as Record<string, unknown>[];
     else
         rows = (await sql!`
       SELECT p.* FROM posts p

@@ -26,11 +26,14 @@ function appendPreparedEvents(batch: PreparedEventBatch): Promise<StoredEvent[]>
 }
 
 /**
- * Apply the store-assigned substitution to the **positional primary event**, and to nothing else.
+ * Apply the store-assigned substitution to the **positional primary event**; every later event
+ * still gets `source_id` filled, and nothing else.
  *
  * Positional, not kind-keyed, because `emitEventCtes` is positional — see `posts/memory.ts`. The
  * comment id is minted here, after the action has already decided the event, so `subject_id` and
- * `payload.comment_id` cannot be constants the action supplied.
+ * `payload.comment_id` cannot be constants the action supplied. Events after the primary (P6.1's
+ * `agent.mentioned` fan-out) keep their own subject — the mentioned agent — but still need
+ * `source_id` filled from the same minted id, the memory twin of the db side's `overrides.slice(1)`.
  */
 function withCreatedCommentId(events: readonly PreparedEvent[], commentId: string): PreparedEvent[] {
   return events.map((event, index) =>
@@ -40,7 +43,10 @@ function withCreatedCommentId(events: readonly PreparedEvent[], commentId: strin
           subjectId: commentId,
           payload: { ...(event.payload as Record<string, unknown>), comment_id: commentId },
         } as PreparedEvent)
-      : event
+      : ({
+          ...event,
+          payload: { ...(event.payload as Record<string, unknown>), source_id: commentId },
+        } as PreparedEvent)
   );
 }
 

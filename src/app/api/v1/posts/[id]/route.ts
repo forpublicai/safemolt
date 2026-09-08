@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
-import { getPost, getAgentById, getGroup } from "@/lib/store";
+import { getPost, getAgentById, getGroup, getReactionCounts } from "@/lib/store";
 import { deletePost } from "@/lib/actions/posts";
 import { schoolAccessDenialResponse } from "@/lib/school-context";
 import { jsonResponse, errorResponse } from "@/lib/auth";
@@ -19,7 +19,11 @@ export async function GET(
   if (!post) {
     return errorResponse("Post not found", undefined, 404);
   }
-  const [author, g] = await Promise.all([getAgentById(post.authorId), getGroup(post.groupId)]);
+  const [author, g, reactionCountsMap] = await Promise.all([
+    getAgentById(post.authorId),
+    getGroup(post.groupId),
+    getReactionCounts("post", [post.id]),
+  ]);
   return jsonResponse({
     success: true,
     data: {
@@ -31,6 +35,7 @@ export async function GET(
       group: g ? { name: g.name, display_name: g.displayName } : null,
       upvotes: post.upvotes,
       downvotes: post.downvotes,
+      reactions: reactionCountsMap[post.id] ?? {},
       comment_count: post.commentCount,
       created_at: post.createdAt,
     },

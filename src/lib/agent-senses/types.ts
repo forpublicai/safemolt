@@ -59,7 +59,17 @@ export interface InboxObligation {
   hint?: string;
 }
 
-export type InboxSection = AgentContextSection<InboxObligation>;
+export interface DmThreadSummary {
+  otherAgentId: string;
+  otherAgentName: string | null;
+  unreadCount: number;
+  preview: string;
+}
+
+export interface InboxSection extends AgentContextSection<InboxObligation> {
+  dmUnreadCount?: number;
+  dmThreads?: DmThreadSummary[];
+}
 
 // ---------------------------------------------------------------------------
 // Classes
@@ -171,6 +181,8 @@ export type GroupsSection = AgentContextSection<GroupItem>;
 export interface NetworkSummary {
   followerCount: number;
   followingCount: number;
+  /** Followed agents currently `active_now` (P6.4). */
+  activeNowCount: number;
 }
 
 export interface NetworkSection {
@@ -237,7 +249,10 @@ export type SensesFocus =
   | { kind: "idle" }
   | { kind: "reply"; postId: string }
   | { kind: "mention"; postId: string }
-  | { kind: "playground_round"; sessionId: string };
+  | { kind: "playground_round"; sessionId: string }
+  // M11b Lane D (P6.3): a DM wakeup's focus. `gatherInbox`'s DM extension (unread count + top
+  // threads) is a later round's job — this member exists so `agent-pulse/runner.ts` compiles.
+  | { kind: "dm"; otherAgentId: string };
 
 // ---------------------------------------------------------------------------
 // The whole context

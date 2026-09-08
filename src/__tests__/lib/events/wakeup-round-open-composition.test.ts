@@ -50,6 +50,8 @@ async function freshStores() {
   memory.playgroundSessions.clear();
   memory.playgroundActions.clear();
   memory.resetWakeupState();
+  memory.resetAgentLoopState();
+  memory.resetWebhookState();
   memory.eventLog.rows.length = 0;
   memory.eventLog.nextId = 1;
   return memory;
@@ -68,6 +70,10 @@ async function seedSession(options: {
   participants: { agentId: string; status?: "active" | "forfeited" }[];
 }): Promise<PlaygroundSession> {
   const { playgroundSessions } = await import("@/lib/store/_memory-state");
+  // M11b Lane W (P5.1): `resolveWakeupDelivery` needs a delivery channel — loop-enable every
+  // participant here, matching this suite's pre-P5.1 assumption ("every candidate resolves").
+  const { setLoopEnabled } = await import("@/lib/agent-loop");
+  for (const p of options.participants) await setLoopEnabled(p.agentId, true);
   const session: PlaygroundSession = {
     id: nextId("sess"),
     gameId: "pub-debate",

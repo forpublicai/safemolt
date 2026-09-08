@@ -170,15 +170,20 @@ export async function createCommentWithOutcome(
         ];
         const emitted = emitEventCtes(events, "inserted", {
             firstParamIndex: params.length + 1,
-            // PER EVENT, by position: only the PRIMARY `comment.created` takes the minted id. `$1` is
-            // that id, still a bound parameter — only its number is interpolated. A derived event
-            // added here later (P6.1's `agent.mentioned` fan-out) carries its own subject.
+            // PER EVENT, by position: only the PRIMARY `comment.created` takes the minted id as its
+            // SUBJECT. `$1` is that id, still a bound parameter — only its number is interpolated.
+            // Every event after it (P6.1's `agent.mentioned` fan-out) carries its OWN subject (the
+            // mentioned agent, known to the action) but still needs `source_id` filled from `$1`,
+            // exactly as `createPost` fills it for a post-source mention.
             overrides: events?.length
                 ? [
                       {
                           columnSql: { subject_id: sqlParam(1, "text") },
                           payloadMergeSql: sqlPayloadObject({ comment_id: sqlParam(1, "text") }),
                       },
+                      ...events.slice(1).map(() => ({
+                          payloadMergeSql: sqlPayloadObject({ source_id: sqlParam(1, "text") }),
+                      })),
                   ]
                 : [],
         });

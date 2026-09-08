@@ -37,6 +37,7 @@ jest.mock("@/lib/store", () => ({
   getGroupMemberCount: jest.fn().mockResolvedValue(0),
   // network
   getFollowingCount: jest.fn().mockResolvedValue(0),
+  countActiveNowFollowees: jest.fn().mockResolvedValue(0),
   // playground
   listPlaygroundSessions: jest.fn().mockResolvedValue([]),
   getPlaygroundActions: jest.fn().mockResolvedValue([]),

@@ -20,11 +20,16 @@ jest.mock("@/lib/store", () => ({
   getPassedEvaluations: jest.fn(),
   getGroupMemberCount: jest.fn(),
   getFollowingCount: jest.fn(),
+  countActiveNowFollowees: jest.fn(),
   listGroups: jest.fn(),
   isGroupMember: jest.fn(),
   listPlaygroundSessions: jest.fn(),
   getPlaygroundActions: jest.fn(),
   getPlaygroundSession: jest.fn(),
+  // M11b lane D (P6.3): `gatherInbox` also reads the DM domain now.
+  listDmConversations: jest.fn(),
+  listDmMessages: jest.fn(),
+  countUnreadDms: jest.fn(),
 }));
 jest.mock("@/lib/playground/games", () => ({
   listGames: jest.fn(() => [{ id: "game-1", name: "Negotiation", minPlayers: 3 }]),
@@ -43,6 +48,7 @@ import {
   getAgentClasses,
   getClassById,
   getFollowingCount,
+  countActiveNowFollowees,
   getGroupMemberCount,
   getPassedEvaluations,
   getPlaygroundActions,
@@ -59,6 +65,9 @@ import {
   listNotifications,
   listPlaygroundSessions,
   listPosts,
+  listDmConversations,
+  listDmMessages,
+  countUnreadDms,
 } from "@/lib/store";
 import { getNewsItems } from "@/lib/rss";
 import { recallMemoryForAgent } from "@/lib/memory/memory-service";
@@ -100,6 +109,9 @@ function stubPopulatedPlatform(): void {
       metadata: {},
     },
   ] as never);
+  jest.mocked(listDmConversations).mockResolvedValue([] as never);
+  jest.mocked(listDmMessages).mockResolvedValue([] as never);
+  jest.mocked(countUnreadDms).mockResolvedValue(0 as never);
   jest.mocked(getAgentClasses).mockResolvedValue([{ classId: "c1" }] as never);
   jest.mocked(getClassById).mockResolvedValue({ id: "c1", name: "Rhetoric" } as never);
   jest.mocked(listClassSessions).mockResolvedValue([
@@ -118,6 +130,7 @@ function stubPopulatedPlatform(): void {
   jest.mocked(isGroupMember).mockImplementation(async (_a: string, groupId: string) => groupId === "general");
   jest.mocked(getGroupMemberCount).mockResolvedValue(9 as never);
   jest.mocked(getFollowingCount).mockResolvedValue(4 as never);
+  jest.mocked(countActiveNowFollowees).mockResolvedValue(1 as never);
   jest.mocked(listPlaygroundSessions).mockImplementation(async (opts?: { status?: string }) =>
     (opts?.status === "pending"
       ? [{ id: "lobby1", gameId: "game-1", participants: [{ agentId: "other", status: "active" }] }]
@@ -196,7 +209,7 @@ describe("buildAgentContext", () => {
       expect.objectContaining({ kind: "pending", id: "lobby1", minPlayers: 3, joined: false }),
     ]);
     expect(context.groups.items.map((g) => g.kind)).toEqual(["joined", "suggested"]);
-    expect(context.network.data).toEqual({ followerCount: 12, followingCount: 4 });
+    expect(context.network.data).toEqual({ followerCount: 12, followingCount: 4, activeNowCount: 1 });
     expect(context.news.items).toHaveLength(1);
     expect(context.memories.items).toEqual([{ text: "I argued about incentives" }]);
     expect(context.admissions.data?.admission_source).toBe("application");

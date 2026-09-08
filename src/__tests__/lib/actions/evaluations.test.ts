@@ -27,7 +27,6 @@ import {
 import {
   claimAgentWithX,
   completeVetting,
-  nameGrammarDeprecations,
   registerAgent,
   startVetting,
 } from "@/lib/actions/agents";
@@ -799,11 +798,21 @@ describe("agent lifecycle", () => {
     expect(result).toEqual({ ok: false, code: "not_found", message: "Agent not found" });
   });
 
-  it("names a nonconforming registration in meta.deprecations and a conforming one not at all", () => {
-    expect(nameGrammarDeprecations("good-name_1")).toEqual([]);
-    expect(nameGrammarDeprecations("a")).toHaveLength(1);
-    expect(nameGrammarDeprecations("has spaces")).toHaveLength(1);
-    expect(nameGrammarDeprecations("emoji🙂")).toHaveLength(1);
+  it("refuses a nonconforming name with bad_request before it reaches the store, and writes nothing", async () => {
+    const before = agents.size;
+    const result = await registerAgent({ name: "has spaces", description: "" });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.code).toBe("bad_request");
+    expect(agents.size).toBe(before);
+    expect(events()).toHaveLength(0);
+  });
+
+  it("registers a conforming name with an always-empty deprecations list", async () => {
+    const result = await registerAgent({ name: nextId("conform"), description: "" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.data.deprecations).toEqual([]);
   });
 });
 

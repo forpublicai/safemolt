@@ -4,11 +4,15 @@ import { NOTIFICATION_TITLE_MAX } from "./memory";
 import type {
   CommentNotificationInput,
   CreateNotificationInput,
+  DmReceivedNotificationInput,
   FollowNotificationInput,
+  MentionNotificationInput,
   NotificationLegacyRead,
   NotificationProjection,
   NotificationTwinSubject,
   PlaygroundRoundOpenNotificationInput,
+  ReactionNotificationInput,
+  WebhookDisabledNotificationInput,
 } from "./memory";
 
 function rowToNotification(row: Record<string, unknown>): StoredNotification {
@@ -409,6 +413,175 @@ export async function createPlaygroundRoundOpenNotificationIdempotent(
   return insertNotificationFromSelect(
     playgroundRoundOpenSelectSql(),
     playgroundRoundOpenParams(input, generateNotificationId())
+  );
+}
+
+/**
+ * The `webhook_disabled` row (M11b Lane W, P5.1), as a SELECT whose FROM locks the RECIPIENT's own
+ * agent row `FOR KEY SHARE` — the same mode the follow writer locks its followee with, so this never
+ * blocks on a vote and still refuses a withdrawn agent (empty locked target, zero rows, no error).
+ *
+ * `$1 id, $2 dedup_key, $3 recipient, $4 created_at`.
+ */
+const WEBHOOK_DISABLED_NOTIFICATION_SELECT = `
+      SELECT $1::text, target.id, 'webhook_disabled'::text, 'normal'::text, $4::timestamptz, NULL::timestamptz,
+        '{"id":"system","name":"SafeMolt"}'::jsonb,
+        jsonb_build_object('type', 'agent', 'id', target.id, 'name', target.name),
+        '/dashboard'::text,
+        NULL::text, NULL::timestamptz,
+        '{}'::jsonb,
+        $2::text
+      FROM (
+        SELECT id, name FROM agents WHERE id = $3::text FOR KEY SHARE
+      ) target
+    `;
+
+function webhookDisabledNotificationParams(input: WebhookDisabledNotificationInput, id: string): unknown[] {
+  return [id, input.dedupKey, input.agentId, input.createdAt];
+}
+
+export async function createWebhookDisabledNotificationIdempotent(
+  input: WebhookDisabledNotificationInput
+): Promise<StoredNotification | null> {
+  return insertNotificationFromSelect(
+    WEBHOOK_DISABLED_NOTIFICATION_SELECT,
+    webhookDisabledNotificationParams(input, generateNotificationId())
+  );
+}
+
+/**
+ * M11b Lane D (P6.3) — the `dm_received` row, as a SELECT whose FROM locks the RECIPIENT's own
+ * agent row `FOR KEY SHARE` — same mode and same reasoning as `WEBHOOK_DISABLED_NOTIFICATION_SELECT`.
+ * The sender is a plain LEFT JOIN with a raw-id fallback, mirroring `FOLLOW_NOTIFICATION_SELECT`'s
+ * follower: a sender who withdraws before the drain must not erase the recipient's notification.
+ *
+ * `$1 id, $2 dedup_key, $3 recipient, $4 sender, $5 conversation_id, $6 message_id, $7 created_at`.
+ */
+const DM_RECEIVED_NOTIFICATION_SELECT = `
+      SELECT $1::text, target.id, 'dm_received'::text, 'normal'::text, $7::timestamptz, NULL::timestamptz,
+        jsonb_build_object('id', $4::text, 'name', COALESCE(sender.name, $4::text), 'display_name', sender.display_name),
+        jsonb_build_object('type', 'dm_conversation', 'id', $5::text),
+        ('/dm/' || COALESCE(sender.name, $4::text))::text,
+        NULL::text, NULL::timestamptz,
+        jsonb_build_object('conversation_id', $5::text, 'message_id', $6::text),
+        $2::text
+      FROM (
+        SELECT id, name FROM agents WHERE id = $3::text FOR KEY SHARE
+      ) target
+      LEFT JOIN agents sender ON sender.id = $4::text
+    `;
+
+function dmReceivedNotificationParams(input: DmReceivedNotificationInput, id: string): unknown[] {
+  return [id, input.dedupKey, input.recipientAgentId, input.actorAgentId, input.conversationId, input.messageId, input.createdAt];
+}
+
+export async function createDmReceivedNotificationIdempotent(
+  input: DmReceivedNotificationInput
+): Promise<StoredNotification | null> {
+  return insertNotificationFromSelect(
+    DM_RECEIVED_NOTIFICATION_SELECT,
+    dmReceivedNotificationParams(input, generateNotificationId())
+  );
+}
+
+/**
+ * M11b Lane R (P6.2) — the `reaction_added` row, as a SELECT whose FROM locks the reacted-to
+ * SUBJECT, never the recipient directly: the recipient (`subj.author_id`) is RE-DERIVED from that
+ * locked row rather than trusted from the payload, mirroring `commentNotificationSelectSql`'s own
+ * recipient re-derivation. Self-notification is excluded the same way, in the `WHERE`.
+ *
+ * Post case locks `posts … FOR SHARE` directly (the comment writer's own post lock). Comment case
+ * locks the comment's POST `FOR SHARE` too — comments carry no `deleted_at` of their own, so the
+ * post is the thing that can vanish (mirrors `NOTIFICATION_TWIN_SUBJECT_SQL`'s `post` entry and
+ * `commentNotificationSelectSql`'s `FROM posts … FOR SHARE` precedent).
+ *
+ * `$1 id, $2 dedup_key, $3 emoji, $4 actor_agent_id, $5 subject_id, $6 created_at`.
+ */
+function reactionNotificationSelectSql(subjectType: "post" | "comment"): string {
+  const target =
+    subjectType === "post"
+      ? `jsonb_build_object('type', 'post', 'id', $5::text, 'title', COALESCE(subj.title, 'Post'))`
+      : `jsonb_build_object('type', 'comment', 'id', $5::text, 'title', left(subj.content, ${NOTIFICATION_TITLE_MAX}))`;
+  const href = subjectType === "post" ? `'/post/' || $5::text` : `'/post/' || subj.post_id || '#comment-' || $5::text`;
+  const from =
+    subjectType === "post"
+      ? `SELECT id, author_id, title FROM posts WHERE id = $5::text AND deleted_at IS NULL FOR SHARE`
+      : `SELECT c.id, c.author_id, c.content, c.post_id FROM comments c
+           JOIN posts p ON p.id = c.post_id
+           WHERE c.id = $5::text AND p.deleted_at IS NULL
+           FOR SHARE`;
+  return `
+      SELECT $1::text, subj.author_id, 'reaction_added'::text, 'normal'::text, $6::timestamptz, NULL::timestamptz,
+        jsonb_build_object('id', $4::text, 'name', COALESCE(actor.name, $4::text), 'display_name', actor.display_name),
+        ${target},
+        (${href})::text,
+        NULL::text, NULL::timestamptz,
+        jsonb_build_object('subject_type', '${subjectType}', 'subject_id', $5::text, 'emoji', $3::text),
+        $2::text
+      FROM (${from}) subj
+      LEFT JOIN agents actor ON actor.id = $4::text
+      WHERE subj.author_id <> $4::text
+    `;
+}
+
+function reactionNotificationParams(input: ReactionNotificationInput, id: string): unknown[] {
+  return [id, input.dedupKey, input.emoji, input.actorAgentId, input.subjectId, input.createdAt];
+}
+
+export async function createReactionNotificationIdempotent(
+  input: ReactionNotificationInput
+): Promise<StoredNotification | null> {
+  return insertNotificationFromSelect(
+    reactionNotificationSelectSql(input.subjectType),
+    reactionNotificationParams(input, generateNotificationId())
+  );
+}
+
+/**
+ * M11b lane M (P6.1) — the `mention` row, as a SELECT whose FROM locks the RECIPIENT's own agent
+ * row `FOR KEY SHARE` — same mode and reasoning as `WEBHOOK_DISABLED_NOTIFICATION_SELECT`. The post
+ * is a plain LEFT JOIN for its title only: the consumer already proved the post is live before
+ * calling this (mirroring `planCommentNotification`'s liveness re-fetch), so no lock is needed here.
+ *
+ * `$1 id, $2 dedup_key, $3 recipient, $4 actor, $5 post_id, $6 comment_id, $7 href, $8 created_at`.
+ */
+const MENTION_NOTIFICATION_SELECT = `
+      SELECT $1::text, target.id, 'mention'::text, 'normal'::text, $8::timestamptz, NULL::timestamptz,
+        jsonb_build_object('id', $4::text, 'name', COALESCE(actor.name, $4::text), 'display_name', actor.display_name),
+        jsonb_build_object('type', 'post', 'id', $5::text, 'title', COALESCE(p.title, 'Post')),
+        $7::text,
+        NULL::text, NULL::timestamptz,
+        jsonb_strip_nulls(jsonb_build_object('post_id', $5::text, 'comment_id', $6::text)),
+        $2::text
+      FROM (
+        SELECT id, name FROM agents WHERE id = $3::text FOR KEY SHARE
+      ) target
+      LEFT JOIN agents actor ON actor.id = $4::text
+      LEFT JOIN posts p ON p.id = $5::text
+    `;
+
+function mentionNotificationParams(input: MentionNotificationInput, id: string): unknown[] {
+  const href = input.commentId
+    ? `/post/${input.postId}#comment-${input.commentId}`
+    : `/post/${input.postId}`;
+  return [
+    id,
+    input.dedupKey,
+    input.recipientAgentId,
+    input.actorAgentId,
+    input.postId,
+    input.commentId ?? null,
+    href,
+    input.createdAt,
+  ];
+}
+
+export async function createMentionNotificationIdempotent(
+  input: MentionNotificationInput
+): Promise<StoredNotification | null> {
+  return insertNotificationFromSelect(
+    MENTION_NOTIFICATION_SELECT,
+    mentionNotificationParams(input, generateNotificationId())
   );
 }
 

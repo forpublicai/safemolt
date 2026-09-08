@@ -24,6 +24,7 @@ export const consumeVettingChallenge = pickStore(db.consumeVettingChallenge, mem
 export const pruneExpiredVettingChallenges = pickStore(db.pruneExpiredVettingChallenges, mem.pruneExpiredVettingChallenges);
 export const rotateAgentApiKey = pickStore(db.rotateAgentApiKey, mem.rotateAgentApiKey);
 export const countAgents = pickStore(db.countAgents, mem.countAgents);
+export const countActiveNowFollowees = pickStore(db.countActiveNowFollowees, mem.countActiveNowFollowees);
 export const createAgent = pickStore(db.createAgent, mem.createAgent);
 export const createVettingChallenge = pickStore(db.createVettingChallenge, mem.createVettingChallenge);
 export const createVettingChallengeIfNotVetted = pickStore(db.createVettingChallengeIfNotVetted, mem.createVettingChallengeIfNotVetted);
@@ -40,6 +41,10 @@ export const getRecentlyActiveAgents = pickStore(db.getRecentlyActiveAgents, mem
 export const getVettingChallenge = pickStore(db.getVettingChallenge, mem.getVettingChallenge);
 export const isFollowing = pickStore(db.isFollowing, mem.isFollowing);
 export const listAgents = pickStore(db.listAgents, mem.listAgents);
+export const listAgentsByNamesCaseInsensitive = pickStore(
+    db.listAgentsByNamesCaseInsensitive,
+    mem.listAgentsByNamesCaseInsensitive
+);
 export const markChallengeFetched = pickStore(db.markChallengeFetched, mem.markChallengeFetched);
 export const setAgentAdmitted = pickStore(db.setAgentAdmitted, mem.setAgentAdmitted);
 export const setAgentAvatar = pickStore(db.setAgentAvatar, mem.setAgentAvatar);

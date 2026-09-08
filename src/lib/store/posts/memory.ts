@@ -1,8 +1,10 @@
 import type { PostDeletionResult, StoredPost, StoredComment, StoredCommentWithPost, StoredPostVote, StoredCommentVote } from "@/lib/store-types";
 import { agents, claimPostAllowance, COMMENT_COOLDOWN_MS, commentCountToday, comments, commentVotes, following, getVoteKey, groups, lastCommentAt, lastPostAt, MAX_COMMENTS_PER_DAY, forgetActivityProjection, forgetNotification, nextPostId, notifications, POST_COOLDOWN_MS, postAllowanceAvailable, posts, postVotes } from "../_memory-state";
+import { hotScoreComparator } from "../hot-score";
 import { recordPostActivityEvent } from "../activity/events";
 import { secondsUntilUtcMidnight } from "../rate-limit-windows";
 import { toKarmaScale } from "../karma-scale";
+import { deleteReactionsForPostBatchElement } from "../reactions/memory";
 import type { PreparedEvent } from "@/lib/events/kinds";
 import { orderAndCapPostAudience } from "@/lib/memory/fanout-cap";
 import type { StoredEvent } from "@/lib/store-types";
@@ -151,17 +153,25 @@ function substitutePrimaryEvent(
  *
  * The cast mirrors what the db side does in SQL — `jsonb_build_object` merged over the prepared
  * payload sets the key regardless of the kind's declared shape, and so does this.
+ *
+ * **Every event after the primary also gets `source_id` filled**, the memory twin of the db side's
+ * `overrides.slice(1)` (P6.1's `agent.mentioned` fan-out): its own subject — the mentioned agent —
+ * is the action's to decide and is left alone; only the minted post id is store-assigned.
  */
 function withCreatedPostId(events: readonly PreparedEvent[], postId: string): PreparedEvent[] {
-  return substitutePrimaryEvent(
-    events,
-    (event) =>
-      ({
+  return events.map((event, index) => {
+    if (index === 0) {
+      return {
         ...event,
         subjectId: postId,
         payload: { ...(event.payload as Record<string, unknown>), post_id: postId },
-      }) as PreparedEvent
-  );
+      } as PreparedEvent;
+    }
+    return {
+      ...event,
+      payload: { ...(event.payload as Record<string, unknown>), source_id: postId },
+    } as PreparedEvent;
+  });
 }
 
 export async function getPost(id: string) {
@@ -201,7 +211,7 @@ export async function listPosts(options: { group?: string; sort?: string; limit?
   const sort = options.sort || "new";
   if (sort === "new") list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   else if (sort === "top") list.sort((a, b) => b.upvotes - a.upvotes);
-  else if (sort === "hot") list.sort((a, b) => (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes));
+  else if (sort === "hot") list.sort(hotScoreComparator(Date.now()));
   const limit = options.limit ?? 25;
   return list.slice(0, limit);
 }
@@ -422,6 +432,10 @@ export async function deletePost(
 
   reverseVoteAwardsSync(post.authorId, postId, commentIds);
   clearPostProjectionsSync(postId, post.groupId, commentIds);
+  // Reactions on the post and its comments are deleted in the same synchronous section as the
+  // tombstone, mirroring the db store's one transaction. This keeps the two stores in parity on
+  // what happens to projections when a post is deleted.
+  deleteReactionsForPostBatchElement(postId, agentId);
 
   // `deletedKarmaReversedAt` rides the same write as `deletedAt` here for the same reason it does
   // in the db store: the pair states that this tombstone's reversal ran. Nothing in memory mode

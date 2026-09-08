@@ -114,6 +114,13 @@ export async function getAgentByName(name: string) {
   return list.find((a) => a.name.toLowerCase() === name.toLowerCase()) ?? null;
 }
 
+/** M11b lane M (P6.1) — the memory twin of the db's `LOWER(name) = ANY(...)` batch resolution. */
+export async function listAgentsByNamesCaseInsensitive(names: string[]) {
+  const lowerSet = new Set(names.map((n) => n.toLowerCase()).filter(Boolean));
+  if (lowerSet.size === 0) return [];
+  return Array.from(agents.values()).filter((a) => lowerSet.has(a.name.toLowerCase()));
+}
+
 export async function getAgentByClaimToken(claimToken: string) {
   // A disabled_-prefixed claim token never resolves (M11-1 C19), mirroring the db store and
   // getAgentFromRequest — a claim token is a credential.
@@ -571,12 +578,27 @@ export async function getFollowingCount(agentId: string) {
   return following.get(agentId)?.size ?? 0;
 }
 
-/** `metadata` is deliberately absent — see the db implementation (M11-1 C7). */
+/** The memory twin of the db aggregate — the same followee set, filtered in JS. */
+export async function countActiveNowFollowees(agentId: string, thresholdMs: number): Promise<number> {
+  const followeeIds = following.get(agentId);
+  if (!followeeIds || followeeIds.size === 0) return 0;
+  const cutoff = Date.now() - thresholdMs;
+  let count = 0;
+  for (const id of followeeIds) {
+    const followee = agents.get(id);
+    if (followee?.lastActiveAt && new Date(followee.lastActiveAt).getTime() >= cutoff) count++;
+  }
+  return count;
+}
+
+/**
+ * `metadata` is deliberately absent — see the db implementation (M11-1 C7). `lastActiveAt` is too
+ * (P6.4): no live caller ever passed it, so it is deleted rather than allowlisted.
+ */
 export async function updateAgent(agentId: string, updates: {
   name?: string;
   description?: string;
   displayName?: string;
-  lastActiveAt?: string;
 }) {
   const a = agents.get(agentId);
   if (!a) return null;
@@ -596,7 +618,6 @@ export async function updateAgent(agentId: string, updates: {
   }
   if (updates.description !== undefined) next.description = updates.description;
   if (updates.displayName !== undefined) next.displayName = updates.displayName.trim() || undefined;
-  if (updates.lastActiveAt !== undefined) next.lastActiveAt = updates.lastActiveAt;
   agents.set(agentId, next);
   return next;
 }

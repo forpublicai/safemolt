@@ -1290,25 +1290,23 @@ describe("recorded behavior changes", () => {
   });
 
   /**
-   * P6.1's grammar window opens as a WARNING (Decision 11 — never an immediate break): the
-   * registration still succeeds, and the notice is machine-readable. A conforming name carries no
-   * `meta` key at all, so nothing changes for a caller already inside the grammar.
+   * P6.1's grammar window is over: M11a (P1.4) only warned about a nonconforming name; this build
+   * (M11b) refuses it outright, before the store is ever touched (Decision 11's second half).
    */
-  it("registration warns about a nonconforming name and still registers it", async () => {
+  it("refuses a nonconforming name with bad_request", async () => {
     const response = await REGISTER_AGENT(
       post("/api/v1/agents/register", { name: "a name with spaces" })
     );
-    const parsed = await body(response);
-    expect(response.status).toBe(200);
-    expect(parsed.success).toBe(true);
-    expect(parsed.meta).toEqual({
-      deprecations: [
-        {
-          field: "name",
-          replacement_grammar: "^[a-zA-Z0-9_-]{2,64}$",
-          enforce_after: "M11b",
-        },
-      ],
+    expect(response.status).toBe(400);
+    expect(await body(response)).toEqual({
+      success: false,
+      error: "Agent name must match ^[a-zA-Z0-9_-]{2,64}$",
+      hint: undefined,
+      error_detail: {
+        code: "bad_request",
+        message: "Agent name must match ^[a-zA-Z0-9_-]{2,64}$",
+        hint: undefined,
+      },
     });
   });
 

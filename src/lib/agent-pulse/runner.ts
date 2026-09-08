@@ -138,6 +138,12 @@ const MENTION_REASON = "mention";
  */
 export const IDLE_WAKEUP_REASON = "idle";
 
+/**
+ * `dm.sent`'s wakeup reason (M11b Lane D, P6.3) — matches `wakeup-router.ts`'s own `DM_REASON`
+ * (spelled independently there, same convention `COMMENT_ON_MY_POST_REASON` follows above).
+ */
+const DM_REASON = "dm";
+
 /** Reasons this dispatcher routes to the narrow "consider replying" path. */
 const REPLY_REASONS: ReadonlySet<string> = new Set([
   COMMENT_ON_MY_POST_REASON,
@@ -148,6 +154,13 @@ const REPLY_REASONS: ReadonlySet<string> = new Set([
 /** The one tool the reply/mention path may invoke — also the only terminal action this train's
  *  execution guard covers (see `actions/comments.ts`'s `execution_guard_failed` refusal). */
 const REPLY_TOOL_NAMES: ReadonlySet<string> = new Set(["create_comment"]);
+
+/**
+ * The two DM tools a `dm` wakeup may invoke. Names come from a LATER round's
+ * `agent-tools/definitions/messages.ts`, which does not exist yet — `toolsNamed()` just filters
+ * `PLATFORM_TOOLS`, so an unregistered name matches nothing until that file lands.
+ */
+const DM_TOOL_NAMES: ReadonlySet<string> = new Set(["send_dm", "read_dm_thread"]);
 
 /** The one tool the playground_round path may invoke ("narrows tools to the playground submit
  *  surface" per the plan). */
@@ -172,6 +185,11 @@ export function focusForWakeup(wakeup: StoredWakeup): SensesFocus {
   }
   if (wakeup.reason === PLAYGROUND_ROUND_REASON) {
     return { kind: "playground_round", sessionId: String(payload.session_id ?? "") };
+  }
+  if (wakeup.reason === DM_REASON) {
+    // The wakeup's own payload (`wakeup-router.ts`'s `routeDmSent`) carries the SENDER as
+    // `other_agent_id` — the recipient being woken needs to know who to reply to.
+    return { kind: "dm", otherAgentId: String(payload.other_agent_id ?? "") };
   }
   return { kind: "idle" };
 }
@@ -446,6 +464,20 @@ async function runPlaygroundRoundWakeup(
   });
 }
 
+/**
+ * `dm`: covered by the same lease-renewal fence every narrow reason gets. `"discussion"` is a
+ * deliberate, minimal reuse of the existing `LoopDomain` — there is no dedicated `messages` domain
+ * yet (out-of-fence: `agent-runtime/index.ts` is outside this lane), and the domain only affects
+ * prompt guidance text here; `toolsNamed()` filters by the explicit `DM_TOOL_NAMES` set, not by
+ * domain, so the narrowing itself is exact regardless.
+ */
+async function runDmWakeup(agent: StoredAgent, wakeup: StoredWakeup, claimToken: string): Promise<WakeupOutcome> {
+  return runNarrowWakeup(agent, wakeup, claimToken, focusForWakeup(wakeup), {
+    toolNames: DM_TOOL_NAMES,
+    domain: "discussion",
+  });
+}
+
 /** Route one claimed wakeup by `reason`. Always completes it exactly once before returning. */
 async function runClaimedWakeup(wakeup: StoredWakeup, claimToken: string): Promise<WakeupOutcome> {
   const agent = await getAgentById(wakeup.agentId);
@@ -461,6 +493,7 @@ async function runClaimedWakeup(wakeup: StoredWakeup, claimToken: string): Promi
   if (wakeup.reason === IDLE_WAKEUP_REASON) return runIdleWakeup(agent, wakeup, claimToken);
   if (wakeup.reason === PLAYGROUND_ROUND_REASON) return runPlaygroundRoundWakeup(agent, wakeup, claimToken);
   if (REPLY_REASONS.has(wakeup.reason)) return runReplyWakeup(agent, wakeup, claimToken);
+  if (wakeup.reason === DM_REASON) return runDmWakeup(agent, wakeup, claimToken);
 
   // An unrecognized reason (a future producer this dispatcher does not know yet): treat it as idle's
   // full-discovery path rather than silently stranding the claim — the safest default for a reason

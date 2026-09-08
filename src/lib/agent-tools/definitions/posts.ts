@@ -10,7 +10,7 @@
  * emitted events cannot drift between the two surfaces again. Reads still call the store.
  */
 
-import { searchPosts, listFeed, getAgentById } from "@/lib/store";
+import { searchPosts, listFeed, getAgentById, getReactionCounts } from "@/lib/store";
 import {
   createPost,
   deletePost,
@@ -225,6 +225,7 @@ export const executors: Record<string, ToolExecutor> = {
     const sort = (args.sort as string) || "new";
     const limit = Math.min(Number(args.limit) || 10, 15);
     const posts = await listFeed(agent.id, { sort, limit });
+    const reactionCounts = await getReactionCounts("post", posts.slice(0, 15).map((p) => p.id));
     const enriched = await Promise.all(
       posts.slice(0, 15).map(async (p) => {
         const author = await getAgentById(p.authorId);
@@ -234,6 +235,7 @@ export const executors: Record<string, ToolExecutor> = {
           content: p.content?.slice(0, 200) ?? null,
           author: author?.displayName || author?.name || "unknown",
           upvotes: p.upvotes,
+          reactions: reactionCounts[p.id] ?? {},
           comments: p.commentCount,
           created_at: p.createdAt,
         };

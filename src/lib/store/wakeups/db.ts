@@ -129,6 +129,42 @@ export function rowToWakeup(row: unknown): StoredWakeup {
   };
 }
 
+/**
+ * M11b Lane W (P5.1) — the shared ledger-row CTE every enqueue/re-arm insert path splices in.
+ *
+ * A `webhook_deliveries` row rides the SAME statement as the wakeup it belongs to (`UNIQUE
+ * (wakeup_id)`, `ON CONFLICT DO NOTHING`) — never a second auto-committed call, which would let a
+ * crash between the two leave a webhook-primary wakeup with no ledger to claim it through. Reached
+ * by bare table name (`agent_webhooks`), never by importing `store/webhooks/*`: this module is
+ * "kind-agnostic on purpose" (see the file header) and a domain import here would be a layering edge.
+ *
+ * `rowCteNames` are UNION'd because `ins` and `rearmed` are mutually exclusive by construction (see
+ * `createOrReArmWakeup`'s own doc comment) — whichever one actually produced a row is the row this
+ * fires for. Gated on `delivery = 'webhook'` OR a live (`disabled_at IS NULL`) `mode = 'both'`
+ * registration, matching `resolveWakeupDelivery`'s precedence and P5.1's "mode='both' additionally
+ * creates a delivery-ledger row for internal-primary wakeups" rule.
+ */
+function webhookLedgerCte(rowCteNames: readonly string[], namePrefix = "wh"): string {
+  const rowName = `${namePrefix}_row`;
+  const union = rowCteNames.map((name) => `SELECT id, agent_id, delivery FROM ${name}`).join("\n      UNION ALL\n      ");
+  return `
+    ${rowName} AS (
+      ${union}
+    ),
+    ${namePrefix}_ledger AS (
+      INSERT INTO webhook_deliveries (wakeup_id, agent_id, next_attempt_at)
+      SELECT r.id, r.agent_id, NOW()
+      FROM ${rowName} r
+      WHERE r.delivery = 'webhook'
+         OR EXISTS (
+           SELECT 1 FROM agent_webhooks h
+           WHERE h.agent_id = r.agent_id AND h.mode = 'both' AND h.disabled_at IS NULL
+         )
+      ON CONFLICT (wakeup_id) DO NOTHING
+      RETURNING wakeup_id
+    )`;
+}
+
 /** The INSERT both write paths share, so the column list and the casts have one definition. */
 const INSERT_WAKEUP = `
   INSERT INTO agent_wakeups (agent_id, reason, event_id, payload, delivery, due_at)
@@ -163,7 +199,15 @@ function insertParams(input: EnqueueWakeupInput | CreateOrReArmWakeupInput): unk
  * completed idle row stops blocking and a fresh idle wakeup may be enqueued again.
  */
 export async function enqueueWakeup(input: EnqueueWakeupInput): Promise<EnqueueWakeupResult> {
-  const rows = await sql!(`${INSERT_WAKEUP} RETURNING *`, insertParams(input));
+  const rows = await sql!(
+    `WITH ins AS (
+      ${INSERT_WAKEUP}
+      RETURNING *
+    ),
+    ${webhookLedgerCte(["ins"])}
+    SELECT ins.* FROM ins`,
+    insertParams(input)
+  );
   if (rows.length === 0) return { created: false, wakeup: null };
   return { created: true, wakeup: rowToWakeup(rows[0]) };
 }
@@ -209,7 +253,8 @@ export async function createOrReArmWakeup(
         AND result IS DISTINCT FROM 'acted'
         AND (result IS DISTINCT FROM 'budget_exhausted' OR completed_at::date < CURRENT_DATE)
       RETURNING *
-    )
+    ),
+    ${webhookLedgerCte(["ins", "rearmed"])}
     SELECT (SELECT to_jsonb(ins) FROM ins) AS created_row,
            (SELECT to_jsonb(rearmed) FROM rearmed) AS rearmed_row
   `,
@@ -297,7 +342,8 @@ export async function createOrReArmPlaygroundRoundWakeup(
         AND result IS DISTINCT FROM 'acted'
         AND (result IS DISTINCT FROM 'budget_exhausted' OR completed_at::date < CURRENT_DATE)
       RETURNING *
-    )
+    ),
+    ${webhookLedgerCte(["ins", "rearmed"])}
     SELECT (SELECT to_jsonb(ins) FROM ins) AS created_row,
            (SELECT to_jsonb(rearmed) FROM rearmed) AS rearmed_row
   `,
@@ -421,17 +467,18 @@ export async function findRoundOpenedEventId(sessionId: string, round: number): 
 }
 
 /**
- * Delivery resolution — the pre-P5 rule, in ONE place.
- *
- * Both callers of this lane (the wakeup-router consumer and the playground deadline sweep) apply it
- * instead of each inventing their own: loop-enabled ⇒ `internal`; a missing row or `enabled = false`
- * ⇒ `null`, and **the caller must not create a wakeup for that agent at all**. Webhook delivery
- * (P5.1) joins this function later; until then `webhook` and `none` are storable values that nothing
- * resolves.
+ * Delivery resolution, in ONE place. **P5.1 joins it here**: loop-enabled ⇒ `internal`; else a live
+ * (`disabled_at IS NULL`) `agent_webhooks` row ⇒ `webhook`; else `null` — the caller creates nothing.
+ * `none` stays unresolved by design (P5.1: "a row nobody consumes is bloat").
  */
-export async function resolveWakeupDelivery(agentId: string): Promise<"internal" | null> {
+export async function resolveWakeupDelivery(agentId: string): Promise<"internal" | "webhook" | null> {
   const state = await getLoopState(agentId);
-  return state?.enabled === true ? "internal" : null;
+  if (state?.enabled === true) return "internal";
+  const rows = await sql!(
+    `SELECT 1 FROM agent_webhooks WHERE agent_id = $1 AND disabled_at IS NULL LIMIT 1`,
+    [agentId]
+  );
+  return rows.length > 0 ? "webhook" : null;
 }
 
 /**

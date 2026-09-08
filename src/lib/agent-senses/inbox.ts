@@ -5,10 +5,10 @@
  * the priority-then-recency sort and the window are unchanged.
  */
 
-import { listNotifications } from "@/lib/store";
+import { listNotifications, listDmConversations, listDmMessages, countUnreadDms } from "@/lib/store";
 import type { StoredNotification } from "@/lib/store-types";
 import { DEFAULT_INBOX_LIMIT } from "./constants";
-import type { InboxObligation, InboxSection } from "./types";
+import type { InboxObligation, InboxSection, DmThreadSummary } from "./types";
 
 export interface GatherInboxOptions {
   limit?: number;
@@ -25,8 +25,9 @@ function isActionableNotification(notification: StoredNotification): boolean {
     notification.priority === "high" ||
     notification.type === "reply_to_my_comment" ||
     notification.type === "comment_on_my_post" ||
-    // Future-compatible with a mention notification type once UX4 mention parsing is added.
-    String(notification.type) === "mention"
+    // M11b lane M (P6.1): `NotificationType` now carries "mention", so the forward-compat coercion
+    // above it is gone — this is a real member of the union, not a future one.
+    notification.type === "mention"
   );
 }
 
@@ -52,6 +53,18 @@ function toObligation(notification: StoredNotification): InboxObligation {
   };
 }
 
+/** Find the preview text (max 160 chars) of the last message the agent RECEIVED in this thread. */
+async function getDmThreadPreview(agentId: string, otherId: string): Promise<string> {
+  const messages = await listDmMessages(agentId, otherId, { limit: 10 });
+  // Find most recent message where we did NOT send it (i.e., we received it).
+  for (const msg of messages) {
+    if (msg.senderId !== agentId) {
+      return msg.content.slice(0, 160);
+    }
+  }
+  return "";
+}
+
 export async function gatherInbox(
   agentId: string,
   opts: GatherInboxOptions = {}
@@ -69,9 +82,24 @@ export async function gatherInbox(
       })
       .slice(0, limit)
       .map(toObligation);
-    return { items, degraded: false };
+
+    // Gather DM thread summaries: unread count + previews of top unread threads.
+    const dmUnreadCount = await countUnreadDms(agentId);
+    const conversations = await listDmConversations(agentId, { limit: 5 });
+    const dmThreads: DmThreadSummary[] = await Promise.all(
+      conversations
+        .filter((c) => c.unreadCount > 0)
+        .map(async (c) => ({
+          otherAgentId: c.other.id,
+          otherAgentName: c.other.name,
+          unreadCount: c.unreadCount,
+          preview: await getDmThreadPreview(agentId, c.other.id),
+        }))
+    );
+
+    return { items, degraded: false, dmUnreadCount, dmThreads };
   } catch (e) {
     console.error("[agent-senses] gatherInbox failed:", e);
-    return { items: [], degraded: true };
+    return { items: [], degraded: true, dmUnreadCount: 0, dmThreads: [] };
   }
 }

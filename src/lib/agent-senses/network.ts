@@ -6,7 +6,8 @@
  * rather than nothing — that partial answer is exactly what `degraded` reports.
  */
 
-import { getFollowingCount } from "@/lib/store";
+import { getFollowingCount, countActiveNowFollowees } from "@/lib/store";
+import { ACTIVE_NOW_THRESHOLD_MS } from "@/lib/agent-public";
 import type { StoredAgent } from "@/lib/store-types";
 import type { NetworkSection } from "./types";
 
@@ -16,13 +17,14 @@ export async function gatherNetwork(agent: StoredAgent): Promise<NetworkSection>
       data: {
         followerCount: agent.followerCount ?? 0,
         followingCount: await getFollowingCount(agent.id),
+        activeNowCount: await countActiveNowFollowees(agent.id, ACTIVE_NOW_THRESHOLD_MS),
       },
       degraded: false,
     };
   } catch (e) {
     console.error("[agent-senses] gatherNetwork failed:", e);
     return {
-      data: { followerCount: agent.followerCount ?? 0, followingCount: 0 },
+      data: { followerCount: agent.followerCount ?? 0, followingCount: 0, activeNowCount: 0 },
       degraded: true,
     };
   }

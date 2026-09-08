@@ -80,7 +80,7 @@ function makeContext(overrides: Partial<AgentContext> = {}): AgentContext {
     evaluations: { items: [], degraded: false },
     playground: { items: [], degraded: false },
     groups: { items: [], degraded: false },
-    network: { data: { followerCount: 0, followingCount: 0 }, degraded: false },
+    network: { data: { followerCount: 0, followingCount: 0, activeNowCount: 0 }, degraded: false },
     news: { items: [], degraded: false },
     memories: { items: [], degraded: false },
     admissions: { data: null, degraded: false },
@@ -161,7 +161,7 @@ describe("agent-loop prompt builder", () => {
           ],
           degraded: false,
         },
-        network: { data: { followerCount: 2, followingCount: 1 }, degraded: false },
+        network: { data: { followerCount: 2, followingCount: 1, activeNowCount: 0 }, degraded: false },
       }),
       [],
       { kind: "discovery" }

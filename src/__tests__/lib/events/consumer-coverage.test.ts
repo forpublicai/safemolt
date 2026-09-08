@@ -312,6 +312,17 @@ describe("coverage manifests", () => {
       "admissions.offer_declined": "none",
       "admissions.offer_expired": "none",
       "agent_loop.action": "none",
+      // M11b lane R (P6.2): reactions — new kind, no legacy writer, `on` at birth.
+      "reaction.added": "on",
+      "reaction.removed": "none",
+      // M11b lane D (P6.3): DMs — new kind, no legacy writer, `on` at birth.
+      "dm.sent": "on",
+      "dm.blocked": "none",
+      "dm.unblocked": "none",
+      // M11b lane W (P5.1): webhooks — new kind, no legacy writer, `on` at birth.
+      "webhook.disabled": "on",
+      // M11b lane-m (P6.1): mentions — derived event, no legacy writer, `on` at birth.
+      "agent.mentioned": "on",
     });
     expect(activityTrailCoverage).toEqual({
       "system.activation_fence": "none",
@@ -369,6 +380,15 @@ describe("coverage manifests", () => {
       "admissions.offer_declined": "none",
       "admissions.offer_expired": "none",
       "agent_loop.action": "shadow",
+      // M11b lanes R/D/W: none of the three new kind families has a public activity kind.
+      "reaction.added": "none",
+      "reaction.removed": "none",
+      "dm.sent": "none",
+      "dm.blocked": "none",
+      "dm.unblocked": "none",
+      "webhook.disabled": "none",
+      // M11b lane-m (P6.1): a mention is inbox/wakeup only, not a public trail entry.
+      "agent.mentioned": "none",
     });
     expect(memoryIngestCoverage).toEqual({
       "system.activation_fence": "none",
@@ -425,6 +445,15 @@ describe("coverage manifests", () => {
       "admissions.offer_declined": "none",
       "admissions.offer_expired": "none",
       "agent_loop.action": "none",
+      // M11b lanes R/D/W: none of the three new kind families schedules memory ingest.
+      "reaction.added": "none",
+      "reaction.removed": "none",
+      "dm.sent": "none",
+      "dm.blocked": "none",
+      "dm.unblocked": "none",
+      "webhook.disabled": "none",
+      // M11b lane-m (P6.1): no memory/vector ingest for a mention — nothing new to embed.
+      "agent.mentioned": "none",
     });
   });
 
@@ -437,13 +466,12 @@ describe("coverage manifests", () => {
    * NOT appear in `DECLARED_LEGACY_WRITERS` — the `none`-with-a-declared-writer rule above already
    * fails it from the other direction.
    *
-   * Two kinds route, and the shortfall against P3.2's prose is the KIND UNION's doing: the plan also
-   * describes `agent.mentioned` (with mention suppression) and `dm.sent`, and neither kind exists in
-   * this build — they belong to a later train (P6.1 / b2). There is no producer, no payload and
-   * nothing to suppress against. `agent.followed` routes to nothing on purpose, which is what the
-   * plan says too.
+   * Four kinds route as of M11b: `comment.created` and `playground.round_opened` from a1/a4,
+   * `dm.sent` (lane D, P6.3), and `agent.mentioned` (lane-m, P6.1) — post source always wakes,
+   * comment source suppressed per the reply/comment-on-my-post predicate. `agent.followed` routes
+   * to nothing on purpose, which is what the plan says too.
    */
-  it("ships the a4 wakeup-router manifest, on for exactly two kinds", () => {
+  it("ships the a4 wakeup-router manifest, on for exactly four kinds", () => {
     expect(wakeupRouterCoverage).toEqual({
       "system.activation_fence": "none",
       "post.created": "none",
@@ -497,6 +525,16 @@ describe("coverage manifests", () => {
       "admissions.offer_declined": "none",
       "admissions.offer_expired": "none",
       "agent_loop.action": "none",
+      "reaction.added": "none",
+      "reaction.removed": "none",
+      // The recipient of a DM owes a reply — the third `on` kind (lane D, P6.3).
+      "dm.sent": "on",
+      "dm.blocked": "none",
+      "dm.unblocked": "none",
+      "webhook.disabled": "none",
+      // The fourth `on` kind (lane-m, P6.1): a mention is a reason to check in, subject to
+      // suppression for a comment-source mention of the reply/comment-on-my-post target.
+      "agent.mentioned": "on",
     });
     // No `legacy`, no `shadow` — the structural claim, asserted rather than merely written down.
     expect(Object.values(wakeupRouterCoverage).filter((state) => state !== "on" && state !== "none"))

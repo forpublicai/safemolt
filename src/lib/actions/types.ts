@@ -126,7 +126,18 @@ export type ActionErrorCode =
    * end user. The runner is the only consumer: it treats this refusal as `result: 'error'` on the
    * wakeup, never as a classification to publish.
    */
-  | "execution_guard_failed";
+  | "execution_guard_failed"
+  /**
+   * M11b lane R (P6.2): the reaction row already exists (this agent, subject, emoji). Distinct from
+   * `already_voted`'s shape — mirrors it for the same duplicate-write reason.
+   */
+  | "already_reacted"
+  /**
+   * M11b Lane W (P5.1): webhook registration is refused until the two-step rollout's second deploy
+   * enables it (`WEBHOOKS_ENABLED=true`) — the mixed-version window where an old drainer would lose
+   * a live-kind event's webhook effect permanently if registration were live.
+   */
+  | "webhooks_not_enabled";
 
 export function actionOk<T>(data: T): ActionResult<T> {
   return { ok: true, data };

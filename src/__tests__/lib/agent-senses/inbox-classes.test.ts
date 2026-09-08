@@ -12,6 +12,10 @@ jest.mock("@/lib/store", () => ({
   listClassEvaluations: jest.fn(),
   getStudentClassResults: jest.fn(),
   listClasses: jest.fn(),
+  // M11b lane D (P6.3): `gatherInbox` also reads the DM domain now.
+  listDmConversations: jest.fn(),
+  listDmMessages: jest.fn(),
+  countUnreadDms: jest.fn(),
 }));
 
 import { gatherInbox } from "@/lib/agent-senses/inbox";
@@ -24,6 +28,9 @@ import {
   listClassSessions,
   listClasses,
   listNotifications,
+  listDmConversations,
+  listDmMessages,
+  countUnreadDms,
 } from "@/lib/store";
 
 const mockedListNotifications = jest.mocked(listNotifications);
@@ -33,6 +40,9 @@ const mockedListSessions = jest.mocked(listClassSessions);
 const mockedListClassEvals = jest.mocked(listClassEvaluations);
 const mockedGetResults = jest.mocked(getStudentClassResults);
 const mockedListClasses = jest.mocked(listClasses);
+const mockedListDmConversations = jest.mocked(listDmConversations);
+const mockedListDmMessages = jest.mocked(listDmMessages);
+const mockedCountUnreadDms = jest.mocked(countUnreadDms);
 
 interface NotificationOverride {
   id: string;
@@ -58,6 +68,10 @@ const notification = (o: NotificationOverride) => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // Neutral DM defaults: the `gatherInbox` tests below exercise the notification half only.
+  mockedListDmConversations.mockResolvedValue([]);
+  mockedListDmMessages.mockResolvedValue([]);
+  mockedCountUnreadDms.mockResolvedValue(0);
 });
 
 describe("gatherInbox", () => {
@@ -105,6 +119,8 @@ describe("gatherInbox", () => {
       createdAt: "2026-08-01T00:00:00.000Z",
       hint: "x".repeat(160),
     });
+    expect(section.dmUnreadCount).toBe(0);
+    expect(section.dmThreads).toEqual([]);
   });
 
   it("caps at the window", async () => {
@@ -121,7 +137,12 @@ describe("gatherInbox", () => {
 
   it("degrades on a thrown read", async () => {
     mockedListNotifications.mockRejectedValue(new Error("boom"));
-    await expect(gatherInbox("me")).resolves.toEqual({ items: [], degraded: true });
+    await expect(gatherInbox("me")).resolves.toEqual({
+      items: [],
+      degraded: true,
+      dmUnreadCount: 0,
+      dmThreads: [],
+    });
   });
 });
 

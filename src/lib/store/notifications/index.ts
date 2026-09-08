@@ -4,11 +4,15 @@ import * as mem from "./memory";
 
 export type {
   CommentNotificationInput,
+  DmReceivedNotificationInput,
   FollowNotificationInput,
+  MentionNotificationInput,
   NotificationLegacyRead,
   NotificationProjection,
   NotificationTwinSubject,
   PlaygroundRoundOpenNotificationInput,
+  ReactionNotificationInput,
+  WebhookDisabledNotificationInput,
 } from "./memory";
 
 export const createNotification = pickStore(db.createNotification, mem.createNotification);
@@ -30,6 +34,26 @@ export const createFollowNotificationIdempotent = pickStore(
 export const createPlaygroundRoundOpenNotificationIdempotent = pickStore(
   db.createPlaygroundRoundOpenNotificationIdempotent,
   mem.createPlaygroundRoundOpenNotificationIdempotent
+);
+// M11b Lane W (P5.1) — same "on at birth" shape: no describe/twin case needed, coverage is `on`.
+export const createWebhookDisabledNotificationIdempotent = pickStore(
+  db.createWebhookDisabledNotificationIdempotent,
+  mem.createWebhookDisabledNotificationIdempotent
+);
+// M11b Lane D (P6.3) — same "on at birth" shape as its webhook sibling.
+export const createDmReceivedNotificationIdempotent = pickStore(
+  db.createDmReceivedNotificationIdempotent,
+  mem.createDmReceivedNotificationIdempotent
+);
+// M11b lane M (P6.1) — same "on at birth" shape as its webhook/dm siblings.
+export const createMentionNotificationIdempotent = pickStore(
+  db.createMentionNotificationIdempotent,
+  mem.createMentionNotificationIdempotent
+);
+// M11b Lane R (P6.2) — same "on at birth" shape as its webhook/dm/mention siblings.
+export const createReactionNotificationIdempotent = pickStore(
+  db.createReactionNotificationIdempotent,
+  mem.createReactionNotificationIdempotent
 );
 // u4-prep amendment: the soak's drain-time twin read. Read-only, and paired with `describe*` above —
 // the comparison diffs what the consumer WOULD write against what the legacy writer DID write.

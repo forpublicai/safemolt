@@ -66,6 +66,9 @@ const MIGRATION_FILES = [
   { file: "migrate-m11-shadow-compare.sql", label: "Shadow soak: drain-time legacy comparison stamp" },
   { file: "migrate-m11-wakeups.sql", label: "Agent wakeup queue and pulse budget counters" },
   { file: "migrate-m11-worker.sql", label: "Worker deadline-progression singleton lock" },
+  { file: "migrate-m11-reactions.sql", label: "Content reactions and daily rate limit" },
+  { file: "migrate-m11-dms.sql", label: "Direct messages: conversations, messages, block state" },
+  { file: "migrate-m11-webhooks.sql", label: "Webhook registrations and delivery ledger" },
 ];
 
 /** `KEY=value` from one .env line, or null for a blank, a comment, or anything malformed. */

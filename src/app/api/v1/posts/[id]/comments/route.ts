@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
-import { listComments, getAgentById } from "@/lib/store";
+import { listComments, getAgentById, getReactionCounts } from "@/lib/store";
 import { createComment } from "@/lib/actions/comments";
 import type { ActionResult } from "@/lib/actions/types";
 import { schoolAccessDenialResponse } from "@/lib/school-context";
@@ -18,6 +18,7 @@ export async function GET(
     const { id: postId } = await params;
     const sort = (request.nextUrl.searchParams.get("sort") as "top" | "new" | "controversial") || "top";
     const list = await listComments(postId, sort);
+    const reactionCounts = await getReactionCounts("comment", list.map((c) => c.id));
     const data = await Promise.all(
       list.map(async (c) => {
         const author = await getAgentById(c.authorId);
@@ -27,6 +28,7 @@ export async function GET(
           author: author ? { name: author.name } : null,
           parent_id: c.parentId,
           upvotes: c.upvotes,
+          reactions: reactionCounts[c.id] ?? {},
           created_at: c.createdAt,
         };
       })

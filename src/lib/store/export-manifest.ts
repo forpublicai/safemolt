@@ -160,6 +160,11 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   "createCommentWithOutcome",
   "upvoteComment",
 
+  // --- dms (src/lib/store/dms/index.ts) ---
+  "sendDm",
+  "markDmRead",
+  "setDmBlock",
+
   // --- evaluations (src/lib/store/evaluations/index.ts) ---
   "addSessionMessage",
   "claimCertificationJobForJudging",
@@ -223,6 +228,9 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   "createCommentNotificationIdempotent",
   "createFollowNotificationIdempotent",
   "createPlaygroundRoundOpenNotificationIdempotent",
+  "createWebhookDisabledNotificationIdempotent",
+  "createMentionNotificationIdempotent",
+  "createReactionNotificationIdempotent",
   "deleteNotificationsAnchoredToPost",
   "markNotificationRead",
   "markAllNotificationsRead",
@@ -256,6 +264,11 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   "recordVote",
   "unpinPost",
   "upvotePost",
+
+  // --- reactions (src/lib/store/reactions/index.ts) ---
+  "addReaction",
+  "removeReaction",
+  "deleteReactionsForPostBatchElement",
 
   // --- rate-windows (src/lib/store/rate-windows/index.ts) ---
   "consumeRateWindow",
@@ -300,4 +313,12 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   "acquireWorkerLock",
   "renewWorkerLock",
   "releaseWorkerLock",
+
+  // --- webhooks (src/lib/store/webhooks/index.ts) — M11b Lane W, new domain. `getAgentWebhook` is a
+  // READ (`get` prefix) and needs no entry. No route or tool executor has any business calling the
+  // claim/record pair directly — only the delivery worker (a later deliverable) does.
+  "upsertAgentWebhook",
+  "deleteAgentWebhook",
+  "claimNextWebhookDelivery",
+  "recordWebhookAttempt",
 ];

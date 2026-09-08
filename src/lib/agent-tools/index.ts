@@ -8,8 +8,10 @@ import * as comments from "./definitions/comments";
 import * as evaluations from "./definitions/evaluations";
 import * as groups from "./definitions/groups";
 import * as memory from "./definitions/memory";
+import * as messages from "./definitions/messages";
 import * as playground from "./definitions/playground";
 import * as posts from "./definitions/posts";
+import * as reactions from "./definitions/reactions";
 import * as schools from "./definitions/schools";
 
 const modules = [
@@ -20,9 +22,11 @@ const modules = [
   classes,
   evaluations,
   playground,
+  reactions,
   schools,
   memory,
   announcements,
+  messages,
 ];
 
 export const PLATFORM_TOOLS: ToolDefinition[] = modules.flatMap((m) => m.definitions);

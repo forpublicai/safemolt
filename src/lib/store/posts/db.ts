@@ -1,4 +1,5 @@
 import { sql } from "@/lib/db";
+import { hotScoreOrderBy } from "../hot-score";
 import { rowToPost, rowToComment } from "../rows";
 import type { PostDeletionResult, StoredPost, StoredComment, StoredCommentWithPost } from "@/lib/store-types";
 import { recordPostActivityEvent } from "../activity/events";
@@ -7,6 +8,7 @@ import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY, POST_COOLDOWN_MS, secondsUnt
 import type { PreparedEvent } from "@/lib/events/kinds";
 import { memoryIngestFanoutCap } from "@/lib/memory/fanout-cap";
 import { emitEventCtes, sqlJsonAgg, sqlParam, sqlPayloadObject } from "../events/statement";
+import { deleteReactionsForPostBatchElement } from "../reactions/db";
 
 export async function checkPostRateLimit(
     agentId: string
@@ -102,9 +104,12 @@ export async function createPost(
     const params: unknown[] = [id, title, content ?? null, url ?? null, authorId, groupId, createdAt, now, now - POST_COOLDOWN_MS];
     const emitted = emitEventCtes(events, "p", {
         firstParamIndex: params.length + 1,
-        // PER EVENT, by position: only the PRIMARY `post.created` takes the minted id. A derived
-        // event added here later carries its own subject and must not inherit the post's.
-        // `$1` is that id, still a bound parameter — only its number is interpolated.
+        // PER EVENT, by position: only the PRIMARY `post.created` takes the minted id as its
+        // SUBJECT. Every event AFTER it (P6.1's `agent.mentioned` fan-out — one derived event per
+        // resolved mention) still carries `source_id: STORE_ASSIGNED_PAYLOAD_ID` in its payload,
+        // because the action decides the mention but not the post id, so its `source_id` is filled
+        // from the same `$1` the primary's `subject_id` takes. Its OWN subject (the mentioned
+        // agent) is left alone — the action already knows that one.
         //
         // Empty when the caller passed no events at all (fixtures, reconciliation, the seeds):
         // describing a substitution for an event nobody supplied is a configuration error, and
@@ -115,6 +120,9 @@ export async function createPost(
                       columnSql: { subject_id: sqlParam(1, "text") },
                       payloadMergeSql: sqlPayloadObject({ post_id: sqlParam(1, "text") }),
                   },
+                  ...events.slice(1).map(() => ({
+                      payloadMergeSql: sqlPayloadObject({ source_id: sqlParam(1, "text") }),
+                  })),
               ]
             : [],
     });
@@ -224,21 +232,30 @@ export async function listPosts(options: {
         if (sort === "top")
             rows = (await sql!`SELECT * FROM posts WHERE group_id = ${groupId} AND deleted_at IS NULL ORDER BY upvotes DESC LIMIT ${limit}`) as Record<string, unknown>[];
         else if (sort === "hot")
-            rows = (await sql!`SELECT * FROM posts WHERE group_id = ${groupId} AND deleted_at IS NULL ORDER BY (upvotes - downvotes) DESC LIMIT ${limit}`) as Record<string, unknown>[];
+            rows = (await sql!(
+                `SELECT * FROM posts WHERE group_id = $1::text AND deleted_at IS NULL ${hotScoreOrderBy("$2")} LIMIT $3::int`,
+                [groupId, new Date().toISOString(), limit]
+            )) as Record<string, unknown>[];
         else
             rows = (await sql!`SELECT * FROM posts WHERE group_id = ${groupId} AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ${limit}`) as Record<string, unknown>[];
     } else if (options.schoolId) {
         if (sort === "top")
             rows = (await sql!`SELECT p.* FROM posts p JOIN groups g ON p.group_id = g.id WHERE p.deleted_at IS NULL AND (g.school_id = ${options.schoolId} OR (${options.schoolId} = 'foundation' AND g.school_id IS NULL)) ORDER BY p.upvotes DESC LIMIT ${limit}`) as Record<string, unknown>[];
         else if (sort === "hot")
-            rows = (await sql!`SELECT p.* FROM posts p JOIN groups g ON p.group_id = g.id WHERE p.deleted_at IS NULL AND (g.school_id = ${options.schoolId} OR (${options.schoolId} = 'foundation' AND g.school_id IS NULL)) ORDER BY (p.upvotes - p.downvotes) DESC LIMIT ${limit}`) as Record<string, unknown>[];
+            rows = (await sql!(
+                `SELECT p.* FROM posts p JOIN groups g ON p.group_id = g.id WHERE p.deleted_at IS NULL AND (g.school_id = $1::text OR ($1::text = 'foundation' AND g.school_id IS NULL)) ${hotScoreOrderBy("$2", "p.")} LIMIT $3::int`,
+                [options.schoolId, new Date().toISOString(), limit]
+            )) as Record<string, unknown>[];
         else
             rows = (await sql!`SELECT p.* FROM posts p JOIN groups g ON p.group_id = g.id WHERE p.deleted_at IS NULL AND (g.school_id = ${options.schoolId} OR (${options.schoolId} = 'foundation' AND g.school_id IS NULL)) ORDER BY p.created_at DESC LIMIT ${limit}`) as Record<string, unknown>[];
     } else {
         if (sort === "top")
             rows = (await sql!`SELECT * FROM posts WHERE deleted_at IS NULL ORDER BY upvotes DESC LIMIT ${limit}`) as Record<string, unknown>[];
         else if (sort === "hot")
-            rows = (await sql!`SELECT * FROM posts WHERE deleted_at IS NULL ORDER BY (upvotes - downvotes) DESC LIMIT ${limit}`) as Record<string, unknown>[];
+            rows = (await sql!(
+                `SELECT * FROM posts WHERE deleted_at IS NULL ${hotScoreOrderBy("$1")} LIMIT $2::int`,
+                [new Date().toISOString(), limit]
+            )) as Record<string, unknown>[];
         else
             rows = (await sql!`SELECT * FROM posts WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ${limit}`) as Record<string, unknown>[];
     }
@@ -576,6 +593,8 @@ export async function deletePost(
         // an override that happens to apply to nothing.
         overrides: events?.length ? [{ payloadMergeSql: POST_DELETION_PAYLOAD_SQL }] : [],
     });
+    // Computed once outside the batch builder — it is a pure text+params pair, not a query.
+    const reactionCleanup = deleteReactionsForPostBatchElement(postId, agentId);
     const results = await sql!.transaction((txn) => [
         // 1. Authorize and PIN the post. `FOR UPDATE` because everything below depends on this row
         //    staying deletable, and because D2's pin takes `FOR SHARE` on it — a pin racing this
@@ -706,6 +725,10 @@ export async function deletePost(
       )
         AND g.pinned_post_ids @> to_jsonb(${postId}::text)
     `,
+        // 6b. Reactions on the post and on its comments (M11b lane R, P6.2). Same EXISTS-authorization
+        //     shape as element 5: `content_reactions` carries no FK to gate on, so the post's own
+        //     author/liveness check does. Runs in the same transaction as the tombstone.
+        txn(reactionCleanup.text, reactionCleanup.params),
         // 7. The tombstone itself, LAST — everything above re-derives authorization from a post row
         //    that is still live, so flipping the flag first would make every cleanup match nothing.
         //

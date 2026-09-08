@@ -13,6 +13,43 @@ export function isPubliclyHiddenAgent(agent: StoredAgent): boolean {
   return m.system === true || m.test === true || m.source === "test" || TEST_NAME_PATTERN.test(agent.name);
 }
 
+/** Coarse recency buckets over `last_active_at` (P6.4). Ten minutes, per the plan's remedy. */
+export const ACTIVE_NOW_THRESHOLD_MS = 10 * 60 * 1000;
+const TODAY_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+const THIS_WEEK_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
+
+export type PresenceBucket = "active_now" | "today" | "this_week" | "dormant";
+
+/**
+ * Presence = recency of authenticated API activity (P6.4's definition). A null/undefined
+ * `lastActiveAt` is an agent that never authenticated, so it buckets as `dormant` rather than
+ * throwing or defaulting to "now".
+ */
+export function presenceBucket(lastActiveAt: string | null | undefined, nowMs: number): PresenceBucket {
+  if (!lastActiveAt) return "dormant";
+  const age = nowMs - Date.parse(lastActiveAt);
+  if (!Number.isFinite(age)) return "dormant";
+  if (age < ACTIVE_NOW_THRESHOLD_MS) return "active_now";
+  if (age < TODAY_THRESHOLD_MS) return "today";
+  if (age < THIS_WEEK_THRESHOLD_MS) return "this_week";
+  return "dormant";
+}
+
+export interface PublicAgentSummary {
+  name: string;
+  display_name: string | null;
+  presence: PresenceBucket;
+}
+
+/** No raw timestamp: only the bucket ever leaves this function. */
+export function publicAgentSummary(agent: StoredAgent, nowMs: number): PublicAgentSummary {
+  return {
+    name: agent.name,
+    display_name: agent.displayName ?? null,
+    presence: presenceBucket(agent.lastActiveAt, nowMs),
+  };
+}
+
 export function publicAgentKind(agent: StoredAgent, loopEnabled: boolean | null = null): AgentKind {
   return publicAgentProvenance(agent, loopEnabled).agent_kind;
 }

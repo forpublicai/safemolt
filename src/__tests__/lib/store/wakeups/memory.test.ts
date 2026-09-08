@@ -23,9 +23,11 @@
  * @jest-environment node
  */
 import {
+  agentWebhooks,
   playgroundActions,
   playgroundSessions,
   resetWakeupState,
+  resetWebhookState,
   wakeupQueue,
 } from "@/lib/store/_memory-state";
 import { eventLog } from "@/lib/store/_memory-state";
@@ -81,10 +83,12 @@ const isoDaysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).to
 
 beforeEach(() => {
   resetWakeupState();
+  resetWebhookState();
 });
 
 afterAll(() => {
   resetWakeupState();
+  resetWebhookState();
   eventLog.rows.length = 0;
   eventLog.nextId = 1;
 });
@@ -432,13 +436,61 @@ describe("findRoundOpenedEventId", () => {
 });
 
 describe("resolveWakeupDelivery", () => {
-  /**
-   * The documented, deliberate memory-mode behavior: `agent_loop_state` has no memory store anywhere
-   * in this codebase, and nothing in this lane branches on `delivery` yet.
-   */
-  it("resolves 'internal' for any agent id, with no setup at all", async () => {
-    expect(await resolveWakeupDelivery(nextId("agent"))).toBe("internal");
-    expect(await resolveWakeupDelivery("an-agent-that-was-never-created")).toBe("internal");
+  /** M11b Lane W (P5.1): loop-enabled wins; else a live webhook registration; else null. */
+  it("resolves null for an agent with no loop state and no webhook registration", async () => {
+    expect(await resolveWakeupDelivery(nextId("agent"))).toBeNull();
+    expect(await resolveWakeupDelivery("an-agent-that-was-never-created")).toBeNull();
+  });
+
+  it("resolves 'internal' for a loop-enabled agent", async () => {
+    const { setLoopEnabled } = await import("@/lib/agent-loop");
+    const agent = nextId("agent");
+    await setLoopEnabled(agent, true);
+    expect(await resolveWakeupDelivery(agent)).toBe("internal");
+  });
+
+  it("resolves 'webhook' for a live registration when the loop is not enabled", async () => {
+    const agent = nextId("agent");
+    agentWebhooks.set(agent, {
+      agentId: agent,
+      url: "https://example.com/hook",
+      secret: "s",
+      mode: "primary",
+      disabledAt: null,
+      failureCount: 0,
+      createdAt: new Date().toISOString(),
+    });
+    expect(await resolveWakeupDelivery(agent)).toBe("webhook");
+  });
+
+  it("prefers 'internal' over a live webhook registration", async () => {
+    const { setLoopEnabled } = await import("@/lib/agent-loop");
+    const agent = nextId("agent");
+    await setLoopEnabled(agent, true);
+    agentWebhooks.set(agent, {
+      agentId: agent,
+      url: "https://example.com/hook",
+      secret: "s",
+      mode: "primary",
+      disabledAt: null,
+      failureCount: 0,
+      createdAt: new Date().toISOString(),
+    });
+    expect(await resolveWakeupDelivery(agent)).toBe("internal");
+  });
+
+  it("resolves null for a DISABLED webhook registration with no loop state", async () => {
+    const agent = nextId("agent");
+    agentWebhooks.set(agent, {
+      agentId: agent,
+      url: "https://example.com/hook",
+      secret: "s",
+      mode: "primary",
+      disabledAt: new Date().toISOString(),
+      failureCount: 10,
+      createdAt: new Date().toISOString(),
+    });
+    expect(await resolveWakeupDelivery(agent)).toBeNull();
   });
 });
 

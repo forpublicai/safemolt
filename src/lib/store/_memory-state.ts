@@ -1,11 +1,21 @@
-import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredActivityContext, StoredActivityFeedItem, StoredActivityFeedOptions, StoredEvent, StoredNotification, AtprotoIdentity, AtprotoBlob, StoredSchool, StoredSchoolProfessor } from "@/lib/store-types";
+import type { StoredAgent, StoredGroup, StoredPost, StoredComment, VettingChallenge, StoredPostVote, StoredCommentVote, StoredAnnouncement, StoredActivityContext, StoredActivityFeedItem, StoredActivityFeedOptions, StoredEvent, StoredNotification, AtprotoIdentity, AtprotoBlob, StoredSchool, StoredSchoolProfessor, StoredDmMessage } from "@/lib/store-types";
 import type { CertificationJob, EvaluationRegistration } from '@/lib/evaluations/types';
 import type { AgentMemory, PlaygroundSession, SessionAction } from '@/lib/playground/types';
 // Type-only, and therefore erased: the wakeup row shape is defined beside the statement that
 // produces it (the `rate-windows` precedent), and this file only needs it to type the map below.
 import type { StoredWakeup } from './wakeups/db';
+// M11b Lane W (P5.1): same reasoning, for the webhook registration and its delivery ledger row.
+import type { StoredAgentWebhook, StoredWebhookDelivery } from './webhooks/db';
 
 /** Shared in-memory state and private helpers for domain memory stores. */
+
+interface StoredReaction {
+  agentId: string;
+  subjectType: "post" | "comment";
+  subjectId: string;
+  emoji: string;
+  createdAt: string;
+}
 
 // Cache maps on globalThis to survive HMR in development
 export const globalStore = globalThis as typeof globalThis & {
@@ -20,6 +30,8 @@ export const globalStore = globalThis as typeof globalThis & {
   __safemolt_lastPostAt?: Map<string, number>;
   __safemolt_lastCommentAt?: Map<string, number>;
   __safemolt_commentCountToday?: Map<string, { date: string; count: number }>;
+  __safemolt_contentReactions?: Map<string, StoredReaction>;  // M11b Lane R (P6.2) keyed by "agentId:subjectType:subjectId:emoji"
+  __safemolt_reactionCountToday?: Map<string, { date: string; count: number }>;  // M11b Lane R daily cap
   __safemolt_vettingChallenges?: Map<string, VettingChallenge>;
   __safemolt_postVotes?: Map<string, StoredPostVote>;  // keyed by "agentId:postId"
   __safemolt_commentVotes?: Map<string, StoredCommentVote>;  // keyed by "agentId:commentId"
@@ -39,6 +51,10 @@ export const globalStore = globalThis as typeof globalThis & {
   __safemolt_wakeups?: { rows: Map<number, StoredWakeup>; nextId: number };  // M11-2 P3.2 wakeup queue
   __safemolt_agentLoopState?: Map<string, MemoryLoopState>;  // M11-2 P3.3 memory-mode agent_loop_state twin
   __safemolt_pulseBudgetCounters?: Map<string, number>;  // M11-2 P3.3 memory-mode pulse_budget_counters twin
+  __safemolt_agentWebhooks?: Map<string, StoredAgentWebhook>;  // M11b Lane W (P5.1) webhook registrations
+  __safemolt_webhookDeliveries?: { rows: Map<number, StoredWebhookDelivery>; nextId: number };  // M11b Lane W delivery ledger
+  __safemolt_dmConversations?: Map<string, StoredDmConversationRow>;  // M11b Lane D (P6.3) keyed by id
+  __safemolt_dmMessages?: Map<string, StoredDmMessage>;  // M11b Lane D keyed by id
 };
 
 export interface NewsletterSubscriberRow {
@@ -203,6 +219,16 @@ export const lastCommentAt = globalStore.__safemolt_lastCommentAt ??= new Map<st
 
 export const commentCountToday = globalStore.__safemolt_commentCountToday ??= new Map<string, { date: string; count: number }>();
 
+export const contentReactions = globalStore.__safemolt_contentReactions ??= new Map<string, StoredReaction>();
+
+export const reactionCountToday = globalStore.__safemolt_reactionCountToday ??= new Map<string, { date: string; count: number }>();
+
+/** Reset reaction state for test fixtures. */
+export function resetReactionState(): void {
+  contentReactions.clear();
+  reactionCountToday.clear();
+}
+
 export const vettingChallenges = globalStore.__safemolt_vettingChallenges ??= new Map<string, VettingChallenge>();
 
 export const postVotes = globalStore.__safemolt_postVotes ??= new Map<string, StoredPostVote>();
@@ -337,6 +363,54 @@ export const pulseBudgetCounters = globalStore.__safemolt_pulseBudgetCounters ??
 
 export function resetPulseBudgetCounters(): void {
   pulseBudgetCounters.clear();
+}
+
+/**
+ * M11b Lane W (P5.1) — the memory-mode webhook registration (one per agent) and its delivery ledger.
+ *
+ * The ledger's id counter lives beside its rows for the same reason `wakeupQueue`'s does: the db
+ * column is BIGSERIAL and must climb independently of how many rows currently remain.
+ */
+export const agentWebhooks = globalStore.__safemolt_agentWebhooks ??= new Map<string, StoredAgentWebhook>();
+
+export const webhookDeliveries = globalStore.__safemolt_webhookDeliveries ??= {
+  rows: new Map<number, StoredWebhookDelivery>(),
+  nextId: 1,
+};
+
+/** Reset both halves together — `resetWakeupState`'s reason applies here too. */
+export function resetWebhookState(): void {
+  agentWebhooks.clear();
+  webhookDeliveries.rows.clear();
+  webhookDeliveries.nextId = 1;
+}
+
+/**
+ * M11b Lane D (P6.3) — DM conversation and message rows. DMs share the comment rate-limit quota
+ * (see spec), so no separate rate-limit maps. The conversation row is upserted by sender, the message
+ * is scoped to the canonicalized pair. Both participants' read cursors live on the conversation.
+ */
+export interface StoredDmConversationRow {
+  id: string;
+  agentLow: string;
+  agentHigh: string;
+  lowBlockedHigh: boolean;
+  highBlockedLow: boolean;
+  lowLastReadSeq: number;
+  highLastReadSeq: number;
+  lastMessageSeq: number;
+  createdAt: string;
+  lastMessageAt: string | null;
+}
+
+export const dmConversations = globalStore.__safemolt_dmConversations ??= new Map<string, StoredDmConversationRow>();
+
+export const dmMessages = globalStore.__safemolt_dmMessages ??= new Map<string, StoredDmMessage>();
+
+/** Reset DM state for test fixtures. */
+export function resetDmState(): void {
+  dmConversations.clear();
+  dmMessages.clear();
 }
 
 // Imported and re-exported from the one definition both stores share, so a window cannot be raised

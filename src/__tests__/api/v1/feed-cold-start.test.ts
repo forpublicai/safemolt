@@ -19,6 +19,7 @@ jest.mock("@/lib/store", () => ({
   touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
   // feed deps
   listFeed: jest.fn(),
+  listPosts: jest.fn(),
   getAgentById: jest.fn(),
   getGroup: jest.fn(),
   isGroupMember: jest.fn(),
@@ -68,6 +69,7 @@ describe("GET /api/v1/feed — cold start", () => {
 
   it("empty + not yet member -> suggests join_group for general", async () => {
     store.listFeed.mockResolvedValue([]);
+    store.listPosts.mockResolvedValue([]);
     store.getGroup.mockResolvedValue(general);
     store.isGroupMember.mockResolvedValue(false);
 
@@ -83,6 +85,7 @@ describe("GET /api/v1/feed — cold start", () => {
         count: number;
         empty_reason: "no_memberships" | "no_posts_in_memberships";
         suggestion: { action: string; group: string; hint: string } | null;
+        feed_mode: "personalized" | "fallback";
       };
       suggestion?: { action: string };
     };
@@ -91,12 +94,15 @@ describe("GET /api/v1/feed — cold start", () => {
     expect(typed.meta.empty_reason).toBe("no_memberships");
     expect(typed.meta.suggestion?.action).toBe("join_group");
     expect(typed.meta.suggestion?.group).toBe("general");
+    // The fallback ran (personalized was empty) and came back empty too.
+    expect(typed.meta.feed_mode).toBe("fallback");
     // Legacy top-level alias
     expect(typed.suggestion?.action).toBe("join_group");
   });
 
   it("empty + member -> suggests create_post in general", async () => {
     store.listFeed.mockResolvedValue([]);
+    store.listPosts.mockResolvedValue([]);
     store.getGroup.mockResolvedValue(general);
     store.isGroupMember.mockResolvedValue(true);
     store.getGroupMemberCount.mockResolvedValue(42);
@@ -108,11 +114,42 @@ describe("GET /api/v1/feed — cold start", () => {
       meta: {
         empty_reason: string;
         suggestion: { action: string; group: string };
+        feed_mode: "personalized" | "fallback";
       };
     };
     expect(typed.meta.empty_reason).toBe("no_posts_in_memberships");
     expect(typed.meta.suggestion.action).toBe("create_post");
     expect(typed.meta.suggestion.group).toBe("general");
+    expect(typed.meta.feed_mode).toBe("fallback");
+  });
+
+  it("empty personalized feed + global posts exist -> fallback with non-empty data", async () => {
+    const globalPost = {
+      id: "g1",
+      title: "global",
+      content: "",
+      authorId: "someone",
+      groupId: "general",
+      upvotes: 0,
+      downvotes: 0,
+      commentCount: 0,
+      createdAt: "2026-05-13T10:00:00.000Z",
+    };
+    store.listFeed.mockResolvedValue([]);
+    store.listPosts.mockResolvedValue([globalPost]);
+    store.getAgentById.mockResolvedValue({ ...vettedAgent, name: "someone" });
+    store.getGroup.mockResolvedValue(general);
+    store.isGroupMember.mockResolvedValue(false);
+
+    const res = await getFeed(makeReq());
+    const body = await res.json();
+    const typed = body as unknown as {
+      data: Array<{ id: string }>;
+      meta: { feed_mode: "personalized" | "fallback"; count: number };
+    };
+    expect(typed.data.map((p) => p.id)).toEqual(["g1"]);
+    expect(typed.meta.feed_mode).toBe("fallback");
+    expect(typed.meta.count).toBe(1);
   });
 
   it("non-empty feed -> no suggestion, meta.count reflects results", async () => {
@@ -137,13 +174,16 @@ describe("GET /api/v1/feed — cold start", () => {
     assertSuccessEnvelope(body, { dataIsArray: true });
     const typed = body as unknown as {
       data: Array<{ id: string }>;
-      meta: { count: number; empty_reason?: string };
+      meta: { count: number; empty_reason?: string; feed_mode: "personalized" | "fallback" };
       suggestion?: unknown;
     };
     expect(typed.data.map((p) => p.id)).toEqual(["p1"]);
     expect(typed.meta.count).toBe(1);
     expect(typed.meta.empty_reason).toBeUndefined();
+    expect(typed.meta.feed_mode).toBe("personalized");
     expect(typed.suggestion).toBeUndefined();
+    // Fallback must not even be consulted when the personalized feed already has data.
+    expect(store.listPosts).not.toHaveBeenCalled();
   });
 
   it("filters posts/authors explicitly marked as test content", async () => {

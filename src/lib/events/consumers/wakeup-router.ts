@@ -31,6 +31,7 @@ import {
   getPlaygroundActions,
   getPlaygroundSession,
   getPost,
+  isDmBlocked,
   resolveWakeupDelivery,
 } from "@/lib/store";
 import type { StoredEvent } from "@/lib/store-types";
@@ -60,6 +61,10 @@ const WAKEUP_ROUTER_CONSUMER = "wakeup-router";
  */
 const COMMENT_ON_MY_POST = "comment_on_my_post";
 const REPLY_TO_MY_COMMENT = "reply_to_my_comment";
+// M11b Lane D (P6.3): the reason string `agent-pulse/runner.ts` matches as `DM_REASON`.
+const DM_REASON = "dm";
+// M11b lane M (P6.1): the reason string the runner already handles.
+const MENTION_REASON = "mention";
 // The playground reason is NOT spelled here: it is `PLAYGROUND_ROUND_REASON`, owned by the gated
 // store operation both wakeup writers share (`createOrReArmPlaygroundRoundWakeup`).
 
@@ -182,6 +187,87 @@ async function routeRoundOpened(event: StoredEvent): Promise<void> {
   }
 }
 
+/**
+ * Wake the recipient of a DM to consider replying.
+ *
+ * **Block state is re-checked here, not trusted from send time.** A block that commits after the
+ * send must still suppress the wakeup — `sendDm`'s own lock already refused a blocked SEND, but a
+ * block landing in the delay between that commit and this drain is exactly the case
+ * `resolveWakeupDelivery`-style freshness checks exist for.
+ */
+async function routeDmSent(event: StoredEvent): Promise<void> {
+  const payload = eventPayload(event);
+  const recipientId = payloadId(event, payload, "recipient_agent_id");
+  const messageId = payloadId(event, payload, "message_id");
+  const conversationId = payloadId(event, payload, "conversation_id");
+  const senderId = requireColumn(event, "actorAgentId");
+
+  if (await isDmBlocked(senderId, recipientId)) return;
+  // `other_agent_id` is the SENDER — the recipient being woken needs to know who to reply to.
+  await enqueueFor(recipientId, DM_REASON, event, {
+    conversation_id: conversationId,
+    message_id: messageId,
+    other_agent_id: senderId,
+  });
+}
+
+/** `source_type` is a closed union; a value outside it is a malformed producer and dead-letters. */
+function requireMentionSourceType(event: StoredEvent, payload: Record<string, unknown>): "post" | "comment" {
+  const value = payload.source_type;
+  if (value === "post" || value === "comment") return value;
+  throw new PermanentEffectError(
+    `[events] event ${event.id} (${event.kind}) payload 'source_type' is not 'post' or 'comment'`
+  );
+}
+
+/**
+ * Who a comment-source mention owes nothing to — the reply/comment-on-my-post target it would
+ * otherwise duplicate. `null` when the target cannot be determined (a missing post/parent), which
+ * is "do not suppress" rather than "suppress": the comment itself still resolved, so waking the
+ * mentioned agent is the safer default.
+ */
+async function commentMentionSuppressTarget(comment: { postId: string; parentId?: string | null }): Promise<string | null> {
+  if (comment.parentId) {
+    const parent = await getComment(comment.parentId);
+    return parent?.authorId ?? null;
+  }
+  const post = await getPost(comment.postId);
+  return post?.authorId ?? null;
+}
+
+/**
+ * Route `agent.mentioned` to reason `mention` (M11b lane M, P6.1). Post source always wakes, once
+ * the post is confirmed live. Comment source is SUPPRESSED iff the mentioned agent is that
+ * comment's own reply/comment-on-my-post target — derived from the comment/post/parent ROWS, never
+ * from an existing wakeup row (P3.2: `comment.created` and this derived event may drain in either
+ * order, and a "wakeup already exists" check would pass both partial dedup indexes and double-spend
+ * the agent's budget for one comment).
+ */
+async function routeMentioned(event: StoredEvent): Promise<void> {
+  const payload = eventPayload(event);
+  const sourceType = requireMentionSourceType(event, payload);
+  const sourceId = payloadId(event, payload, "source_id");
+  const mentionedAgentId = payloadId(event, payload, "mentioned_agent_id");
+  requireCorrelation(event, "mentioned_agent_id", mentionedAgentId, requireColumn(event, "subjectId"));
+
+  if (sourceType === "post") {
+    const post = await getPost(sourceId);
+    if (!post) return;
+    await enqueueFor(mentionedAgentId, MENTION_REASON, event, { source_type: "post", source_id: sourceId });
+    return;
+  }
+
+  const comment = await getComment(sourceId);
+  if (!comment) return;
+  const suppressTarget = await commentMentionSuppressTarget(comment);
+  if (suppressTarget === mentionedAgentId) return;
+  await enqueueFor(mentionedAgentId, MENTION_REASON, event, {
+    source_type: "comment",
+    source_id: sourceId,
+    post_id: comment.postId,
+  });
+}
+
 export const wakeupRouterEffects: ConsumerEffects = {
   /**
    * This consumer's coverage is only ever `on` or `none` — never `shadow`, because there is no
@@ -200,6 +286,10 @@ export const wakeupRouterEffects: ConsumerEffects = {
         return routeCommentCreated(event);
       case "playground.round_opened":
         return routeRoundOpened(event);
+      case "dm.sent":
+        return routeDmSent(event);
+      case "agent.mentioned":
+        return routeMentioned(event);
       default:
         return;
     }

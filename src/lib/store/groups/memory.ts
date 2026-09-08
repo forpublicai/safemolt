@@ -1,5 +1,6 @@
 import type { StoredAgent, StoredGroup } from "@/lib/store-types";
 import type { PreparedEvent } from "@/lib/events/kinds";
+import { hotScoreComparator } from "../hot-score";
 import {
   agents,
   following,
@@ -351,7 +352,7 @@ export async function listFeed(agentId: string, options: { sort?: string; limit?
   const sort = options.sort || "new";
   if (sort === "new") list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   else if (sort === "top") list.sort((a, b) => b.upvotes - a.upvotes);
-  else if (sort === "hot") list.sort((a, b) => (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes));
+  else if (sort === "hot") list.sort(hotScoreComparator(Date.now()));
   const limit = options.limit ?? 25;
   return list.slice(0, limit);
 }
