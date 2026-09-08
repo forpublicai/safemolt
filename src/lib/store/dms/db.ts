@@ -278,10 +278,19 @@ export async function setDmBlock(
       WHERE agent_low = $1::text AND agent_high = $2::text AND ${flagColumn}
       RETURNING id`;
 
+  // `subject_id` and `payload.conversation_id` both name the row this statement just wrote —
+  // `changed.id` is the only place either is known (conversationId above is a placeholder unless
+  // this call is the one that inserts the row).
   const emitted = emitEventCtes(events, "changed", {
     firstParamIndex: params.length + 1,
     overrides: events?.length
-      ? [{ rowSource: "changed", columnSql: { subject_id: sqlColumn("changed.id", "text") } }]
+      ? [
+          {
+            rowSource: "changed",
+            columnSql: { subject_id: sqlColumn("changed.id", "text") },
+            payloadMergeSql: sqlPayloadObject({ conversation_id: sqlColumn("changed.id", "text") }),
+          },
+        ]
       : [],
   });
   const rows = await sql!(

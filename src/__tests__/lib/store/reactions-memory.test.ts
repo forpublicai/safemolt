@@ -10,12 +10,13 @@
 import { addReaction as actionAddReaction, removeReaction as actionRemoveReaction } from "@/lib/actions/reactions";
 import {
   addReaction as storeAddReaction,
+  removeReaction as storeRemoveReaction,
   deletePost,
   getReactionCounts,
   listNotifications,
 } from "@/lib/store";
-import { createAgent, getAgentById } from "@/lib/store/agents/memory";
-import { comments, eventLog, posts, reactionCountToday, wakeupQueue } from "@/lib/store/_memory-state";
+import { createAgent, deleteAgent, getAgentById } from "@/lib/store/agents/memory";
+import { comments, contentReactions, eventLog, posts, reactionCountToday, wakeupQueue } from "@/lib/store/_memory-state";
 import { seedComment, seedPost } from "@/__tests__/helpers/store-fixtures";
 import type { StoredAgent } from "@/lib/store-types";
 
@@ -262,5 +263,88 @@ describe("no wakeup", () => {
     // Mutation check: a wakeup route case for `reaction.added` would insert a row and advance this
     // counter; the coverage manifest marks it "none" everywhere, so nothing should move it.
     expect(wakeupQueue.nextId).toBe(before);
+  });
+});
+
+describe("F4: a concurrent duplicate add in memory mode", () => {
+  it("two Promise.all'd identical adds leave one added, one already_reacted — never a second row or event", async () => {
+    const author = await freshAgent();
+    const reactor = await freshAgent();
+    const post = await seedPost(author.id, GROUP, "concurrent duplicate");
+    const before = eventLog.nextId;
+
+    const [first, second] = await Promise.all([
+      actionAddReaction({ agent: reactor, subjectType: "post", subjectId: post.id, emoji: "👍" }),
+      actionAddReaction({ agent: reactor, subjectType: "post", subjectId: post.id, emoji: "👍" }),
+    ]);
+    const outcomes = [first, second].map((r) => (r.ok ? "added" : r.code));
+
+    expect(outcomes.sort()).toEqual(["added", "already_reacted"]);
+    expect((await getReactionCounts("post", [post.id]))[post.id]).toEqual({ "👍": 1 });
+    expect(eventLog.nextId).toBe(before + 1);
+  });
+});
+
+describe("F3: the acting agent is re-checked before the memory mutation", () => {
+  it("a reactor withdrawn just before the store call is refused not_found, charging nothing and emitting nothing", async () => {
+    const author = await freshAgent();
+    const reactor = await freshAgent();
+    const post = await seedPost(author.id, GROUP, "withdrawn reactor");
+
+    // Simulates the action's own subject/group reads racing a withdrawal: by the time the store
+    // call runs, the agent id it was given no longer resolves.
+    expect((await deleteAgent(reactor.id)).ok).toBe(true);
+
+    const before = eventLog.nextId;
+    const result = await storeAddReaction({
+      agentId: reactor.id,
+      subjectType: "post",
+      subjectId: post.id,
+      emoji: "👍",
+      dailyLimit: 200,
+    });
+
+    // Mutation check: removing the `agents.has(input.agentId)` guard in `store/reactions/memory.ts`
+    // lets this fall through to the insert — outcome flips to "added", the quota map gains an
+    // entry, and `eventLog.nextId` advances. With the guard, none of that happens.
+    expect(result.outcome).toBe("not_found");
+    expect((await getReactionCounts("post", [post.id]))[post.id]).toEqual({});
+    expect(reactionCountToday.get(reactor.id)).toBeUndefined();
+    expect(eventLog.nextId).toBe(before);
+  });
+});
+
+describe("F7: removal is gated on the live subject", () => {
+  it("a reaction row surviving its post's deletion cannot be removed: writes nothing, emits nothing", async () => {
+    const author = await freshAgent();
+    const reactor = await freshAgent();
+    const post = await seedPost(author.id, GROUP, "removed after delete");
+    expect((await actionAddReaction({ agent: reactor, subjectType: "post", subjectId: post.id, emoji: "👍" })).ok).toBe(true);
+
+    const deletion = await deletePost(post.id, author.id);
+    expect(deletion.deleted).toBe(true);
+    // `deletePost`'s own cleanup already removed the row; plant a stale one back to stand in for a
+    // row no live-subject check has reached yet — the case F7 closes.
+    contentReactions.set(`${reactor.id}:post:${post.id}:👍`, {
+      agentId: reactor.id,
+      subjectType: "post",
+      subjectId: post.id,
+      emoji: "👍",
+      createdAt: new Date().toISOString(),
+    });
+
+    const before = eventLog.nextId;
+    const result = await storeRemoveReaction({
+      agentId: reactor.id,
+      subjectType: "post",
+      subjectId: post.id,
+      emoji: "👍",
+    });
+
+    // Mutation check: dropping the `isSubjectLive` half of `removed` in
+    // `store/reactions/memory.ts` reports "removed" here, because the row itself is still present
+    // in `contentReactions` — the whole point of F7 is that the subject's liveness gates it too.
+    expect(result.outcome).toBe("not_found");
+    expect(eventLog.nextId).toBe(before);
   });
 });

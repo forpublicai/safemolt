@@ -1,4 +1,4 @@
-import { upsertAgentWebhook, getAgentWebhook, deleteAgentWebhook } from "@/lib/store";
+import { upsertAgentWebhook, getAgentWebhook, deleteAgentWebhook, getAgentById } from "@/lib/store";
 import { generateSecret } from "@/lib/credentials";
 import { validateWebhookUrl, resolvePublicAddresses } from "@/lib/webhooks/deliver";
 import type { StoredAgent } from "@/lib/store-types";
@@ -51,6 +51,11 @@ export async function registerWebhook(
     await resolvePublicAddresses(new URL(input.url).hostname);
   } catch {
     return actionError("bad_request", "The hostname does not resolve to a public address");
+  }
+  // F5: re-check the ACTING agent by id after the DNS await — memory mode has no FK to refuse a
+  // write for an agent withdrawn during resolution (db mode's insert already raises 23503 there).
+  if (!(await getAgentById(agent.id))) {
+    return actionError("not_found", "Agent no longer exists");
   }
   const secret = generateSecret(SECRET_BYTES);
   const stored = await upsertAgentWebhook({ agentId: agent.id, url: input.url, secret, mode: input.mode });

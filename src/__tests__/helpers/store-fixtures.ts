@@ -37,7 +37,7 @@ export async function seedPost(
 ): Promise<StoredPost> {
   clearRateWindows();
   const post = await createPost(authorId, groupId, title, content, url);
-  if (!post) throw new Error(`fixture post for ${authorId} was refused by the post cooldown`);
+  if (!post) throw new Error(`fixture post for ${authorId} was refused (post cooldown, or the author is not a registered agent)`);
   return post;
 }
 

@@ -6,11 +6,14 @@ import { listPostsByAuthor } from "@/lib/store/posts/memory";
 // Two posts by one author is the fixture this contract needs; C16's cooldown refuses the second.
 import { seedPost as createPost } from "@/__tests__/helpers/store-fixtures";
 import type { StoredAgent } from "@/lib/store-types";
+import { agents } from "@/lib/store/_memory-state";
 
 describe("UX7 public profile parity primitives", () => {
   it("queries author posts directly instead of filtering a limited global page", async () => {
     const a1 = "ux7-author-a";
     const a2 = "ux7-author-b";
+    // The memory createPost refuses an unregistered author (parity with the posts.author_id FK).
+    for (const id of [a1, a2]) agents.set(id, { id, name: id } as never);
     await createPost(a1, "group_general", "old author post", "body");
     await createPost(a2, "group_general", "other author post", "body");
     await createPost(a1, "group_general", "new author post", "body");

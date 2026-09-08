@@ -7,8 +7,7 @@ import {
   commentAllowanceAvailable,
 } from "../_memory-state";
 import type { PreparedEvent } from "@/lib/events/kinds";
-import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents, type PreparedEventBatch } from "../events/memory";
-import type { StoredEvent } from "@/lib/store-types";
+import { appendPreparedBatch, prepareEventBatch } from "../events/memory";
 
 export interface SendDmResult {
   outcome: "blocked" | "rate_limited" | "inserted";
@@ -34,21 +33,6 @@ function blockFlagField(isLow: boolean): "lowBlockedHigh" | "highBlockedLow" {
  */
 function readCursorField(isLow: boolean): "lowLastReadSeq" | "highLastReadSeq" {
   return isLow ? "lowLastReadSeq" : "highLastReadSeq";
-}
-
-/**
- * Preflight events before mutation, then append with no await between mutation and append (Decision 4).
- */
-function preflightEvents(events: readonly PreparedEvent[] | undefined): PreparedEventBatch {
-  return prepareEventBatch(events);
-}
-
-/**
- * Append a preflighted batch and return the emitted events (after dispatch completes).
- */
-function appendPreparedEvents(batch: PreparedEventBatch): Promise<StoredEvent[]> {
-  const { stored, dispatched } = appendPreparedBatch(batch);
-  return dispatched.then(() => stored);
 }
 
 /**
@@ -100,19 +84,29 @@ export async function sendDm(
     return { outcome: "rate_limited", message: null };
   }
 
-  // Preflight events BEFORE the mutation (Decision 4).
-  validatePreparedEvents(events);
+  // Every value the event payload needs is computable now, with no await in between (single JS
+  // thread) — so the WHOLE batch preflights (kind, payload, idempotency) before any state changes.
+  const now = new Date().toISOString();
+  const conversationId = conv?.id ?? `dmc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+  const nextSeq = (conv?.lastMessageSeq ?? 0) + 1;
+  const messageId = `dm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+  const preparedEvents = events?.length
+    ? withCreatedDmMessageId(events, messageId, conversationId, nextSeq, recipientId)
+    : events;
+  const batch = prepareEventBatch(preparedEvents);
 
-  // ---- Synchronous section: claim, upsert, insert. No await until event append. ----
-  // Claim the allowance.
+  // ---- Synchronous section: re-check actor, claim, upsert, insert, append. No await until dispatch. ----
+  // The action resolves the recipient with an `await` before calling this; a sender withdrawn in
+  // that window must refuse here too, like `agent_rate_limits.agent_id`'s FK would in db mode.
+  // Folded into `rate_limited` — the shared `SendDmResult` type must stay identical in both stores.
+  if (!agents.has(senderId)) {
+    return { outcome: "rate_limited", message: null };
+  }
   if (!claimCommentAllowance(senderId)) {
     return { outcome: "rate_limited", message: null };
   }
 
-  // Upsert conversation.
-  const now = new Date().toISOString();
   if (!conv) {
-    const conversationId = `dmc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
     conv = {
       id: conversationId,
       agentLow,
@@ -128,29 +122,21 @@ export async function sendDm(
     dmConversations.set(conversationId, conv);
   }
 
-  // Increment seq and update timestamp.
-  conv.lastMessageSeq += 1;
+  conv.lastMessageSeq = nextSeq;
   conv.lastMessageAt = now;
 
-  // Insert message.
-  const messageId = `dm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
   const message: StoredDmMessage = {
     id: messageId,
     conversationId: conv.id,
     senderId,
     content,
-    seq: conv.lastMessageSeq,
+    seq: nextSeq,
     createdAt: now,
   };
   dmMessages.set(messageId, message);
+  const { dispatched } = appendPreparedBatch(batch);
   // ---- End synchronous section. ----
-
-  // Emit events with positional primary substitution (after main mutation).
-  if (events?.length) {
-    const prepared = withCreatedDmMessageId(events, messageId, conv.id, conv.lastMessageSeq, recipientId);
-    const batch = preflightEvents(prepared);
-    await appendPreparedEvents(batch);
-  }
+  await dispatched;
 
   return { outcome: "inserted", message };
 }
@@ -183,56 +169,51 @@ export async function setDmBlock(
   const { agentLow, agentHigh, aIsLow } = canonicalizePair(blockerId, otherId);
   const flagField = blockFlagField(aIsLow);
 
-  let conv = Array.from(dmConversations.values()).find(
+  const existing = Array.from(dmConversations.values()).find(
     (c) => c.agentLow === agentLow && c.agentHigh === agentHigh
   );
 
-  if (!conv) {
-    if (!blocked) return false; // Can't unblock a row that doesn't exist.
-    // Create it.
-    const now = new Date().toISOString();
-    const conversationId = `dmc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
-    conv = {
-      id: conversationId,
-      agentLow,
-      agentHigh,
-      lowBlockedHigh: false,
-      highBlockedLow: false,
-      lowLastReadSeq: 0,
-      highLastReadSeq: 0,
-      lastMessageSeq: 0,
-      createdAt: now,
-      lastMessageAt: null,
-    };
-    dmConversations.set(conversationId, conv);
-  }
+  if (!existing && !blocked) return false; // Can't unblock a row that doesn't exist.
+  if (existing && existing[flagField] === blocked) return false; // No change.
 
-  const oldValue = conv[flagField];
-  if (oldValue === blocked) return false; // No change.
+  // Preflight the WHOLE batch before any state change (Decision 4) — a bad payload or a duplicate
+  // idempotency key must not leave the row created, or the flag flipped, with no event to show for it.
+  const now = new Date().toISOString();
+  const conversationId = existing?.id ?? `dmc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+  const prepared = events?.length
+    ? events.map((event, index) =>
+        index === 0
+          ? ({
+              ...event,
+              subjectId: conversationId,
+              payload: {
+                ...(event.payload as Record<string, unknown>),
+                conversation_id: conversationId,
+                target_agent_id: otherId,
+              },
+            } as PreparedEvent)
+          : event
+      )
+    : events;
+  const batch = prepareEventBatch(prepared);
 
-  validatePreparedEvents(events);
-
-  // Mutate the flag.
+  const conv = existing ?? {
+    id: conversationId,
+    agentLow,
+    agentHigh,
+    lowBlockedHigh: false,
+    highBlockedLow: false,
+    lowLastReadSeq: 0,
+    highLastReadSeq: 0,
+    lastMessageSeq: 0,
+    createdAt: now,
+    lastMessageAt: null,
+  };
+  if (!existing) dmConversations.set(conversationId, conv);
   conv[flagField] = blocked;
 
-  // Emit events with positional substitution.
-  if (events?.length) {
-    const prepared = events.map((event, index) =>
-      index === 0
-        ? ({
-            ...event,
-            subjectId: conv.id,
-            payload: {
-              ...(event.payload as Record<string, unknown>),
-              conversation_id: conv.id,
-              target_agent_id: otherId,
-            },
-          } as PreparedEvent)
-        : event
-    );
-    const batch = preflightEvents(prepared);
-    await appendPreparedEvents(batch);
-  }
+  const { dispatched } = appendPreparedBatch(batch);
+  await dispatched;
 
   return true;
 }

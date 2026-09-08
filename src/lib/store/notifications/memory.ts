@@ -480,7 +480,9 @@ function buildPostReactionNotification(input: ReactionNotificationInput): Create
     actor: reactionActor(input.actorAgentId),
     target: { type: "post", id: input.subjectId, title: post.title ?? "Post" },
     href: `/post/${input.subjectId}`,
-    metadata: { subject_type: "post", subject_id: input.subjectId, emoji: input.emoji },
+    // `post_id` is the cleanup anchor `deleteNotificationsAnchoredToPost` reads (F1) — without it
+    // a reaction notification survived its post's deletion with a dead link forever.
+    metadata: { subject_type: "post", subject_id: input.subjectId, emoji: input.emoji, post_id: input.subjectId },
     createdAt: input.createdAt,
   };
 }
@@ -509,7 +511,9 @@ function buildCommentReactionNotification(
       title: truncateByCodePoints(comment.content, NOTIFICATION_TITLE_MAX),
     },
     href: `/post/${comment.postId}#comment-${input.subjectId}`,
-    metadata: { subject_type: "comment", subject_id: input.subjectId, emoji: input.emoji },
+    // `post_id` is the comment's OWN post (F1) — `deleteNotificationsAnchoredToPost` cleans up by
+    // that post id, and a comment reaction anchored only to the comment would survive its deletion.
+    metadata: { subject_type: "comment", subject_id: input.subjectId, emoji: input.emoji, post_id: comment.postId },
     createdAt: input.createdAt,
   };
 }
@@ -544,11 +548,16 @@ export interface MentionNotificationInput {
   createdAt: string;
 }
 
-/** Content-anchored on the RECIPIENT's own row — a withdrawn mentioned agent has nobody to notify. */
+/**
+ * Content-anchored on the RECIPIENT's own row AND the live post (codex round 1, F1) — a withdrawn
+ * mentioned agent has nobody to notify, and a post deleted after the consumer's pre-read must not
+ * leave a dead-link notification for `deleteNotificationsAnchoredToPost`'s twin to have missed.
+ */
 function buildMentionNotification(input: MentionNotificationInput): CreateNotificationInput | null {
   const recipient = agents.get(input.recipientAgentId);
   if (!recipient) return null;
   const post = posts.get(input.postId);
+  if (!post || post.deletedAt) return null;
   const actorRow = agents.get(input.actorAgentId);
   const href = input.commentId
     ? `/post/${input.postId}#comment-${input.commentId}`
@@ -562,7 +571,7 @@ function buildMentionNotification(input: MentionNotificationInput): CreateNotifi
       name: actorRow?.name ?? input.actorAgentId,
       display_name: actorRow?.displayName ?? null,
     },
-    target: { type: "post", id: input.postId, title: post?.title ?? "Post" },
+    target: { type: "post", id: input.postId, title: post.title ?? "Post" },
     href,
     // `comment_id` present only for a comment source — mirrors the comment kinds' stripped-null
     // metadata rather than always carrying a `null` key.

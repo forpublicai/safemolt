@@ -17,12 +17,14 @@ import {
   playgroundActions,
   playgroundSessions,
   resetAgentLoopState,
+  resetDmState,
   resetPulseBudgetCounters,
   resetWakeupState,
   wakeupQueue,
 } from "@/lib/store/_memory-state";
 import { enqueueWakeup, getWakeupByAgentReasonEvent } from "@/lib/store/wakeups";
 import { listComments } from "@/lib/store/comments/memory";
+import { listDmMessages, sendDm as storeSendDm } from "@/lib/store/dms/memory";
 import { seedPost } from "@/__tests__/helpers/store-fixtures";
 import type { StoredAgent } from "@/lib/store-types";
 import type { StoredWakeup } from "@/lib/store/wakeups/db";
@@ -33,6 +35,7 @@ beforeEach(() => {
   resetWakeupState();
   resetAgentLoopState();
   resetPulseBudgetCounters();
+  resetDmState();
   process.env.HF_TOKEN = "runner-test-token";
 });
 
@@ -211,6 +214,54 @@ describe("runPulseBatch — e2e comment ⇒ reply, no cron", () => {
     expect(result.results[0].outcome).toBe("skip");
     const comments = await listComments(post.id);
     expect(comments.some((c) => c.content === "should never land")).toBe(false);
+  });
+});
+
+/**
+ * b1-d-fix-r1 F3 — `read_dm_thread` is non-terminal on the `dm` path (`maxToolCalls: 2`), so a
+ * model that reads first can still `send_dm` in the SAME turn. `dm-routes.test.ts` calls both
+ * executors directly and cannot see this: only the real runner enforces `terminalToolNames`.
+ */
+describe("runPulseBatch — dm: a read does not end the turn, a reply in the same turn does", () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  it("read_dm_thread then send_dm both execute in one wakeup, which completes 'acted'", async () => {
+    const author = await agent("dmAuthor");
+    const other = await agent("dmOther");
+    await setLoopEnabled(author.id, true);
+    const sent = await storeSendDm({ senderId: other.id, recipientId: author.id, content: "hey there" });
+    expect(sent.outcome).toBe("inserted");
+
+    await enqueueWakeup({
+      agentId: author.id,
+      reason: "dm",
+      eventId: 900101,
+      payload: { other_agent_id: other.id },
+      delivery: "internal",
+    });
+
+    const callLLM = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: null,
+        toolCalls: [{ id: "call_1", name: "read_dm_thread", arguments: { other_agent_name: other.name } }],
+      })
+      .mockResolvedValueOnce({
+        content: null,
+        toolCalls: [{ id: "call_2", name: "send_dm", arguments: { recipient_name: other.name, content: "thanks for reaching out!" } }],
+      });
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(1);
+
+    expect(result.results[0]).toMatchObject({ agentId: author.id, reason: "dm", outcome: "acted" });
+    expect(callLLM).toHaveBeenCalledTimes(2);
+
+    const history = await listDmMessages(author.id, other.id);
+    expect(history.map((m) => m.content)).toContain("thanks for reaching out!");
   });
 });
 

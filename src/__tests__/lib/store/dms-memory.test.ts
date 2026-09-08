@@ -219,6 +219,77 @@ describe("tombstoned participant renders as deleted", () => {
   });
 });
 
+describe("F2 — preflight throws before any state changes (memory)", () => {
+  /** A pre-seeded idemKey makes `prepareEventBatch` throw deterministically (duplicate-key path). */
+  function seedIdemKey(key: string): void {
+    eventLog.rows.push(dmSentEvent(eventLog.nextId++, "seed", "seed", "seed_conv", "seed_msg", 1));
+    eventLog.rows[eventLog.rows.length - 1].idemKey = key;
+  }
+
+  it("sendDm throws and leaves no message, no conversation, no quota claimed", async () => {
+    const a = await freshAgent("pfSendA");
+    const b = await freshAgent("pfSendB");
+    seedIdemKey("dup-send");
+
+    await expect(
+      sendDm({ senderId: a.id, recipientId: b.id, content: "should not land" }, [
+        {
+          kind: "dm.sent",
+          actorAgentId: a.id,
+          subjectType: "dm_message",
+          subjectId: "x",
+          secondarySubjectId: b.id,
+          schoolId: null,
+          idemKey: "dup-send",
+          payload: { conversation_id: "x", message_id: "x", seq: 0, recipient_agent_id: b.id },
+        },
+      ])
+    ).rejects.toThrow();
+
+    expect(await listDmMessages(a.id, b.id)).toHaveLength(0);
+    // Quota untouched: a follow-up send (no events) still succeeds as the FIRST message.
+    const retry = await sendDm({ senderId: a.id, recipientId: b.id, content: "first real send" });
+    expect(retry.outcome).toBe("inserted");
+    expect(retry.message?.seq).toBe(1);
+  });
+
+  it("setDmBlock throws and leaves the flag unset (no conversation row created)", async () => {
+    const a = await freshAgent("pfBlockA");
+    const b = await freshAgent("pfBlockB");
+    seedIdemKey("dup-block");
+
+    await expect(
+      setDmBlock(a.id, b.id, true, [
+        {
+          kind: "dm.blocked",
+          actorAgentId: a.id,
+          subjectType: "dm_conversation",
+          subjectId: "x",
+          secondarySubjectId: b.id,
+          schoolId: null,
+          idemKey: "dup-block",
+          payload: { conversation_id: "x", target_agent_id: b.id },
+        },
+      ])
+    ).rejects.toThrow();
+
+    // Flag never flipped: a follow-up block (no events) reports a real change.
+    expect(await setDmBlock(a.id, b.id, true)).toBe(true);
+  });
+});
+
+describe("F6 — memory re-checks the sender by id (withdrawal parity with the FK)", () => {
+  it("a sender withdrawn before the call is refused like agent_rate_limits' FK would refuse it", async () => {
+    const a = await freshAgent("wdSendA");
+    const b = await freshAgent("wdSendB");
+    expect(await deleteAgent(a.id)).toEqual({ ok: true });
+
+    const result = await sendDm({ senderId: a.id, recipientId: b.id, content: "from the void" });
+    expect(result).toEqual({ outcome: "rate_limited", message: null });
+    expect(await listDmMessages(a.id, b.id)).toHaveLength(0);
+  });
+});
+
 describe("consumer wiring — drain-time block re-check suppresses the wakeup", () => {
   /**
    * The memory dispatcher fires synchronously on emit, so there is no real gap between a send and

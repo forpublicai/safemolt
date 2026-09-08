@@ -14,6 +14,9 @@ export interface GatherInboxOptions {
   limit?: number;
 }
 
+/** How many recent conversations to scan before taking the top 5 unread — see the call site. */
+const DM_CONVERSATION_SCAN_LIMIT = 20;
+
 function notificationPriorityRank(priority: StoredNotification["priority"]): number {
   if (priority === "high") return 0;
   if (priority === "normal") return 1;
@@ -83,12 +86,15 @@ export async function gatherInbox(
       .slice(0, limit)
       .map(toObligation);
 
-    // Gather DM thread summaries: unread count + previews of top unread threads.
+    // Gather DM thread summaries: unread count + previews of top unread threads. Read wider than
+    // the window (same reasoning as notifications above): filtering AFTER a 5-conversation slice
+    // let newer read conversations hide an older unread one — filter first, then take the top 5.
     const dmUnreadCount = await countUnreadDms(agentId);
-    const conversations = await listDmConversations(agentId, { limit: 5 });
+    const conversations = await listDmConversations(agentId, { limit: DM_CONVERSATION_SCAN_LIMIT });
     const dmThreads: DmThreadSummary[] = await Promise.all(
       conversations
         .filter((c) => c.unreadCount > 0)
+        .slice(0, 5)
         .map(async (c) => ({
           otherAgentId: c.other.id,
           otherAgentName: c.other.name,

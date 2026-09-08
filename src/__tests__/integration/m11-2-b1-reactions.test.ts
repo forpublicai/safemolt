@@ -2,7 +2,7 @@
  * M11b lane R (P6.2) `[integration]` — reactions against the real database.
  *
  * What only a database can show, and what this file is for:
- *  - **the FOR KEY SHARE subject lock**: a reaction attempted after the subject's tombstone lands
+ *  - **the FOR SHARE subject lock**: a reaction attempted after the subject's tombstone lands
  *    must see `deleted_at IS NOT NULL` and refuse, and a reaction that lands first must be cleaned
  *    up by `deletePost`'s batch in the SAME transaction as the tombstone;
  *  - **the ON CONFLICT DO NOTHING / under-cap gate under real concurrency**: N racing duplicate adds
@@ -18,17 +18,18 @@
 import { POST as POST_POST_REACTION, DELETE as DELETE_POST_REACTION } from "@/app/api/v1/posts/[id]/reactions/route";
 import { createComment } from "@/lib/actions/comments";
 import { createPost, deletePost } from "@/lib/actions/posts";
-import { addReaction } from "@/lib/actions/reactions";
+import { addReaction, removeReaction } from "@/lib/actions/reactions";
 import { executors } from "@/lib/agent-tools/definitions/reactions";
 import { notificationsConsumer } from "@/lib/events/consumers/notifications";
 import { eventConsumers } from "@/lib/events/consumers/registry";
 import { getEventById } from "@/lib/store/events/db";
 import { drainEventConsumer } from "@/lib/store/events/drain-db";
+import { secondsUntilUtcMidnight } from "@/lib/store/rate-limit-windows";
 import type { StoredAgent, StoredEvent } from "@/lib/store-types";
 
 import { withMiddlewareHeaders } from "../helpers/middleware-headers";
 import { activateRealConsumers } from "./helpers/activate-consumers";
-import { rejections, runConcurrently } from "./helpers/concurrency";
+import { raceAgainstHeldLock, rejections, runConcurrently } from "./helpers/concurrency";
 import { closeIntegrationConnections, pgPool } from "./helpers/db";
 
 const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
@@ -146,24 +147,69 @@ afterAll(async () => {
   await closeIntegrationConnections();
 });
 
+/** The tombstone `deletePost`'s own batch element writes, held open on a dedicated connection. */
+const TOMBSTONE_SQL = `
+  UPDATE posts SET deleted_at = NOW(), deleted_by_agent_id = $2, deleted_karma_reversed_at = NOW()
+  WHERE id = $1 AND deleted_at IS NULL
+`;
+
 describe.each(["post", "comment"] as const)("%s reactions vs deletePost — both orderings", (surface) => {
-  it("delete-first: the reaction attempt afterward is not_found, writes nothing, emits nothing", async () => {
+  // Activated here (idempotent, see `activateRealConsumers`) rather than only in the
+  // delayed-consume describe below, because "reaction-first" now drains too (F1, F4).
+  beforeAll(async () => {
+    await activateRealConsumers();
+  });
+
+  it("delete-first (real overlapping transaction): addReaction blocks on the tombstone, then is not_found", async () => {
     const author = await seedAgent();
     const reactor = await seedAgent();
     const group = await seedGroup(author.id);
     const { subjectId, postId } = await makeSubject(surface, author, group);
-
-    expect((await deletePost({ agent: author, postId })).ok).toBe(true);
-
     const marker = await maxEventId();
-    const result = await addReaction({ agent: reactor, subjectType: surface, subjectId, emoji: "👍" });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe("not_found");
+
+    // The tombstone is held OPEN — not committed — so `addReaction` genuinely contends for the
+    // post lock rather than racing a delete that already finished (codex round 1, F4).
+    const race = await raceAgainstHeldLock({
+      hold: async (holder) => {
+        await holder.query(TOMBSTONE_SQL, [postId, author.id]);
+      },
+      contend: () => addReaction({ agent: reactor, subjectType: surface, subjectId, emoji: "👍" }),
+      contenderMarker: "race:b1r-add-post-lock",
+    });
+
+    expect(race.observedBlocked).toBe(true);
+    expect(race.result.ok).toBe(false);
+    if (!race.result.ok) expect(race.result.code).toBe("not_found");
     expect(await eventsSince(marker)).toEqual([]);
     expect(await reactionRows(surface, subjectId)).toEqual([]);
   });
 
-  it("reaction-first: the reaction succeeds, and the subsequent delete removes it in the same transaction", async () => {
+  it("delete-first (real overlapping transaction): removeReaction against a live row blocks on the tombstone, then is not_found and leaves the row untouched", async () => {
+    const author = await seedAgent();
+    const reactor = await seedAgent();
+    const group = await seedGroup(author.id);
+    const { subjectId, postId } = await makeSubject(surface, author, group);
+    expect((await addReaction({ agent: reactor, subjectType: surface, subjectId, emoji: "🎉" })).ok).toBe(true);
+    const marker = await maxEventId();
+
+    const race = await raceAgainstHeldLock({
+      hold: async (holder) => {
+        await holder.query(TOMBSTONE_SQL, [postId, author.id]);
+      },
+      contend: () => removeReaction({ agent: reactor, subjectType: surface, subjectId, emoji: "🎉" }),
+      contenderMarker: "race:b1r-remove-post-lock",
+    });
+
+    expect(race.observedBlocked).toBe(true);
+    expect(race.result.ok).toBe(false);
+    if (!race.result.ok) expect(race.result.code).toBe("not_found");
+    expect(await eventsSince(marker)).toEqual([]);
+    // Mutation check: dropping F7's `EXISTS (SELECT 1 FROM subject)` gate lets this DELETE match
+    // the still-physically-present row once the tombstone commits, reporting "removed" instead.
+    expect(await reactionRows(surface, subjectId)).toHaveLength(1);
+  });
+
+  it("reaction-first: the reaction succeeds, its drained notification exists, and the subsequent delete removes both in the same transaction", async () => {
     const author = await seedAgent();
     const reactor = await seedAgent();
     const group = await seedGroup(author.id);
@@ -175,8 +221,23 @@ describe.each(["post", "comment"] as const)("%s reactions vs deletePost — both
     expect((await eventsSince(marker)).map((e) => e.kind)).toEqual(["reaction.added"]);
     expect(await reactionRows(surface, subjectId)).toHaveLength(1);
 
+    await drainEventConsumer(notificationsConsumer, { batchSize: 200 });
+    const { rows: notifBefore } = await pgPool().query(
+      `SELECT 1 FROM notifications WHERE metadata->>'subject_id' = $1 AND metadata->>'subject_type' = $2`,
+      [subjectId, surface]
+    );
+    expect(notifBefore).toHaveLength(1);
+
     expect((await deletePost({ agent: author, postId })).ok).toBe(true);
     expect(await reactionRows(surface, subjectId)).toEqual([]);
+
+    // F1: the notification carries `metadata.post_id` (the post itself, or the comment's post), so
+    // `deleteNotificationsAnchoredToPost` finds and removes it along with the tombstone.
+    const { rows: notifAfter } = await pgPool().query(
+      `SELECT 1 FROM notifications WHERE metadata->>'subject_id' = $1 AND metadata->>'subject_type' = $2`,
+      [subjectId, surface]
+    );
+    expect(notifAfter).toEqual([]);
   });
 });
 
@@ -201,8 +262,10 @@ describe("concurrent duplicate reacts", () => {
 
     // Mutation check: if the insert's `ON CONFLICT DO NOTHING` / `under_cap` gate were removed, more
     // than one of these racing calls could land a row, and `content_reactions` would carry more than
-    // one — instead exactly one survives.
-    expect(await reactionRows("post", subjectId)).toHaveLength(1);
+    // one — instead exactly one survives, and the map is never empty.
+    const rows = await reactionRows("post", subjectId);
+    expect(rows).not.toEqual([]);
+    expect(rows).toHaveLength(1);
     expect((await eventsSince(marker)).filter((e) => e.kind === "reaction.added")).toHaveLength(1);
 
     // Mutation check: if the `bump` CTE fired on every attempt instead of only `EXISTS (SELECT 1 FROM
@@ -214,6 +277,37 @@ describe("concurrent duplicate reacts", () => {
     );
     expect(quota[0].reaction_count).toBe(1);
   });
+
+  it("F5/F6: two identical requests with exactly one slot left never answer rate_limited — one added, one already_reacted", async () => {
+    const author = await seedAgent();
+    const reactor = await seedAgent();
+    const group = await seedGroup(author.id);
+    const { subjectId } = await makeSubject("post", author, group);
+    // The seed and the decisive statement land in ONE transaction (F6), so the daily limit can be
+    // set to exactly 1 with no prior reaction charged against it — the "one slot left" shape F5
+    // names, rather than needing a separate reaction to consume the first slot.
+    const prevLimit = process.env.REACTION_DAILY_LIMIT;
+    process.env.REACTION_DAILY_LIMIT = "1";
+    try {
+      const outcomes = await runConcurrently([
+        () => addReaction({ agent: reactor, subjectType: "post", subjectId, emoji: "👍" }),
+        () => addReaction({ agent: reactor, subjectType: "post", subjectId, emoji: "👍" }),
+      ]);
+      expect(rejections(outcomes)).toEqual([]);
+      const codes = outcomes.map((o) => {
+        if (!o.ok) return "rejected";
+        return o.value.ok ? "added" : o.value.code;
+      });
+      // Mutation check: before F5, the loser's snapshot could pre-date the winner's commit and see
+      // `current_count` still at the cap with no matching `existing` row — this asserts it never
+      // reports `rate_limited` (the wrong refusal), only `already_reacted` (the right one).
+      expect(codes.sort()).toEqual(["added", "already_reacted"]);
+    } finally {
+      if (prevLimit === undefined) delete process.env.REACTION_DAILY_LIMIT;
+      else process.env.REACTION_DAILY_LIMIT = prevLimit;
+    }
+  });
+
 });
 
 describe("delayed-consume: a reaction.added event that drains after its subject is gone", () => {
@@ -273,31 +367,43 @@ describe("rate limit through both surfaces", () => {
       // ROUTE: first admitted, second capped.
       expect((await POST_POST_REACTION(reactionRequest(routeReactor, routeFirst.subjectId, "POST", "👍") as never, routeParams(routeFirst.subjectId))).status).toBe(200);
       let marker = await maxEventId();
-      const cappedRoute = await POST_POST_REACTION(
-        reactionRequest(routeReactor, routeSecond.subjectId, "POST", "👍") as never,
-        routeParams(routeSecond.subjectId)
-      );
-      expect(cappedRoute.status).toBe(429);
-      const cappedRouteBody = (await cappedRoute.json()) as { retry_after_seconds?: number };
-      expect(typeof cappedRouteBody.retry_after_seconds).toBe("number");
-      expect(await eventsSince(marker)).toEqual([]);
-      expect(await reactionRows("post", routeSecond.subjectId)).toEqual([]);
+      // Date.now() frozen only for the capped calls below, so `retry_after_seconds` can be checked
+      // for the EXACT value rather than merely "is a number" — real elapsed network time would
+      // otherwise make an exact assertion flaky.
+      const FROZEN_NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
+      const expectedRetry = secondsUntilUtcMidnight(FROZEN_NOW);
+      const nowSpy = jest.spyOn(Date, "now").mockReturnValue(FROZEN_NOW);
+      let cappedRouteBody: { retry_after_seconds?: number };
+      let cappedToolData: { code: string; retry_after_seconds: number };
+      try {
+        const cappedRoute = await POST_POST_REACTION(
+          reactionRequest(routeReactor, routeSecond.subjectId, "POST", "👍") as never,
+          routeParams(routeSecond.subjectId)
+        );
+        expect(cappedRoute.status).toBe(429);
+        cappedRouteBody = (await cappedRoute.json()) as { retry_after_seconds?: number };
+        expect(cappedRouteBody.retry_after_seconds).toBe(expectedRetry);
+        expect(await eventsSince(marker)).toEqual([]);
+        expect(await reactionRows("post", routeSecond.subjectId)).toEqual([]);
 
-      // TOOL: same shape, a fresh reactor and fresh subjects so the two surfaces cannot interfere.
-      expect(
-        (await executors.add_reaction({ subject_type: "post", subject_id: toolFirst.subjectId, emoji: "👍" }, { agent: toolReactor } as never)).success
-      ).toBe(true);
-      marker = await maxEventId();
-      const cappedTool = await executors.add_reaction(
-        { subject_type: "post", subject_id: toolSecond.subjectId, emoji: "👍" },
-        { agent: toolReactor } as never
-      );
-      expect(cappedTool.success).toBe(false);
-      const cappedToolData = cappedTool.data as { code: string; retry_after_seconds: number };
-      expect(cappedToolData.code).toBe("rate_limited");
-      expect(typeof cappedToolData.retry_after_seconds).toBe("number");
-      expect(await eventsSince(marker)).toEqual([]);
-      expect(await reactionRows("post", toolSecond.subjectId)).toEqual([]);
+        // TOOL: same shape, a fresh reactor and fresh subjects so the two surfaces cannot interfere.
+        expect(
+          (await executors.add_reaction({ subject_type: "post", subject_id: toolFirst.subjectId, emoji: "👍" }, { agent: toolReactor } as never)).success
+        ).toBe(true);
+        marker = await maxEventId();
+        const cappedTool = await executors.add_reaction(
+          { subject_type: "post", subject_id: toolSecond.subjectId, emoji: "👍" },
+          { agent: toolReactor } as never
+        );
+        expect(cappedTool.success).toBe(false);
+        cappedToolData = cappedTool.data as { code: string; retry_after_seconds: number };
+        expect(cappedToolData.code).toBe("rate_limited");
+        expect(cappedToolData.retry_after_seconds).toBe(expectedRetry);
+        expect(await eventsSince(marker)).toEqual([]);
+        expect(await reactionRows("post", toolSecond.subjectId)).toEqual([]);
+      } finally {
+        nowSpy.mockRestore();
+      }
 
       // DELETE stays uncapped through both surfaces, even though both reactors are at the cap.
       expect(

@@ -27,12 +27,13 @@ type AttemptOutcome = "empty" | "delivered" | "failed";
 /**
  * A claimed row with no live registration (deleted between enqueue and claim) has nothing to
  * deliver to; record it as a failed attempt so the store's own fenced update terminalizes it
- * (`gone`/`disabled`) rather than rescheduling forever.
+ * (`gone`/`disabled`) rather than rescheduling forever. F1: a `disabledAt` registration is the same
+ * case — never send another HTTP request after auto-disable, let the fenced update terminalize it.
  */
 async function attemptOne(): Promise<AttemptOutcome> {
   const claimed = await claimNextWebhookDelivery({ claimToken: randomUUID(), leaseMs: LEASE_MS });
   if (!claimed) return "empty";
-  if (claimed.url === null || claimed.secret === null) {
+  if (claimed.url === null || claimed.secret === null || claimed.disabledAt !== null) {
     await recordWebhookAttempt({ id: claimed.id, claimToken: claimed.claimToken, agentId: claimed.agentId, status: null, ok: false });
     return "failed";
   }

@@ -5,7 +5,7 @@ import type { PostDeletionResult, StoredPost, StoredComment, StoredCommentWithPo
 import { recordPostActivityEvent } from "../activity/events";
 import { toIsoOrEmpty } from "@/lib/iso-date";
 import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY, POST_COOLDOWN_MS, secondsUntilUtcMidnight } from "../rate-limit-windows";
-import type { PreparedEvent } from "@/lib/events/kinds";
+import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
 import { memoryIngestFanoutCap } from "@/lib/memory/fanout-cap";
 import { emitEventCtes, sqlJsonAgg, sqlParam, sqlPayloadObject } from "../events/statement";
 import { deleteReactionsForPostBatchElement } from "../reactions/db";
@@ -105,11 +105,9 @@ export async function createPost(
     const emitted = emitEventCtes(events, "p", {
         firstParamIndex: params.length + 1,
         // PER EVENT, by position: only the PRIMARY `post.created` takes the minted id as its
-        // SUBJECT. Every event AFTER it (P6.1's `agent.mentioned` fan-out — one derived event per
-        // resolved mention) still carries `source_id: STORE_ASSIGNED_PAYLOAD_ID` in its payload,
-        // because the action decides the mention but not the post id, so its `source_id` is filled
-        // from the same `$1` the primary's `subject_id` takes. Its OWN subject (the mentioned
-        // agent) is left alone — the action already knows that one.
+        // SUBJECT. An event AFTER it gets `source_id` filled ONLY when its own payload carries the
+        // marker (P6.1's `agent.mentioned` fan-out does) — codex round 1 F5: a future secondary
+        // event with its OWN `source_id` must keep it rather than being overwritten.
         //
         // Empty when the caller passed no events at all (fixtures, reconciliation, the seeds):
         // describing a substitution for an event nobody supplied is a configuration error, and
@@ -120,9 +118,11 @@ export async function createPost(
                       columnSql: { subject_id: sqlParam(1, "text") },
                       payloadMergeSql: sqlPayloadObject({ post_id: sqlParam(1, "text") }),
                   },
-                  ...events.slice(1).map(() => ({
-                      payloadMergeSql: sqlPayloadObject({ source_id: sqlParam(1, "text") }),
-                  })),
+                  ...events.slice(1).map((event) =>
+                      (event.payload as Record<string, unknown> | undefined)?.source_id === STORE_ASSIGNED_PAYLOAD_ID
+                          ? { payloadMergeSql: sqlPayloadObject({ source_id: sqlParam(1, "text") }) }
+                          : undefined
+                  ),
               ]
             : [],
     });

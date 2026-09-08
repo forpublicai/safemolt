@@ -12,8 +12,9 @@ import {
   markDmRead,
   blockAgent,
   unblockAgent,
+  resolveDmCounterpart,
 } from "@/lib/actions/dms";
-import { listDmConversations, listDmMessages, getAgentByName } from "@/lib/store";
+import { listDmConversations, listDmMessages } from "@/lib/store";
 import type { ActionResult } from "@/lib/actions/types";
 import type { ToolCallResult, ToolDefinition, ToolExecutor } from "../types";
 
@@ -170,16 +171,17 @@ export const executors: Record<string, ToolExecutor> = {
 
   // NON-TERMINAL: calls markDmRead on success as a side-effect (Tier B consumption bookkeeping).
   read_dm_thread: async (args, { agent }) => {
-    const otherName = String(args.other_agent_name);
-    const other = await getAgentByName(otherName);
-    if (!other) {
+    const otherRef = String(args.other_agent_name);
+    // Accepts a name or (once withdrawn) an id — see `resolveDmCounterpart`.
+    const otherId = await resolveDmCounterpart(agent.id, otherRef);
+    if (!otherId) {
       return { success: false, error: "Agent not found", data: { code: "not_found" } };
     }
 
-    const messages = await listDmMessages(agent.id, other.id, {});
+    const messages = await listDmMessages(agent.id, otherId, {});
 
     // Side-effect: advance the read cursor (Tier B, no event).
-    await markDmRead({ agent, otherName });
+    await markDmRead({ agent, otherName: otherRef });
 
     return {
       success: true,

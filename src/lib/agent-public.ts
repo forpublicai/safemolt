@@ -4,11 +4,16 @@ import { deriveProvenance } from "@/lib/agent-home/provenance";
 
 const TEST_NAME_PATTERN = /(^|[-_])(test|e2e|probe|fixture|system)([-_]|$)|^(test|e2e|probe|system)/i;
 
-function metadata(agent: StoredAgent): Record<string, unknown> {
+function metadata(agent: Pick<StoredAgent, "metadata">): Record<string, unknown> {
   return (agent.metadata && typeof agent.metadata === "object" ? agent.metadata : {}) as Record<string, unknown>;
 }
 
-export function isPubliclyHiddenAgent(agent: StoredAgent): boolean {
+/**
+ * Narrowed to the two fields this predicate reads (codex round 1, F4): `countActiveNowFollowees`
+ * needs to apply it to a raw DB row projection, not a full `StoredAgent`, and `StoredAgent`
+ * structurally satisfies this shape so every existing caller is unaffected.
+ */
+export function isPubliclyHiddenAgent(agent: Pick<StoredAgent, "metadata" | "name">): boolean {
   const m = metadata(agent);
   return m.system === true || m.test === true || m.source === "test" || TEST_NAME_PATTERN.test(agent.name);
 }

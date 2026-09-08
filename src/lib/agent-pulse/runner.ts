@@ -27,10 +27,10 @@
  *
  * The guard reaches the WIRED actions only — `create_comment` and `submit_playground_action` thread
  * it into their gated statements today. Every other terminal tool an `idle` tick can reach (posts,
- * votes, groups, classes, evaluations, follow, memory) now sits behind the lease-renewal fence but
- * still has no statement-level guard, so a disable landing in the seconds between the renewal and the
- * write is a real residual there — recorded as this train's deferred work, not silently assumed
- * complete.
+ * votes, groups, classes, evaluations, follow, memory, `send_dm` — b1-d-fix-r1's F1, deferred under
+ * ledger item 9) now sits behind the lease-renewal fence but still has no statement-level guard, so
+ * a disable landing in the seconds between the renewal and the write is a real residual there —
+ * recorded as this train's deferred work, not silently assumed complete.
  */
 import { randomUUID } from "node:crypto";
 
@@ -156,11 +156,14 @@ const REPLY_REASONS: ReadonlySet<string> = new Set([
 const REPLY_TOOL_NAMES: ReadonlySet<string> = new Set(["create_comment"]);
 
 /**
- * The two DM tools a `dm` wakeup may invoke. Names come from a LATER round's
- * `agent-tools/definitions/messages.ts`, which does not exist yet — `toolsNamed()` just filters
- * `PLATFORM_TOOLS`, so an unregistered name matches nothing until that file lands.
+ * The DM tools a `dm` wakeup may invoke. `read_dm_thread`/`list_dms` are NON-terminal (codex round
+ * 1, finding 3): an agent that reads first must be able to reply in the same turn, so only
+ * `send_dm` sits in `DM_TERMINAL_TOOL_NAMES` below and the turn is allowed a second call.
  */
-const DM_TOOL_NAMES: ReadonlySet<string> = new Set(["send_dm", "read_dm_thread"]);
+const DM_TOOL_NAMES: ReadonlySet<string> = new Set(["send_dm", "read_dm_thread", "list_dms"]);
+
+/** The one DM tool that ends the turn — see `DM_TOOL_NAMES`. */
+const DM_TERMINAL_TOOL_NAMES: ReadonlySet<string> = new Set(["send_dm"]);
 
 /** The one tool the playground_round path may invoke ("narrows tools to the playground submit
  *  surface" per the plan). */
@@ -308,6 +311,10 @@ interface NarrowWakeupConfig {
   domain: LoopDomain;
   /** playground_round only: the successful result's `round` must equal this or the tick errors. */
   expectedRound?: number;
+  /** Usually `toolNames` (every tool ends the turn) — the `dm` path narrows this to `send_dm`. */
+  terminalToolNames: ReadonlySet<string>;
+  /** Usually 1 — the `dm` path raises this to 2 so a read can be followed by a reply. */
+  maxToolCalls: number;
 }
 
 /**
@@ -359,9 +366,9 @@ async function runNarrowWakeup(
       messages,
       tools: toolsNamed(config.toolNames),
       callLLM,
-      maxToolCalls: 1,
+      maxToolCalls: config.maxToolCalls,
       requireFinalText: false,
-      terminalToolNames: config.toolNames,
+      terminalToolNames: config.terminalToolNames,
       executionGuard: fence.executionGuard,
       // The fence: renew the lease, token-checked, with the `agent_loop_state.enabled` EXISTS
       // predicate baked into `renewWakeupLease` itself (P3.2 semantics). A `false` return here ends
@@ -433,6 +440,8 @@ async function runNarrowWakeup(
 async function runReplyWakeup(agent: StoredAgent, wakeup: StoredWakeup, claimToken: string): Promise<WakeupOutcome> {
   return runNarrowWakeup(agent, wakeup, claimToken, focusForWakeup(wakeup), {
     toolNames: REPLY_TOOL_NAMES,
+    terminalToolNames: REPLY_TOOL_NAMES,
+    maxToolCalls: 1,
     domain: "discussion",
   });
 }
@@ -459,6 +468,8 @@ async function runPlaygroundRoundWakeup(
   const round = typeof payload.round === "number" ? payload.round : undefined;
   return runNarrowWakeup(agent, wakeup, claimToken, focusForWakeup(wakeup), {
     toolNames: PLAYGROUND_ROUND_TOOL_NAMES,
+    terminalToolNames: PLAYGROUND_ROUND_TOOL_NAMES,
+    maxToolCalls: 1,
     domain: "playground",
     expectedRound: round,
   });
@@ -475,6 +486,8 @@ async function runDmWakeup(agent: StoredAgent, wakeup: StoredWakeup, claimToken:
   return runNarrowWakeup(agent, wakeup, claimToken, focusForWakeup(wakeup), {
     toolNames: DM_TOOL_NAMES,
     domain: "discussion",
+    terminalToolNames: DM_TERMINAL_TOOL_NAMES,
+    maxToolCalls: 2,
   });
 }
 

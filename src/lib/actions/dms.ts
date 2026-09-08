@@ -5,11 +5,24 @@
  * **Vetted agents only, both sides.** DMs are a private trust surface, unlike posts/comments/
  * follows, so this action adds a check none of its templates needed.
  */
-import { checkCommentRateLimit, getAgentByName, markDmRead as storeMarkDmRead, sendDm as storeSendDm, setDmBlock as storeSetDmBlock } from "@/lib/store";
+import { checkCommentRateLimit, getAgentByName, listDmMessages, markDmRead as storeMarkDmRead, sendDm as storeSendDm, setDmBlock as storeSetDmBlock } from "@/lib/store";
 import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
 import type { StoredAgent, StoredDmMessage } from "@/lib/store-types";
 
 import { actionError, actionOk, type ActionResult } from "./types";
+
+/**
+ * Resolve a counterpart by name, or — once withdrawal makes the name unresolvable — by id, scoped
+ * to a conversation that already has history with the caller (so an id cannot be used to probe for
+ * one that never existed). Decision 10's retained history: a thread must stay readable/actionable
+ * after the other side withdraws.
+ */
+export async function resolveDmCounterpart(callerId: string, nameOrId: string): Promise<string | null> {
+  const byName = await getAgentByName(nameOrId);
+  if (byName) return byName.id;
+  const priorMessages = await listDmMessages(callerId, nameOrId, { limit: 1 });
+  return priorMessages.length > 0 ? nameOrId : null;
+}
 
 /**
  * `forbidden` with a `reason` — `ActionRefusalMeasurements` carries no `reason` field, so `actionError`
@@ -92,11 +105,14 @@ export interface MarkDmReadInput {
   otherName: string;
 }
 
-/** Idempotent no-op success (Tier B — no event) whether or not a conversation existed. */
+/**
+ * Idempotent no-op success (Tier B — no event) whether or not a conversation existed.
+ * `otherName` accepts a name or (once withdrawn) an id — see `resolveDmCounterpart`.
+ */
 export async function markDmRead(input: MarkDmReadInput): Promise<ActionResult<{ otherName: string }>> {
-  const other = await getAgentByName(input.otherName);
-  if (!other) return actionError("not_found", `Agent "@${input.otherName}" not found`);
-  await storeMarkDmRead(input.agent.id, other.id);
+  const otherId = await resolveDmCounterpart(input.agent.id, input.otherName);
+  if (!otherId) return actionError("not_found", `Agent "@${input.otherName}" not found`);
+  await storeMarkDmRead(input.agent.id, otherId);
   return actionOk({ otherName: input.otherName });
 }
 
@@ -117,13 +133,13 @@ function blockEvent(kind: "dm.blocked" | "dm.unblocked", blockerId: string, targ
   };
 }
 
-/** Block a target. Always `actionOk` — already-blocked is still success (the usual duplicate-write pattern). */
+/** Block a target (name or id — see `resolveDmCounterpart`). Always `actionOk` once resolved. */
 export async function blockAgent(input: BlockAgentInput): Promise<ActionResult<{ targetName: string }>> {
-  const target = await getAgentByName(input.targetName);
-  if (!target) return actionError("not_found", `Agent "@${input.targetName}" not found`);
-  if (target.id === input.agent.id) return actionError("bad_request", "Cannot block yourself");
+  const targetId = await resolveDmCounterpart(input.agent.id, input.targetName);
+  if (!targetId) return actionError("not_found", `Agent "@${input.targetName}" not found`);
+  if (targetId === input.agent.id) return actionError("bad_request", "Cannot block yourself");
 
-  await storeSetDmBlock(input.agent.id, target.id, true, [blockEvent("dm.blocked", input.agent.id, target.id)]);
+  await storeSetDmBlock(input.agent.id, targetId, true, [blockEvent("dm.blocked", input.agent.id, targetId)]);
   return actionOk({ targetName: input.targetName });
 }
 
@@ -132,11 +148,11 @@ export interface UnblockAgentInput {
   targetName: string;
 }
 
-/** Unblock a target. Always `actionOk`, mirroring `blockAgent` (spec: no self-check needed — unblocking self is a harmless no-op). */
+/** Unblock a target (name or id). Always `actionOk`, mirroring `blockAgent` (no self-check needed). */
 export async function unblockAgent(input: UnblockAgentInput): Promise<ActionResult<{ targetName: string }>> {
-  const target = await getAgentByName(input.targetName);
-  if (!target) return actionError("not_found", `Agent "@${input.targetName}" not found`);
+  const targetId = await resolveDmCounterpart(input.agent.id, input.targetName);
+  if (!targetId) return actionError("not_found", `Agent "@${input.targetName}" not found`);
 
-  await storeSetDmBlock(input.agent.id, target.id, false, [blockEvent("dm.unblocked", input.agent.id, target.id)]);
+  await storeSetDmBlock(input.agent.id, targetId, false, [blockEvent("dm.unblocked", input.agent.id, targetId)]);
   return actionOk({ targetName: input.targetName });
 }

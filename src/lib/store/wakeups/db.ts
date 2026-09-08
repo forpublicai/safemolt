@@ -133,34 +133,58 @@ export function rowToWakeup(row: unknown): StoredWakeup {
  * M11b Lane W (P5.1) — the shared ledger-row CTE every enqueue/re-arm insert path splices in.
  *
  * A `webhook_deliveries` row rides the SAME statement as the wakeup it belongs to (`UNIQUE
- * (wakeup_id)`, `ON CONFLICT DO NOTHING`) — never a second auto-committed call, which would let a
- * crash between the two leave a webhook-primary wakeup with no ledger to claim it through. Reached
- * by bare table name (`agent_webhooks`), never by importing `store/webhooks/*`: this module is
- * "kind-agnostic on purpose" (see the file header) and a domain import here would be a layering edge.
+ * (wakeup_id)`) — never a second auto-committed call, which would let a crash between the two leave
+ * a webhook-primary wakeup with no ledger to claim it through. Reached by bare table name
+ * (`agent_webhooks`), never by importing `store/webhooks/*`: this module is "kind-agnostic on
+ * purpose" (see the file header) and a domain import here would be a layering edge.
  *
  * `rowCteNames` are UNION'd because `ins` and `rearmed` are mutually exclusive by construction (see
  * `createOrReArmWakeup`'s own doc comment) — whichever one actually produced a row is the row this
- * fires for. Gated on `delivery = 'webhook'` OR a live (`disabled_at IS NULL`) `mode = 'both'`
- * registration, matching `resolveWakeupDelivery`'s precedence and P5.1's "mode='both' additionally
- * creates a delivery-ledger row for internal-primary wakeups" rule.
+ * fires for.
+ *
+ * **F3: the registration is LOCKED `FOR SHARE`, not read through a bare `EXISTS`**, so this insert
+ * serializes against `deleteAgentWebhook`'s row-owning `DELETE` — whichever commits first is the one
+ * the other observes, and no ledger row can be created for a registration a concurrent delete already
+ * removed (or vice versa, leave one behind that the delete's own sweep already ran past). The lock
+ * gates BOTH branches: webhook-primary now also requires the registration to still be live at this
+ * instant, not merely at `resolveWakeupDelivery`'s earlier, unlocked read.
+ *
+ * **F2: `rearmCteName`, when given, makes the insert an `ON CONFLICT (wakeup_id) DO UPDATE` that
+ * resets the ledger row — but ONLY for a wakeup id present in that re-arm CTE's own `RETURNING`.** A
+ * re-armed wakeup's OLD ledger row is a stale terminal row from its previous life; a freshly inserted
+ * wakeup can never conflict (its id is new), so gating the reset on `rearmCteName` rather than
+ * resetting unconditionally cannot affect the plain-insert case.
  */
-function webhookLedgerCte(rowCteNames: readonly string[], namePrefix = "wh"): string {
+function webhookLedgerCte(rowCteNames: readonly string[], namePrefix = "wh", rearmCteName?: string): string {
   const rowName = `${namePrefix}_row`;
+  const regName = `${namePrefix}_reg`;
   const union = rowCteNames.map((name) => `SELECT id, agent_id, delivery FROM ${name}`).join("\n      UNION ALL\n      ");
+  const conflictClause = rearmCteName
+    ? `ON CONFLICT (wakeup_id) DO UPDATE
+        SET attempts = 0, delivered_at = NULL, last_status = NULL, last_attempt_at = NULL,
+            terminal_reason = NULL, claimed_at = NULL, claim_token = NULL, lease_expires_at = NULL,
+            next_attempt_at = NOW()
+        WHERE EXISTS (SELECT 1 FROM ${rearmCteName} WHERE ${rearmCteName}.id = webhook_deliveries.wakeup_id)`
+    : `ON CONFLICT (wakeup_id) DO NOTHING`;
   return `
     ${rowName} AS (
       ${union}
+    ),
+    ${regName} AS (
+      SELECT h.agent_id, h.mode
+      FROM agent_webhooks h
+      WHERE h.agent_id IN (SELECT agent_id FROM ${rowName}) AND h.disabled_at IS NULL
+      FOR SHARE
     ),
     ${namePrefix}_ledger AS (
       INSERT INTO webhook_deliveries (wakeup_id, agent_id, next_attempt_at)
       SELECT r.id, r.agent_id, NOW()
       FROM ${rowName} r
-      WHERE r.delivery = 'webhook'
-         OR EXISTS (
-           SELECT 1 FROM agent_webhooks h
-           WHERE h.agent_id = r.agent_id AND h.mode = 'both' AND h.disabled_at IS NULL
-         )
-      ON CONFLICT (wakeup_id) DO NOTHING
+      WHERE EXISTS (
+        SELECT 1 FROM ${regName} g
+        WHERE g.agent_id = r.agent_id AND (r.delivery = 'webhook' OR g.mode = 'both')
+      )
+      ${conflictClause}
       RETURNING wakeup_id
     )`;
 }
@@ -254,7 +278,7 @@ export async function createOrReArmWakeup(
         AND (result IS DISTINCT FROM 'budget_exhausted' OR completed_at::date < CURRENT_DATE)
       RETURNING *
     ),
-    ${webhookLedgerCte(["ins", "rearmed"])}
+    ${webhookLedgerCte(["ins", "rearmed"], "wh", "rearmed")}
     SELECT (SELECT to_jsonb(ins) FROM ins) AS created_row,
            (SELECT to_jsonb(rearmed) FROM rearmed) AS rearmed_row
   `,
@@ -343,7 +367,7 @@ export async function createOrReArmPlaygroundRoundWakeup(
         AND (result IS DISTINCT FROM 'budget_exhausted' OR completed_at::date < CURRENT_DATE)
       RETURNING *
     ),
-    ${webhookLedgerCte(["ins", "rearmed"])}
+    ${webhookLedgerCte(["ins", "rearmed"], "wh", "rearmed")}
     SELECT (SELECT to_jsonb(ins) FROM ins) AS created_row,
            (SELECT to_jsonb(rearmed) FROM rearmed) AS rearmed_row
   `,

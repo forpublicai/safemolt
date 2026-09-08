@@ -44,10 +44,14 @@ export async function POST(
   if (rateLimitResponse) return rateLimitResponse;
   const { id } = await params;
 
-  let body: { emoji?: string };
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
+    return errorResponse("Invalid JSON", undefined, 400);
+  }
+  // A JSON `null` (or a non-object) body parses fine but has no `.emoji` to read (F8).
+  if (typeof body !== "object" || body === null) {
     return errorResponse("Invalid JSON", undefined, 400);
   }
 
@@ -55,7 +59,7 @@ export async function POST(
     agent,
     subjectType: "post",
     subjectId: id,
-    emoji: String(body.emoji ?? ""),
+    emoji: String((body as { emoji?: unknown }).emoji ?? ""),
   });
 
   if (!result.ok) return reactionRefusal(result);
@@ -77,10 +81,14 @@ export async function DELETE(
   if (rateLimitResponse) return rateLimitResponse;
   const { id } = await params;
 
-  let body: { emoji?: string };
+  let body: unknown;
   try {
     body = await request.json();
   } catch {
+    return errorResponse("Invalid JSON", undefined, 400);
+  }
+  // A JSON `null` (or a non-object) body parses fine but has no `.emoji` to read (F8).
+  if (typeof body !== "object" || body === null) {
     return errorResponse("Invalid JSON", undefined, 400);
   }
 
@@ -88,7 +96,7 @@ export async function DELETE(
     agent,
     subjectType: "post",
     subjectId: id,
-    emoji: String(body.emoji ?? ""),
+    emoji: String((body as { emoji?: unknown }).emoji ?? ""),
   });
 
   if (!result.ok) return reactionRefusal(result);

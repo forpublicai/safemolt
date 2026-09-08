@@ -1,5 +1,5 @@
 import type { AddReactionInput, RemoveReactionInput, AddReactionOutcome, RemoveReactionOutcome } from "./db";
-import { comments, posts } from "../_memory-state";
+import { agents, comments, posts } from "../_memory-state";
 import { contentReactions, reactionCountToday } from "../_memory-state";
 import type { PreparedEvent } from "@/lib/events/kinds";
 import type { StoredEvent } from "@/lib/store-types";
@@ -62,6 +62,16 @@ export async function addReaction(
     return { outcome: "rate_limited", counts: allCounts[input.subjectId] ?? {} };
   }
 
+  // The acting agent, re-checked here (F3): the action awaits a subject/group read before calling,
+  // and a caller withdrawing in that window would otherwise charge quota and emit an event for
+  // nobody. Postgres refuses via `content_reactions.agent_id REFERENCES agents(id)`; memory has no
+  // such backstop, so it refuses before writing — reported as the same `not_found` a missing
+  // subject gets.
+  if (!agents.has(input.agentId)) {
+    const allCounts = await getReactionCounts(input.subjectType, [input.subjectId]);
+    return { outcome: "not_found", counts: allCounts[input.subjectId] ?? {} };
+  }
+
   // Preflight events before the mutation (Decision 4): all throwing work happens first.
   const batch = prepareEventBatch(events);
 
@@ -84,15 +94,16 @@ export async function addReaction(
 }
 
 /**
- * Remove a reaction. Uncapped — undo must always work.
- * No separate subject-liveness check: a row that did not exist deletes nothing and emits nothing.
+ * Remove a reaction. Uncapped — undo must always work, but only against a LIVE subject: a row
+ * surviving a tombstoned post or comment deletes nothing and emits nothing (F7), matching the db
+ * store's `EXISTS (SELECT 1 FROM subject)` gate.
  */
 export async function removeReaction(
   input: RemoveReactionInput,
   events?: readonly PreparedEvent[]
 ): Promise<{ outcome: RemoveReactionOutcome; counts: Record<string, number> }> {
   const key = getReactionKey(input.agentId, input.subjectType, input.subjectId, input.emoji);
-  const removed = contentReactions.has(key);
+  const removed = contentReactions.has(key) && isSubjectLive(input.subjectType, input.subjectId);
 
   if (!removed) {
     const allCounts = await getReactionCounts(input.subjectType, [input.subjectId]);

@@ -295,4 +295,56 @@ describe("mentions — comment source", () => {
     expect(await mentionNotificationsFor(parentCommenter.id)).toHaveLength(1);
     expect(await mentionWakeupsFor(parentCommenter.id)).toEqual([]);
   });
+
+  /**
+   * Codex round 1 F7 — suppression is derived from rows (see `wakeup-router.ts`'s
+   * `routeMentioned`), never from an existing wakeup row, so it must hold no matter which of the
+   * two events drains first, or whether they drain concurrently. Replays the router directly on
+   * the real emitted events to control the order the action layer's own dispatch does not expose.
+   */
+  it("suppresses the reply-mention wakeup regardless of drain order or concurrency", async () => {
+    await freshStores();
+    const author = makeAgent("author");
+    const parentCommenter = makeAgent("parent");
+    const replier = makeAgent("replier");
+    await seedAgent(author);
+    await seedAgent(parentCommenter);
+    await seedAgent(replier);
+    const groupId = await seedGroup(author.id);
+
+    const { post } = unwrap(
+      await createPost({ agent: author, groupName: groupId, title: "Hi", content: "body" })
+    );
+    const { comment: parent } = unwrap(
+      await createComment({ agent: parentCommenter, postId: post.id, content: "first" })
+    );
+    const { comment: reply } = unwrap(
+      await createComment({
+        agent: replier,
+        postId: post.id,
+        parentId: parent.id,
+        content: `agreed @${parentCommenter.name}`,
+      })
+    );
+
+    const { wakeupRouterEffects } = await import("@/lib/events/consumers/wakeup-router");
+    const { eventLog, resetWakeupState } = await import("@/lib/store/_memory-state");
+    const { listWakeupsForAgent } = await import("@/lib/store/wakeups/memory");
+    const commentEvent = eventLog.rows.find((e) => e.kind === "comment.created" && e.payload.comment_id === reply.id);
+    const mentionEvent = eventLog.rows.find((e) => e.kind === "agent.mentioned" && e.payload.source_id === reply.id);
+    if (!commentEvent || !mentionEvent) throw new Error("expected both events to have been emitted");
+
+    const orders: Array<() => Promise<unknown>> = [
+      () => wakeupRouterEffects.apply(mentionEvent).then(() => wakeupRouterEffects.apply(commentEvent)),
+      () => wakeupRouterEffects.apply(commentEvent).then(() => wakeupRouterEffects.apply(mentionEvent)),
+      () => Promise.all([wakeupRouterEffects.apply(mentionEvent), wakeupRouterEffects.apply(commentEvent)]),
+    ];
+    for (const drain of orders) {
+      resetWakeupState();
+      await drain();
+      const all = await listWakeupsForAgent(parentCommenter.id);
+      expect(all).toHaveLength(1);
+      expect(all[0]).toMatchObject({ reason: "reply_to_my_comment" });
+    }
+  });
 });

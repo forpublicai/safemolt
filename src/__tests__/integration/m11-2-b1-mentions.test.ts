@@ -24,6 +24,7 @@ import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kind
 import { getEventById } from "@/lib/store/events/db";
 import { createComment as storeCreateComment } from "@/lib/store/comments/db";
 import { createPost as storeCreatePost } from "@/lib/store/posts/db";
+import { createMentionNotificationIdempotent } from "@/lib/store/notifications/db";
 import type { StoredEvent } from "@/lib/store-types";
 
 import { closeIntegrationConnections, pgPool } from "./helpers/db";
@@ -105,7 +106,11 @@ async function eventsSince(marker: number): Promise<StoredEvent[]> {
   return Promise.all(rows.map(async (row) => (await getEventById(Number(row.id)))!));
 }
 
-function mentionEvent(mentionedAgentId: string, sourceType: "post" | "comment"): PreparedEvent<"agent.mentioned"> {
+function mentionEvent(
+  mentionedAgentId: string,
+  sourceType: "post" | "comment",
+  sourceId: string = STORE_ASSIGNED_PAYLOAD_ID
+): PreparedEvent<"agent.mentioned"> {
   return {
     kind: "agent.mentioned",
     actorAgentId: null,
@@ -114,7 +119,7 @@ function mentionEvent(mentionedAgentId: string, sourceType: "post" | "comment"):
     schoolId: null,
     payload: {
       source_type: sourceType,
-      source_id: STORE_ASSIGNED_PAYLOAD_ID,
+      source_id: sourceId,
       mentioned_agent_id: mentionedAgentId,
     },
   };
@@ -128,6 +133,8 @@ beforeAll(async () => {
 afterAll(async () => {
   const like = `b1m_%_${RUN}%`;
   await pgPool().query(`DELETE FROM events WHERE id > $1`, [baselineEventId]);
+  // Cascades on agent delete below too; explicit for readability of what F1's test writes.
+  await pgPool().query(`DELETE FROM notifications WHERE agent_id LIKE $1`, [like]);
   await pgPool().query(`DELETE FROM comments WHERE author_id LIKE $1 OR post_id IN (SELECT id FROM posts WHERE author_id LIKE $1)`, [like]);
   await pgPool().query(`DELETE FROM posts WHERE author_id LIKE $1 OR group_id LIKE $1`, [like]);
   await pgPool().query(`DELETE FROM group_members WHERE group_id LIKE $1`, [like]);
@@ -172,6 +179,32 @@ describe("createPost — the derived agent.mentioned event", () => {
       source_id: post!.id,
       mentioned_agent_id: mentioned.id,
     });
+  });
+
+  /** Codex round 1 F5: the override is gated on the marker, so a derived event that already names
+   * its own `source_id` must not be overwritten with the freshly-minted post id. */
+  it("keeps a derived event's own source_id when it is not the marker", async () => {
+    const author = await seedAgent();
+    const mentioned = await seedAgent();
+    const group = await seedGroup(author.id);
+    await clearPostCooldown(author.id);
+    const marker = await maxEventId();
+
+    const post = await storeCreatePost(author.id, group, "hi", `cc @${mentioned.name}`, undefined, [
+      {
+        kind: "post.created",
+        actorAgentId: author.id,
+        subjectType: "post",
+        subjectId: STORE_ASSIGNED_PAYLOAD_ID,
+        schoolId: null,
+        payload: { post_id: STORE_ASSIGNED_PAYLOAD_ID, group_id: group, author_id: author.id },
+      } satisfies PreparedEvent<"post.created">,
+      mentionEvent(mentioned.id, "post", "explicit-source-id"),
+    ]);
+    expect(post).not.toBeNull();
+
+    const [, derived] = await eventsSince(marker);
+    expect(derived.payload.source_id).toBe("explicit-source-id");
   });
 
   /**
@@ -240,6 +273,33 @@ describe("createComment — the derived agent.mentioned event", () => {
     });
   });
 
+  /** Codex round 1 F5: same marker gate on the comment side. */
+  it("keeps a derived event's own source_id when it is not the marker", async () => {
+    const author = await seedAgent();
+    const commenter = await seedAgent();
+    const mentioned = await seedAgent();
+    const group = await seedGroup(author.id);
+    const post = await seedPost(author.id, group);
+    const marker = await maxEventId();
+
+    const comment = await storeCreateComment(post, commenter.id, `cc @${mentioned.name}`, undefined, [
+      {
+        kind: "comment.created",
+        actorAgentId: commenter.id,
+        subjectType: "comment",
+        subjectId: STORE_ASSIGNED_PAYLOAD_ID,
+        secondarySubjectId: post,
+        schoolId: null,
+        payload: { comment_id: STORE_ASSIGNED_PAYLOAD_ID, post_id: post, parent_id: null },
+      } satisfies PreparedEvent<"comment.created">,
+      mentionEvent(mentioned.id, "comment", "explicit-source-id"),
+    ]);
+    expect(comment).not.toBeNull();
+
+    const [, derived] = await eventsSince(marker);
+    expect(derived.payload.source_id).toBe("explicit-source-id");
+  });
+
   it("a refused comment (cooldown) writes no comment AND no derived mention event", async () => {
     const author = await seedAgent();
     const commenter = await seedAgent();
@@ -264,5 +324,45 @@ describe("createComment — the derived agent.mentioned event", () => {
 
     expect(comment).toBeNull();
     expect(await eventsSince(marker)).toEqual([]);
+  });
+});
+
+describe("createMentionNotificationIdempotent (db) — codex round 1 F1", () => {
+  it("creates nothing for a post deleted after the consumer's pre-read", async () => {
+    const author = await seedAgent();
+    const recipient = await seedAgent();
+    const group = await seedGroup(author.id);
+    const post = await seedPost(author.id, group);
+    await pgPool().query(`UPDATE posts SET deleted_at = NOW() WHERE id = $1`, [post]);
+
+    const result = await createMentionNotificationIdempotent({
+      dedupKey: nextId("dedup"),
+      recipientAgentId: recipient.id,
+      actorAgentId: author.id,
+      postId: post,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result).toBeNull();
+    const { rows } = await pgPool().query(`SELECT id FROM notifications WHERE agent_id = $1`, [recipient.id]);
+    expect(rows).toEqual([]);
+  });
+
+  it("still creates a notification for a live post (control)", async () => {
+    const author = await seedAgent();
+    const recipient = await seedAgent();
+    const group = await seedGroup(author.id);
+    const post = await seedPost(author.id, group);
+
+    const result = await createMentionNotificationIdempotent({
+      dedupKey: nextId("dedup"),
+      recipientAgentId: recipient.id,
+      actorAgentId: author.id,
+      postId: post,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.type).toBe("mention");
   });
 });

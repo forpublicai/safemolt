@@ -28,6 +28,7 @@ import {
   type SendDmResult,
 } from "@/lib/store/dms/db";
 import { deleteAgent } from "@/lib/store/agents/db";
+import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
 
 type SendDmOutcome = SendDmResult;
 
@@ -59,6 +60,7 @@ afterAll(async () => {
   );
   await pgPool().query(`DELETE FROM dm_conversations WHERE agent_low LIKE $1 OR agent_high LIKE $1`, [like]);
   await pgPool().query(`DELETE FROM agent_rate_limits WHERE agent_id LIKE $1`, [like]);
+  await pgPool().query(`DELETE FROM events WHERE actor_agent_id LIKE $1`, [like]);
   await pgPool().query(`DELETE FROM agents WHERE id LIKE $1`, [like]);
   await closeIntegrationConnections();
 });
@@ -192,6 +194,31 @@ describe("concurrent send/mark-read never strands a message", () => {
     const maxSeq = Math.max(...allMessages.map((m) => m.seq));
     expect(unreadCounted).toBeLessThanOrEqual(maxSeq);
     expect(unreadCounted).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("F5 — block event payload names the real conversation, not the store-assigned marker", () => {
+  it("dm.blocked's payload.conversation_id equals the row's own subject_id", async () => {
+    const a = await seedAgent();
+    const b = await seedAgent();
+    const event: PreparedEvent<"dm.blocked"> = {
+      kind: "dm.blocked",
+      actorAgentId: a.id,
+      subjectType: "dm_conversation",
+      subjectId: STORE_ASSIGNED_PAYLOAD_ID,
+      secondarySubjectId: b.id,
+      schoolId: null,
+      payload: { conversation_id: STORE_ASSIGNED_PAYLOAD_ID, target_agent_id: b.id },
+    };
+    expect(await setDmBlock(a.id, b.id, true, [event])).toBe(true);
+
+    const { rows } = await pgPool().query(
+      `SELECT subject_id, payload FROM events WHERE kind = 'dm.blocked' AND actor_agent_id = $1 ORDER BY id DESC LIMIT 1`,
+      [a.id]
+    );
+    const row = rows[0] as { subject_id: string; payload: { conversation_id: string } };
+    expect(row.payload.conversation_id).toBe(row.subject_id);
+    expect(row.payload.conversation_id).not.toBe(STORE_ASSIGNED_PAYLOAD_ID);
   });
 });
 

@@ -262,3 +262,30 @@ describe.each(["post", "comment"] as const)("%s reactions — refusal parity", (
     expect((toolResult.data as { code: string }).code).toBe("admission_required");
   });
 });
+
+describe.each(["post", "comment"] as const)("%s reactions — a JSON null body (F8)", (surface) => {
+  function nullBodyRequest(caller: StoredAgent, method: "POST" | "DELETE"): Request {
+    return new Request(
+      `https://safemolt.com${ROUTES[surface].path("whatever")}`,
+      withMiddlewareHeaders({
+        method,
+        headers: { Authorization: `Bearer ${caller.apiKey}`, "content-type": "application/json" },
+        body: "null",
+      })
+    );
+  }
+
+  it("POST answers 400 instead of throwing on `body.emoji`", async () => {
+    const caller = await agent("null-body-post");
+    // Mutation check: reverting the `typeof body !== "object"` guard makes `body.emoji` on a
+    // `null` body throw a TypeError, which Next surfaces as a 500, not this 400.
+    const response = await ROUTES[surface].POST(nullBodyRequest(caller, "POST") as never, routeParams("whatever"));
+    expect(response.status).toBe(400);
+  });
+
+  it("DELETE answers 400 instead of throwing on `body.emoji`", async () => {
+    const caller = await agent("null-body-delete");
+    const response = await ROUTES[surface].DELETE(nullBodyRequest(caller, "DELETE") as never, routeParams("whatever"));
+    expect(response.status).toBe(400);
+  });
+});

@@ -5,7 +5,7 @@ import { recordPostActivityEvent } from "../activity/events";
 import { secondsUntilUtcMidnight } from "../rate-limit-windows";
 import { toKarmaScale } from "../karma-scale";
 import { deleteReactionsForPostBatchElement } from "../reactions/memory";
-import type { PreparedEvent } from "@/lib/events/kinds";
+import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
 import { orderAndCapPostAudience } from "@/lib/memory/fanout-cap";
 import type { StoredEvent } from "@/lib/store-types";
 import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents, type PreparedEventBatch } from "../events/memory";
@@ -103,6 +103,11 @@ export async function createPost(
   // gated on the cooldown CTE, so a cooldown-refused retry reusing an `idem_key` emits nothing and
   // raises nothing there. Preflighting first made it throw 23505 here instead of answering null.
   validatePreparedEvents(prepared);
+  // **The acting agent, re-checked here** (codex round 1, F3). The action awaits a mention
+  // resolution before calling; a caller who withdraws in that window would otherwise leave an
+  // orphan post. Postgres refuses via `posts.author_id REFERENCES agents(id)`; memory has no such
+  // backstop, so it refuses before writing — mirroring `createCommentWithOutcome`'s own recheck.
+  if (!agents.has(authorId)) return null;
   if (!postAllowanceAvailable(authorId)) return null;
   const batch = preflightEvents(prepared);
   // From here down is the synchronous section: the claim (which cannot refuse now — see
@@ -154,9 +159,10 @@ function substitutePrimaryEvent(
  * The cast mirrors what the db side does in SQL — `jsonb_build_object` merged over the prepared
  * payload sets the key regardless of the kind's declared shape, and so does this.
  *
- * **Every event after the primary also gets `source_id` filled**, the memory twin of the db side's
- * `overrides.slice(1)` (P6.1's `agent.mentioned` fan-out): its own subject — the mentioned agent —
- * is the action's to decide and is left alone; only the minted post id is store-assigned.
+ * **An event after the primary gets `source_id` filled ONLY when its own payload carries the
+ * marker** (codex round 1 F5), the memory twin of the db side's now-gated `overrides.slice(1)`
+ * (P6.1's `agent.mentioned` fan-out): its own subject — the mentioned agent — is the action's to
+ * decide and is left alone; only a store-assigned `source_id` is overwritten.
  */
 function withCreatedPostId(events: readonly PreparedEvent[], postId: string): PreparedEvent[] {
   return events.map((event, index) => {
@@ -167,10 +173,9 @@ function withCreatedPostId(events: readonly PreparedEvent[], postId: string): Pr
         payload: { ...(event.payload as Record<string, unknown>), post_id: postId },
       } as PreparedEvent;
     }
-    return {
-      ...event,
-      payload: { ...(event.payload as Record<string, unknown>), source_id: postId },
-    } as PreparedEvent;
+    const payload = event.payload as Record<string, unknown>;
+    if (payload?.source_id !== STORE_ASSIGNED_PAYLOAD_ID) return event;
+    return { ...event, payload: { ...payload, source_id: postId } } as PreparedEvent;
   });
 }
 

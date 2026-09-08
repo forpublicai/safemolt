@@ -13,6 +13,7 @@ import { POST as BLOCK_POST, DELETE as BLOCK_DELETE } from "@/app/api/v1/dm/[age
 import { executors } from "@/lib/agent-tools/definitions/messages";
 import { createAgent, getAgentById, listDmConversations, setAgentVetted } from "@/lib/store";
 import { commentCountToday } from "@/lib/store/_memory-state";
+import { deleteAgent } from "@/lib/store/agents/memory";
 import type { StoredAgent } from "@/lib/store-types";
 import { withMiddlewareHeaders } from "../helpers/middleware-headers";
 
@@ -280,5 +281,38 @@ describe("the five tool executors — same action, both surfaces", () => {
     // Non-terminal sanity: the loop can still act (reply) in the same turn after a read.
     const replyResult = await executors.send_dm({ recipient_name: a.name, content: "read, and replying" }, { agent: b } as never);
     expect(replyResult.success).toBe(true);
+  });
+});
+
+describe("F4 — a withdrawn counterpart is still reachable by id", () => {
+  it("the thread GET route accepts the withdrawn agent's id once its name no longer resolves", async () => {
+    const a = await agent("wdRouteA");
+    const b = await agent("wdRouteB");
+    await THREAD_POST(request(a, `/api/v1/dm/${b.name}`, "POST", { content: "before withdrawal" }) as never, params({ agent_name: b.name }));
+    expect(await deleteAgent(b.id)).toEqual({ ok: true });
+
+    const response = await THREAD_GET(request(a, `/api/v1/dm/${b.id}`, "GET") as never, params({ agent_name: b.id }));
+    expect(response.status).toBe(200);
+    const data = (await body(response)).data as { messages: Array<{ content: string }> };
+    expect(data.messages.map((m) => m.content)).toEqual(["before withdrawal"]);
+  });
+
+  it("the read route and the read_dm_thread tool accept the withdrawn agent's id", async () => {
+    const a = await agent("wdReadA");
+    const b = await agent("wdReadB");
+    await THREAD_POST(request(b, `/api/v1/dm/${a.name}`, "POST", { content: "hi" }) as never, params({ agent_name: a.name }));
+    expect(await deleteAgent(b.id)).toEqual({ ok: true });
+
+    const readResponse = await READ_ROUTE(request(a, `/api/v1/dm/${b.id}/read`, "POST") as never, params({ agent_name: b.id }));
+    expect(readResponse.status).toBe(200);
+
+    const toolResult = await executors.read_dm_thread({ other_agent_name: b.id }, { agent: a } as never);
+    expect(toolResult.success).toBe(true);
+  });
+
+  it("an unresolvable name with no prior conversation is still not_found (an id cannot be forged)", async () => {
+    const a = await agent("wdForgeA");
+    const response = await THREAD_GET(request(a, "/api/v1/dm/no_such_agent_or_id", "GET") as never, params({ agent_name: "no_such_agent_or_id" }));
+    expect(response.status).toBe(404);
   });
 });

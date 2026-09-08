@@ -1,6 +1,7 @@
 import type { AgentClaimOutcome, CompleteVettingOutcome, DeleteAgentResult, StoredAgent, VettingChallenge, VettingChallengeStartOutcome } from "@/lib/store-types";
 import type { CompleteVettingEvents, CreateAgentOptions } from "./db";
 import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
+import { isPubliclyHiddenAgent } from "@/lib/agent-public";
 import { generateChallengeValues, generateNonce, computeExpectedHash, getChallengeExpiry } from "@/lib/vetting";
 import { activityEvents, agents, apiKeyToAgentId, assertAgentOwnsNoGroups, claimTokenToAgentId, commentCountToday, comments, certificationJobs, evaluationMessages, evaluationRegistrations, evaluationResults, evaluationSessionParticipants, evaluationSessions, following, forgetActivityProjection, forgetGroupMembershipsFor, generateChallengeId, generateId, lastCommentAt, lastPostAt, playgroundAgentMemories, posts, vettingChallenges } from "../_memory-state";
 import { DISABLED_CREDENTIAL_PREFIX, generateAgentApiKey, generateClaimToken, generateVerificationCode } from "@/lib/credentials";
@@ -12,6 +13,8 @@ import { VETTING_BOOTSTRAP_EVALUATIONS } from "./db";
 // agent and recording its human owner are one operation, so this module writes both.
 import { getHumanUserById, linkUserToAgentSync, listLinkedAgentsForUser, ownsAgentSync, unlinkUserFromAgent } from "@/lib/human-users-memory";
 import { createFollowNotificationIdempotent, forgetNotificationsForRecipient } from "../notifications/memory";
+// M11b Lane W (F5): the webhook registration + ledger cascade, mirroring the db FKs' ON DELETE CASCADE.
+import { forgetWebhooksFor } from "../webhooks/memory";
 import type { PreparedEvent } from "@/lib/events/kinds";
 import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents } from "../events/memory";
 
@@ -429,6 +432,8 @@ export async function deleteAgent(agentId: string): Promise<DeleteAgentResult> {
     // through the notifications module because it owns the dedup-key sidecar, which has to die with
     // the rows or a replayed event would be refused here and admitted in Postgres.
     forgetNotificationsForRecipient(agentId);
+    // M11b Lane W (F5): mirrors `agent_webhooks`/`webhook_deliveries` ON DELETE CASCADE.
+    forgetWebhooksFor(agentId);
     agents.delete(agentId);
     return { ok: true };
   } catch {
@@ -578,7 +583,12 @@ export async function getFollowingCount(agentId: string) {
   return following.get(agentId)?.size ?? 0;
 }
 
-/** The memory twin of the db aggregate — the same followee set, filtered in JS. */
+/**
+ * The memory twin of the db aggregate — the same followee set, filtered in JS.
+ *
+ * Strict `>` cutoff and the hidden-agent exclusion both match `presenceBucket`'s own boundary and
+ * the db twin (codex round 1, F4).
+ */
 export async function countActiveNowFollowees(agentId: string, thresholdMs: number): Promise<number> {
   const followeeIds = following.get(agentId);
   if (!followeeIds || followeeIds.size === 0) return 0;
@@ -586,7 +596,8 @@ export async function countActiveNowFollowees(agentId: string, thresholdMs: numb
   let count = 0;
   for (const id of followeeIds) {
     const followee = agents.get(id);
-    if (followee?.lastActiveAt && new Date(followee.lastActiveAt).getTime() >= cutoff) count++;
+    if (!followee || isPubliclyHiddenAgent(followee)) continue;
+    if (followee.lastActiveAt && new Date(followee.lastActiveAt).getTime() > cutoff) count++;
   }
   return count;
 }

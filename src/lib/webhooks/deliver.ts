@@ -56,8 +56,12 @@ function parseIPv4Octets(addr: string): number[] | null {
   return parts.some((p) => p > 255) ? null : parts;
 }
 
-/** Unspecified/"this network", RFC1918 private, CGNAT, link-local and multicast — table-driven to keep complexity flat. */
-const V4_NON_PUBLIC_RANGES: ((a: number, b: number) => boolean)[] = [
+/**
+ * Unspecified, RFC1918 private, CGNAT, link-local, multicast, reserved, benchmarking (198.18/15) and
+ * the three documentation TEST-NET blocks — table-driven to keep complexity flat. F6: only a
+ * global-unicast address may be dialed; everything else is a spoofable or non-routed range.
+ */
+const V4_NON_PUBLIC_RANGES: ((a: number, b: number, c: number) => boolean)[] = [
   (a) => a === 0,
   (a) => a === 10,
   (a, b) => a === 172 && b >= 16 && b <= 31,
@@ -65,12 +69,18 @@ const V4_NON_PUBLIC_RANGES: ((a: number, b: number) => boolean)[] = [
   (a, b) => a === 100 && b >= 64 && b <= 127,
   (a, b) => a === 169 && b === 254,
   (a) => a >= 224 && a <= 239,
+  (a) => a >= 240,
+  (a, b) => a === 198 && (b === 18 || b === 19),
+  (a, b, c) => a === 192 && b === 0 && c === 0,
+  (a, b, c) => a === 192 && b === 0 && c === 2,
+  (a, b, c) => a === 198 && b === 51 && c === 100,
+  (a, b, c) => a === 203 && b === 0 && c === 113,
 ];
 
 function isPublicIPv4Octets(o: number[], allowLoopback: boolean): boolean {
-  const [a, b] = o;
+  const [a, b, c] = o;
   if (a === 127) return allowLoopback;
-  return !V4_NON_PUBLIC_RANGES.some((matches) => matches(a, b));
+  return !V4_NON_PUBLIC_RANGES.some((matches) => matches(a, b, c));
 }
 
 function isPublicIPv4(addr: string, allowLoopback: boolean): boolean {
@@ -120,6 +130,23 @@ function isIPv6Loopback(g: number[]): boolean {
   return g.slice(0, 7).every((x) => x === 0) && g[7] === 1;
 }
 
+function embeddedIPv4(hi: number, lo: number): string {
+  return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+}
+
+/** 64:ff9b::/96 (RFC 6052 NAT64): the last two groups carry the real IPv4 address to check. */
+function nat64EmbeddedV4(g: number[]): string | null {
+  if (g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
+    return embeddedIPv4(g[6], g[7]);
+  }
+  return null;
+}
+
+/** 2002::/16 (RFC 3056 6to4): the next two groups carry the real IPv4 address to check. */
+function sixToFourEmbeddedV4(g: number[]): string | null {
+  return g[0] === 0x2002 ? embeddedIPv4(g[1], g[2]) : null;
+}
+
 /** ULA fc00::/7, link-local fe80::/10, multicast ff00::/8 — table-driven to keep complexity flat. */
 const V6_NON_PUBLIC_RANGES: ((first: number) => boolean)[] = [
   (first) => (first & 0xffc0) === 0xfe80,
@@ -132,8 +159,11 @@ function isPublicIPv6(addr: string, allowLoopback: boolean): boolean {
   if (!g) return false;
   const mappedV4 = ipv4MappedAddress(g);
   if (mappedV4) return isPublicIPv4(mappedV4, allowLoopback);
+  const translatedV4 = nat64EmbeddedV4(g) ?? sixToFourEmbeddedV4(g);
+  if (translatedV4) return isPublicIPv4(translatedV4, allowLoopback);
   if (g.every((x) => x === 0)) return false;
   if (isIPv6Loopback(g)) return allowLoopback;
+  if (g[0] === 0x2001 && g[1] === 0x0db8) return false; // documentation 2001:db8::/32
   return !V6_NON_PUBLIC_RANGES.some((matches) => matches(g[0]));
 }
 
@@ -293,12 +323,19 @@ function sendSignedRequest(
 }
 
 /**
- * Delivers one signed webhook POST. Re-resolves fresh (never cached from registration — DNS can
- * change between attempts) and picks the first validated address; a resolution failure is reported
- * the same as any other total failure (`status: null`), never thrown, so a caller doing
- * claim→deliver→record never needs a second error path.
+ * Delivers one signed webhook POST. F6: re-validates the URL on EVERY attempt — a stored row
+ * predates whatever hygiene ran at registration — and re-resolves fresh (DNS can change between
+ * attempts), picking the first validated address. A resolution failure is reported the same as any
+ * other total failure (`status: null`), never thrown, so claim→deliver→record needs no second path.
+ *
+ * `lookupAll` is test-only injection (default real DNS) — it is what lets a test pin a NAMED host to
+ * a chosen address without mocking `node:dns` globally.
  */
-export async function deliverWakeup(input: DeliverWakeupInput): Promise<DeliverWakeupResult> {
+export async function deliverWakeup(
+  input: DeliverWakeupInput,
+  lookupAll?: LookupAllFn
+): Promise<DeliverWakeupResult> {
+  if (!validateWebhookUrl(input.url).ok) return { ok: false, status: null };
   let parsed: URL;
   try {
     parsed = new URL(input.url);
@@ -307,7 +344,7 @@ export async function deliverWakeup(input: DeliverWakeupInput): Promise<DeliverW
   }
   let addresses: string[];
   try {
-    addresses = await resolvePublicAddresses(parsed.hostname);
+    addresses = await resolvePublicAddresses(parsed.hostname, lookupAll);
   } catch {
     return { ok: false, status: null };
   }

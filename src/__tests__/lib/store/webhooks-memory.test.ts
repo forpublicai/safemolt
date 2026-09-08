@@ -13,9 +13,12 @@
 import {
   claimNextWebhookDelivery,
   createAgent,
+  createOrReArmWakeup,
+  deleteAgent,
   deleteAgentWebhook,
   enqueueWakeup,
   getAgentWebhook,
+  getWakeupByAgentReasonEvent,
   listNotifications,
   recordWebhookAttempt,
   resolveWakeupDelivery,
@@ -202,7 +205,7 @@ describe("attempt bookkeeping — backoff then exhaustion", () => {
 });
 
 describe("disable at 10 failures emits webhook.disabled -> webhook_disabled notification", () => {
-  it("the 10th failure disables the registration and the notification appears", async () => {
+  it("the 10th failure reclassifies THIS attempt as disabled (F1) and the notification appears", async () => {
     const agent = await seedAgent("dis");
     await upsertAgentWebhook({ agentId: agent.id, url: "https://a.example/hook", secret: "s", mode: "primary" });
     // Seed 9 prior failures directly — avoids looping 10 real claim/record cycles.
@@ -217,7 +220,12 @@ describe("disable at 10 failures emits webhook.disabled -> webhook_disabled noti
       status: 500,
       ok: false,
     });
-    expect(outcome).toBe("retry"); // this delivery's own attempt count is still below 3
+    // F1: crossing the threshold reclassifies THIS attempt's own outcome as `disabled` — the
+    // triggering row terminalizes here rather than staying a `retry` (its own attempt count is
+    // still below 3, so before F1 this answered `retry`, leaving the row nonterminal forever more).
+    expect(outcome).toBe("disabled");
+    expect(ledgerFor(wakeup.id)!.terminalReason).toBe("webhook_disabled");
+    expect(wakeupQueue.rows.get(wakeup.id)!.result).toBe("webhook_disabled");
 
     const registration = await getAgentWebhook(agent.id);
     expect(registration?.disabledAt).not.toBeNull();
@@ -225,7 +233,50 @@ describe("disable at 10 failures emits webhook.disabled -> webhook_disabled noti
 
     const notifications = await listNotifications(agent.id);
     expect(notifications.some((n) => n.type === "webhook_disabled")).toBe(true);
-    void wakeup; // enqueued only to give the attempt something to claim
+  });
+
+  it("F1 disposition: crossing the threshold also terminalizes pending and expired-claim rows of the same agent", async () => {
+    const agent = await seedAgent("dispose");
+    await upsertAgentWebhook({ agentId: agent.id, url: "https://a.example/hook", secret: "s", mode: "primary" });
+    agentWebhooks.get(agent.id)!.failureCount = 9;
+
+    const triggering = await enqueueForAgent(agent.id, "trigger");
+    const pending = await enqueueForAgent(agent.id, "pending");
+    const expiredClaim = await enqueueForAgent(agent.id, "expired-claim");
+    const liveClaim = await enqueueForAgent(agent.id, "live-claim");
+
+    const expiredLedger = ledgerFor(expiredClaim.id)!;
+    expiredLedger.claimedAt = new Date(Date.now() - 120_000).toISOString();
+    expiredLedger.claimToken = "stale-token";
+    expiredLedger.leaseExpiresAt = new Date(Date.now() - 60_000).toISOString();
+
+    const liveLedger = ledgerFor(liveClaim.id)!;
+    liveLedger.claimedAt = new Date().toISOString();
+    liveLedger.claimToken = "live-token";
+    liveLedger.leaseExpiresAt = new Date(Date.now() + 300_000).toISOString();
+
+    const triggerClaim = await claimNextWebhookDelivery({ claimToken: "trig", leaseMs: 60_000 });
+    expect(triggerClaim?.wakeupId).toBe(triggering.id);
+    const outcome = await recordWebhookAttempt({
+      id: triggerClaim!.id,
+      claimToken: "trig",
+      agentId: agent.id,
+      status: 500,
+      ok: false,
+    });
+    expect(outcome).toBe("disabled");
+
+    // Pending and expired-claim rows are swept: terminalized and their wakeups completed.
+    for (const wakeup of [pending, expiredClaim]) {
+      const ledger = ledgerFor(wakeup.id)!;
+      expect(ledger.terminalReason).toBe("webhook_disabled");
+      expect(wakeupQueue.rows.get(wakeup.id)!.result).toBe("webhook_disabled");
+    }
+
+    // A LIVE claim is left alone — its own attempt finishes the job later.
+    expect(liveLedger.terminalReason).toBeNull();
+    expect(liveLedger.claimToken).toBe("live-token");
+    expect(wakeupQueue.rows.get(liveClaim.id)!.completedAt).toBeNull();
   });
 });
 
@@ -265,6 +316,90 @@ describe("delete/disable disposition of ledger rows", () => {
     expect(outcome).toBe("gone");
     expect(ledgerFor(claimedWakeup.id)!.terminalReason).toBe("webhook_removed");
     expect(wakeupQueue.rows.get(claimedWakeup.id)!.result).toBe("webhook_removed");
+  });
+
+  it("F4: delete also sweeps a row with an EXPIRED (not live) claim, same as an unclaimed one", async () => {
+    const agent = await seedAgent("delexp");
+    await upsertAgentWebhook({ agentId: agent.id, url: "https://a.example/hook", secret: "s", mode: "primary" });
+    const wakeup = await enqueueForAgent(agent.id);
+    const ledger = ledgerFor(wakeup.id)!;
+    ledger.claimedAt = new Date(Date.now() - 120_000).toISOString();
+    ledger.claimToken = "stale-crashed-claimant";
+    ledger.leaseExpiresAt = new Date(Date.now() - 60_000).toISOString();
+
+    await deleteAgentWebhook(agent.id);
+
+    expect(ledgerFor(wakeup.id)!.terminalReason).toBe("webhook_removed");
+    expect(wakeupQueue.rows.get(wakeup.id)!.completedAt).not.toBeNull();
+    expect(wakeupQueue.rows.get(wakeup.id)!.result).toBe("webhook_removed");
+  });
+});
+
+describe("re-arm resets a stale terminal ledger row (F2)", () => {
+  it("exhausts, re-arms, and finds ONE ledger row that is claimable again", async () => {
+    const agent = await seedAgent("rearm");
+    await upsertAgentWebhook({ agentId: agent.id, url: "https://a.example/hook", secret: "s", mode: "primary" });
+    const eventId = 900001;
+
+    const first = await createOrReArmWakeup({
+      agentId: agent.id,
+      reason: "rearm-reason",
+      eventId,
+      payload: {},
+      delivery: "webhook",
+    });
+    expect(first).toEqual({ created: true, reArmed: false });
+    const wakeup = await getWakeupByAgentReasonEvent(agent.id, "rearm-reason", eventId);
+    expect(wakeup).not.toBeNull();
+
+    // Exhaust the ledger (and, coupled, the wakeup) in one failed attempt.
+    ledgerFor(wakeup!.id)!.attempts = 2;
+    const claim = await claimNextWebhookDelivery({ claimToken: "t1", leaseMs: 60_000 });
+    const outcome = await recordWebhookAttempt({
+      id: claim!.id,
+      claimToken: "t1",
+      agentId: agent.id,
+      status: 500,
+      ok: false,
+    });
+    expect(outcome).toBe("exhausted");
+    expect(wakeupQueue.rows.get(wakeup!.id)!.completedAt).not.toBeNull();
+
+    const rearmed = await createOrReArmWakeup({
+      agentId: agent.id,
+      reason: "rearm-reason",
+      eventId,
+      payload: {},
+      delivery: "webhook",
+    });
+    expect(rearmed).toEqual({ created: false, reArmed: true });
+
+    // Exactly one ledger row rides this wakeup — the re-arm reset it in place, never duplicated it.
+    const rowsForWakeup = Array.from(webhookDeliveries.rows.values()).filter((r) => r.wakeupId === wakeup!.id);
+    expect(rowsForWakeup).toHaveLength(1);
+    const reset = rowsForWakeup[0];
+    expect(reset.terminalReason).toBeNull();
+    expect(reset.attempts).toBe(0);
+    expect(reset.claimedAt).toBeNull();
+
+    // And it is genuinely claimable again, not merely reset on paper.
+    const reclaim = await claimNextWebhookDelivery({ claimToken: "t2", leaseMs: 60_000 });
+    expect(reclaim?.wakeupId).toBe(wakeup!.id);
+  });
+});
+
+describe("F5: memory-mode actor parity for webhook registration", () => {
+  it("deleteAgent sweeps the webhook registration and every ledger row for that agent", async () => {
+    const agent = await seedAgent("cascade");
+    await upsertAgentWebhook({ agentId: agent.id, url: "https://a.example/hook", secret: "s", mode: "primary" });
+    await enqueueForAgent(agent.id, "cascade-a");
+    await enqueueForAgent(agent.id, "cascade-b");
+    expect(Array.from(webhookDeliveries.rows.values()).some((r) => r.agentId === agent.id)).toBe(true);
+
+    await deleteAgent(agent.id);
+
+    expect(agentWebhooks.has(agent.id)).toBe(false);
+    expect(Array.from(webhookDeliveries.rows.values()).some((r) => r.agentId === agent.id)).toBe(false);
   });
 });
 

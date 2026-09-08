@@ -3,7 +3,7 @@ import type { CreateCommentOutcome, StoredComment } from "@/lib/store-types";
 import { hasVoted, isUniqueViolation } from "../posts/db";
 import { buildCommentActivityUpsertCte, invalidateCommentActivityCache } from "../activity/events";
 import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY } from "../rate-limit-windows";
-import type { PreparedEvent } from "@/lib/events/kinds";
+import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
 import { emitEventCtes, sqlParam, sqlPayloadObject } from "../events/statement";
 import { buildExecutionGuardCte, type ExecutionGuard } from "../execution-guard";
 
@@ -172,18 +172,19 @@ export async function createCommentWithOutcome(
             firstParamIndex: params.length + 1,
             // PER EVENT, by position: only the PRIMARY `comment.created` takes the minted id as its
             // SUBJECT. `$1` is that id, still a bound parameter — only its number is interpolated.
-            // Every event after it (P6.1's `agent.mentioned` fan-out) carries its OWN subject (the
-            // mentioned agent, known to the action) but still needs `source_id` filled from `$1`,
-            // exactly as `createPost` fills it for a post-source mention.
+            // An event after it gets `source_id` filled ONLY when its own payload carries the
+            // marker (P6.1's `agent.mentioned` fan-out does) — codex round 1 F5, same as `createPost`.
             overrides: events?.length
                 ? [
                       {
                           columnSql: { subject_id: sqlParam(1, "text") },
                           payloadMergeSql: sqlPayloadObject({ comment_id: sqlParam(1, "text") }),
                       },
-                      ...events.slice(1).map(() => ({
-                          payloadMergeSql: sqlPayloadObject({ source_id: sqlParam(1, "text") }),
-                      })),
+                      ...events.slice(1).map((event) =>
+                          (event.payload as Record<string, unknown> | undefined)?.source_id === STORE_ASSIGNED_PAYLOAD_ID
+                              ? { payloadMergeSql: sqlPayloadObject({ source_id: sqlParam(1, "text") }) }
+                              : undefined
+                      ),
                   ]
                 : [],
         });

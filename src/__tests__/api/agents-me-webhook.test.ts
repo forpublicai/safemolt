@@ -95,6 +95,31 @@ describe("POST /api/v1/agents/me/webhook", () => {
     expect(mockedRegister).not.toHaveBeenCalled();
   });
 
+  it("F9: 400s on a JSON `null` body instead of throwing on property access", async () => {
+    authOk();
+    const response = await POST(makeRequest("POST", null));
+
+    expect(response.status).toBe(400);
+    expect(mockedRegister).not.toHaveBeenCalled();
+  });
+
+  it("F9: 400s on a JSON array body (not an object)", async () => {
+    authOk();
+    const response = await POST(makeRequest("POST", ["https://example.com/hook"]));
+
+    expect(response.status).toBe(400);
+    expect(mockedRegister).not.toHaveBeenCalled();
+  });
+
+  it("maps 'not_found' to 404 (F5: the acting agent was withdrawn during registration)", async () => {
+    authOk();
+    mockedRegister.mockResolvedValue({ ok: false, code: "not_found", message: "Agent no longer exists" });
+
+    const response = await POST(makeRequest("POST", { url: "https://example.com/hook", mode: "primary" }));
+
+    expect(response.status).toBe(404);
+  });
+
   it("maps 'webhooks_not_enabled' to 503 with the stable code", async () => {
     authOk();
     mockedRegister.mockResolvedValue({

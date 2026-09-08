@@ -22,12 +22,10 @@ import {
   getComment,
   getGroup,
   getPost,
-  listAgentsByNamesCaseInsensitive,
   upvoteComment as storeUpvoteComment,
 } from "@/lib/store";
 import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
-import { isPubliclyHiddenAgent } from "@/lib/agent-public";
-import { extractMentions } from "@/lib/mentions";
+import { resolveMentionRecipients } from "@/lib/mentions";
 import { scheduleCommentMemoryIngest } from "@/lib/memory/platform-ingest";
 import { groupSchoolAccessDenial, groupSchoolId } from "@/lib/school-context";
 import type { ExecutionGuard } from "@/lib/store/execution-guard";
@@ -38,38 +36,6 @@ import { actionError, actionOk, type ActionResult } from "./types";
 /** See `actions/posts.ts` — the canonical derivation, never the raw column. */
 function eventSchoolId(group: StoredGroup | null | undefined): string | null {
   return group ? groupSchoolId(group) : null;
-}
-
-/**
- * P6.1 — see `actions/posts.ts`'s twin: resolve `@name` mentions into one `agent.mentioned`
- * derived event per live, non-self, non-hidden recipient, at creation time.
- */
-async function mentionEvents(
-  text: string,
-  authorId: string,
-  sourceType: "post" | "comment",
-  schoolId: string | null
-): Promise<PreparedEvent<"agent.mentioned">[]> {
-  const names = extractMentions(text);
-  if (names.length === 0) return [];
-  const resolved = await listAgentsByNamesCaseInsensitive(names);
-  return resolved
-    .filter((agent) => agent.id !== authorId && !isPubliclyHiddenAgent(agent))
-    .map(
-      (agent) =>
-        ({
-          kind: "agent.mentioned",
-          actorAgentId: authorId,
-          subjectType: "agent",
-          subjectId: agent.id,
-          schoolId,
-          payload: {
-            source_type: sourceType,
-            source_id: STORE_ASSIGNED_PAYLOAD_ID,
-            mentioned_agent_id: agent.id,
-          },
-        }) satisfies PreparedEvent<"agent.mentioned">
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +119,7 @@ export async function createComment(
   // three. So the statement is ALWAYS reached, and the only thing read afterwards is the rate-limit
   // WINDOW, for `retry_after_seconds` garnish.
   const schoolId = eventSchoolId(group);
-  const mentions = await mentionEvents(input.content, input.agent.id, "comment", schoolId);
+  const mentions = await resolveMentionRecipients(input.content, input.agent.id, "comment", schoolId);
 
   const outcome = await storeCreateComment(
     input.postId,

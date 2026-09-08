@@ -44,17 +44,24 @@ export async function getAgentWebhook(agentId: string): Promise<StoredAgentWebho
   return row ? cloneWebhook(row) : null;
 }
 
+/** A row's claim is still LIVE (unexpired lease) — shared by every "unclaimed-or-expired" sweep below. */
+function hasLiveClaim(row: StoredWebhookDelivery, nowMs: number): boolean {
+  return row.claimedAt !== null && (row.leaseExpiresAt === null || Date.parse(row.leaseExpiresAt) >= nowMs);
+}
+
 /**
- * See `db.ts`: delete the registration, then terminalize every UNCLAIMED ledger row whose wakeup is
- * webhook-**primary**, completing that wakeup too — in the same synchronous section, this store's
- * stand-in for "the same statement".
+ * See `db.ts`: delete the registration, then terminalize every unclaimed-or-lease-expired ledger row
+ * whose wakeup is webhook-**primary**, completing that wakeup too — in the same synchronous section,
+ * this store's stand-in for "the same statement". F4: a row with a LIVE claim is left for its own
+ * attempt to find the registration gone; an expired one has no live claimant to finish it.
  */
 export async function deleteAgentWebhook(agentId: string): Promise<{ deleted: boolean }> {
   const existed = agentWebhooks.delete(agentId);
   if (!existed) return { deleted: false };
-  const nowIso = new Date().toISOString();
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
   for (const row of webhookDeliveries.rows.values()) {
-    if (row.agentId !== agentId || row.terminalReason !== null || row.claimedAt !== null) continue;
+    if (row.agentId !== agentId || row.terminalReason !== null || hasLiveClaim(row, nowMs)) continue;
     row.terminalReason = "webhook_removed";
     const wakeup = wakeupQueue.rows.get(row.wakeupId);
     if (wakeup && wakeup.delivery === "webhook" && wakeup.completedAt === null) {
@@ -65,12 +72,23 @@ export async function deleteAgentWebhook(agentId: string): Promise<{ deleted: bo
   return { deleted: true };
 }
 
+/**
+ * F5: mirrors `agent_webhooks.agent_id`/`webhook_deliveries.agent_id … ON DELETE CASCADE` — an agent
+ * withdrawal removes both rows outright, unlike `deleteAgentWebhook`'s business-rule terminalization
+ * (a cascade drops rows; it runs no wakeup-completion logic). Called by `agents/memory.ts`'s
+ * `deleteAgent` sweep, one helper the way `forgetNotificationsForRecipient` is.
+ */
+export function forgetWebhooksFor(agentId: string): void {
+  agentWebhooks.delete(agentId);
+  for (const [id, row] of Array.from(webhookDeliveries.rows.entries())) {
+    if (row.agentId === agentId) webhookDeliveries.rows.delete(id);
+  }
+}
+
 /** A due candidate: nonterminal, (unclaimed OR lease expired), and its backoff clock has elapsed. */
 function isClaimable(row: StoredWebhookDelivery, nowMs: number): boolean {
   if (row.terminalReason !== null) return false;
-  if (row.claimedAt !== null && (row.leaseExpiresAt === null || Date.parse(row.leaseExpiresAt) >= nowMs)) {
-    return false;
-  }
+  if (hasLiveClaim(row, nowMs)) return false;
   return Date.parse(row.nextAttemptAt) <= nowMs;
 }
 
@@ -110,7 +128,11 @@ export async function claimNextWebhookDelivery(
   };
 }
 
-/** `db.ts`'s outcome precedence, transcribed. */
+/**
+ * `db.ts`'s outcome precedence, transcribed. F1: crossing the failure threshold on THIS attempt
+ * reclassifies its own outcome as `disabled` too — checked before the exhaustion/retry branches, so
+ * the triggering row terminalizes in the same call rather than waiting for a later attempt.
+ */
 function classifyAttemptOutcome(
   ok: boolean,
   registration: StoredAgentWebhook | undefined,
@@ -119,6 +141,7 @@ function classifyAttemptOutcome(
   if (ok) return "success";
   if (!registration) return "gone";
   if (registration.disabledAt !== null) return "disabled";
+  if (registration.failureCount + 1 >= 10) return "disabled";
   if (attemptsBefore + 1 >= 3) return "exhausted";
   return "retry";
 }
@@ -141,12 +164,17 @@ function terminalReasonFor(outcome: RecordWebhookAttemptOutcome): string {
  * Apply one attempt's outcome to the ledger row, its webhook-primary wakeup and the registration's
  * failure counter — the memory twin of `recordWebhookAttempt`'s single token-fenced statement, done
  * as one synchronous mutation instead.
+ *
+ * `liveFailure` (not `outcome`) gates the counter bump — matching `db.ts`'s `live_failure`: a failed
+ * attempt against a registration that is present and not yet disabled bumps it, whether this attempt
+ * itself ends up `retry`, `exhausted`, or (crossing the threshold) `disabled`.
  */
 function applyRecordedAttempt(
   row: StoredWebhookDelivery,
   registration: StoredAgentWebhook | undefined,
   outcome: RecordWebhookAttemptOutcome,
   status: number | null,
+  liveFailure: boolean,
   willDisable: boolean
 ): void {
   const nowIso = new Date().toISOString();
@@ -170,9 +198,30 @@ function applyRecordedAttempt(
   }
 
   if (outcome === "success" && registration) registration.failureCount = 0;
-  if ((outcome === "exhausted" || outcome === "retry") && registration) {
+  if (liveFailure && registration) {
     registration.failureCount += 1;
     if (willDisable) registration.disabledAt = nowIso;
+  }
+}
+
+/**
+ * F1's disposition sweep: crossing the threshold terminalizes every OTHER unclaimed-or-expired
+ * ledger row of this agent, completing each one's webhook-primary wakeup — the memory twin of
+ * `db.ts`'s `disable_sweep`/`disable_sweep_wakeups` CTEs. A `mode='both'` ledger terminalizes without
+ * touching its internal wakeup, same rule `deleteAgentWebhook` follows. A row with a still-live claim
+ * is left for its own attempt to find the registration disabled.
+ */
+function sweepDisabledAgentLedgers(agentId: string, triggeringRowId: number, nowMs: number): void {
+  const nowIso = new Date(nowMs).toISOString();
+  for (const row of webhookDeliveries.rows.values()) {
+    if (row.agentId !== agentId || row.id === triggeringRowId) continue;
+    if (row.terminalReason !== null || hasLiveClaim(row, nowMs)) continue;
+    row.terminalReason = "webhook_disabled";
+    const wakeup = wakeupQueue.rows.get(row.wakeupId);
+    if (wakeup && wakeup.delivery === "webhook" && wakeup.completedAt === null) {
+      wakeup.completedAt = nowIso;
+      wakeup.result = "webhook_disabled";
+    }
   }
 }
 
@@ -199,15 +248,18 @@ export async function recordWebhookAttempt(
 
   const registration = agentWebhooks.get(row.agentId);
   const outcome = classifyAttemptOutcome(input.ok, registration, row.attempts);
-  const bumping = outcome === "exhausted" || outcome === "retry";
-  const willDisable =
-    bumping && registration !== undefined && registration.disabledAt === null && registration.failureCount + 1 >= 10;
+  // F1: `liveFailure` mirrors `db.ts`'s own predicate — a failed attempt against a present,
+  // not-yet-disabled registration — independent of which terminal outcome this attempt lands on.
+  const liveFailure = !input.ok && registration !== undefined && registration.disabledAt === null;
+  const willDisable = liveFailure && registration!.failureCount + 1 >= 10;
 
   const events: PreparedEvent<"webhook.disabled">[] = willDisable ? [buildWebhookDisabledEvent(row.agentId)] : [];
   validatePreparedEvents(events);
   const batch = prepareEventBatch(events);
 
-  applyRecordedAttempt(row, registration, outcome, input.status, willDisable);
+  const nowMs = Date.now();
+  applyRecordedAttempt(row, registration, outcome, input.status, liveFailure, willDisable);
+  if (willDisable) sweepDisabledAgentLedgers(row.agentId, row.id, nowMs);
 
   await appendPreparedBatch(batch).dispatched;
   return outcome;

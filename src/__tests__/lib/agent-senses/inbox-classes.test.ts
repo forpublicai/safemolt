@@ -144,6 +144,35 @@ describe("gatherInbox", () => {
       dmThreads: [],
     });
   });
+
+  it("F8: an older unread thread is not hidden by 5 newer READ ones (filter before the limit)", async () => {
+    mockedListNotifications.mockResolvedValue([]);
+    const readConvo = (n: number) => ({
+      id: `conv_read_${n}`,
+      other: { id: `agent_read_${n}`, name: `read_${n}`, deleted: false },
+      lastMessageAt: `2026-08-0${n}T00:00:00.000Z`,
+      unreadCount: 0,
+    });
+    const unreadConvo = {
+      id: "conv_unread_old",
+      other: { id: "agent_unread", name: "unread_agent", deleted: false },
+      lastMessageAt: "2026-07-01T00:00:00.000Z",
+      unreadCount: 3,
+    };
+    // Newest-first, as `listDmConversations` orders: 5 read conversations, then the unread one 6th.
+    mockedListDmConversations.mockResolvedValue(
+      [readConvo(5), readConvo(4), readConvo(3), readConvo(2), readConvo(1), unreadConvo] as never
+    );
+    mockedCountUnreadDms.mockResolvedValue(3);
+    mockedListDmMessages.mockResolvedValue([
+      { senderId: "agent_unread", content: "hi", id: "m1", conversationId: "conv_unread_old", seq: 1, createdAt: "" },
+    ] as never);
+
+    const section = await gatherInbox("me");
+
+    expect(mockedListDmConversations).toHaveBeenCalledWith("me", { limit: 20 });
+    expect((section.dmThreads ?? []).map((t) => t.otherAgentId)).toEqual(["agent_unread"]);
+  });
 });
 
 describe("gatherClasses", () => {

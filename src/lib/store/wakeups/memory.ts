@@ -172,17 +172,28 @@ function insertRow(
 /**
  * M11b Lane W (P5.1) — the memory twin of `db.ts`'s `webhookLedgerCte`: a `webhook_deliveries` row
  * rides the SAME synchronous section as the wakeup it belongs to, never a second `await`-separated
- * call. Gated identically: `delivery = 'webhook'` OR a live `mode = 'both'` registration. The linear
- * scan is this store's `ON CONFLICT (wakeup_id) DO NOTHING` twin — cheap at memory-mode scale, and
- * the only way to enforce the uniqueness without a second index to keep in sync.
+ * call. The linear scan is this store's `ON CONFLICT` twin — cheap at memory-mode scale, and the
+ * only way to enforce the uniqueness without a second index to keep in sync.
+ *
+ * F3: eligibility requires a LIVE registration (`disabledAt === null`) for BOTH branches — matching
+ * `db.ts`'s `FOR SHARE`-gated read, which the synchronous section stands in for here (no `await`
+ * splits the check from the write, so nothing can disable/delete the registration in between).
+ *
+ * F2: `resetOnRearm` resets a pre-existing (stale, terminal) row instead of leaving it — the memory
+ * twin of the db `ON CONFLICT ... DO UPDATE` gated on the re-arm CTE's `RETURNING`. Callers pass it
+ * only on the re-arm branch; the fresh-insert branch can never find an existing row for a new id.
  */
-function createWebhookLedgerRowIfNeeded(wakeup: StoredWakeup): void {
+function createWebhookLedgerRowIfNeeded(wakeup: StoredWakeup, resetOnRearm = false): void {
   const registration = agentWebhooks.get(wakeup.agentId);
   const eligible =
-    wakeup.delivery === "webhook" || (registration?.mode === "both" && registration.disabledAt === null);
+    registration !== undefined &&
+    registration.disabledAt === null &&
+    (wakeup.delivery === "webhook" || registration.mode === "both");
   if (!eligible) return;
   for (const row of webhookDeliveries.rows.values()) {
-    if (row.wakeupId === wakeup.id) return;
+    if (row.wakeupId !== wakeup.id) continue;
+    if (resetOnRearm) resetLedgerRow(row);
+    return;
   }
   const nowIso = new Date().toISOString();
   const row: StoredWebhookDelivery = {
@@ -200,6 +211,19 @@ function createWebhookLedgerRowIfNeeded(wakeup: StoredWakeup): void {
     nextAttemptAt: nowIso,
   };
   webhookDeliveries.rows.set(row.id, row);
+}
+
+/** F2: the reset fields, in one place — the memory twin of the db `ON CONFLICT ... DO UPDATE SET` list. */
+function resetLedgerRow(row: StoredWebhookDelivery): void {
+  row.attempts = 0;
+  row.lastAttemptAt = null;
+  row.deliveredAt = null;
+  row.lastStatus = null;
+  row.terminalReason = null;
+  row.claimedAt = null;
+  row.claimToken = null;
+  row.leaseExpiresAt = null;
+  row.nextAttemptAt = new Date().toISOString();
 }
 
 /** See `db.ts`: a plain insert that never re-arms, deduped by whichever index applies. */
@@ -239,7 +263,7 @@ export async function createOrReArmWakeup(
   }
   if (!reArmable(existing)) return { created: false, reArmed: false };
   clearClaimAndCompletion(existing);
-  createWebhookLedgerRowIfNeeded(existing);
+  createWebhookLedgerRowIfNeeded(existing, true);
   return { created: false, reArmed: true };
 }
 
@@ -293,7 +317,7 @@ export async function createOrReArmPlaygroundRoundWakeup(
   }
   if (!reArmable(existing)) return { created: false, reArmed: false };
   clearClaimAndCompletion(existing);
-  createWebhookLedgerRowIfNeeded(existing);
+  createWebhookLedgerRowIfNeeded(existing, true);
   return { created: false, reArmed: true };
 }
 

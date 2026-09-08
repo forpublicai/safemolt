@@ -490,10 +490,11 @@ export async function createDmReceivedNotificationIdempotent(
  * locked row rather than trusted from the payload, mirroring `commentNotificationSelectSql`'s own
  * recipient re-derivation. Self-notification is excluded the same way, in the `WHERE`.
  *
- * Post case locks `posts … FOR SHARE` directly (the comment writer's own post lock). Comment case
- * locks the comment's POST `FOR SHARE` too — comments carry no `deleted_at` of their own, so the
- * post is the thing that can vanish (mirrors `NOTIFICATION_TWIN_SUBJECT_SQL`'s `post` entry and
- * `commentNotificationSelectSql`'s `FROM posts … FOR SHARE` precedent).
+ * `live_post` locks the post `FOR SHARE` FIRST, and `subj` for a comment joins FROM it — a
+ * dependent CTE runs after the one it reads, so the post lock is taken before the comment's
+ * (codex round 1, F2; mirrors `reactions/db.ts`'s own fix). `post_id` rides in `subj` for both
+ * cases, so `metadata.post_id` below is always the CLEANUP anchor `deletePost` reads (F1) — the
+ * post itself, or the comment's post.
  *
  * `$1 id, $2 dedup_key, $3 emoji, $4 actor_agent_id, $5 subject_id, $6 created_at`.
  */
@@ -503,22 +504,34 @@ function reactionNotificationSelectSql(subjectType: "post" | "comment"): string 
       ? `jsonb_build_object('type', 'post', 'id', $5::text, 'title', COALESCE(subj.title, 'Post'))`
       : `jsonb_build_object('type', 'comment', 'id', $5::text, 'title', left(subj.content, ${NOTIFICATION_TITLE_MAX}))`;
   const href = subjectType === "post" ? `'/post/' || $5::text` : `'/post/' || subj.post_id || '#comment-' || $5::text`;
-  const from =
+  const livePostCte =
     subjectType === "post"
       ? `SELECT id, author_id, title FROM posts WHERE id = $5::text AND deleted_at IS NULL FOR SHARE`
-      : `SELECT c.id, c.author_id, c.content, c.post_id FROM comments c
-           JOIN posts p ON p.id = c.post_id
-           WHERE c.id = $5::text AND p.deleted_at IS NULL
+      : `SELECT p.id FROM posts p
+           WHERE p.id = (SELECT post_id FROM comments WHERE id = $5::text) AND p.deleted_at IS NULL
+           FOR SHARE`;
+  const subjCte =
+    subjectType === "post"
+      ? `SELECT id, author_id, title, id AS post_id FROM live_post`
+      : `SELECT c.id, c.author_id, c.content, c.post_id
+           FROM live_post lp JOIN comments c ON c.post_id = lp.id
+           WHERE c.id = $5::text
            FOR SHARE`;
   return `
+      WITH live_post AS (
+        ${livePostCte}
+      ),
+      subj AS (
+        ${subjCte}
+      )
       SELECT $1::text, subj.author_id, 'reaction_added'::text, 'normal'::text, $6::timestamptz, NULL::timestamptz,
         jsonb_build_object('id', $4::text, 'name', COALESCE(actor.name, $4::text), 'display_name', actor.display_name),
         ${target},
         (${href})::text,
         NULL::text, NULL::timestamptz,
-        jsonb_build_object('subject_type', '${subjectType}', 'subject_id', $5::text, 'emoji', $3::text),
+        jsonb_build_object('subject_type', '${subjectType}', 'subject_id', $5::text, 'emoji', $3::text, 'post_id', subj.post_id),
         $2::text
-      FROM (${from}) subj
+      FROM subj
       LEFT JOIN agents actor ON actor.id = $4::text
       WHERE subj.author_id <> $4::text
     `;
@@ -538,10 +551,12 @@ export async function createReactionNotificationIdempotent(
 }
 
 /**
- * M11b lane M (P6.1) — the `mention` row, as a SELECT whose FROM locks the RECIPIENT's own agent
- * row `FOR KEY SHARE` — same mode and reasoning as `WEBHOOK_DISABLED_NOTIFICATION_SELECT`. The post
- * is a plain LEFT JOIN for its title only: the consumer already proved the post is live before
- * calling this (mirroring `planCommentNotification`'s liveness re-fetch), so no lock is needed here.
+ * M11b lane M (P6.1) — the `mention` row, as a SELECT whose FROM locks the LIVE POST `FOR SHARE`
+ * BEFORE the recipient's own agent row `FOR KEY SHARE` (lock order posts -> agents, codex round 1
+ * F1). The consumer's own pre-read is at-least-once and can race a concurrent delete; the insert
+ * must be gated on this statement's OWN lock, or `deleteNotificationsAnchoredToPost` can run before
+ * this commits and a dead-link notification survives it. The `JOIN` (not `LEFT JOIN`) on both
+ * subqueries is the gate: no post, no recipient, no row.
  *
  * `$1 id, $2 dedup_key, $3 recipient, $4 actor, $5 post_id, $6 comment_id, $7 href, $8 created_at`.
  */
@@ -554,10 +569,12 @@ const MENTION_NOTIFICATION_SELECT = `
         jsonb_strip_nulls(jsonb_build_object('post_id', $5::text, 'comment_id', $6::text)),
         $2::text
       FROM (
+        SELECT id, title FROM posts WHERE id = $5::text AND deleted_at IS NULL FOR SHARE
+      ) p
+      JOIN (
         SELECT id, name FROM agents WHERE id = $3::text FOR KEY SHARE
-      ) target
+      ) target ON true
       LEFT JOIN agents actor ON actor.id = $4::text
-      LEFT JOIN posts p ON p.id = $5::text
     `;
 
 function mentionNotificationParams(input: MentionNotificationInput, id: string): unknown[] {

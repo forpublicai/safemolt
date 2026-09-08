@@ -4,7 +4,7 @@ import { hasVoted } from "../posts/memory";
 import { recordCommentActivityEvent } from "../activity/events";
 import { createCommentNotificationIdempotent } from "../notifications/memory";
 import { toKarmaScale } from "../karma-scale";
-import type { PreparedEvent } from "@/lib/events/kinds";
+import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
 import type { StoredEvent } from "@/lib/store-types";
 import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents, type PreparedEventBatch } from "../events/memory";
 import { executionGuardPasses, type ExecutionGuard } from "../execution-guard";
@@ -32,22 +32,23 @@ function appendPreparedEvents(batch: PreparedEventBatch): Promise<StoredEvent[]>
  * Positional, not kind-keyed, because `emitEventCtes` is positional — see `posts/memory.ts`. The
  * comment id is minted here, after the action has already decided the event, so `subject_id` and
  * `payload.comment_id` cannot be constants the action supplied. Events after the primary (P6.1's
- * `agent.mentioned` fan-out) keep their own subject — the mentioned agent — but still need
- * `source_id` filled from the same minted id, the memory twin of the db side's `overrides.slice(1)`.
+ * `agent.mentioned` fan-out) keep their own subject — the mentioned agent — and get `source_id`
+ * filled ONLY when their own payload carries the marker (codex round 1 F5), the memory twin of the
+ * db side's now-gated `overrides.slice(1)`.
  */
 function withCreatedCommentId(events: readonly PreparedEvent[], commentId: string): PreparedEvent[] {
-  return events.map((event, index) =>
-    index === 0
-      ? ({
-          ...event,
-          subjectId: commentId,
-          payload: { ...(event.payload as Record<string, unknown>), comment_id: commentId },
-        } as PreparedEvent)
-      : ({
-          ...event,
-          payload: { ...(event.payload as Record<string, unknown>), source_id: commentId },
-        } as PreparedEvent)
-  );
+  return events.map((event, index) => {
+    if (index === 0) {
+      return {
+        ...event,
+        subjectId: commentId,
+        payload: { ...(event.payload as Record<string, unknown>), comment_id: commentId },
+      } as PreparedEvent;
+    }
+    const payload = event.payload as Record<string, unknown>;
+    if (payload?.source_id !== STORE_ASSIGNED_PAYLOAD_ID) return event;
+    return { ...event, payload: { ...payload, source_id: commentId } } as PreparedEvent;
+  });
 }
 
 /**

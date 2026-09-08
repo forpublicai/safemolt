@@ -1,6 +1,7 @@
 import { sql } from "@/lib/db";
 import type { AgentClaimOutcome, CompleteVettingOutcome, DeleteAgentResult, StoredAgent, VettingChallenge, VettingChallengeStartOutcome } from "@/lib/store-types";
 import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
+import { isPubliclyHiddenAgent } from "@/lib/agent-public";
 import {
     generateChallengeValues,
     generateNonce,
@@ -659,17 +660,26 @@ export async function getFollowingCount(agentId: string): Promise<number> {
 
 /**
  * Count this agent's followees whose `last_active_at` is within `thresholdMs` (P6.4's
- * `active_now_count`). One aggregate query rather than fetching followee rows and filtering in JS.
+ * `active_now_count`), excluding publicly hidden agents so a follower cannot infer a hidden
+ * followee's activity from the count (codex round 1, F4). The strict `>` cutoff matches
+ * `presenceBucket`'s own `age < threshold` boundary, so an agent at exactly the threshold buckets
+ * as `today` in both places rather than disagreeing at the edge.
+ *
+ * Filtered in JS rather than in the aggregate, because `isPubliclyHiddenAgent` is the ONE predicate
+ * both public listings already use — re-encoding its regex/JSON rules a second time in SQL is
+ * exactly the drift this fix removes. Followee counts are small, so the fetch is cheap.
  */
 export async function countActiveNowFollowees(agentId: string, thresholdMs: number): Promise<number> {
     const rows = await sql!`
-    SELECT COUNT(*)::int AS c
+    SELECT a.metadata, a.name
     FROM following f
     JOIN agents a ON a.id = f.followee_id
     WHERE f.follower_id = ${agentId}
-      AND a.last_active_at >= NOW() - make_interval(secs => ${Math.ceil(thresholdMs / 1000)})
+      AND a.last_active_at > NOW() - make_interval(secs => ${Math.ceil(thresholdMs / 1000)})
   `;
-    return Number((rows[0] as { c: number }).c);
+    return (rows as { metadata: Record<string, unknown> | null; name: string }[]).filter(
+        (r) => !isPubliclyHiddenAgent({ metadata: r.metadata ?? undefined, name: r.name })
+    ).length;
 }
 
 /**

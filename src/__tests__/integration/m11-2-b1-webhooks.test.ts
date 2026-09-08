@@ -19,7 +19,7 @@ import {
   recordWebhookAttempt,
   upsertAgentWebhook,
 } from "@/lib/store/webhooks/db";
-import { enqueueWakeup } from "@/lib/store/wakeups/db";
+import { createOrReArmWakeup, enqueueWakeup, getWakeupByAgentReasonEvent } from "@/lib/store/wakeups/db";
 import { deleteAgent } from "@/lib/store/agents/db";
 import { registerWebhook } from "@/lib/actions/webhooks";
 import type { StoredAgent } from "@/lib/store-types";
@@ -362,5 +362,137 @@ describe("registerWebhook — the two-step rollout gate", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("webhooks_not_enabled");
     expect(await getAgentWebhook(agent)).toBeNull();
+  });
+
+  it("F5: refuses 'not_found' (not a raised 23503) when the acting agent was withdrawn before the write", async () => {
+    process.env.WEBHOOKS_ENABLED = "true";
+    const agent = await seedAgent();
+    const stub = { id: agent, name: agent } as unknown as StoredAgent;
+    const deleted = await deleteAgent(agent);
+    expect(deleted.ok).toBe(true);
+
+    const result = await registerWebhook(stub, { url: "https://example.com/hook", mode: "primary" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("not_found");
+    expect(await getAgentWebhook(agent)).toBeNull();
+  });
+});
+
+describe("F1: auto-disable disposition sweep", () => {
+  it("crossing the threshold terminalizes pending and expired-claim rows, leaves a live claim alone", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+    await pgPool().query(`UPDATE agent_webhooks SET failure_count = 9 WHERE agent_id = $1`, [agent]);
+
+    const triggeringWakeup = await seedWebhookWakeup(agent);
+    const pendingWakeup = await seedWebhookWakeup(agent);
+    const expiredClaimWakeup = await seedWebhookWakeup(agent);
+    const liveClaimWakeup = await seedWebhookWakeup(agent);
+
+    const expiredLedger = await ledgerRowForWakeup(expiredClaimWakeup);
+    await pgPool().query(
+      `UPDATE webhook_deliveries SET claimed_at = NOW(), claim_token = 'stale', lease_expires_at = NOW() - INTERVAL '1 hour' WHERE id = $1`,
+      [expiredLedger.id]
+    );
+    const liveLedger = await ledgerRowForWakeup(liveClaimWakeup);
+    await pgPool().query(
+      `UPDATE webhook_deliveries SET claimed_at = NOW(), claim_token = 'live', lease_expires_at = NOW() + INTERVAL '1 hour' WHERE id = $1`,
+      [liveLedger.id]
+    );
+
+    const claimed = await claimNextWebhookDelivery({ claimToken: `b1w_disp_trig_${RUN}`, leaseMs: 30_000 });
+    expect(claimed!.wakeupId).toBe(triggeringWakeup);
+    const outcome = await recordWebhookAttempt({
+      id: claimed!.id,
+      claimToken: claimed!.claimToken,
+      agentId: agent,
+      status: 500,
+      ok: false,
+    });
+    // F1: crossing the threshold reclassifies THIS attempt's own outcome as `disabled`.
+    expect(outcome).toBe("disabled");
+    await assertLedgerWakeupCoupling(triggeringWakeup);
+    expect((await ledgerRowForWakeup(triggeringWakeup)).terminal_reason).toBe("webhook_disabled");
+
+    for (const wakeupId of [pendingWakeup, expiredClaimWakeup]) {
+      const ledger = await ledgerRowForWakeup(wakeupId);
+      expect(ledger.terminal_reason).toBe("webhook_disabled");
+      const wakeup = await wakeupRow(wakeupId);
+      expect(wakeup.completed_at).not.toBeNull();
+      expect(wakeup.result).toBe("webhook_disabled");
+    }
+
+    const liveAfter = await ledgerRowForWakeup(liveClaimWakeup);
+    expect(liveAfter.terminal_reason).toBeNull();
+    expect(liveAfter.claim_token).toBe("live");
+  });
+});
+
+describe("F4: delete terminalizes an expired-lease claim, not just an unclaimed row", () => {
+  it("sweeps an expired-claim ledger row exactly like an unclaimed one", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+    const wakeupId = await seedWebhookWakeup(agent);
+    const ledger = await ledgerRowForWakeup(wakeupId);
+    await pgPool().query(
+      `UPDATE webhook_deliveries SET claimed_at = NOW(), claim_token = 'crashed', lease_expires_at = NOW() - INTERVAL '1 hour' WHERE id = $1`,
+      [ledger.id]
+    );
+
+    const result = await deleteAgentWebhook(agent);
+    expect(result.deleted).toBe(true);
+
+    await assertLedgerWakeupCoupling(wakeupId);
+    expect((await ledgerRowForWakeup(wakeupId)).terminal_reason).toBe("webhook_removed");
+  });
+});
+
+describe("F2: re-arm resets a stale terminal ledger row", () => {
+  it("exhausts, re-arms, and finds ONE ledger row that is claimable again", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+    const eventId = nextEventId();
+
+    const first = await createOrReArmWakeup({
+      agentId: agent,
+      reason: "b1w_rearm_reason",
+      eventId,
+      payload: { run: RUN },
+      delivery: "webhook",
+    });
+    expect(first).toEqual({ created: true, reArmed: false });
+    const wakeup = await getWakeupByAgentReasonEvent(agent, "b1w_rearm_reason", eventId);
+    expect(wakeup).not.toBeNull();
+
+    await pgPool().query(`UPDATE webhook_deliveries SET attempts = 2 WHERE wakeup_id = $1`, [wakeup!.id]);
+    const claimed = await claimNextWebhookDelivery({ claimToken: `b1w_rearm_ex_${RUN}`, leaseMs: 30_000 });
+    const outcome = await recordWebhookAttempt({
+      id: claimed!.id,
+      claimToken: claimed!.claimToken,
+      agentId: agent,
+      status: 500,
+      ok: false,
+    });
+    expect(outcome).toBe("exhausted");
+    expect((await wakeupRow(wakeup!.id)).completed_at).not.toBeNull();
+
+    const rearmed = await createOrReArmWakeup({
+      agentId: agent,
+      reason: "b1w_rearm_reason",
+      eventId,
+      payload: { run: RUN },
+      delivery: "webhook",
+    });
+    expect(rearmed).toEqual({ created: false, reArmed: true });
+
+    const { rows } = await pgPool().query(`SELECT * FROM webhook_deliveries WHERE wakeup_id = $1`, [wakeup!.id]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].terminal_reason).toBeNull();
+    expect(rows[0].attempts).toBe(0);
+    expect(rows[0].claimed_at).toBeNull();
+
+    const reclaim = await claimNextWebhookDelivery({ claimToken: `b1w_rearm_re_${RUN}`, leaseMs: 30_000 });
+    expect(reclaim?.wakeupId).toBe(wakeup!.id);
   });
 });

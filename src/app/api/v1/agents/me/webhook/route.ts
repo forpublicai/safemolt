@@ -12,6 +12,8 @@ function webhookRefusal(result: Extract<ActionResult<never>, { ok: false }>): Re
   switch (result.code) {
     case "webhooks_not_enabled":
       return errorResponse("Webhooks not enabled", result.message, 503, { code: "webhooks_not_enabled" });
+    case "not_found":
+      return errorResponse("Not found", result.message, 404);
     case "bad_request":
     default:
       return errorResponse("Invalid request", result.message, 400);
@@ -23,16 +25,31 @@ interface RegisterBody {
   mode?: unknown;
 }
 
+type ParsedBody = { ok: true; body: RegisterBody } | { ok: false; response: Response };
+
+/**
+ * F9: a syntactically valid `null`/array/primitive body parses fine but is not an object — property
+ * reads on it would otherwise throw and answer 500 instead of 400. Split out to keep `POST` simple.
+ */
+async function parseRegisterBody(request: NextRequest): Promise<ParsedBody> {
+  try {
+    const parsed: unknown = await request.json();
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return { ok: false, response: errorResponse("Invalid request", "Request body must be a JSON object", 400) };
+    }
+    return { ok: true, body: parsed as RegisterBody };
+  } catch {
+    return { ok: false, response: errorResponse("Invalid JSON", undefined, 400) };
+  }
+}
+
 export async function POST(request: NextRequest) {
   const access = await requireAgent(request);
   if (!access.ok) return access.response;
 
-  let body: RegisterBody;
-  try {
-    body = await request.json();
-  } catch {
-    return errorResponse("Invalid JSON", undefined, 400);
-  }
+  const parsed = await parseRegisterBody(request);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body;
   if (typeof body.url !== "string" || body.url.length === 0) {
     return errorResponse("Invalid request", "url is required", 400);
   }

@@ -95,6 +95,19 @@ describe("resolvePublicAddresses — rejection table (injected resolver, no real
     ["unspecified v6", "::", 6],
     ["ULA fc00::/7", "fc00::1", 6],
     ["IPv4-mapped private", "::ffff:10.0.0.1", 6],
+    // F6 additions — reserved, benchmarking and documentation ranges.
+    ["reserved 240/4", "240.0.0.1", 4],
+    ["broadcast", "255.255.255.255", 4],
+    ["benchmarking 198.18/15", "198.18.0.1", 4],
+    ["benchmarking 198.19/15", "198.19.0.1", 4],
+    ["TEST-NET-1 192.0.2/24", "192.0.2.1", 4],
+    ["TEST-NET-2 198.51.100/24", "198.51.100.1", 4],
+    ["TEST-NET-3 203.0.113/24", "203.0.113.1", 4],
+    ["IETF protocol 192.0.0/24", "192.0.0.1", 4],
+    ["IPv6 unspecified ::/128", "::", 6],
+    ["IPv6 documentation 2001:db8::/32", "2001:db8::1", 6],
+    ["NAT64 64:ff9b::/96 wrapping a PRIVATE v4", "64:ff9b::a00:1", 6],
+    ["6to4 2002::/16 wrapping a PRIVATE v4", "2002:0a00:0001::", 6],
   ];
 
   it.each(rejected)("rejects %s (%s)", async (_label, address, family) => {
@@ -107,6 +120,13 @@ describe("resolvePublicAddresses — rejection table (injected resolver, no real
     await expect(
       resolvePublicAddresses("host.example", fakeLookup([{ address: "93.184.216.34", family: 4 }]))
     ).resolves.toEqual(["93.184.216.34"]);
+  });
+
+  it("F6: translates a NAT64 address wrapping a PUBLIC v4 and accepts it", async () => {
+    // 64:ff9b::5db8:d822 embeds 93.184.216.34 (0x5d=93, 0xb8=184, 0xd8=216, 0x22=34).
+    await expect(
+      resolvePublicAddresses("host.example", fakeLookup([{ address: "64:ff9b::5db8:d822", family: 6 }]))
+    ).resolves.toEqual(["64:ff9b::5db8:d822"]);
   });
 
   it("rejects a MIXED list as a whole — one private address fails the whole resolution", async () => {
@@ -188,11 +208,46 @@ describe("deliverWakeup — real local receiver (no mocking of node:http/https)"
     expect(headers["content-type"]).toBe("application/json");
     const expectedSignature = `sha256=${createHmac("sha256", "test-secret").update(body).digest("hex")}`;
     expect(headers["x-safemolt-signature"]).toBe(expectedSignature);
-    // Pinning, proven indirectly: the socket only reaches this 127.0.0.1-only listener, and the
-    // Host header presented matches the hostname used in the URL. A real DNS-rebind defeat needs an
-    // injectable resolver, which `deliverWakeup` deliberately does not expose — see the
-    // "re-resolves fresh per call" case above for the actual mitigation this pins.
-    expect(headers.host).toMatch(/^127\.0\.0\.1(:\d+)?$/);
+  });
+
+  it("F7: pins DNS resolution — connects to the injected address, presents the named Host", async () => {
+    enableSeam();
+    const port = await startServer((_req, res) => {
+      res.writeHead(200);
+      res.end();
+    });
+    // A resolver returning the loopback listener for a name that would never really resolve there —
+    // proof the socket follows the RESOLVED address, not a same-string coincidence with the URL host.
+    const lookupAll: LookupAllFn = async () => [{ address: "127.0.0.1", family: 4 }];
+
+    const result = await deliverWakeup(
+      {
+        url: `http://my-webhook-target.example:${port}/hook`,
+        secret: "s",
+        wakeupId: 1,
+        eventId: null,
+        payload: {},
+      },
+      lookupAll
+    );
+
+    expect(result).toEqual({ ok: true, status: 200 });
+    expect(received).toHaveLength(1);
+    expect(received[0].headers.host).toBe(`my-webhook-target.example:${port}`);
+  });
+
+  it("F6: validates the URL on every attempt — a bad stored URL never reaches DNS or the socket", async () => {
+    enableSeam();
+    const lookupAll: LookupAllFn = jest.fn();
+
+    // Userinfo is rejected by `validateWebhookUrl` regardless of the insecure-local seam.
+    const result = await deliverWakeup(
+      { url: "http://user:pass@127.0.0.1:1/hook", secret: "s", wakeupId: 1, eventId: null, payload: {} },
+      lookupAll
+    );
+
+    expect(result).toEqual({ ok: false, status: null });
+    expect(lookupAll).not.toHaveBeenCalled();
   });
 
   it("omits X-SafeMolt-Event-Id entirely when eventId is null (not an empty string)", async () => {

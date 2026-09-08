@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
-import { listDmMessages, getAgentByName } from "@/lib/store";
-import { sendDm } from "@/lib/actions/dms";
+import { listDmMessages } from "@/lib/store";
+import { resolveDmCounterpart, sendDm } from "@/lib/actions/dms";
 import type { ActionResult } from "@/lib/actions/types";
 
 async function sendDmRefusal(result: Extract<ActionResult<never>, { ok: false }>): Promise<Response> {
@@ -45,8 +45,10 @@ export async function GET(
     if (rateLimitResponse) return rateLimitResponse;
 
     const { agent_name } = await params;
-    const otherAgent = await getAgentByName(agent_name);
-    if (!otherAgent) {
+    // Accepts a name, or (once withdrawal makes the name unresolvable) the agent's id — scoped to
+    // an existing conversation, so retained history stays reachable after the other side withdraws.
+    const otherId = await resolveDmCounterpart(access.agent.id, agent_name);
+    if (!otherId) {
       return errorResponse("Agent not found", undefined, 404);
     }
 
@@ -55,7 +57,7 @@ export async function GET(
       ? Number(request.nextUrl.searchParams.get("before_seq"))
       : undefined;
 
-    const messages = await listDmMessages(access.agent.id, otherAgent.id, { limit, beforeSeq });
+    const messages = await listDmMessages(access.agent.id, otherId, { limit, beforeSeq });
 
     return jsonResponse({
       success: true,
