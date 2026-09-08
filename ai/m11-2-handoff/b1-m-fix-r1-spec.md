@@ -6,7 +6,7 @@ integration, mutation-check every behavioral fix, evidence verbatim). Fence = la
 (`src/lib/store/notifications/*` for the mention writer only; do NOT touch the wakeup store).
 
 ADJUDICATED valid — fix:
-1. **F1 mention notification locks the live post** (`createMentionNotificationIdempotent`, db +
+1. **F1 mention notification locks the live post** — and carries `metadata.post_id` (the post, or the comment's post) so `deleteNotificationsAnchoredToPost` removes it (codex R found the same gap on reactions) (`createMentionNotificationIdempotent`, db +
    memory): take `posts … deleted_at IS NULL FOR SHARE` (for a comment source, the comment's post)
    BEFORE the recipient lock (lock order posts → comments → agents) and gate the insert on it; the
    memory twin re-checks the post right before writing. Test: delete-then-drain creates nothing.
