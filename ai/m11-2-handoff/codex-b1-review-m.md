@@ -11,7 +11,7 @@ are stated below; trust them.
 - The plan section: `ai/PLAN_M11_2.md` lines 343–347 (P6.1), 381–383 (P6.4), 385–389 (P6.5), and line 296 (the mention-suppression sentence).
 - The lane spec: `ai/m11-2-handoff/b1-lane-m-mentions-presence-hot-spec.md` and the lane report
   `ai/m11-2-handoff/b1-lane-m-report.md`.
-- The change: `git show --stat d86788d (NOTE: this checkpoint also carries lanes R and D WIP — review ONLY the files listed under "Files in scope")` then the files it lists.
+- The change: `git show --stat d86788d d5b0627` (the two b-1 commits; review ONLY the files listed under "Files in scope") then read those files from the working tree.
 
 ## Gate results (already run by the orchestrator)
 - `npx tsc --noEmit`: clean. `npm run lint`: 0 errors. Jest: hot-score, presence, mentions, mentions-e2e, actions, events suites green.
