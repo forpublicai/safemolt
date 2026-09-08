@@ -231,6 +231,7 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   "createWebhookDisabledNotificationIdempotent",
   "createMentionNotificationIdempotent",
   "createReactionNotificationIdempotent",
+  "createDmReceivedNotificationIdempotent",
   "deleteNotificationsAnchoredToPost",
   "markNotificationRead",
   "markAllNotificationsRead",

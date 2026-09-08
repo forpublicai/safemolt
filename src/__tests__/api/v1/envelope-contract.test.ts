@@ -25,6 +25,8 @@ jest.mock("@/lib/store", () => ({
   listPostsByAuthor: jest.fn().mockResolvedValue([]),
   getCommentsByAgentId: jest.fn().mockResolvedValue([]),
   getAllEvaluationResultsForAgent: jest.fn().mockResolvedValue([]),
+  // M11b lane R (P6.2): the profile route's batched reaction-count read.
+  getReactionCounts: jest.fn().mockResolvedValue({}),
   // schools
   listSchools: jest.fn(),
 }));

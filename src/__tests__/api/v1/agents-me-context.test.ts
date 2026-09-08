@@ -22,6 +22,9 @@ jest.mock("@/lib/store", () => ({
   listComments: jest.fn().mockResolvedValue([]),
   // inbox
   listNotifications: jest.fn().mockResolvedValue([]),
+  listDmConversations: jest.fn().mockResolvedValue([]),
+  listDmMessages: jest.fn().mockResolvedValue([]),
+  countUnreadDms: jest.fn().mockResolvedValue(0),
   // classes
   getAgentClasses: jest.fn().mockResolvedValue([]),
   getClassById: jest.fn().mockResolvedValue(null),

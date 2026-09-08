@@ -57,6 +57,8 @@ describe("UX7 public profile parity primitives", () => {
       listPostsByAuthor: jest.fn(async () => []),
       getCommentsByAgentId: jest.fn(async () => []),
       getAllEvaluationResultsForAgent: jest.fn(async () => []),
+      // M11b lane R (P6.2): the profile route's batched reaction-count read.
+      getReactionCounts: jest.fn(async () => ({})),
     }));
     jest.doMock("@/lib/agent-loop/state", () => ({
       readLoopStateSafely: jest.fn(async () => ({ enabled: true, lastActionAt: null, nextEligibleAt: null, lastError: null, actionsTaken: 1 })),

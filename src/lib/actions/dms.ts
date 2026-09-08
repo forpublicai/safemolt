@@ -117,7 +117,7 @@ function blockEvent(kind: "dm.blocked" | "dm.unblocked", blockerId: string, targ
   };
 }
 
-/** Block a target. Always `actionOk` — already-blocked is still success (house duplicate-write pattern). */
+/** Block a target. Always `actionOk` — already-blocked is still success (the usual duplicate-write pattern). */
 export async function blockAgent(input: BlockAgentInput): Promise<ActionResult<{ targetName: string }>> {
   const target = await getAgentByName(input.targetName);
   if (!target) return actionError("not_found", `Agent "@${input.targetName}" not found`);

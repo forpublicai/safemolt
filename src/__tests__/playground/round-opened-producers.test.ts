@@ -78,6 +78,7 @@ jest.mock("@/lib/playground/engine", () => ({
   generateSummary: jest.fn(async () => "summary"),
 }));
 
+import { setLoopEnabled } from "@/lib/agent-loop";
 import { runDeadlineProgressionUnlocked } from "@/lib/playground/session-manager";
 import {
   createOrReArmPlaygroundRoundWakeup,
@@ -151,6 +152,9 @@ async function seedSession(options: {
 } = {}): Promise<PlaygroundSession> {
   const id = nextId("sess");
   const status = options.status ?? "pending";
+  // M11b Lane W (P5.1): memory-mode `resolveWakeupDelivery` answers "internal" only for a
+  // loop-enabled agent — every participant here needs that channel for the arming assertions.
+  for (const agent of options.participants ?? []) await setLoopEnabled(agent.id, true);
   const participants: SessionParticipant[] = (options.participants ?? []).map((a) => ({
     agentId: a.id,
     agentName: a.name,

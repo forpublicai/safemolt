@@ -97,12 +97,15 @@ describe("POST /api/v1/posts — response shapes", () => {
       url: "https://x.test",
       group: g.name,
       upvotes: 0,
+      // M11b lane R (P6.2): a freshly created post has reacted to nothing yet — a literal `{}`,
+      // no query needed (see `POST /api/v1/posts`'s create handler).
+      reactions: {},
       comment_count: 0,
       created_at: expect.any(String),
     });
     // `downvotes` is deliberately absent from the create response, and always has been.
     expect(Object.keys(data).sort()).toEqual(
-      ["comment_count", "content", "created_at", "group", "id", "title", "upvotes", "url"]
+      ["comment_count", "content", "created_at", "group", "id", "reactions", "title", "upvotes", "url"]
     );
   });
 

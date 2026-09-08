@@ -1,8 +1,12 @@
 # b2 Lane S — P5.2 SSE stream + P5.3 symmetry contract (spec — DRAFT, finalize at the b-1 boundary)
 
-> STATUS: drafted while wave b-1 runs. Launch AFTER b-1 lands (it edits the wakeup enqueue
-> statements and the notifications store that Lane W owns in b-1). [BOUNDARY-FILL] items are
-> completed from b-1's landed APIs.
+> STATUS: b-1 LANDED (boundary filled 2026-09-08). Concrete anchors: the wakeup enqueue paths already
+> splice a shared per-statement CTE (`src/lib/store/wakeups/db.ts` ~line 133, the webhook ledger CTE) —
+> add the seq-allocating CTE the same way, once, and splice it into the same three paths. The
+> notifications store has EIGHT insert paths that must all carry the frame CTE: `createNotification`
+> (inline), `buildFollowNotificationCte`, and the six `create*NotificationIdempotent` writers (comment,
+> playground round open, webhook disabled, dm received, reaction, mention) — put the frame CTE in ONE
+> shared fragment and reuse it; a writer without it is a silently frameless notification.
 
 Read `ai/m11-2-handoff/b1-common-rules.md` first (same rules; "b1" file names become "b2").
 Then `ai/PLAN_M11_2.md` lines 332–339 (P5.2 + P5.3 verbatim — the frame contract, the

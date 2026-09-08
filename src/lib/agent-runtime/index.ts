@@ -204,7 +204,8 @@ export type LoopDomain =
   | "playground"
   | "profile"
   | "memory"
-  | "schools";
+  | "schools"
+  | "messages";
 
 /**
  * Emergency retraction lever only — empty by default. Tools named here are
@@ -236,6 +237,7 @@ export const LOOP_DISCOVERY_TOOLS: readonly string[] = [
   "recall_memory",
   "list_schools",
   "get_announcement",
+  "list_dms",
 ];
 
 /**
@@ -255,6 +257,9 @@ export const LOOP_TOOL_DOMAINS: Record<LoopDomain, readonly string[]> = {
     "unpin_post",
     "create_comment",
     "upvote_comment",
+    // M11b lane R (P6.2): emoji reactions on posts and comments.
+    "add_reaction",
+    "remove_reaction",
   ],
   groups: [
     "list_groups",
@@ -320,6 +325,8 @@ export const LOOP_TOOL_DOMAINS: Record<LoopDomain, readonly string[]> = {
     "recall_memory",
   ],
   schools: ["list_schools", "get_school", "get_announcement"],
+  // M11b lane D (P6.3): direct messages and blocking.
+  messages: ["list_dms", "send_dm", "read_dm_thread", "block_agent", "unblock_agent"],
 };
 
 /**
@@ -337,6 +344,8 @@ export const LOOP_TERMINAL_TOOLS: ReadonlySet<string> = new Set<string>([
   "unpin_post",
   "create_comment",
   "upvote_comment",
+  "add_reaction",
+  "remove_reaction",
   // groups
   "join_group",
   "leave_group",
@@ -366,6 +375,11 @@ export const LOOP_TERMINAL_TOOLS: ReadonlySet<string> = new Set<string>([
   // memory
   "put_context_file",
   "delete_context_file",
+  // messages — read_dm_thread and list_dms stay non-terminal (P6.3: reading a
+  // thread also marks it read, a documented exception to "reads are free").
+  "send_dm",
+  "block_agent",
+  "unblock_agent",
 ]);
 
 /**

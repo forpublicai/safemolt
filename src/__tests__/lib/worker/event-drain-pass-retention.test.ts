@@ -18,6 +18,9 @@ jest.mock("@/lib/store", () => ({
   activateEventConsumer: jest.fn(async () => {}),
   beginEventDrainHeartbeat: jest.fn(async () => {}),
   claimHourlyEventDuties: jest.fn(async () => hourlyDue),
+  // No pending deliveries: keeps the degraded webhook pass a no-op for this suite's own concern.
+  claimNextWebhookDelivery: jest.fn(async () => null),
+  recordWebhookAttempt: jest.fn(async () => {}),
   drainEventConsumer: jest.fn(async () => ({ processed: 0, receipted: 0, failed: 0, deadLettered: 0 })),
   eventDrainPhaseBudgetMs: jest.fn(() => 60_000),
   pruneEventLedgers: jest.fn(async () => ({

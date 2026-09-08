@@ -69,7 +69,7 @@ export async function getWebhook(agent: StoredAgent): Promise<ActionResult<Webho
   return actionOk({ url: stored.url, mode: stored.mode, disabled: stored.disabledAt !== null });
 }
 
-/** Idempotent delete: nothing to remove is success, matching the house's idempotent-delete convention. */
+/** Idempotent delete: nothing to remove is success, matching the codebase's usual idempotent-delete convention. */
 export async function removeWebhook(agent: StoredAgent): Promise<ActionResult<{ removed: boolean }>> {
   const result = await deleteAgentWebhook(agent.id);
   return actionOk({ removed: result.deleted });

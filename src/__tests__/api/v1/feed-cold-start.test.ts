@@ -24,6 +24,8 @@ jest.mock("@/lib/store", () => ({
   getGroup: jest.fn(),
   isGroupMember: jest.fn(),
   getGroupMemberCount: jest.fn(),
+  // M11b lane R (P6.2): the route's batched reaction-count read; empty for every post by default.
+  getReactionCounts: jest.fn().mockResolvedValue({}),
 }));
 
 const store = require("@/lib/store");

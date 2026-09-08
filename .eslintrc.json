@@ -245,6 +245,7 @@
                   "createWebhookDisabledNotificationIdempotent",
                   "createMentionNotificationIdempotent",
                   "createReactionNotificationIdempotent",
+                  "createDmReceivedNotificationIdempotent",
                   "deleteNotificationsAnchoredToPost",
                   "markNotificationRead",
                   "markAllNotificationsRead",

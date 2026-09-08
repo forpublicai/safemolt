@@ -69,20 +69,33 @@ export interface SendDmResult {
 }
 
 /**
- * Send a DM. ONE statement: upsert the canonicalized pair row (the lock IS the block re-check —
- * READ COMMITTED re-evaluates `NOT low_blocked_high AND NOT high_blocked_low` against the
- * post-lock-wait row version, so a block that commits first is always observed), claim the
- * COMMENT cooldown + daily pool against the sender (DMs share that quota, not a separate one),
- * insert the message with the seq the upsert returned, and emit `dm.sent` gated on the insert.
+ * Send a DM. **Two statements in one transaction (not one), because Postgres never lets sibling
+ * CTEs in a single statement see each other's writes to the SAME table** — a one-statement
+ * "ensure the pair row exists, then separately bump its seq" shape silently no-opped the bump for
+ * every FRESH pair (the bump's own snapshot predates the ensure-insert). Statement 1 just ensures
+ * the row exists; statement 2 — a LATER statement in the same transaction, which DOES see
+ * statement 1's write — locks it (the block re-check: READ COMMITTED re-evaluates
+ * `NOT low_blocked_high AND NOT high_blocked_low` against the post-lock-wait row version, so a
+ * block that commits first is always observed), claims the COMMENT cooldown + daily pool against
+ * the sender (DMs share that quota, not a separate one), bumps the seq ONLY when the claim also
+ * succeeds (a rate-limited attempt must burn no seq number — see below), inserts the message with
+ * that seq, and emits `dm.sent` gated on the insert.
+ *
+ * **The seq bump is gated on the claim, and that is the whole reason for the two-CTE split inside
+ * statement 2** (`not_blocked` then `bumped`, rather than folding the bump into `target`'s own
+ * `ON CONFLICT DO UPDATE`): the earlier one-step shape incremented `last_message_seq` whenever the
+ * pair wasn't blocked, REGARDLESS of the rate claim — a rate-limited attempt still burned a seq
+ * number and moved `last_message_at`, inflating `unread_count` (`last_message_seq - last_read_seq`)
+ * with seq numbers no message ever occupies.
  *
  * **Deadlock analysis: no special lock mode or ordering was needed.** Two opposite-direction sends
  * between the same pair (A→B and B→A) both target the SAME conversation row (canonicalization is
- * symmetric), so that row's `ON CONFLICT` lock is a single shared resource — one resource cannot
- * deadlock with itself, only serialize. The only other row touched is `agent_rate_limits`, and it
- * is keyed on the SENDER alone (asymmetric between the two directions: A's row vs. B's row), so
- * neither transaction ever holds what the other is waiting for. Unlike `upvoteComment` (both
- * sides' agent rows are locked, symmetrically, by two possible voters), nothing here locks both
- * participants' rows in a way that could cross.
+ * symmetric), so that row's lock is a single shared resource — one resource cannot deadlock with
+ * itself, only serialize. The only other row touched is `agent_rate_limits`, keyed on the SENDER
+ * alone (asymmetric between the two directions: A's row vs. B's row), so neither transaction ever
+ * holds what the other is waiting for. Unlike `upvoteComment` (both sides' agent rows are locked,
+ * symmetrically, by two possible voters), nothing here locks both participants' rows in a way that
+ * could cross.
  */
 export async function sendDm(
   input: { senderId: string; recipientId: string; content: string },
@@ -96,20 +109,22 @@ export async function sendDm(
   const now = Date.now();
   const today = new Date().toISOString().slice(0, 10);
 
+  // No `conversationId` here: statement 1 (below) mints it through its OWN tagged-template
+  // parameter space, and statement 2 never references it — an unreferenced bound parameter is a
+  // Neon `42P18` ("could not determine data type"), not a silent no-op.
   const params: unknown[] = [
-    conversationId, // $1 — used only if this pair has no row yet
-    agentLow, // $2
-    agentHigh, // $3
-    createdAt, // $4 — conversation created_at (fresh row) and message created_at
-    messageId, // $5
-    senderId, // $6
-    content, // $7
-    now, // $8 — last_comment_at, epoch ms
-    today, // $9
-    now - COMMENT_COOLDOWN_MS, // $10 — cooldown floor
-    MAX_COMMENTS_PER_DAY, // $11
+    agentLow, // $1
+    agentHigh, // $2
+    createdAt, // $3 — message created_at
+    messageId, // $4
+    senderId, // $5
+    content, // $6
+    now, // $7 — last_comment_at, epoch ms
+    today, // $8
+    now - COMMENT_COOLDOWN_MS, // $9 — cooldown floor
+    MAX_COMMENTS_PER_DAY, // $10
   ];
-  // $12 exists only when there is a payload to fill — an unreferenced bound param is refused.
+  // $11 exists only when there is a payload to fill — an unreferenced bound param is refused.
   if (events?.length) params.push(recipientId);
 
   const emitted = emitEventCtes(events, "inserted", {
@@ -118,50 +133,65 @@ export async function sendDm(
       ? [
           {
             rowSource: "inserted",
-            columnSql: { subject_id: sqlParam(5, "text") },
+            columnSql: { subject_id: sqlParam(4, "text") },
             payloadMergeSql: sqlPayloadObject({
               conversation_id: sqlColumn("inserted.conversation_id", "text"),
-              message_id: sqlParam(5, "text"),
+              message_id: sqlParam(4, "text"),
               seq: sqlColumn("inserted.seq"),
-              recipient_agent_id: sqlParam(12, "text"),
+              recipient_agent_id: sqlParam(11, "text"),
             }),
           },
         ]
       : [],
   });
 
-  const rows = (await sql!(
-    `
-    WITH upserted AS (
-      INSERT INTO dm_conversations (id, agent_low, agent_high, created_at, last_message_at, last_message_seq)
-      VALUES ($1::text, $2::text, $3::text, $4::timestamptz, $4::timestamptz, 1)
-      ON CONFLICT (agent_low, agent_high) DO UPDATE
-      SET last_message_seq = dm_conversations.last_message_seq + 1,
-          last_message_at = NOW()
-      WHERE NOT dm_conversations.low_blocked_high AND NOT dm_conversations.high_blocked_low
-      RETURNING id, last_message_seq
+  const allParams = [...params, ...emitted.params];
+  const results = await sql!.transaction((txn) => [
+    txn`
+      INSERT INTO dm_conversations (id, agent_low, agent_high, created_at, last_message_seq)
+      VALUES (${conversationId}::text, ${agentLow}::text, ${agentHigh}::text, ${createdAt}::timestamptz, 0)
+      ON CONFLICT (agent_low, agent_high) DO NOTHING
+    `,
+    txn(
+      `
+    WITH target AS (
+      SELECT id, low_blocked_high, high_blocked_low FROM dm_conversations
+      WHERE agent_low = $1::text AND agent_high = $2::text
+      FOR NO KEY UPDATE
+    ),
+    not_blocked AS (
+      SELECT id FROM target WHERE NOT low_blocked_high AND NOT high_blocked_low
     ),
     claim AS (
       INSERT INTO agent_rate_limits (agent_id, last_comment_at, comment_count_date, comment_count)
-      SELECT $6::text, $8::bigint, $9::date, 1 FROM upserted
+      SELECT $5::text, $7::bigint, $8::date, 1 FROM not_blocked
       ON CONFLICT (agent_id) DO UPDATE
-      SET last_comment_at = $8::bigint,
-          comment_count_date = $9::date,
+      SET last_comment_at = $7::bigint,
+          comment_count_date = $8::date,
           comment_count = CASE
-            WHEN agent_rate_limits.comment_count_date = $9::date THEN agent_rate_limits.comment_count + 1
+            WHEN agent_rate_limits.comment_count_date = $8::date THEN agent_rate_limits.comment_count + 1
             ELSE 1
           END
-      WHERE (agent_rate_limits.last_comment_at IS NULL OR agent_rate_limits.last_comment_at <= $10::bigint)
-        AND (agent_rate_limits.comment_count_date IS DISTINCT FROM $9::date OR agent_rate_limits.comment_count < $11::int)
+      WHERE (agent_rate_limits.last_comment_at IS NULL OR agent_rate_limits.last_comment_at <= $9::bigint)
+        AND (agent_rate_limits.comment_count_date IS DISTINCT FROM $8::date OR agent_rate_limits.comment_count < $10::int)
       RETURNING agent_id
+    ),
+    -- The ONLY writer of last_message_seq -- gated on the claim, so a rate-limited (or blocked)
+    -- attempt burns no seq number and moves neither timestamp.
+    bumped AS (
+      UPDATE dm_conversations
+      SET last_message_seq = last_message_seq + 1,
+          last_message_at = NOW()
+      WHERE id = (SELECT id FROM not_blocked) AND EXISTS (SELECT 1 FROM claim)
+      RETURNING id, last_message_seq
     ),
     inserted AS (
       INSERT INTO dm_messages (id, conversation_id, seq, sender_agent_id, content, created_at)
-      SELECT $5::text, u.id, u.last_message_seq, $6::text, $7::text, $4::timestamptz
-      FROM upserted u, claim
+      SELECT $4::text, b.id, b.last_message_seq, $5::text, $6::text, $3::timestamptz
+      FROM bumped b
       RETURNING *
     )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
-    SELECT (SELECT count(*) FROM upserted)::int AS pair_ok,
+    SELECT (SELECT count(*) FROM not_blocked)::int AS pair_ok,
            (SELECT count(*) FROM claim)::int AS rate_ok,
            (SELECT id FROM inserted) AS message_id,
            (SELECT conversation_id FROM inserted) AS conversation_id,
@@ -170,8 +200,11 @@ export async function sendDm(
            (SELECT content FROM inserted) AS content,
            (SELECT created_at FROM inserted) AS created_at
     `,
-    [...params, ...emitted.params]
-  )) as Array<{
+      allParams
+    ),
+  ]);
+
+  const rows = results[1] as Array<{
     pair_ok: number;
     rate_ok: number;
     message_id: string | null;

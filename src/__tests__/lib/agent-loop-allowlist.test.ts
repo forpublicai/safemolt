@@ -67,6 +67,7 @@ describe("autonomous loop tool router", () => {
         "evaluations",
         "groups",
         "memory",
+        "messages",
         "playground",
         "profile",
         "schools",

@@ -49,18 +49,20 @@ function addReactionStatementText(subjectType: "post" | "comment", eventCtes: st
          WHERE c.id = $2 AND p.deleted_at IS NULL FOR KEY SHARE`;
     const subjectTypeLiteral = subjectType === "post" ? "'post'" : "'comment'";
     return `
-    WITH rate_locked AS (
-      UPDATE agent_rate_limits
-      SET reaction_count = CASE WHEN reaction_count_date <> CURRENT_DATE THEN 0 ELSE reaction_count END,
-          reaction_count_date = CURRENT_DATE
-      WHERE agent_id = $1
-      RETURNING reaction_count
+    -- A lock-then-write read, not a write: two sibling UPDATEs against the same
+    -- \`agent_rate_limits\` row within one statement silently lose the second write once a third
+    -- CTE also reads the first's RETURNING (verified empirically against this schema) — the same
+    -- failure mode this file's \`removeReaction\`/\`deletePost\` never hit because they write the row
+    -- only once. \`pre\` locks and rolls the day; the single \`rate_updated\` below is the only writer.
+    WITH pre AS (
+      SELECT CASE WHEN reaction_count_date <> CURRENT_DATE THEN 0 ELSE reaction_count END AS current_count
+      FROM agent_rate_limits WHERE agent_id = $1 FOR UPDATE
     ),
     subject AS (
       ${subjectCte}
     ),
     under_cap AS (
-      SELECT 1 FROM rate_locked WHERE reaction_count < $4
+      SELECT 1 FROM pre WHERE current_count < $4
     ),
     -- Read BEFORE the insert, so a cap breach never masks a real pre-existing duplicate: without
     -- this, an agent who already reacted and is separately over cap was misreported as rate
@@ -75,16 +77,20 @@ function addReactionStatementText(subjectType: "post" | "comment", eventCtes: st
       ON CONFLICT (agent_id, subject_type, subject_id, emoji) DO NOTHING
       RETURNING *
     ),
-    bump AS (
+    -- The ONLY write to agent_rate_limits: rolls the day and adds 1 iff the insert above landed,
+    -- in one UPDATE, so there is nothing left for a second sibling writer to lose.
+    rate_updated AS (
       UPDATE agent_rate_limits
-      SET reaction_count = reaction_count + 1
-      WHERE agent_id = $1 AND EXISTS (SELECT 1 FROM inserted)
-      RETURNING agent_id
+      SET reaction_count = (SELECT current_count FROM pre)
+            + (CASE WHEN EXISTS (SELECT 1 FROM inserted) THEN 1 ELSE 0 END),
+          reaction_count_date = CURRENT_DATE
+      WHERE agent_id = $1
+      RETURNING reaction_count
     )${eventCtes}
     SELECT (SELECT 1 FROM subject) IS NOT NULL AS subject_exists,
            (SELECT 1 FROM inserted) IS NOT NULL AS inserted,
            (SELECT 1 FROM existing) IS NOT NULL AS already_reacted,
-           (SELECT reaction_count FROM rate_locked) >= $4 AS over_cap
+           (SELECT 1 FROM pre WHERE current_count >= $4) IS NOT NULL AS over_cap
   `;
 }
 
