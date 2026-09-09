@@ -52,3 +52,14 @@ report the line delta.
 - DO NOT TOUCH: `src/lib/store/{wakeups,notifications,activity}/`, `worker/**`, `src/lib/stream/`,
   `src/lib/worker/stream-server.ts`, `src/lib/events/consumers/activity-trail.ts`,
   `src/app/api/v1/internal/school-events/**` (Lane S), public docs, inventory, CLAUDE.md.
+
+## Concurrency rule with the b-1 fix loop (added 2026-09-08)
+
+The b-1 codex fix loop still runs in this tree; its fix agents edit `src/lib/agent-pulse/runner.ts`,
+`src/lib/agent-tools/definitions/{messages,reactions}.ts`, the store notification writers and the
+b-1 test files. **Sequence P7.1's deletions in `agent-loop.ts` / `runner.ts` / the tool
+definitions LAST**, and touch them only after `ai/m11-2-handoff/b1-fixes-landed.md` exists. Do
+P7.2 (durable playground memory), P7.4 (planning hygiene), P7.3 (route reconciliation) and the
+boundary-allowlist shrink first. If the marker is still absent when you reach the end, write a
+precise handoff (`b2-lane-c-handoff.md`) naming the remaining deletions and stop. Do not run
+`npm test` with no path (the b-1 lanes' suites may be mid-edit); target your own files.

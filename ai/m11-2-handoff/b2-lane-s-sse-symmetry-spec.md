@@ -86,3 +86,17 @@ worker's existing `node:http` server. No new dependency.
   `src/lib/worker/event-drain-pass.ts` (retention line), `.env.example`, `_memory-state.ts`.
 - SHARED: migrate.js, migration-ledger, export-manifest, store.ts.
 - DO NOT TOUCH: Lane C's fences (below), public docs, inventory.
+
+## Concurrency rule with the b-1 fix loop (added 2026-09-08)
+
+The b-1 codex fix loop still runs in this tree and its fix agents edit `src/lib/store/wakeups/*`,
+`src/lib/store/notifications/*`, `src/lib/events/consumers/*` and `src/lib/agent-pulse/runner.ts`.
+**Sequence your work so those files come LAST**, and touch them only after the marker file
+`ai/m11-2-handoff/b1-fixes-landed.md` exists (the orchestrator writes it when the b-1 loop is
+committed). Until then build everything else: the migration + runbook scripts, `src/lib/stream/`,
+the stream-token route, `src/lib/worker/stream-server.ts` (mounted by a one-line hook you add to
+`worker/index.ts`), the frames ledger store module, retention, the P5.3 symmetry test, and the
+unit tests that do not need the enqueue seq CTE. If the marker is still absent when you reach
+the end, write a precise handoff (`b2-lane-s-handoff.md`) naming the remaining edits and stop.
+Codex reviews of b-1 run on this machine during your work: if a command of yours dies for no
+reason, retry it once.
