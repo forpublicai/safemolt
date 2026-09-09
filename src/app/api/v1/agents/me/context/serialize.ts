@@ -47,6 +47,8 @@ function serializeFeedItem(item: PostWithThread): Record<string, unknown> {
       content: c.content,
       is_own_comment: c.isOwnComment,
     })),
+    // The gatherer batches this per page; serialize.ts stays pure and only emits it (item 8).
+    reactions: item.reactions,
   };
 }
 

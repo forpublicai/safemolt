@@ -10,6 +10,7 @@ jest.mock("@/lib/store", () => ({
   listPosts: jest.fn(),
   getPost: jest.fn(),
   listComments: jest.fn(),
+  getReactionCounts: jest.fn(),
   listNotifications: jest.fn(),
   getAgentClasses: jest.fn(),
   getClassById: jest.fn(),
@@ -54,6 +55,7 @@ import {
   getPlaygroundActions,
   getPlaygroundSession,
   getPost,
+  getReactionCounts,
   getStudentClassResults,
   isGroupMember,
   listClassEvaluations,
@@ -93,6 +95,7 @@ function stubPopulatedPlatform(): void {
   jest.mocked(listFeed).mockResolvedValue([post("p1", "author_a")] as never);
   jest.mocked(listPosts).mockResolvedValue([post("g1", "author_b")] as never);
   jest.mocked(getPost).mockResolvedValue(post("p9", "author_a") as never);
+  jest.mocked(getReactionCounts).mockResolvedValue({});
   jest.mocked(listComments).mockResolvedValue([
     { id: "c1", authorId: "critic", content: "First" },
   ] as never);

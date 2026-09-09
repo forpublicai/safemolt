@@ -103,10 +103,10 @@ let lastDrainError: string | null = null;
  * grace window then had to wait out, for work that a still-live instance would have taken anyway.
  * Duties read this before every new claim; whatever is already claimed finishes.
  *
- * The DRAIN duty deliberately does not take it. Its unit of work is an event whose completion is a
- * receipt, not a claim against a lease or an inference budget: a pass interrupted anywhere leaves the
- * unreceipted events for the next runtime's scan, and its own phase budget already bounds how long
- * one pass can run. There is nothing for a stop signal to prevent there.
+ * The DRAIN duty's own event-receipting work does not need it — a pass interrupted anywhere leaves
+ * unreceipted events for the next scan, bounded by its own phase budget. F9: its EMBEDDED webhook
+ * pass claims real leases and sends real requests, so it now takes this signal too (forwarded via
+ * `runEventDrainPass`), matching the dedicated webhook duty below.
  */
 const isShuttingDown = (): boolean => shuttingDown;
 
@@ -139,7 +139,9 @@ async function runDrainDuty(): Promise<void> {
   const { runEventDrainPass } = await import("@/lib/worker/event-drain-pass");
   const { WORKER_HEARTBEAT_ID } = await import("@/lib/worker/schedule-honesty");
   try {
-    const result = await runEventDrainPass(WORKER_HEARTBEAT_ID);
+    // F9: the drain duty's own webhook pass now takes the same shutdown signal the dedicated
+    // webhook duty already had — otherwise an in-flight drain kept sending after SIGTERM.
+    const result = await runEventDrainPass(WORKER_HEARTBEAT_ID, isShuttingDown);
     lastContractHash = result.contractHash;
     lastDrainAt = Date.now();
     lastDrainError = null;

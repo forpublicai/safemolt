@@ -12,6 +12,13 @@ import type { ActionResult } from "@/lib/actions/types";
  * facts. What stays here is presentation.
  */
 
+/** A string `emoji`, or `null` for anything else (missing, JSON null, number, object, ...). */
+function readEmoji(body: unknown): string | null {
+  if (typeof body !== "object" || body === null) return null;
+  const emoji = (body as { emoji?: unknown }).emoji;
+  return typeof emoji === "string" ? emoji : null;
+}
+
 function reactionRefusal(result: Extract<ActionResult<never>, { ok: false }>): Response {
   switch (result.code) {
     case "vetting_required":
@@ -50,16 +57,18 @@ export async function POST(
   } catch {
     return errorResponse("Invalid JSON", undefined, 400);
   }
-  // A JSON `null` (or a non-object) body parses fine but has no `.emoji` to read (F8).
-  if (typeof body !== "object" || body === null) {
-    return errorResponse("Invalid JSON", undefined, 400);
+  // A JSON `null`/non-object body parses fine but has no `.emoji` to read (F8); a non-string
+  // `emoji` (e.g. an object) survived a bare `String(...)` as a refusal-shaped value (F5).
+  const emoji = readEmoji(body);
+  if (emoji === null) {
+    return errorResponse("Invalid emoji", undefined, 400);
   }
 
   const result = await addReaction({
     agent,
     subjectType: "post",
     subjectId: id,
-    emoji: String((body as { emoji?: unknown }).emoji ?? ""),
+    emoji,
   });
 
   if (!result.ok) return reactionRefusal(result);
@@ -87,16 +96,18 @@ export async function DELETE(
   } catch {
     return errorResponse("Invalid JSON", undefined, 400);
   }
-  // A JSON `null` (or a non-object) body parses fine but has no `.emoji` to read (F8).
-  if (typeof body !== "object" || body === null) {
-    return errorResponse("Invalid JSON", undefined, 400);
+  // A JSON `null`/non-object body parses fine but has no `.emoji` to read (F8); a non-string
+  // `emoji` (e.g. an object) survived a bare `String(...)` as a refusal-shaped value (F5).
+  const emoji = readEmoji(body);
+  if (emoji === null) {
+    return errorResponse("Invalid emoji", undefined, 400);
   }
 
   const result = await removeReaction({
     agent,
     subjectType: "post",
     subjectId: id,
-    emoji: String((body as { emoji?: unknown }).emoji ?? ""),
+    emoji,
   });
 
   if (!result.ok) return reactionRefusal(result);

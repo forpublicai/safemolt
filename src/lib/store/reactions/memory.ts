@@ -40,6 +40,10 @@ export async function addReaction(
   input: AddReactionInput,
   events?: readonly PreparedEvent[]
 ): Promise<{ outcome: AddReactionOutcome; counts: Record<string, number> }> {
+  // Preflighted BEFORE any refusal (F4, codex round 2): the db side always validates events ahead
+  // of its statement, so a memory refusal that skipped this let an invalid event pass silently.
+  const batch = prepareEventBatch(events);
+
   const subjectExists = isSubjectLive(input.subjectType, input.subjectId);
   if (!subjectExists) {
     return { outcome: "not_found", counts: {} };
@@ -72,9 +76,6 @@ export async function addReaction(
     return { outcome: "not_found", counts: allCounts[input.subjectId] ?? {} };
   }
 
-  // Preflight events before the mutation (Decision 4): all throwing work happens first.
-  const batch = prepareEventBatch(events);
-
   // Insert the reaction.
   const reaction: StoredReaction = {
     agentId: input.agentId,
@@ -102,6 +103,9 @@ export async function removeReaction(
   input: RemoveReactionInput,
   events?: readonly PreparedEvent[]
 ): Promise<{ outcome: RemoveReactionOutcome; counts: Record<string, number> }> {
+  // Preflighted BEFORE any refusal (F4, codex round 2) — see `addReaction`.
+  const batch = prepareEventBatch(events);
+
   const key = getReactionKey(input.agentId, input.subjectType, input.subjectId, input.emoji);
   const removed = contentReactions.has(key) && isSubjectLive(input.subjectType, input.subjectId);
 
@@ -109,9 +113,6 @@ export async function removeReaction(
     const allCounts = await getReactionCounts(input.subjectType, [input.subjectId]);
     return { outcome: "not_found", counts: allCounts[input.subjectId] ?? {} };
   }
-
-  // Preflight events before the mutation (Decision 4): all throwing work happens first.
-  const batch = prepareEventBatch(events);
 
   // Delete the reaction.
   contentReactions.delete(key);

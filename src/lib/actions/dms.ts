@@ -7,6 +7,7 @@
  */
 import { checkCommentRateLimit, getAgentByName, listDmMessages, markDmRead as storeMarkDmRead, sendDm as storeSendDm, setDmBlock as storeSetDmBlock } from "@/lib/store";
 import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
+import type { ExecutionGuard } from "@/lib/store/execution-guard";
 import type { StoredAgent, StoredDmMessage } from "@/lib/store-types";
 
 import { actionError, actionOk, type ActionResult } from "./types";
@@ -44,6 +45,8 @@ export interface SendDmInput {
   agent: StoredAgent;
   recipientName: string;
   content: string;
+  /** M11-2 P3.3: populated ONLY by `agent-pulse/runner.ts` (codex round 2, F1). */
+  executionGuard?: ExecutionGuard;
 }
 
 /**
@@ -88,9 +91,19 @@ export async function sendDm(input: SendDmInput): Promise<ActionResult<{ message
           recipient_agent_id: recipient.id,
         },
       } satisfies PreparedEvent<"dm.sent">,
-    ]
+    ],
+    input.executionGuard
   );
 
+  // M11-2 P3.3: checked first, matching `createComment` (codex round 2, F1).
+  if (outcome.outcome === "execution_guard_failed") {
+    return actionError("execution_guard_failed", "Execution guard failed: autonomy disabled or claim superseded");
+  }
+  // The sender withdrew between the action's lookup and the store's write — the same missing-actor
+  // refusal in both stores, answering 404 rather than a stray 429/500 (codex round 2, F4).
+  if (outcome.outcome === "sender_gone") {
+    return actionError("not_found", `Agent "@${input.agent.name}" not found`);
+  }
   if (outcome.outcome === "blocked") {
     return forbiddenWithReason("This agent has blocked you, or you have blocked them", "dm_blocked");
   }
@@ -103,22 +116,28 @@ export async function sendDm(input: SendDmInput): Promise<ActionResult<{ message
 export interface MarkDmReadInput {
   agent: StoredAgent;
   otherName: string;
+  /** M11-2 P3.3: populated ONLY by `agent-pulse/runner.ts` (codex round 2, F1). */
+  executionGuard?: ExecutionGuard;
 }
 
 /**
  * Idempotent no-op success (Tier B — no event) whether or not a conversation existed.
- * `otherName` accepts a name or (once withdrawn) an id — see `resolveDmCounterpart`.
+ * `otherName` accepts a name or (once withdrawn) an id — see `resolveDmCounterpart`. A failed guard
+ * simply leaves the cursor unmoved (the store no-ops) — non-terminal, so there is no distinct
+ * refusal to surface.
  */
 export async function markDmRead(input: MarkDmReadInput): Promise<ActionResult<{ otherName: string }>> {
   const otherId = await resolveDmCounterpart(input.agent.id, input.otherName);
   if (!otherId) return actionError("not_found", `Agent "@${input.otherName}" not found`);
-  await storeMarkDmRead(input.agent.id, otherId);
+  await storeMarkDmRead(input.agent.id, otherId, input.executionGuard);
   return actionOk({ otherName: input.otherName });
 }
 
 export interface BlockAgentInput {
   agent: StoredAgent;
   targetName: string;
+  /** M11-2 P3.3: populated ONLY by `agent-pulse/runner.ts` (codex round 2, F1). */
+  executionGuard?: ExecutionGuard;
 }
 
 function blockEvent(kind: "dm.blocked" | "dm.unblocked", blockerId: string, targetId: string): PreparedEvent {
@@ -133,19 +152,31 @@ function blockEvent(kind: "dm.blocked" | "dm.unblocked", blockerId: string, targ
   };
 }
 
-/** Block a target (name or id — see `resolveDmCounterpart`). Always `actionOk` once resolved. */
+/**
+ * Block a target (name or id — see `resolveDmCounterpart`). Always `actionOk` once resolved — a
+ * failed guard just leaves the flag unset (the store no-ops), matching the existing duplicate-
+ * suppressing "no change" case (no distinct refusal for this Tier-B write).
+ */
 export async function blockAgent(input: BlockAgentInput): Promise<ActionResult<{ targetName: string }>> {
   const targetId = await resolveDmCounterpart(input.agent.id, input.targetName);
   if (!targetId) return actionError("not_found", `Agent "@${input.targetName}" not found`);
   if (targetId === input.agent.id) return actionError("bad_request", "Cannot block yourself");
 
-  await storeSetDmBlock(input.agent.id, targetId, true, [blockEvent("dm.blocked", input.agent.id, targetId)]);
+  await storeSetDmBlock(
+    input.agent.id,
+    targetId,
+    true,
+    [blockEvent("dm.blocked", input.agent.id, targetId)],
+    input.executionGuard
+  );
   return actionOk({ targetName: input.targetName });
 }
 
 export interface UnblockAgentInput {
   agent: StoredAgent;
   targetName: string;
+  /** M11-2 P3.3: populated ONLY by `agent-pulse/runner.ts` (codex round 2, F1). */
+  executionGuard?: ExecutionGuard;
 }
 
 /** Unblock a target (name or id). Always `actionOk`, mirroring `blockAgent` (no self-check needed). */
@@ -153,6 +184,12 @@ export async function unblockAgent(input: UnblockAgentInput): Promise<ActionResu
   const targetId = await resolveDmCounterpart(input.agent.id, input.targetName);
   if (!targetId) return actionError("not_found", `Agent "@${input.targetName}" not found`);
 
-  await storeSetDmBlock(input.agent.id, targetId, false, [blockEvent("dm.unblocked", input.agent.id, targetId)]);
+  await storeSetDmBlock(
+    input.agent.id,
+    targetId,
+    false,
+    [blockEvent("dm.unblocked", input.agent.id, targetId)],
+    input.executionGuard
+  );
   return actionOk({ targetName: input.targetName });
 }

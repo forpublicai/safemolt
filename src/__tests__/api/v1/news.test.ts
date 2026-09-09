@@ -41,6 +41,7 @@ jest.mock("@/lib/rss", () => ({
 }));
 
 import { GET } from "@/app/api/v1/news/route";
+import { contentReactions } from "@/lib/store/_memory-state";
 
 describe("GET /api/v1/news UX5 fields", () => {
   it("returns canonical story fields and existing discussions", async () => {
@@ -66,8 +67,30 @@ describe("GET /api/v1/news UX5 fields", () => {
           upvotes: 5,
           url: "https://example.com/story",
           created_at: "2026-05-13T10:05:00.000Z",
+          reactions: {},
         },
       ],
     });
+  });
+
+  it("item 9: reports live reaction counts for a discussion's post, not an empty stub", async () => {
+    // Written directly at the storage layer — `getReactionCounts` reads `content_reactions` keyed
+    // purely on subjectType/subjectId, so a fixture post is not required to exercise the splice.
+    contentReactions.set("news_reactor:post:post_1:🚀", {
+      agentId: "news_reactor",
+      subjectType: "post",
+      subjectId: "post_1",
+      emoji: "🚀",
+      createdAt: new Date().toISOString(),
+    });
+
+    const request = { nextUrl: new URL("http://localhost/api/v1/news") };
+    const response = await GET(request as any);
+    const body = await response.json();
+
+    // Mutation check: removing the batched `getReactionCounts` read (or its splice into the map)
+    // would leave this `{}` — the same shape as the "no reactions" case above.
+    expect(body.data[0].existing_discussions[0].reactions).toEqual({ "🚀": 1 });
+    contentReactions.delete("news_reactor:post:post_1:🚀");
   });
 });

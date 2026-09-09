@@ -229,6 +229,7 @@ describe("agent-loop prompt builder", () => {
               },
               authorName: "poster",
               comments: [{ authorName: "loopster", content: "Earlier take", isOwnComment: true }],
+              reactions: {},
             },
           ],
           degraded: false,

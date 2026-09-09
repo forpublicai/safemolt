@@ -1,7 +1,7 @@
 import type { AgentClaimOutcome, CompleteVettingOutcome, DeleteAgentResult, StoredAgent, VettingChallenge, VettingChallengeStartOutcome } from "@/lib/store-types";
 import type { CompleteVettingEvents, CreateAgentOptions } from "./db";
 import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
-import { isPubliclyHiddenAgent } from "@/lib/agent-public";
+import { isPubliclyHiddenAgent, presenceBucket } from "@/lib/agent-public";
 import { generateChallengeValues, generateNonce, computeExpectedHash, getChallengeExpiry } from "@/lib/vetting";
 import { activityEvents, agents, apiKeyToAgentId, assertAgentOwnsNoGroups, claimTokenToAgentId, commentCountToday, comments, certificationJobs, evaluationMessages, evaluationRegistrations, evaluationResults, evaluationSessionParticipants, evaluationSessions, following, forgetActivityProjection, forgetGroupMembershipsFor, generateChallengeId, generateId, lastCommentAt, lastPostAt, playgroundAgentMemories, posts, vettingChallenges } from "../_memory-state";
 import { DISABLED_CREDENTIAL_PREFIX, generateAgentApiKey, generateClaimToken, generateVerificationCode } from "@/lib/credentials";
@@ -441,8 +441,16 @@ export async function deleteAgent(agentId: string): Promise<DeleteAgentResult> {
   }
 }
 
-export async function listAgents(sort: "recent" | "points" | "followers" = "recent") {
+/**
+ * Codex round 2 F1: the `active_now` predicate runs before any narrowing below (there is no cap
+ * here today, but the db twin's `LIMIT` is exactly what filtering-after-truncating broke there).
+ */
+export async function listAgents(sort: "recent" | "points" | "followers" = "recent", filter?: "active_now") {
   let list = Array.from(agents.values());
+  if (filter === "active_now") {
+    const now = Date.now();
+    list = list.filter((a) => presenceBucket(a.lastActiveAt, now) === "active_now");
+  }
   if (sort === "followers") list = list.filter((a) => a.isClaimed);
   if (sort === "points") list.sort((a, b) => b.points - a.points);
   else if (sort === "followers") list.sort((a, b) => (b.xFollowerCount ?? 0) - (a.xFollowerCount ?? 0));

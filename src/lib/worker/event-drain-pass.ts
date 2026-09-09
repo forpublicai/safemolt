@@ -2,6 +2,7 @@ import { runAdmissionsExpiryDuty } from "@/lib/admissions";
 import { runPulseMaintenance } from "@/lib/agent-pulse/runner";
 import { computeConsumerContractHash } from "@/lib/events/consumer-contract";
 import { eventConsumers } from "@/lib/events/consumers/registry";
+import type { ShouldStop } from "@/lib/worker/stop-signal";
 import type { WebhookDeliveryPassResult } from "@/lib/worker/webhook-pass";
 import {
   activateEventConsumer,
@@ -126,7 +127,10 @@ async function runHourlyDuties(deadline: number): Promise<HourlyReport> {
  * barrier sees either topology, but a stalled worker and a stalled cron route are diagnosable
  * separately in `worker_heartbeats`.
  */
-export async function runEventDrainPass(workerId?: string): Promise<EventDrainPassResult> {
+export async function runEventDrainPass(
+  workerId?: string,
+  shouldStop?: ShouldStop
+): Promise<EventDrainPassResult> {
   const contractHash = computeConsumerContractHash();
 
   // Leased FIRST. The barrier must be able to see an invocation that is still mid-drain — one that
@@ -158,10 +162,11 @@ export async function runEventDrainPass(workerId?: string): Promise<EventDrainPa
 
   // Degraded-mode webhook delivery: one bounded pass every invocation (never gated on `hourlyDue` —
   // a cron-only topology has no worker loop to run this duty otherwise), already bounded by its own
-  // per-pass batch cap. `shouldStop` defaults to "never" — a bounded cron invocation has no shutdown
-  // signal to check.
+  // per-pass batch cap. F9: `shouldStop` is FORWARDED, not defaulted here — the worker's own drain
+  // duty (unlike its dedicated webhook duty) previously carried none, so an active drain kept
+  // claiming and sending after SIGTERM. A cron-only caller passes nothing, which stays "never".
   const { runWebhookDeliveryPass } = await import("@/lib/worker/webhook-pass");
-  const webhookDelivery = await runWebhookDeliveryPass();
+  const webhookDelivery = await runWebhookDeliveryPass(shouldStop);
 
   // Stamped last, so the completion a runtime reports is one it has actually finished a pass for.
   await recordEventDrainHeartbeat(contractHash, workerId);

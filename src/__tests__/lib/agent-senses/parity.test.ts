@@ -83,6 +83,7 @@ function makeFixtureContext(): AgentContext {
           },
           authorName: "poster",
           comments: [{ authorName: "critic", content: "First", isOwnComment: false }],
+          reactions: {},
         },
       ],
       degraded: false,

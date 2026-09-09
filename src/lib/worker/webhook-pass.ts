@@ -34,7 +34,7 @@ async function attemptOne(): Promise<AttemptOutcome> {
   const claimed = await claimNextWebhookDelivery({ claimToken: randomUUID(), leaseMs: LEASE_MS });
   if (!claimed) return "empty";
   if (claimed.url === null || claimed.secret === null || claimed.disabledAt !== null) {
-    await recordWebhookAttempt({ id: claimed.id, claimToken: claimed.claimToken, agentId: claimed.agentId, status: null, ok: false });
+    await recordWebhookAttempt({ id: claimed.id, claimToken: claimed.claimToken, status: null, ok: false });
     return "failed";
   }
   const result = await deliverWakeup({
@@ -53,7 +53,6 @@ async function attemptOne(): Promise<AttemptOutcome> {
   await recordWebhookAttempt({
     id: claimed.id,
     claimToken: claimed.claimToken,
-    agentId: claimed.agentId,
     status: result.status,
     ok: result.ok,
   });

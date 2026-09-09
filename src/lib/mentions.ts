@@ -30,14 +30,10 @@ export function extractMentions(text: string): string[] {
 }
 
 /**
- * P6.1 — resolve `@name` mentions in fresh content into one `agent.mentioned` derived event per
- * live, non-self, non-hidden recipient. Resolution happens at CREATION TIME: a rename afterward
- * does not retro-apply, and this is a data pre-read (not a refusal-gating one), so it runs before
- * the mutation like the group/membership reads above it in each caller.
- *
- * `source_id` is left as the marker: the store fills it from the id it mints for the primary event,
- * the same way it fills `post.created`'s own `post_id`. One resolver for both actions (codex round
- * 1, F8) — the post and comment paths used to carry near-identical copies.
+ * P6.1 — resolve `@name` mentions into one `agent.mentioned` derived event per live, non-self,
+ * non-hidden recipient. Resolution happens at CREATION TIME (a rename afterward does not
+ * retro-apply), before the mutation. `source_id` is left as the marker; the store fills it from
+ * the id it mints for the primary event.
  */
 export async function resolveMentionRecipients(
   text: string,

@@ -147,13 +147,11 @@ function sixToFourEmbeddedV4(g: number[]): string | null {
   return g[0] === 0x2002 ? embeddedIPv4(g[1], g[2]) : null;
 }
 
-/** ULA fc00::/7, link-local fe80::/10, multicast ff00::/8 — table-driven to keep complexity flat. */
-const V6_NON_PUBLIC_RANGES: ((first: number) => boolean)[] = [
-  (first) => (first & 0xffc0) === 0xfe80,
-  (first) => (first & 0xfe00) === 0xfc00,
-  (first) => (first & 0xff00) === 0xff00,
-];
-
+/**
+ * F5: an ALLOWLIST, not a denylist — only `2000::/3` (global unicast) is dialable. Everything else
+ * (`fec0::/10`, `fe80::/10`, `fc00::/7`, `ff00::/8`, and any other reserved block) is refused by
+ * simply falling outside the one range this returns true for, rather than by naming each one.
+ */
 function isPublicIPv6(addr: string, allowLoopback: boolean): boolean {
   const g = ipv6Groups(addr);
   if (!g) return false;
@@ -164,7 +162,7 @@ function isPublicIPv6(addr: string, allowLoopback: boolean): boolean {
   if (g.every((x) => x === 0)) return false;
   if (isIPv6Loopback(g)) return allowLoopback;
   if (g[0] === 0x2001 && g[1] === 0x0db8) return false; // documentation 2001:db8::/32
-  return !V6_NON_PUBLIC_RANGES.some((matches) => matches(g[0]));
+  return (g[0] & 0xe000) === 0x2000;
 }
 
 function isPublicAddress(addr: string, allowLoopback: boolean): boolean {
@@ -280,7 +278,8 @@ function sendSignedRequest(
   parsed: URL,
   pinnedIp: string,
   body: string,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  totalTimeoutMs: number
 ): Promise<DeliverWakeupResult> {
   const isHttps = parsed.protocol === "https:";
   const requestFn = isHttps ? https.request : http.request;
@@ -312,10 +311,12 @@ function sendSignedRequest(
     req.on("timeout", () => req.destroy(new Error("connect timeout")));
     req.on("error", () => resolve({ ok: false, status: null }));
 
+    // F6: `totalTimeoutMs` is what remains of the 10s deadline AFTER DNS — never a fresh 10s here —
+    // so a slow resolution cannot let the socket phase run past the claim's own 30s lease.
     const totalTimer = setTimeout(() => {
       req.destroy(new Error("total timeout"));
       resolve({ ok: false, status: null });
-    }, TOTAL_TIMEOUT_MS);
+    }, Math.max(totalTimeoutMs, 0));
 
     req.write(body);
     req.end();
@@ -323,10 +324,29 @@ function sendSignedRequest(
 }
 
 /**
+ * Resolves to `null` after `ms` — the race partner that lets a slow DNS lookup lose the deadline.
+ * Returns its timer handle too, so the caller can clear it once the race settles either way — an
+ * uncleared timer otherwise outlives the request and leaks in a test's teardown check.
+ */
+function afterMs<T>(ms: number, value: T): [Promise<T>, NodeJS.Timeout] {
+  let timer!: NodeJS.Timeout;
+  const promise = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(value), ms);
+  });
+  return [promise, timer];
+}
+
+/**
  * Delivers one signed webhook POST. F6: re-validates the URL on EVERY attempt — a stored row
  * predates whatever hygiene ran at registration — and re-resolves fresh (DNS can change between
  * attempts), picking the first validated address. A resolution failure is reported the same as any
  * other total failure (`status: null`), never thrown, so claim→deliver→record needs no second path.
+ *
+ * **The 10s deadline is started BEFORE resolving, not after** — a `Promise.race` against a timer, so
+ * a resolver that answers late is refused before any socket work runs, and the socket then gets only
+ * whatever time remains. A shared 30s claim lease is what this protects: DNS time used to be free,
+ * letting a slow resolution push the whole attempt past the lease and invite a duplicate send from a
+ * reclaiming worker.
  *
  * `lookupAll` is test-only injection (default real DNS) — it is what lets a test pin a NAMED host to
  * a chosen address without mocking `node:dns` globally.
@@ -342,13 +362,21 @@ export async function deliverWakeup(
   } catch {
     return { ok: false, status: null };
   }
-  let addresses: string[];
+  const deadline = Date.now() + TOTAL_TIMEOUT_MS;
+  const dnsPromise = resolvePublicAddresses(parsed.hostname, lookupAll);
+  dnsPromise.catch(() => {}); // observed via the race below; a late rejection must not go unhandled
+  const [timeoutPromise, timer] = afterMs<null>(Math.max(deadline - Date.now(), 0), null);
+  let addresses: string[] | null;
   try {
-    addresses = await resolvePublicAddresses(parsed.hostname, lookupAll);
+    addresses = await Promise.race([dnsPromise, timeoutPromise]);
   } catch {
     return { ok: false, status: null };
+  } finally {
+    clearTimeout(timer);
   }
+  const remaining = deadline - Date.now();
+  if (addresses === null || remaining <= 0) return { ok: false, status: null };
   const body = JSON.stringify(input.payload);
   const headers = buildHeaders(input, body);
-  return sendSignedRequest(parsed, addresses[0], body, headers);
+  return sendSignedRequest(parsed, addresses[0], body, headers, remaining);
 }

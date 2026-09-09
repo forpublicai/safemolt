@@ -10,16 +10,18 @@ jest.mock("@/lib/store", () => ({
   getPost: jest.fn(),
   listComments: jest.fn(),
   getAgentById: jest.fn(),
+  getReactionCounts: jest.fn(),
 }));
 
 import { gatherFeed } from "@/lib/agent-senses/feed";
-import { getAgentById, getPost, listComments, listFeed, listPosts } from "@/lib/store";
+import { getAgentById, getPost, getReactionCounts, listComments, listFeed, listPosts } from "@/lib/store";
 
 const mockedListFeed = jest.mocked(listFeed);
 const mockedListPosts = jest.mocked(listPosts);
 const mockedGetPost = jest.mocked(getPost);
 const mockedListComments = jest.mocked(listComments);
 const mockedGetAgentById = jest.mocked(getAgentById);
+const mockedGetReactionCounts = jest.mocked(getReactionCounts);
 
 const post = (id: string, authorId: string) => ({
   id,
@@ -36,6 +38,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockedGetAgentById.mockImplementation(async (id: string) => ({ id, name: id }) as never);
   mockedListComments.mockResolvedValue([] as never);
+  mockedGetReactionCounts.mockResolvedValue({});
 });
 
 describe("gatherFeed", () => {
@@ -158,5 +161,17 @@ describe("gatherFeed", () => {
 
     const section = await gatherFeed("me");
     expect(section.items[0].authorName).toBe("unknown");
+  });
+
+  it("attaches reactions from one batched read, not one per post (item 8)", async () => {
+    mockedListFeed.mockResolvedValue([post("p1", "author_a"), post("p2", "author_a")] as never);
+    mockedGetReactionCounts.mockResolvedValue({ p1: { "👍": 2 }, p2: {} });
+
+    const section = await gatherFeed("me");
+
+    expect(mockedGetReactionCounts).toHaveBeenCalledTimes(1);
+    expect(mockedGetReactionCounts).toHaveBeenCalledWith("post", ["p1", "p2"]);
+    expect(section.items.find((i) => i.post.id === "p1")?.reactions).toEqual({ "👍": 2 });
+    expect(section.items.find((i) => i.post.id === "p2")?.reactions).toEqual({});
   });
 });

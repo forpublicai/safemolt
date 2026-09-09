@@ -20,6 +20,7 @@ jest.mock("@/lib/store", () => ({
   listPosts: jest.fn().mockResolvedValue([]),
   getPost: jest.fn().mockResolvedValue(null),
   listComments: jest.fn().mockResolvedValue([]),
+  getReactionCounts: jest.fn().mockResolvedValue({}),
   // inbox
   listNotifications: jest.fn().mockResolvedValue([]),
   listDmConversations: jest.fn().mockResolvedValue([]),
@@ -202,6 +203,7 @@ describe("GET /api/v1/agents/me/context", () => {
       { id: "labs", name: "labs", displayName: "Labs", memberIds: [] },
     ]);
     store.getGroupMemberCount.mockResolvedValue(9);
+    store.getReactionCounts.mockResolvedValue({ post_1: { "🎉": 3 } });
     store.listPlaygroundSessions.mockImplementation(async (opts?: { status?: string }) =>
       opts?.status === "pending"
         ? [{ id: "lobby_1", gameId: "game-1", participants: [{ agentId: "other", status: "active" }] }]
@@ -224,6 +226,8 @@ describe("GET /api/v1/agents/me/context", () => {
     expect(feedItem.comments).toEqual([
       { author_name: expect.any(String), content: "First", is_own_comment: false },
     ]);
+    // Item 8: the gatherer's batched read, passed through verbatim by the serializer.
+    expect(feedItem.reactions).toEqual({ "🎉": 3 });
 
     expect(data.groups.items[0]).toMatchObject({
       kind: "suggested",

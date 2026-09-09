@@ -192,7 +192,9 @@ function createWebhookLedgerRowIfNeeded(wakeup: StoredWakeup, resetOnRearm = fal
   if (!eligible) return;
   for (const row of webhookDeliveries.rows.values()) {
     if (row.wakeupId !== wakeup.id) continue;
-    if (resetOnRearm) resetLedgerRow(row);
+    // F3: reset ONLY a terminal ledger of a webhook-PRIMARY wakeup — an internal re-arm of a
+    // `mode='both'` wakeup must never clobber its independent webhook channel, live or terminal.
+    if (resetOnRearm && row.terminalReason !== null && wakeup.delivery === "webhook") resetLedgerRow(row);
     return;
   }
   const nowIso = new Date().toISOString();
@@ -226,12 +228,21 @@ function resetLedgerRow(row: StoredWebhookDelivery): void {
   row.nextAttemptAt = new Date().toISOString();
 }
 
+/** F1: a webhook-primary wakeup with no live registration would have no ledger to ever claim it through. */
+function webhookRegistrationLive(agentId: string): boolean {
+  const registration = agentWebhooks.get(agentId);
+  return registration !== undefined && registration.disabledAt === null;
+}
+
 /** See `db.ts`: a plain insert that never re-arms, deduped by whichever index applies. */
 export async function enqueueWakeup(input: EnqueueWakeupInput): Promise<EnqueueWakeupResult> {
   // Normalized FIRST, so a cyclic payload throws with nothing written — the db store serializes
   // before it sends, so it refuses the same input the same way, dedup or no dedup.
   const payload = normalizePayload(input.payload);
   if (conflictingRow(input.agentId, input.reason, input.eventId)) {
+    return { created: false, wakeup: null };
+  }
+  if (input.delivery === "webhook" && !webhookRegistrationLive(input.agentId)) {
     return { created: false, wakeup: null };
   }
   const row = insertRow(input, payload);
@@ -257,11 +268,18 @@ export async function createOrReArmWakeup(
   const payload = normalizePayload(input.payload);
   const existing = conflictingRow(input.agentId, input.reason, input.eventId);
   if (!existing) {
+    if (input.delivery === "webhook" && !webhookRegistrationLive(input.agentId)) {
+      return { created: false, reArmed: false };
+    }
     const row = insertRow(input, payload);
     createWebhookLedgerRowIfNeeded(row);
     return { created: true, reArmed: false };
   }
   if (!reArmable(existing)) return { created: false, reArmed: false };
+  // F1: re-arming a webhook-primary wakeup takes the same live-registration gate as a fresh insert.
+  if (existing.delivery === "webhook" && !webhookRegistrationLive(existing.agentId)) {
+    return { created: false, reArmed: false };
+  }
   clearClaimAndCompletion(existing);
   createWebhookLedgerRowIfNeeded(existing, true);
   return { created: false, reArmed: true };
@@ -311,11 +329,17 @@ export async function createOrReArmPlaygroundRoundWakeup(
   };
   const existing = conflictingRow(asBase.agentId, asBase.reason, asBase.eventId);
   if (!existing) {
+    if (asBase.delivery === "webhook" && !webhookRegistrationLive(asBase.agentId)) {
+      return { created: false, reArmed: false };
+    }
     const row = insertRow(asBase, payload);
     createWebhookLedgerRowIfNeeded(row);
     return { created: true, reArmed: false };
   }
   if (!reArmable(existing)) return { created: false, reArmed: false };
+  if (existing.delivery === "webhook" && !webhookRegistrationLive(existing.agentId)) {
+    return { created: false, reArmed: false };
+  }
   clearClaimAndCompletion(existing);
   createWebhookLedgerRowIfNeeded(existing, true);
   return { created: false, reArmed: true };

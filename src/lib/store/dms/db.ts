@@ -4,6 +4,16 @@ import { toIsoOrEmpty, toIsoOrNull } from "@/lib/iso-date";
 import type { PreparedEvent } from "@/lib/events/kinds";
 import { emitEventCtes, sqlColumn, sqlParam, sqlPayloadObject } from "../events/statement";
 import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY } from "../rate-limit-windows";
+import { buildExecutionGuardCte, type ExecutionGuard } from "../execution-guard";
+
+/** The sender-side FK `agent_rate_limits.agent_id` — a withdrawn sender trips this, not a 500. */
+const SENDER_RATE_LIMIT_FK = "agent_rate_limits_agent_id_fkey";
+
+function isSenderForeignKeyViolation(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const failure = error as { code?: unknown; constraint?: unknown };
+  return failure.code === "23503" && failure.constraint === SENDER_RATE_LIMIT_FK;
+}
 
 /**
  * The canonicalized pair `(agent_low, agent_high)` — DMs share one row per pair regardless of who
@@ -64,42 +74,20 @@ function rowToDmConversation(row: Record<string, unknown>): StoredDmConversation
 }
 
 export interface SendDmResult {
-  outcome: "blocked" | "rate_limited" | "inserted";
+  outcome: "blocked" | "rate_limited" | "inserted" | "execution_guard_failed" | "sender_gone";
   message: StoredDmMessage | null;
 }
 
 /**
- * Send a DM. **Two statements in one transaction (not one), because Postgres never lets sibling
- * CTEs in a single statement see each other's writes to the SAME table** — a one-statement
- * "ensure the pair row exists, then separately bump its seq" shape silently no-opped the bump for
- * every FRESH pair (the bump's own snapshot predates the ensure-insert). Statement 1 just ensures
- * the row exists; statement 2 — a LATER statement in the same transaction, which DOES see
- * statement 1's write — locks it (the block re-check: READ COMMITTED re-evaluates
- * `NOT low_blocked_high AND NOT high_blocked_low` against the post-lock-wait row version, so a
- * block that commits first is always observed), claims the COMMENT cooldown + daily pool against
- * the sender (DMs share that quota, not a separate one), bumps the seq ONLY when the claim also
- * succeeds (a rate-limited attempt must burn no seq number — see below), inserts the message with
- * that seq, and emits `dm.sent` gated on the insert.
- *
- * **The seq bump is gated on the claim, and that is the whole reason for the two-CTE split inside
- * statement 2** (`not_blocked` then `bumped`, rather than folding the bump into `target`'s own
- * `ON CONFLICT DO UPDATE`): the earlier one-step shape incremented `last_message_seq` whenever the
- * pair wasn't blocked, REGARDLESS of the rate claim — a rate-limited attempt still burned a seq
- * number and moved `last_message_at`, inflating `unread_count` (`last_message_seq - last_read_seq`)
- * with seq numbers no message ever occupies.
- *
- * **Deadlock analysis: no special lock mode or ordering was needed.** Two opposite-direction sends
- * between the same pair (A→B and B→A) both target the SAME conversation row (canonicalization is
- * symmetric), so that row's lock is a single shared resource — one resource cannot deadlock with
- * itself, only serialize. The only other row touched is `agent_rate_limits`, keyed on the SENDER
- * alone (asymmetric between the two directions: A's row vs. B's row), so neither transaction ever
- * holds what the other is waiting for. Unlike `upvoteComment` (both sides' agent rows are locked,
- * symmetrically, by two possible voters), nothing here locks both participants' rows in a way that
- * could cross.
+ * Send a DM. Statement 1 ensures the pair row exists (a fresh pair's bump would otherwise no-op,
+ * since sibling CTEs never see each other's writes to the same table). Statement 2 locks that row,
+ * re-checks the block flags, claims the shared comment cooldown, and bumps the seq only when the
+ * claim also succeeds, so a refused attempt burns no seq number.
  */
 export async function sendDm(
   input: { senderId: string; recipientId: string; content: string },
-  events?: readonly PreparedEvent[]
+  events?: readonly PreparedEvent[],
+  executionGuard?: ExecutionGuard
 ): Promise<SendDmResult> {
   const { senderId, recipientId, content } = input;
   const { agentLow, agentHigh } = canonicalizePair(senderId, recipientId);
@@ -145,26 +133,32 @@ export async function sendDm(
       : [],
   });
 
-  const allParams = [...params, ...emitted.params];
-  const results = await sql!.transaction((txn) => [
-    txn`
+  // M11-2 P3.3: rendered LAST, after every event param, so its own placeholder numbering never
+  // moves when `emitted.params` grows or shrinks (mirrors `createComment`).
+  const guard = buildExecutionGuardCte(executionGuard, params.length + 1 + emitted.params.length);
+  const allParams = [...params, ...emitted.params, ...guard.params];
+  let results: unknown[];
+  try {
+    results = await sql!.transaction((txn) => [
+      txn`
       INSERT INTO dm_conversations (id, agent_low, agent_high, created_at, last_message_seq)
       VALUES (${conversationId}::text, ${agentLow}::text, ${agentHigh}::text, ${createdAt}::timestamptz, 0)
       ON CONFLICT (agent_low, agent_high) DO NOTHING
     `,
-    txn(
-      `
+      txn(
+        `
     WITH target AS (
-      SELECT id, low_blocked_high, high_blocked_low FROM dm_conversations
+      SELECT id, low_blocked_high, high_blocked_low FROM dm_conversations /* race:dm-send-pair-lock */
       WHERE agent_low = $1::text AND agent_high = $2::text
       FOR NO KEY UPDATE
-    ),
+    )${guard.cte ? `,\n    ${guard.cte}` : ""},
     not_blocked AS (
       SELECT id FROM target WHERE NOT low_blocked_high AND NOT high_blocked_low
     ),
     claim AS (
       INSERT INTO agent_rate_limits (agent_id, last_comment_at, comment_count_date, comment_count)
       SELECT $5::text, $7::bigint, $8::date, 1 FROM not_blocked
+      ${guard.cte ? "WHERE EXISTS (SELECT 1 FROM guard)" : ""}
       ON CONFLICT (agent_id) DO UPDATE
       SET last_comment_at = $7::bigint,
           comment_count_date = $8::date,
@@ -198,11 +192,19 @@ export async function sendDm(
            (SELECT seq FROM inserted) AS seq,
            (SELECT sender_agent_id FROM inserted) AS sender_agent_id,
            (SELECT content FROM inserted) AS content,
-           (SELECT created_at FROM inserted) AS created_at
+           (SELECT created_at FROM inserted) AS created_at${
+             guard.cte ? `,\n           (SELECT count(*) FROM guard)::int AS guard_passed` : ""
+           }
     `,
-      allParams
-    ),
-  ]);
+        allParams
+      ),
+    ]);
+  } catch (error) {
+    // The sender can withdraw between the action's lookup and this statement; the same refusal in
+    // both stores, not a 500 (codex round 2, F4).
+    if (isSenderForeignKeyViolation(error)) return { outcome: "sender_gone", message: null };
+    throw error;
+  }
 
   const rows = results[1] as Array<{
     pair_ok: number;
@@ -213,11 +215,17 @@ export async function sendDm(
     sender_agent_id: string | null;
     content: string | null;
     created_at: string | Date | null;
+    guard_passed?: number;
   }>;
 
   // A scalar SELECT with no FROM always returns exactly one row — classify from it, never from a
   // later read (CLAUDE.md: "a refusal decided by a pre-read is a refusal decided from stale data").
+  // The guard is checked FIRST, matching `createComment`'s precedence — it precedes every other
+  // refusal causally, since it is what a runner-driven caller needs distinguished.
   const row = rows[0];
+  if (executionGuard && Number(row.guard_passed ?? 0) === 0) {
+    return { outcome: "execution_guard_failed", message: null };
+  }
   if (Number(row.pair_ok) === 0) return { outcome: "blocked", message: null };
   if (Number(row.rate_ok) === 0) return { outcome: "rate_limited", message: null };
   return {
@@ -237,14 +245,19 @@ export async function sendDm(
  * Advance the reader's cursor to the current head. Tier B: no event. The plain `UPDATE` naturally
  * serializes behind any in-flight `sendDm` for the same pair, since both touch the one row.
  */
-export async function markDmRead(readerId: string, otherId: string): Promise<boolean> {
+export async function markDmRead(
+  readerId: string,
+  otherId: string,
+  executionGuard?: ExecutionGuard
+): Promise<boolean> {
   const { agentLow, agentHigh, aIsLow } = canonicalizePair(readerId, otherId);
   const column = readCursorColumn(aIsLow);
+  const guard = buildExecutionGuardCte(executionGuard, 3);
   const rows = await sql!(
-    `UPDATE dm_conversations SET ${column} = last_message_seq
-     WHERE agent_low = $1::text AND agent_high = $2::text
+    `${guard.cte ? `WITH ${guard.cte} ` : ""}UPDATE dm_conversations /* race:dm-send-pair-lock */ SET ${column} = last_message_seq
+     WHERE agent_low = $1::text AND agent_high = $2::text${guard.cte ? " AND EXISTS (SELECT 1 FROM guard)" : ""}
      RETURNING id`,
-    [agentLow, agentHigh]
+    [agentLow, agentHigh, ...guard.params]
   );
   return rows.length > 0;
 }
@@ -258,7 +271,8 @@ export async function setDmBlock(
   blockerId: string,
   otherId: string,
   blocked: boolean,
-  events?: readonly PreparedEvent[]
+  events?: readonly PreparedEvent[],
+  executionGuard?: ExecutionGuard
 ): Promise<boolean> {
   const { agentLow, agentHigh, aIsLow } = canonicalizePair(blockerId, otherId);
   const flagColumn = blockFlagColumn(aIsLow);
@@ -266,21 +280,6 @@ export async function setDmBlock(
   const createdAt = new Date().toISOString();
 
   const params: unknown[] = blocked ? [conversationId, agentLow, agentHigh, createdAt] : [agentLow, agentHigh];
-  const changedSql = blocked
-    ? `
-      INSERT INTO dm_conversations (id, agent_low, agent_high, created_at, ${flagColumn})
-      VALUES ($1::text, $2::text, $3::text, $4::timestamptz, true)
-      ON CONFLICT (agent_low, agent_high) DO UPDATE SET ${flagColumn} = true
-      WHERE NOT dm_conversations.${flagColumn}
-      RETURNING id`
-    : `
-      UPDATE dm_conversations SET ${flagColumn} = false
-      WHERE agent_low = $1::text AND agent_high = $2::text AND ${flagColumn}
-      RETURNING id`;
-
-  // `subject_id` and `payload.conversation_id` both name the row this statement just wrote —
-  // `changed.id` is the only place either is known (conversationId above is a placeholder unless
-  // this call is the one that inserts the row).
   const emitted = emitEventCtes(events, "changed", {
     firstParamIndex: params.length + 1,
     overrides: events?.length
@@ -293,36 +292,63 @@ export async function setDmBlock(
         ]
       : [],
   });
+  const guard = buildExecutionGuardCte(executionGuard, params.length + 1 + emitted.params.length);
+  // Blocked=true must gate the INSERT branch too, not only the ON CONFLICT branch — `SELECT ...
+  // FROM guard` makes the whole INSERT source zero rows when the guard fails, instead of a WHERE
+  // clause that only reaches the conflict path.
+  const changedSql = blocked
+    ? `
+      INSERT INTO dm_conversations /* race:dm-send-pair-lock */ (id, agent_low, agent_high, created_at, ${flagColumn})
+      SELECT $1::text, $2::text, $3::text, $4::timestamptz, true${guard.cte ? " FROM guard" : ""}
+      ON CONFLICT (agent_low, agent_high) DO UPDATE SET ${flagColumn} = true
+      WHERE NOT dm_conversations.${flagColumn}${guard.cte ? " AND EXISTS (SELECT 1 FROM guard)" : ""}
+      RETURNING id`
+    : `
+      UPDATE dm_conversations /* race:dm-send-pair-lock */ SET ${flagColumn} = false
+      WHERE agent_low = $1::text AND agent_high = $2::text AND ${flagColumn}${guard.cte ? " AND EXISTS (SELECT 1 FROM guard)" : ""}
+      RETURNING id`;
+
   const rows = await sql!(
-    `WITH changed AS (${changedSql})${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+    `WITH ${guard.cte ? `${guard.cte},\n     ` : ""}changed AS (${changedSql})${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
      SELECT (SELECT count(*) FROM changed)::int AS changed_count`,
-    [...params, ...emitted.params]
+    [...params, ...emitted.params, ...guard.params]
   );
   return Number((rows[0] as { changed_count?: number } | undefined)?.changed_count ?? 0) > 0;
 }
 
-/** The caller's own conversations, newest activity first. Unread counts computed in SQL. */
+/**
+ * The caller's own conversations, newest activity first. Unread counts computed in SQL.
+ *
+ * `unreadFirst` (codex round 2, F3) selects unread threads BEFORE the limit, rather than after —
+ * a caller that filters post-limit can have an older unread thread pushed out entirely by newer
+ * read ones. Off by default: `/api/v1/dm`'s plain recency ordering is unaffected.
+ */
 export async function listDmConversations(
   agentId: string,
-  options: { limit?: number; offset?: number } = {}
+  options: { limit?: number; offset?: number; unreadFirst?: boolean } = {}
 ): Promise<StoredDmConversation[]> {
   const limit = options.limit ?? 20;
   const offset = options.offset ?? 0;
-  const rows = await sql!`
-    SELECT c.id,
-           CASE WHEN c.agent_low = ${agentId} THEN c.agent_high ELSE c.agent_low END AS other_id,
-           a.name AS other_name,
-           c.last_message_at,
-           CASE WHEN c.agent_low = ${agentId}
+  const unreadTerm = `CASE WHEN c.agent_low = $1::text
                 THEN c.last_message_seq - c.low_last_read_seq
                 ELSE c.last_message_seq - c.high_last_read_seq
-           END AS unread_count
+           END`;
+  const rows = await sql!(
+    `
+    SELECT c.id,
+           CASE WHEN c.agent_low = $1::text THEN c.agent_high ELSE c.agent_low END AS other_id,
+           a.name AS other_name,
+           c.last_message_at,
+           ${unreadTerm} AS unread_count
     FROM dm_conversations c
-    LEFT JOIN agents a ON a.id = CASE WHEN c.agent_low = ${agentId} THEN c.agent_high ELSE c.agent_low END
-    WHERE c.agent_low = ${agentId} OR c.agent_high = ${agentId}
-    ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC
-    LIMIT ${limit} OFFSET ${offset}
-  `;
+    LEFT JOIN agents a ON a.id = CASE WHEN c.agent_low = $1::text THEN c.agent_high ELSE c.agent_low END
+    WHERE c.agent_low = $1::text OR c.agent_high = $1::text
+    ORDER BY ${options.unreadFirst ? `(${unreadTerm}) > 0 DESC,` : ""}
+             c.last_message_at DESC NULLS LAST, c.created_at DESC
+    LIMIT $2::int OFFSET $3::int
+    `,
+    [agentId, limit, offset]
+  );
   return (rows as Record<string, unknown>[]).map(rowToDmConversation);
 }
 

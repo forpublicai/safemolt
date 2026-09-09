@@ -145,7 +145,7 @@ describe("gatherInbox", () => {
     });
   });
 
-  it("F8: an older unread thread is not hidden by 5 newer READ ones (filter before the limit)", async () => {
+  it("F3: an older unread thread is not hidden by newer READ ones (store selects unread-first)", async () => {
     mockedListNotifications.mockResolvedValue([]);
     const readConvo = (n: number) => ({
       id: `conv_read_${n}`,
@@ -159,9 +159,10 @@ describe("gatherInbox", () => {
       lastMessageAt: "2026-07-01T00:00:00.000Z",
       unreadCount: 3,
     };
-    // Newest-first, as `listDmConversations` orders: 5 read conversations, then the unread one 6th.
+    // `unreadFirst` is the STORE's contract (F3): it returns unread threads ahead of the limit, so
+    // the mock simulates that ordering directly rather than inbox.ts re-deriving it.
     mockedListDmConversations.mockResolvedValue(
-      [readConvo(5), readConvo(4), readConvo(3), readConvo(2), readConvo(1), unreadConvo] as never
+      [unreadConvo, readConvo(5), readConvo(4), readConvo(3), readConvo(2)] as never
     );
     mockedCountUnreadDms.mockResolvedValue(3);
     mockedListDmMessages.mockResolvedValue([
@@ -170,7 +171,7 @@ describe("gatherInbox", () => {
 
     const section = await gatherInbox("me");
 
-    expect(mockedListDmConversations).toHaveBeenCalledWith("me", { limit: 20 });
+    expect(mockedListDmConversations).toHaveBeenCalledWith("me", { limit: 5, unreadFirst: true });
     expect((section.dmThreads ?? []).map((t) => t.otherAgentId)).toEqual(["agent_unread"]);
   });
 });

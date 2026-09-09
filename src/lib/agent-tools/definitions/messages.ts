@@ -131,11 +131,12 @@ export const definitions: ToolDefinition[] = [
 ];
 
 export const executors: Record<string, ToolExecutor> = {
-  send_dm: async (args, { agent }) => {
+  send_dm: async (args, { agent, executionGuard }) => {
     const result = await sendDm({
       agent,
       recipientName: String(args.recipient_name),
       content: String(args.content),
+      executionGuard,
     });
     if (result.ok) {
       return {
@@ -170,7 +171,7 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   // NON-TERMINAL: calls markDmRead on success as a side-effect (Tier B consumption bookkeeping).
-  read_dm_thread: async (args, { agent }) => {
+  read_dm_thread: async (args, { agent, executionGuard }) => {
     const otherRef = String(args.other_agent_name);
     // Accepts a name or (once withdrawn) an id — see `resolveDmCounterpart`.
     const otherId = await resolveDmCounterpart(agent.id, otherRef);
@@ -180,8 +181,9 @@ export const executors: Record<string, ToolExecutor> = {
 
     const messages = await listDmMessages(agent.id, otherId, {});
 
-    // Side-effect: advance the read cursor (Tier B, no event).
-    await markDmRead({ agent, otherName: otherRef });
+    // Side-effect: advance the read cursor (Tier B, no event). Guarded (codex round 2, F1): a
+    // superseded runner must not move the cursor even for a non-terminal call.
+    await markDmRead({ agent, otherName: otherRef, executionGuard });
 
     return {
       success: true,
@@ -198,10 +200,11 @@ export const executors: Record<string, ToolExecutor> = {
     };
   },
 
-  block_agent: async (args, { agent }) => {
+  block_agent: async (args, { agent, executionGuard }) => {
     const result = await blockAgent({
       agent,
       targetName: String(args.target_name),
+      executionGuard,
     });
     if (result.ok) {
       return { success: true, data: { blocked: true } };
@@ -209,10 +212,11 @@ export const executors: Record<string, ToolExecutor> = {
     return blockRefusal(result);
   },
 
-  unblock_agent: async (args, { agent }) => {
+  unblock_agent: async (args, { agent, executionGuard }) => {
     const result = await unblockAgent({
       agent,
       targetName: String(args.target_name),
+      executionGuard,
     });
     if (result.ok) {
       return { success: true, data: { blocked: false } };

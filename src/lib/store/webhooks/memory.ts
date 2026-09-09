@@ -1,5 +1,5 @@
 import type { PreparedEvent } from "@/lib/events/kinds";
-import { agentWebhooks, wakeupQueue, webhookDeliveries } from "../_memory-state";
+import { agents, agentWebhooks, wakeupQueue, webhookDeliveries } from "../_memory-state";
 import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents } from "../events/memory";
 import type {
   ClaimedWebhookDelivery,
@@ -22,7 +22,19 @@ function cloneWebhook(row: StoredAgentWebhook): StoredAgentWebhook {
   return { ...row };
 }
 
+/**
+ * F7: re-checks the agent right here, immediately before the write — matching
+ * `agent_webhooks.agent_id REFERENCES agents(id)`, which the db driver enforces on every insert.
+ * The action's own re-check closes the ordinary race; this is the store's own defense so an
+ * orphan registration can never be written even if a future caller skips that re-check.
+ */
 export async function upsertAgentWebhook(input: UpsertAgentWebhookInput): Promise<StoredAgentWebhook> {
+  if (!agents.has(input.agentId)) {
+    const error = new Error(`agent ${input.agentId} does not exist`) as Error & { code: string; constraint: string };
+    error.code = "23503";
+    error.constraint = "agent_webhooks_agent_id_fkey";
+    throw error;
+  }
   const existing = agentWebhooks.get(input.agentId);
   const row: StoredAgentWebhook = {
     agentId: input.agentId,

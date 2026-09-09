@@ -19,12 +19,17 @@ import {
   recordWebhookAttempt,
   upsertAgentWebhook,
 } from "@/lib/store/webhooks/db";
-import { createOrReArmWakeup, enqueueWakeup, getWakeupByAgentReasonEvent } from "@/lib/store/wakeups/db";
+import {
+  createOrReArmWakeup,
+  enqueueWakeup,
+  getWakeupByAgentReasonEvent,
+  resolveWakeupDelivery,
+} from "@/lib/store/wakeups/db";
 import { deleteAgent } from "@/lib/store/agents/db";
 import { registerWebhook } from "@/lib/actions/webhooks";
 import type { StoredAgent } from "@/lib/store-types";
-import { closeIntegrationConnections, pgPool } from "./helpers/db";
-import { rejections, runConcurrently } from "./helpers/concurrency";
+import { closeIntegrationConnections, pgClient, pgPool } from "./helpers/db";
+import { pidOf, rejections, runConcurrently, waitForWaiter } from "./helpers/concurrency";
 
 const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
 let seq = 0;
@@ -179,7 +184,6 @@ describe("recordWebhookAttempt — the token fence", () => {
     const staleOutcome = await recordWebhookAttempt({
       id: first!.id,
       claimToken: first!.claimToken,
-      agentId: agent,
       status: 500,
       ok: false,
     });
@@ -203,7 +207,6 @@ describe("terminal-ledger / webhook-primary-wakeup coupling", () => {
     const outcome = await recordWebhookAttempt({
       id: claimed!.id,
       claimToken: claimed!.claimToken,
-      agentId: agent,
       status: 200,
       ok: true,
     });
@@ -225,7 +228,6 @@ describe("terminal-ledger / webhook-primary-wakeup coupling", () => {
       outcome = await recordWebhookAttempt({
         id: claimed!.id,
         claimToken: claimed!.claimToken,
-        agentId: agent,
         status: 500,
         ok: false,
       });
@@ -271,7 +273,6 @@ describe("terminal-ledger / webhook-primary-wakeup coupling", () => {
     const outcome = await recordWebhookAttempt({
       id: claimed!.id,
       claimToken: claimed!.claimToken,
-      agentId: agent,
       status: 200,
       ok: true,
     });
@@ -307,7 +308,6 @@ describe("agent withdrawal cascades", () => {
       await recordWebhookAttempt({
         id: second!.id,
         claimToken: second!.claimToken,
-        agentId: agent,
         status: 200,
         ok: true,
       });
@@ -318,7 +318,6 @@ describe("agent withdrawal cascades", () => {
       await recordWebhookAttempt({
         id: term!.id,
         claimToken: term!.claimToken,
-        agentId: agent,
         status: 200,
         ok: true,
       });
@@ -406,7 +405,6 @@ describe("F1: auto-disable disposition sweep", () => {
     const outcome = await recordWebhookAttempt({
       id: claimed!.id,
       claimToken: claimed!.claimToken,
-      agentId: agent,
       status: 500,
       ok: false,
     });
@@ -470,7 +468,6 @@ describe("F2: re-arm resets a stale terminal ledger row", () => {
     const outcome = await recordWebhookAttempt({
       id: claimed!.id,
       claimToken: claimed!.claimToken,
-      agentId: agent,
       status: 500,
       ok: false,
     });
@@ -494,5 +491,120 @@ describe("F2: re-arm resets a stale terminal ledger row", () => {
 
     const reclaim = await claimNextWebhookDelivery({ claimToken: `b1w_rearm_re_${RUN}`, leaseMs: 30_000 });
     expect(reclaim?.wakeupId).toBe(wakeup!.id);
+  });
+});
+
+describe("F1: no ledger-less webhook-primary wakeup", () => {
+  it("refuses the enqueue when the registration vanishes between resolveWakeupDelivery and enqueueWakeup", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+
+    const delivery = await resolveWakeupDelivery(agent);
+    expect(delivery).toBe("webhook");
+    await deleteAgentWebhook(agent); // the race window: gone before the enqueue below runs
+
+    const result = await enqueueWakeup({
+      agentId: agent,
+      reason: "b1w_f1_gone",
+      eventId: nextEventId(),
+      payload: { run: RUN },
+      delivery: delivery!,
+    });
+
+    expect(result).toEqual({ created: false, wakeup: null });
+    const { rows } = await pgPool().query(`SELECT id FROM agent_wakeups WHERE agent_id = $1 AND reason = $2`, [
+      agent,
+      "b1w_f1_gone",
+    ]);
+    expect(rows).toHaveLength(0);
+  });
+});
+
+describe("F3: an internal re-arm never resets an active mode='both' ledger", () => {
+  it("leaves a live-claimed both ledger untouched across an internal re-arm", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "both" });
+    const eventId = nextEventId();
+
+    const first = await createOrReArmWakeup({
+      agentId: agent,
+      reason: "b1w_f3_both",
+      eventId,
+      payload: { run: RUN },
+      delivery: "internal",
+    });
+    expect(first).toEqual({ created: true, reArmed: false });
+    const wakeup = await getWakeupByAgentReasonEvent(agent, "b1w_f3_both", eventId);
+    const ledger = await ledgerRowForWakeup(wakeup!.id);
+    await pgPool().query(
+      `UPDATE webhook_deliveries SET claimed_at = NOW(), claim_token = 'b1w_f3_live', lease_expires_at = NOW() + INTERVAL '1 hour' WHERE id = $1`,
+      [ledger.id]
+    );
+
+    // The internal tick completes and re-arms while the webhook side is still live-claimed.
+    await pgPool().query(`UPDATE agent_wakeups SET completed_at = NOW(), result = NULL WHERE id = $1`, [wakeup!.id]);
+
+    const rearmed = await createOrReArmWakeup({
+      agentId: agent,
+      reason: "b1w_f3_both",
+      eventId,
+      payload: { run: RUN },
+      delivery: "internal",
+    });
+    expect(rearmed).toEqual({ created: false, reArmed: true });
+
+    const ledgerAfter = await ledgerRowForWakeup(wakeup!.id);
+    expect(ledgerAfter.claim_token).toBe("b1w_f3_live");
+    expect(ledgerAfter.claimed_at).not.toBeNull();
+  });
+});
+
+describe("F2/F8(b): the disposition sweep sees a ledger committed during its own lock wait", () => {
+  it("terminalizes a delivery that committed WHILE deleteAgentWebhook was waiting on the registration lock", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+
+    const holder = await pgClient();
+    await holder.query("BEGIN");
+    const holderPid = await pidOf(holder);
+    // Stands in for a concurrent enqueue's own `reg` lock — same row, same mode.
+    await holder.query(`SELECT mode FROM agent_webhooks WHERE agent_id = $1 AND disabled_at IS NULL FOR SHARE`, [
+      agent,
+    ]);
+
+    const deletePromise = deleteAgentWebhook(agent);
+    const waited = await waitForWaiter(holderPid, "", 5000);
+    expect(waited).toBe(true); // deleteAgentWebhook is genuinely blocked on the held registration lock
+
+    // Committed on the SAME connection that holds the lock, mimicking a concurrent enqueue whose
+    // wakeup+ledger land WHILE the delete is still waiting — the exact window round 2 finding 2 names.
+    const interruptedWakeupId = nextEventId();
+    const wakeupInsert = await holder.query(
+      `INSERT INTO agent_wakeups (agent_id, reason, event_id, payload, delivery, due_at)
+       VALUES ($1, 'b1w_f2_interrupt', $2, '{}'::jsonb, 'webhook', NOW())
+       RETURNING id`,
+      [agent, interruptedWakeupId]
+    );
+    const newWakeupId = Number(wakeupInsert.rows[0].id);
+    await holder.query(
+      `INSERT INTO webhook_deliveries (wakeup_id, agent_id, next_attempt_at) VALUES ($1, $2, NOW())`,
+      [newWakeupId, agent]
+    );
+    await holder.query("COMMIT");
+    await holder.end();
+
+    const result = await deletePromise;
+    expect(result.deleted).toBe(true);
+
+    const { rows: nonterminal } = await pgPool().query(
+      `SELECT count(*)::int AS n FROM webhook_deliveries WHERE agent_id = $1 AND terminal_reason IS NULL`,
+      [agent]
+    );
+    expect(nonterminal[0].n).toBe(0);
+    const { rows: incomplete } = await pgPool().query(
+      `SELECT count(*)::int AS n FROM agent_wakeups WHERE agent_id = $1 AND delivery = 'webhook' AND completed_at IS NULL`,
+      [agent]
+    );
+    expect(incomplete[0].n).toBe(0);
   });
 });

@@ -98,7 +98,6 @@ describe("register / rotate / delete", () => {
       mode: "primary",
     });
     expect(created).toMatchObject({
-      agentId: agent.id,
       url: "https://a.example/hook",
       secret: "s1",
       mode: "primary",
@@ -106,6 +105,12 @@ describe("register / rotate / delete", () => {
       failureCount: 0,
     });
     expect(await getAgentWebhook(agent.id)).toMatchObject({ url: "https://a.example/hook", secret: "s1" });
+  });
+
+  it("F7: refuses (23503-shaped) a registration for an agent the shared map no longer has", async () => {
+    await expect(
+      upsertAgentWebhook({ agentId: "no-such-agent", url: "https://a.example/hook", secret: "s1", mode: "primary" })
+    ).rejects.toMatchObject({ code: "23503", constraint: "agent_webhooks_agent_id_fkey" });
   });
 
   it("a re-POST rotates url/secret/mode and clears a prior disable", async () => {
@@ -160,6 +165,93 @@ describe("enqueue creates a webhook delivery ledger", () => {
     expect(wakeup.delivery).toBe("internal");
     expect(ledgerFor(wakeup.id)).toMatchObject({ agentId: agent.id, terminalReason: null });
   });
+
+  it("F1: refuses a webhook-primary enqueue once the registration is gone (no ledger-less wakeup)", async () => {
+    const agent = await seedAgent("wgone");
+    await upsertAgentWebhook({ agentId: agent.id, url: "https://a.example/hook", secret: "s", mode: "primary" });
+    const delivery = await resolvedDelivery(agent.id); // 'webhook', as `resolveWakeupDelivery` saw it
+    await deleteAgentWebhook(agent.id); // the registration vanishes BETWEEN that read and the enqueue
+
+    const result = await enqueueWakeup({
+      agentId: agent.id,
+      reason: "f1-gone",
+      eventId: null,
+      payload: {},
+      delivery,
+    });
+
+    expect(result).toEqual({ created: false, wakeup: null });
+  });
+
+  it("F1: refuses a webhook-primary re-arm once the registration is gone", async () => {
+    const agent = await seedAgent("wgone-rearm");
+    await upsertAgentWebhook({ agentId: agent.id, url: "https://a.example/hook", secret: "s", mode: "primary" });
+    const eventId = 700001;
+    const first = await createOrReArmWakeup({
+      agentId: agent.id,
+      reason: "f1-rearm",
+      eventId,
+      payload: {},
+      delivery: "webhook",
+    });
+    expect(first).toEqual({ created: true, reArmed: false });
+    const wakeup = await getWakeupByAgentReasonEvent(agent.id, "f1-rearm", eventId);
+    wakeup!.completedAt = new Date().toISOString(); // make it re-armable without a real attempt
+    wakeupQueue.rows.get(wakeup!.id)!.completedAt = wakeup!.completedAt;
+
+    await deleteAgentWebhook(agent.id);
+
+    const rearmed = await createOrReArmWakeup({
+      agentId: agent.id,
+      reason: "f1-rearm",
+      eventId,
+      payload: {},
+      delivery: "webhook",
+    });
+    expect(rearmed).toEqual({ created: false, reArmed: false });
+  });
+});
+
+describe("F3: an internal re-arm never resets an active `mode='both'` ledger", () => {
+  it("leaves a live-claimed `both` ledger untouched across an internal re-arm", async () => {
+    const agent = await seedAgent("f3-both");
+    enableLoop(agent.id);
+    await upsertAgentWebhook({ agentId: agent.id, url: "https://a.example/hook", secret: "s", mode: "both" });
+    const eventId = 700002;
+
+    const first = await createOrReArmWakeup({
+      agentId: agent.id,
+      reason: "f3-both-reason",
+      eventId,
+      payload: {},
+      delivery: "internal",
+    });
+    expect(first).toEqual({ created: true, reArmed: false });
+    const wakeup = await getWakeupByAgentReasonEvent(agent.id, "f3-both-reason", eventId);
+    const ledger = ledgerFor(wakeup!.id)!;
+    ledger.claimedAt = new Date().toISOString();
+    ledger.claimToken = "f3-live-claim";
+    ledger.leaseExpiresAt = new Date(Date.now() + 60_000).toISOString();
+
+    // The INTERNAL tick completes and re-arms while the webhook side is still live-claimed —
+    // exactly the race F3 closes.
+    const storedWakeup = wakeupQueue.rows.get(wakeup!.id)!;
+    storedWakeup.completedAt = new Date().toISOString();
+    storedWakeup.result = null;
+
+    const rearmed = await createOrReArmWakeup({
+      agentId: agent.id,
+      reason: "f3-both-reason",
+      eventId,
+      payload: {},
+      delivery: "internal",
+    });
+    expect(rearmed).toEqual({ created: false, reArmed: true });
+
+    const ledgerAfter = ledgerFor(wakeup!.id)!;
+    expect(ledgerAfter.claimToken).toBe("f3-live-claim");
+    expect(ledgerAfter.claimedAt).not.toBeNull();
+  });
 });
 
 describe("attempt bookkeeping — backoff then exhaustion", () => {
@@ -177,7 +269,7 @@ describe("attempt bookkeeping — backoff then exhaustion", () => {
     let claim = await claimNextWebhookDelivery({ claimToken: "t1", leaseMs: 60_000 });
     expect(claim?.wakeupId).toBe(wakeup.id);
     let before = Date.now();
-    let outcome = await recordWebhookAttempt({ id: claim!.id, claimToken: "t1", agentId: agent.id, status: 500, ok: false });
+    let outcome = await recordWebhookAttempt({ id: claim!.id, claimToken: "t1", status: 500, ok: false });
     expect(outcome).toBe("retry");
     let ledger = ledgerFor(wakeup.id)!;
     expect(Date.parse(ledger.nextAttemptAt)).toBe(before + 60_000);
@@ -187,14 +279,14 @@ describe("attempt bookkeeping — backoff then exhaustion", () => {
     claim = await claimNextWebhookDelivery({ claimToken: "t2", leaseMs: 60_000 });
     expect(claim?.id).toBe(ledger.id);
     before = Date.now();
-    outcome = await recordWebhookAttempt({ id: claim!.id, claimToken: "t2", agentId: agent.id, status: 500, ok: false });
+    outcome = await recordWebhookAttempt({ id: claim!.id, claimToken: "t2", status: 500, ok: false });
     expect(outcome).toBe("retry");
     ledger = ledgerFor(wakeup.id)!;
     expect(Date.parse(ledger.nextAttemptAt)).toBe(before + 600_000);
 
     jest.advanceTimersByTime(600_001);
     claim = await claimNextWebhookDelivery({ claimToken: "t3", leaseMs: 60_000 });
-    outcome = await recordWebhookAttempt({ id: claim!.id, claimToken: "t3", agentId: agent.id, status: 500, ok: false });
+    outcome = await recordWebhookAttempt({ id: claim!.id, claimToken: "t3", status: 500, ok: false });
     expect(outcome).toBe("exhausted");
     ledger = ledgerFor(wakeup.id)!;
     expect(ledger.terminalReason).toBe("exhausted");
@@ -215,9 +307,7 @@ describe("disable at 10 failures emits webhook.disabled -> webhook_disabled noti
     const claim = await claimNextWebhookDelivery({ claimToken: "t1", leaseMs: 60_000 });
     const outcome = await recordWebhookAttempt({
       id: claim!.id,
-      claimToken: "t1",
-      agentId: agent.id,
-      status: 500,
+      claimToken: "t1", status: 500,
       ok: false,
     });
     // F1: crossing the threshold reclassifies THIS attempt's own outcome as `disabled` — the
@@ -259,9 +349,7 @@ describe("disable at 10 failures emits webhook.disabled -> webhook_disabled noti
     expect(triggerClaim?.wakeupId).toBe(triggering.id);
     const outcome = await recordWebhookAttempt({
       id: triggerClaim!.id,
-      claimToken: "trig",
-      agentId: agent.id,
-      status: 500,
+      claimToken: "trig", status: 500,
       ok: false,
     });
     expect(outcome).toBe("disabled");
@@ -308,9 +396,7 @@ describe("delete/disable disposition of ledger rows", () => {
     // The in-flight attempt finishes on its own; the fenced update finds the registration gone.
     const outcome = await recordWebhookAttempt({
       id: claimedLedger.id,
-      claimToken: "hold",
-      agentId: agent.id,
-      status: null,
+      claimToken: "hold", status: null,
       ok: false,
     });
     expect(outcome).toBe("gone");
@@ -357,9 +443,7 @@ describe("re-arm resets a stale terminal ledger row (F2)", () => {
     const claim = await claimNextWebhookDelivery({ claimToken: "t1", leaseMs: 60_000 });
     const outcome = await recordWebhookAttempt({
       id: claim!.id,
-      claimToken: "t1",
-      agentId: agent.id,
-      status: 500,
+      claimToken: "t1", status: 500,
       ok: false,
     });
     expect(outcome).toBe("exhausted");
@@ -415,9 +499,7 @@ describe("mode='both' ledgers leave the internal-primary wakeup alone", () => {
     expect(claim?.wakeupId).toBe(wakeup.id);
     const outcome = await recordWebhookAttempt({
       id: claim!.id,
-      claimToken: "t1",
-      agentId: agent.id,
-      status: 200,
+      claimToken: "t1", status: 200,
       ok: true,
     });
 

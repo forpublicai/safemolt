@@ -108,6 +108,10 @@ describe("resolvePublicAddresses — rejection table (injected resolver, no real
     ["IPv6 documentation 2001:db8::/32", "2001:db8::1", 6],
     ["NAT64 64:ff9b::/96 wrapping a PRIVATE v4", "64:ff9b::a00:1", 6],
     ["6to4 2002::/16 wrapping a PRIVATE v4", "2002:0a00:0001::", 6],
+    // F5 round 2 additions — the allowlist (`2000::/3`) must refuse these explicitly.
+    ["deprecated site-local fec0::/10", "fec0::1", 6],
+    ["6to4 2002::/16 wrapping PRIVATE 192.168/16", "2002:c0a8:101::", 6],
+    ["NAT64 64:ff9b::/96 wrapping LOOPBACK", "64:ff9b::7f00:1", 6],
   ];
 
   it.each(rejected)("rejects %s (%s)", async (_label, address, family) => {
@@ -120,6 +124,12 @@ describe("resolvePublicAddresses — rejection table (injected resolver, no real
     await expect(
       resolvePublicAddresses("host.example", fakeLookup([{ address: "93.184.216.34", family: 4 }]))
     ).resolves.toEqual(["93.184.216.34"]);
+  });
+
+  it("F5: accepts an ordinary global-unicast IPv6 address (2000::/3)", async () => {
+    await expect(
+      resolvePublicAddresses("host.example", fakeLookup([{ address: "2606:4700::1111", family: 6 }]))
+    ).resolves.toEqual(["2606:4700::1111"]);
   });
 
   it("F6: translates a NAT64 address wrapping a PUBLIC v4 and accepts it", async () => {
@@ -288,11 +298,17 @@ describe("deliverWakeup — real local receiver (no mocking of node:http/https)"
     expect(received).toHaveLength(1); // exactly one request — no chase of Location
   });
 
-  it("resolves cleanly (does not hang or throw) on a response body over the 64KB cap", async () => {
+  it("F8(c): stops at the 64KB cap even against a receiver that streams forever and never ends", async () => {
     enableSeam();
+    let timer: NodeJS.Timeout;
     const port = await startServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "text/plain" });
-      res.end("x".repeat(100 * 1024));
+      // Never calls res.end() — only the client's own cap can make this resolve. Without the cap,
+      // this keeps writing until `deliverWakeup`'s 10s total timeout aborts the request instead.
+      timer = setInterval(() => {
+        if (res.destroyed) return;
+        res.write("x".repeat(8 * 1024));
+      }, 5);
     });
 
     const result = await deliverWakeup({
@@ -302,8 +318,31 @@ describe("deliverWakeup — real local receiver (no mocking of node:http/https)"
       eventId: null,
       payload: {},
     });
+    clearInterval(timer!);
 
-    expect(result.ok).toBe(true);
-    expect(result.status).toBe(200);
-  });
+    expect(result).toEqual({ ok: true, status: 200 });
+  }, 12_000);
+});
+
+describe("deliverWakeup — F6: the 10s deadline covers DNS", () => {
+  it("refuses before any socket work when the resolver answers after the deadline", async () => {
+    // Cleared explicitly (not left to fire): an uncleared 11s timer otherwise outlives this test.
+    let resolverTimer: NodeJS.Timeout;
+    const lookupAll: LookupAllFn = () =>
+      new Promise((resolve) => {
+        resolverTimer = setTimeout(() => resolve([{ address: "93.184.216.34", family: 4 }]), 11_000);
+      });
+
+    const start = Date.now();
+    const result = await deliverWakeup(
+      { url: "https://host.example/hook", secret: "s", wakeupId: 1, eventId: null, payload: {} },
+      lookupAll
+    );
+    const elapsedMs = Date.now() - start;
+    clearTimeout(resolverTimer!);
+
+    expect(result).toEqual({ ok: false, status: null });
+    // Refused at (roughly) the 10s deadline, never waiting out the resolver's own 11s delay.
+    expect(elapsedMs).toBeLessThan(10_500);
+  }, 15_000);
 });

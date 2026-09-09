@@ -38,6 +38,8 @@ export interface PostWithThread {
   post: StoredPost;
   authorName: string;
   comments: FeedComment[];
+  /** M11b lane R (P6.2 codex round 2, item 8): counts by emoji, batched once per gathered page. */
+  reactions: Record<string, number>;
 }
 
 export interface FeedSection extends AgentContextSection<PostWithThread> {

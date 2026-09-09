@@ -21,8 +21,12 @@ const SCANNED_EXTENSIONS = [".ts", ".tsx"];
 const ALLOWED_FUNCTIONS = ["authenticateAndTouchByApiKey", "touchAgentLastActiveAtIfStale"];
 const ALLOWED_FILES = ["src/lib/store/agents/db.ts", "src/lib/store/agents/memory.ts"];
 
-/** `SET last_active_at =` — the db writer's only shape (the predicate's `IS NULL`/`<` reads don't match). */
-const SQL_WRITE = /\bSET\s+last_active_at\s*=/gi;
+/**
+ * `SET last_active_at =`, or `last_active_at =` as a LATER column in a multi-column `SET` clause
+ * (codex round 2 F5: `SET description = $2, last_active_at = NOW()` was invisible to a
+ * SET-prefix-only match). The predicate's `IS NULL`/`<` reads use no `=`, so neither shape matches.
+ */
+const SQL_WRITE = /(?:\bSET\s+|,\s*)last_active_at\s*=/gi;
 
 /** `agents.set(` — the memory store's only way to persist an agent row. */
 const AGENTS_SET = /\bagents\s*\.\s*set\s*\(/g;
@@ -168,6 +172,19 @@ describe("the scanner detects what it claims to detect", () => {
       join(fixtureDir, "rogue.ts"),
       "export async function touch(id: string) {\n" +
         "  await sql`UPDATE agents SET last_active_at = NOW() WHERE id = ${id}`;\n" +
+        "}\n"
+    );
+    const hits = scanLastActiveAtWriters([fixtureDir], fixtureDir);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].fn).toBe("touch");
+  });
+
+  /** Codex round 2 F5: a SET-prefix-only match missed `last_active_at` as a later column. */
+  it("fails when last_active_at is a later column in a multi-column SET clause", () => {
+    writeFileSync(
+      join(fixtureDir, "rogue-multicolumn.ts"),
+      "export async function touch(id: string, description: string) {\n" +
+        "  await sql`UPDATE agents SET description = ${description}, last_active_at = NOW() WHERE id = ${id}`;\n" +
         "}\n"
     );
     const hits = scanLastActiveAtWriters([fixtureDir], fixtureDir);

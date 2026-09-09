@@ -11,12 +11,16 @@
  *
  * @jest-environment node
  */
+import { GET as GET_POST } from "@/app/api/v1/posts/[id]/route";
+import { GET as GET_POST_COMMENTS } from "@/app/api/v1/posts/[id]/comments/route";
 import { POST as POST_POST_REACTION, DELETE as DELETE_POST_REACTION } from "@/app/api/v1/posts/[id]/reactions/route";
 import {
   POST as POST_COMMENT_REACTION,
   DELETE as DELETE_COMMENT_REACTION,
 } from "@/app/api/v1/comments/[id]/reactions/route";
 import { executors } from "@/lib/agent-tools/definitions/reactions";
+import { executors as postExecutors } from "@/lib/agent-tools/definitions/posts";
+import { executors as commentExecutors } from "@/lib/agent-tools/definitions/comments";
 import { createAgent, getAgentById, setAgentVetted } from "@/lib/store/agents/memory";
 import { createGroup } from "@/lib/store/groups/memory";
 import { seedComment, seedPost } from "@/__tests__/helpers/store-fixtures";
@@ -287,5 +291,78 @@ describe.each(["post", "comment"] as const)("%s reactions — a JSON null body (
     const caller = await agent("null-body-delete");
     const response = await ROUTES[surface].DELETE(nullBodyRequest(caller, "DELETE") as never, routeParams("whatever"));
     expect(response.status).toBe(400);
+  });
+});
+
+describe.each(["post", "comment"] as const)("%s reactions — an object-valued emoji (F5)", (surface) => {
+  function objectEmojiRequest(caller: StoredAgent, method: "POST" | "DELETE"): Request {
+    return new Request(
+      `https://safemolt.com${ROUTES[surface].path("whatever")}`,
+      withMiddlewareHeaders({
+        method,
+        headers: { Authorization: `Bearer ${caller.apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify({ emoji: { toString: null } }),
+      })
+    );
+  }
+
+  it("POST answers 400 instead of throwing inside String(...)", async () => {
+    const caller = await agent("object-emoji-post");
+    // Mutation check: reverting to `String((body as {emoji?:unknown}).emoji ?? "")` throws a
+    // TypeError inside `String(...)` for this body, which Next surfaces as a 500, not this 400.
+    const response = await ROUTES[surface].POST(objectEmojiRequest(caller, "POST") as never, routeParams("whatever"));
+    expect(response.status).toBe(400);
+  });
+
+  it("DELETE answers 400 instead of throwing inside String(...)", async () => {
+    const caller = await agent("object-emoji-delete");
+    const response = await ROUTES[surface].DELETE(objectEmojiRequest(caller, "DELETE") as never, routeParams("whatever"));
+    expect(response.status).toBe(400);
+  });
+});
+
+describe("F6: the reactions serializer surfaces exact, non-empty counts on read", () => {
+  it("a post's GET route, the feed tool, a comment's GET route and the comments tool all report the reactions actually written", async () => {
+    const owner = await agent("f6-owner");
+    const group = await createGroup(nextName("f6grp"), "F6 fixture", "", owner.id);
+    const post = await seedPost(owner.id, group.id, "f6 post");
+    const comment = await seedComment(post.id, owner.id, "f6 comment");
+
+    const reactorA = await agent("f6-a");
+    const reactorB = await agent("f6-b");
+    expect((await callRoute("POST", "post", reactorA, post.id, "👍")).status).toBe(200);
+    expect((await callRoute("POST", "post", reactorB, post.id, "👍")).status).toBe(200);
+    expect((await callRoute("POST", "comment", reactorA, comment.id, "🎉")).status).toBe(200);
+
+    // `NextRequest`, not a plain `Request`: the comments GET route reads `request.nextUrl`, which a
+    // plain `Request` does not have — that throws inside the route's own try/catch as a 500.
+    const { NextRequest } = require("next/server");
+    const postGetRequest = new NextRequest(
+      `https://safemolt.com/api/v1/posts/${post.id}`,
+      withMiddlewareHeaders({ headers: { Authorization: `Bearer ${owner.apiKey}` } })
+    );
+    const postGet = await GET_POST(postGetRequest as never, routeParams(post.id));
+    const postBody = (await postGet.json()) as { data: { reactions: Record<string, number> } };
+    // Mutation check: a serializer that emitted `{}` for `reactions` instead of the batched read
+    // would still pass every mutation-response assertion above — none of them calls a read route.
+    expect(postBody.data.reactions).toEqual({ "👍": 2 });
+
+    const commentsGetRequest = new NextRequest(
+      `https://safemolt.com/api/v1/posts/${post.id}/comments`,
+      withMiddlewareHeaders({ headers: { Authorization: `Bearer ${owner.apiKey}` } })
+    );
+    const commentsGet = await GET_POST_COMMENTS(commentsGetRequest as never, routeParams(post.id));
+    const commentsBody = (await commentsGet.json()) as {
+      data: Array<{ id: string; reactions: Record<string, number> }>;
+    };
+    expect(commentsBody.data.find((c) => c.id === comment.id)?.reactions).toEqual({ "🎉": 1 });
+
+    const feedResult = await postExecutors.list_feed({ limit: 10 }, { agent: owner } as never);
+    const feedPosts = (feedResult.data as { posts: Array<{ id: string; reactions: Record<string, number> }> }).posts;
+    expect(feedPosts.find((p) => p.id === post.id)?.reactions).toEqual({ "👍": 2 });
+
+    const commentsToolResult = await commentExecutors.list_comments({ post_id: post.id }, { agent: owner } as never);
+    const toolComments = (commentsToolResult.data as { comments: Array<{ id: string; reactions: Record<string, number> }> }).comments;
+    expect(toolComments.find((c) => c.id === comment.id)?.reactions).toEqual({ "🎉": 1 });
   });
 });

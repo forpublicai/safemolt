@@ -62,9 +62,13 @@ function addReactionStatementText(subjectType: "post" | "comment", eventCtes: st
     -- Postgres refuses two data-modifying CTEs writing the same row in one statement
     -- (postgresql.org/docs/current/queries-with.html#QUERIES-WITH-MODIFYING). \`pre\` only reads
     -- and locks; \`rate_updated\` below is the sole writer of \`agent_rate_limits\` here.
+    -- FOR NO KEY UPDATE, not FOR UPDATE (codex round 2, F1): FOR UPDATE conflicts with the FOR KEY
+    -- SHARE a withdrawal's own FK check takes on this row, so a reaction holding this lock while a
+    -- withdrawal holds the actor's agents row deadlocked (40P01). NO KEY UPDATE does not conflict.
     WITH pre AS (
+      /* race:b1r-pre-lock */
       SELECT CASE WHEN reaction_count_date <> CURRENT_DATE THEN 0 ELSE reaction_count END AS current_count
-      FROM agent_rate_limits WHERE agent_id = $1 FOR UPDATE
+      FROM agent_rate_limits WHERE agent_id = $1 FOR NO KEY UPDATE
     ),
     live_post AS (
       ${livePostCte}
@@ -124,10 +128,14 @@ export async function addReaction(
         // Every other column is nullable or defaulted (scripts/schema.sql), so this is safe even
         // for an agent who has never posted or commented. As statement 1 of the batch, its row
         // lock is held to commit, and statement 2 below then takes its OWN fresh snapshot.
+        // The no-op update targets `reaction_count`, never `agent_id` (codex round 2, F1): writing
+        // back the row's OWN key column forces Postgres's strongest (FOR UPDATE-equivalent) tuple
+        // lock regardless of the explicit mode below, reopening the same withdrawal deadlock.
         txn`
+      /* race:b1r-seed-lock */
       INSERT INTO agent_rate_limits (agent_id, reaction_count_date, reaction_count)
       VALUES (${input.agentId}, CURRENT_DATE, 0)
-      ON CONFLICT (agent_id) DO UPDATE SET agent_id = EXCLUDED.agent_id
+      ON CONFLICT (agent_id) DO UPDATE SET reaction_count = agent_rate_limits.reaction_count
     `,
         txn(addReactionStatementText(input.subjectType, eventCtes), [...params, ...emitted.params]),
     ]);

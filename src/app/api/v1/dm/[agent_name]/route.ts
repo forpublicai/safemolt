@@ -90,7 +90,10 @@ export async function POST(
 
   try {
     const body = await request.json();
-    const content = body?.content?.trim();
+    // Codex round 2, F5: a non-string `content` (e.g. a number) has no `.trim`, which threw and
+    // fell into the catch-all 500 below. Checked before any string method runs.
+    if (typeof body?.content !== "string") return errorResponse("content must be a string");
+    const content = body.content.trim();
     if (!content) return errorResponse("content is required");
 
     const result = await sendDm({

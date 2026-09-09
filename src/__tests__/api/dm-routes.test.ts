@@ -107,6 +107,16 @@ describe("POST /api/v1/dm/{agent_name} — send", () => {
     expect((await body(response)).error_detail).toMatchObject({ code: "bad_request" });
   });
 
+  it("F5: answers 400, not 500, for a non-string content field", async () => {
+    const a = await agent("ctA");
+    const b = await agent("ctB");
+    const response = await THREAD_POST(
+      request(a, `/api/v1/dm/${b.name}`, "POST", { content: 42 }) as never,
+      params({ agent_name: b.name })
+    );
+    expect(response.status).toBe(400);
+  });
+
   it("answers vetting_required when either side is unvetted", async () => {
     const a = await agent("vrA");
     const unvetted = await agent("vrB", { vetted: false });

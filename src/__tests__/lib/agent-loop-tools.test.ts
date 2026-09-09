@@ -66,6 +66,11 @@ function baseStore(overrides: Record<string, unknown> = {}) {
     getPassedEvaluations: jest.fn(async () => []),
     ensureGeneralGroup: jest.fn(async () => undefined),
     listNotifications: jest.fn(async () => []),
+    // b1: the senses gatherers read reactions, DM unread counts and active followees.
+    getReactionCounts: jest.fn(async () => ({})),
+    countUnreadDms: jest.fn(async () => 0),
+    listDmConversations: jest.fn(async () => []),
+    countActiveNowFollowees: jest.fn(async () => 0),
     listGroups: jest.fn(async () => []),
     getFollowingCount: jest.fn(async () => 0),
     ...overrides,

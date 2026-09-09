@@ -27,7 +27,9 @@ export async function GET(request: NextRequest) {
   const nowMs = Date.now();
   const sort = parseSort(request.nextUrl.searchParams.get("sort"));
   const filter = request.nextUrl.searchParams.get("filter");
-  const agents = visibleAgents(await listAgents(sort), filter, nowMs);
+  // Codex round 2 F1: the store applies the presence predicate before its row cap; this call no
+  // longer relies on `visibleAgents` to narrow a set that a 500-row limit already truncated.
+  const agents = visibleAgents(await listAgents(sort, filter === "active_now" ? "active_now" : undefined), filter, nowMs);
 
   return jsonResponse({
     success: true,

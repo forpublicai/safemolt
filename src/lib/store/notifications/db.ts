@@ -485,16 +485,9 @@ export async function createDmReceivedNotificationIdempotent(
 }
 
 /**
- * M11b Lane R (P6.2) — the `reaction_added` row, as a SELECT whose FROM locks the reacted-to
- * SUBJECT, never the recipient directly: the recipient (`subj.author_id`) is RE-DERIVED from that
- * locked row rather than trusted from the payload, mirroring `commentNotificationSelectSql`'s own
- * recipient re-derivation. Self-notification is excluded the same way, in the `WHERE`.
- *
- * `live_post` locks the post `FOR SHARE` FIRST, and `subj` for a comment joins FROM it — a
- * dependent CTE runs after the one it reads, so the post lock is taken before the comment's
- * (codex round 1, F2; mirrors `reactions/db.ts`'s own fix). `post_id` rides in `subj` for both
- * cases, so `metadata.post_id` below is always the CLEANUP anchor `deletePost` reads (F1) — the
- * post itself, or the comment's post.
+ * M11b Lane R (P6.2) — the `reaction_added` row. `live_post` locks the post `FOR SHARE` first, and
+ * `subj` for a comment joins FROM it, so the post lock is always taken before the comment's.
+ * `post_id` rides in `subj` for both cases — the cleanup anchor `deletePost` reads (F1).
  *
  * `$1 id, $2 dedup_key, $3 emoji, $4 actor_agent_id, $5 subject_id, $6 created_at`.
  */
@@ -569,7 +562,7 @@ const MENTION_NOTIFICATION_SELECT = `
         jsonb_strip_nulls(jsonb_build_object('post_id', $5::text, 'comment_id', $6::text)),
         $2::text
       FROM (
-        SELECT id, title FROM posts WHERE id = $5::text AND deleted_at IS NULL FOR SHARE
+        /* race:b1m-mention-post-lock */ SELECT id, title FROM posts WHERE id = $5::text AND deleted_at IS NULL FOR SHARE
       ) p
       JOIN (
         SELECT id, name FROM agents WHERE id = $3::text FOR KEY SHARE

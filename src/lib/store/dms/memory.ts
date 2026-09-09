@@ -8,9 +8,10 @@ import {
 } from "../_memory-state";
 import type { PreparedEvent } from "@/lib/events/kinds";
 import { appendPreparedBatch, prepareEventBatch } from "../events/memory";
+import { executionGuardPasses, type ExecutionGuard } from "../execution-guard";
 
 export interface SendDmResult {
-  outcome: "blocked" | "rate_limited" | "inserted";
+  outcome: "blocked" | "rate_limited" | "inserted" | "execution_guard_failed" | "sender_gone";
   message: StoredDmMessage | null;
 }
 
@@ -56,9 +57,16 @@ function withCreatedDmMessageId(events: readonly PreparedEvent[], messageId: str
  */
 export async function sendDm(
   input: { senderId: string; recipientId: string; content: string },
-  events?: readonly PreparedEvent[]
+  events?: readonly PreparedEvent[],
+  executionGuard?: ExecutionGuard
 ): Promise<SendDmResult> {
   const { senderId, recipientId, content } = input;
+
+  // M11-2 P3.3: checked FIRST, matching `createComment` — it precedes every other refusal
+  // causally, and the whole function body up to `dispatched` is one synchronous section.
+  if (!executionGuardPasses(executionGuard)) {
+    return { outcome: "execution_guard_failed", message: null };
+  }
 
   // No agent-existence check here, deliberately: Decision 10 makes DM participant ids FK-LESS
   // with tombstone semantics (unlike comments' `author_id` FK), so the db twin has none either —
@@ -97,10 +105,11 @@ export async function sendDm(
 
   // ---- Synchronous section: re-check actor, claim, upsert, insert, append. No await until dispatch. ----
   // The action resolves the recipient with an `await` before calling this; a sender withdrawn in
-  // that window must refuse here too, like `agent_rate_limits.agent_id`'s FK would in db mode.
-  // Folded into `rate_limited` — the shared `SendDmResult` type must stay identical in both stores.
+  // that window must refuse here too, like `agent_rate_limits.agent_id`'s FK would in db mode —
+  // `sender_gone`, matching db's translated 23503 (codex round 2, F4: was folded into
+  // `rate_limited`, which answered 429 instead of the 404 a missing actor should get).
   if (!agents.has(senderId)) {
-    return { outcome: "rate_limited", message: null };
+    return { outcome: "sender_gone", message: null };
   }
   if (!claimCommentAllowance(senderId)) {
     return { outcome: "rate_limited", message: null };
@@ -144,12 +153,17 @@ export async function sendDm(
 /**
  * Mark messages read. Find the conversation (do not create), then set the reader's cursor to head.
  */
-export async function markDmRead(readerId: string, otherId: string): Promise<boolean> {
+export async function markDmRead(
+  readerId: string,
+  otherId: string,
+  executionGuard?: ExecutionGuard
+): Promise<boolean> {
   const { agentLow, agentHigh, aIsLow } = canonicalizePair(readerId, otherId);
   const conv = Array.from(dmConversations.values()).find(
     (c) => c.agentLow === agentLow && c.agentHigh === agentHigh
   );
   if (!conv) return false;
+  if (!executionGuardPasses(executionGuard)) return false;
 
   const field = readCursorField(aIsLow);
   conv[field] = conv.lastMessageSeq;
@@ -164,7 +178,8 @@ export async function setDmBlock(
   blockerId: string,
   otherId: string,
   blocked: boolean,
-  events?: readonly PreparedEvent[]
+  events?: readonly PreparedEvent[],
+  executionGuard?: ExecutionGuard
 ): Promise<boolean> {
   const { agentLow, agentHigh, aIsLow } = canonicalizePair(blockerId, otherId);
   const flagField = blockFlagField(aIsLow);
@@ -175,6 +190,7 @@ export async function setDmBlock(
 
   if (!existing && !blocked) return false; // Can't unblock a row that doesn't exist.
   if (existing && existing[flagField] === blocked) return false; // No change.
+  if (!executionGuardPasses(executionGuard)) return false;
 
   // Preflight the WHOLE batch before any state change (Decision 4) — a bad payload or a duplicate
   // idempotency key must not leave the row created, or the flag flipped, with no event to show for it.
@@ -224,7 +240,7 @@ export async function setDmBlock(
  */
 export async function listDmConversations(
   agentId: string,
-  options: { limit?: number; offset?: number } = {}
+  options: { limit?: number; offset?: number; unreadFirst?: boolean } = {}
 ): Promise<StoredDmConversation[]> {
   const limit = options.limit ?? 20;
   const offset = options.offset ?? 0;
@@ -242,8 +258,13 @@ export async function listDmConversations(
     return { conv: c, otherId, unread };
   });
 
-  // Sort by last_message_at DESC, then created_at DESC (nulls last).
+  // Sort by last_message_at DESC, then created_at DESC (nulls last); `unreadFirst` (codex round 2,
+  // F3) puts unread threads ahead of that, matching the db statement's ORDER BY term.
   withUnread.sort((a, b) => {
+    if (options.unreadFirst) {
+      const unreadDiff = Number(b.unread > 0) - Number(a.unread > 0);
+      if (unreadDiff !== 0) return unreadDiff;
+    }
     if (a.conv.lastMessageAt === null && b.conv.lastMessageAt === null) {
       return new Date(b.conv.createdAt).getTime() - new Date(a.conv.createdAt).getTime();
     }

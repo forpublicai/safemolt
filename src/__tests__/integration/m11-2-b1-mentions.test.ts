@@ -28,6 +28,7 @@ import { createMentionNotificationIdempotent } from "@/lib/store/notifications/d
 import type { StoredEvent } from "@/lib/store-types";
 
 import { closeIntegrationConnections, pgPool } from "./helpers/db";
+import { raceAgainstHeldLock } from "./helpers/concurrency";
 
 const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
 let seq = 0;
@@ -106,6 +107,16 @@ async function eventsSince(marker: number): Promise<StoredEvent[]> {
   return Promise.all(rows.map(async (row) => (await getEventById(Number(row.id)))!));
 }
 
+/**
+ * Codex round 2 F4: sibling data-modifying CTEs have no guaranteed execution order, so the primary
+ * and derived events must be found by kind + subject, never by array position.
+ */
+function findEvent(events: StoredEvent[], kind: string, subjectId: string): StoredEvent {
+  const found = events.find((e) => e.kind === kind && e.subjectId === subjectId);
+  if (!found) throw new Error(`no ${kind} event for subject ${subjectId} in ${events.length} events`);
+  return found;
+}
+
 function mentionEvent(
   mentionedAgentId: string,
   sourceType: "post" | "comment",
@@ -166,14 +177,14 @@ describe("createPost — the derived agent.mentioned event", () => {
     expect(post).not.toBeNull();
 
     const emitted = await eventsSince(marker);
-    expect(emitted.map((e) => e.kind)).toEqual(["post.created", "agent.mentioned"]);
+    expect(emitted).toHaveLength(2);
 
-    const [primary, derived] = emitted;
+    const primary = findEvent(emitted, "post.created", post!.id);
+    const derived = findEvent(emitted, "agent.mentioned", mentioned.id);
     expect(primary.subjectId).toBe(post!.id);
     // The load-bearing assertion: the derived event kept its OWN subject (the mentioned agent —
     // the action already knew it), while its payload's `source_id` was filled by the STORE from
     // the very id it minted for the primary event, via the same `$1` substitution.
-    expect(derived.subjectId).toBe(mentioned.id);
     expect(derived.payload).toMatchObject({
       source_type: "post",
       source_id: post!.id,
@@ -203,7 +214,7 @@ describe("createPost — the derived agent.mentioned event", () => {
     ]);
     expect(post).not.toBeNull();
 
-    const [, derived] = await eventsSince(marker);
+    const derived = findEvent(await eventsSince(marker), "agent.mentioned", mentioned.id);
     expect(derived.payload.source_id).toBe("explicit-source-id");
   });
 
@@ -235,6 +246,45 @@ describe("createPost — the derived agent.mentioned event", () => {
     expect(post).toBeNull();
     expect(await eventsSince(marker)).toEqual([]);
   });
+
+  /**
+   * Codex round 2 F2: the derived event rides the SAME statement as the post, the cap claim and
+   * the primary event, so a failure while writing it must roll back all four. A shared `idemKey`
+   * across the two prepared events collides on `idx_events_idem` during execution — a real 23505,
+   * not a preflight refusal — which is what the earlier refusal tests could not show.
+   */
+  it("a failing derived event insert leaves no post, no quota change, and no primary event", async () => {
+    const author = await seedAgent();
+    const mentioned = await seedAgent();
+    const group = await seedGroup(author.id);
+    await clearPostCooldown(author.id);
+    const marker = await maxEventId();
+    const clashKey = nextId("idem-clash");
+
+    await expect(
+      storeCreatePost(author.id, group, "hi", `cc @${mentioned.name}`, undefined, [
+        {
+          kind: "post.created",
+          actorAgentId: author.id,
+          subjectType: "post",
+          subjectId: STORE_ASSIGNED_PAYLOAD_ID,
+          schoolId: null,
+          idemKey: clashKey,
+          payload: { post_id: STORE_ASSIGNED_PAYLOAD_ID, group_id: group, author_id: author.id },
+        } satisfies PreparedEvent<"post.created">,
+        { ...mentionEvent(mentioned.id, "post"), idemKey: clashKey },
+      ])
+    ).rejects.toThrow();
+
+    expect(await eventsSince(marker)).toEqual([]);
+    const { rows: postRows } = await pgPool().query(`SELECT id FROM posts WHERE author_id = $1`, [author.id]);
+    expect(postRows).toEqual([]);
+    const { rows: capRows } = await pgPool().query(
+      `SELECT agent_id FROM agent_rate_limits WHERE agent_id = $1`,
+      [author.id]
+    );
+    expect(capRows).toEqual([]);
+  });
 });
 
 describe("createComment — the derived agent.mentioned event", () => {
@@ -261,11 +311,11 @@ describe("createComment — the derived agent.mentioned event", () => {
     expect(comment).not.toBeNull();
 
     const emitted = await eventsSince(marker);
-    expect(emitted.map((e) => e.kind)).toEqual(["comment.created", "agent.mentioned"]);
+    expect(emitted).toHaveLength(2);
 
-    const [primary, derived] = emitted;
+    const primary = findEvent(emitted, "comment.created", comment!.id);
+    const derived = findEvent(emitted, "agent.mentioned", mentioned.id);
     expect(primary.subjectId).toBe(comment!.id);
-    expect(derived.subjectId).toBe(mentioned.id);
     expect(derived.payload).toMatchObject({
       source_type: "comment",
       source_id: comment!.id,
@@ -296,7 +346,7 @@ describe("createComment — the derived agent.mentioned event", () => {
     ]);
     expect(comment).not.toBeNull();
 
-    const [, derived] = await eventsSince(marker);
+    const derived = findEvent(await eventsSince(marker), "agent.mentioned", mentioned.id);
     expect(derived.payload.source_id).toBe("explicit-source-id");
   });
 
@@ -324,6 +374,42 @@ describe("createComment — the derived agent.mentioned event", () => {
 
     expect(comment).toBeNull();
     expect(await eventsSince(marker)).toEqual([]);
+  });
+
+  /** Codex round 2 F2, comment side: same idem_key clash, same all-or-nothing statement. */
+  it("a failing derived event insert leaves no comment, no quota change, and no primary event", async () => {
+    const author = await seedAgent();
+    const commenter = await seedAgent();
+    const mentioned = await seedAgent();
+    const group = await seedGroup(author.id);
+    const post = await seedPost(author.id, group);
+    const marker = await maxEventId();
+    const clashKey = nextId("idem-clash");
+
+    await expect(
+      storeCreateComment(post, commenter.id, `cc @${mentioned.name}`, undefined, [
+        {
+          kind: "comment.created",
+          actorAgentId: commenter.id,
+          subjectType: "comment",
+          subjectId: STORE_ASSIGNED_PAYLOAD_ID,
+          secondarySubjectId: post,
+          schoolId: null,
+          idemKey: clashKey,
+          payload: { comment_id: STORE_ASSIGNED_PAYLOAD_ID, post_id: post, parent_id: null },
+        } satisfies PreparedEvent<"comment.created">,
+        { ...mentionEvent(mentioned.id, "comment"), idemKey: clashKey },
+      ])
+    ).rejects.toThrow();
+
+    expect(await eventsSince(marker)).toEqual([]);
+    const { rows: commentRows } = await pgPool().query(`SELECT id FROM comments WHERE author_id = $1`, [commenter.id]);
+    expect(commentRows).toEqual([]);
+    const { rows: capRows } = await pgPool().query(
+      `SELECT agent_id FROM agent_rate_limits WHERE agent_id = $1`,
+      [commenter.id]
+    );
+    expect(capRows).toEqual([]);
   });
 });
 
@@ -364,5 +450,35 @@ describe("createMentionNotificationIdempotent (db) — codex round 1 F1", () => 
 
     expect(result).not.toBeNull();
     expect(result?.type).toBe("mention");
+  });
+
+  /**
+   * Codex round 2 F3: the earlier liveness test let the tombstone commit before calling the
+   * writer, which proves the predicate but not the lock. Holding the tombstone UPDATE open proves
+   * the writer's `FOR SHARE` actually contends with it, not merely that a deleted post is refused.
+   */
+  it("blocks on an uncommitted tombstone update, then refuses once it commits", async () => {
+    const author = await seedAgent();
+    const recipient = await seedAgent();
+    const group = await seedGroup(author.id);
+    const post = await seedPost(author.id, group);
+
+    const race = await raceAgainstHeldLock({
+      hold: async (holder) => {
+        await holder.query(`UPDATE posts SET deleted_at = NOW() WHERE id = $1`, [post]);
+      },
+      contend: () =>
+        createMentionNotificationIdempotent({
+          dedupKey: nextId("dedup"),
+          recipientAgentId: recipient.id,
+          actorAgentId: author.id,
+          postId: post,
+          createdAt: new Date().toISOString(),
+        }),
+      contenderMarker: "race:b1m-mention-post-lock",
+    });
+
+    expect(race.observedBlocked).toBe(true);
+    expect(race.result).toBeNull();
   });
 });

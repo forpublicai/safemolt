@@ -33,8 +33,9 @@ import {
 } from "@/lib/store/_memory-state";
 import { clearRateWindows } from "@/__tests__/helpers/store-fixtures";
 import { listNotifications } from "@/lib/store/notifications/memory";
-import { listWakeupsForAgent } from "@/lib/store/wakeups/memory";
+import { listWakeupsForAgent, claimNextWakeup, completeWakeup, enqueueWakeup } from "@/lib/store/wakeups/memory";
 import { deleteAgent } from "@/lib/store/agents/memory";
+import type { ExecutionGuard } from "@/lib/store/execution-guard";
 import type { StoredAgent, StoredEvent } from "@/lib/store-types";
 
 let seq = 0;
@@ -169,6 +170,29 @@ describe("read cursor + unread", () => {
     const after = await listDmConversations(b.id);
     expect(after[0].unreadCount).toBe(0);
   });
+
+  it("F3: unreadFirst surfaces an older unread thread ahead of newer read ones, before the limit", async () => {
+    const reader = await freshAgent("f3Reader");
+    const p1 = await freshAgent("f3P1");
+    const p2 = await freshAgent("f3P2");
+    const p3 = await freshAgent("f3P3");
+
+    await sendDm({ senderId: p1.id, recipientId: reader.id, content: "oldest, stays unread" });
+    clearRateWindows();
+    await sendDm({ senderId: p2.id, recipientId: reader.id, content: "read" });
+    await markDmRead(reader.id, p2.id);
+    clearRateWindows();
+    await sendDm({ senderId: p3.id, recipientId: reader.id, content: "newest, read" });
+    await markDmRead(reader.id, p3.id);
+
+    // Without unreadFirst, recency alone would return the two READ threads and drop p1 entirely.
+    // The tie-break among the (fast, same-tick) read threads is not this test's concern — only
+    // that the unread one is guaranteed a seat ahead of the limit.
+    const page = await listDmConversations(reader.id, { limit: 2, unreadFirst: true });
+    expect(page[0].other.id).toBe(p1.id);
+    expect(page[0].unreadCount).toBe(1);
+    expect(page.map((c) => c.other.id)).toContain(p1.id);
+  });
 });
 
 describe("rate limit shape", () => {
@@ -285,8 +309,67 @@ describe("F6 — memory re-checks the sender by id (withdrawal parity with the F
     expect(await deleteAgent(a.id)).toEqual({ ok: true });
 
     const result = await sendDm({ senderId: a.id, recipientId: b.id, content: "from the void" });
-    expect(result).toEqual({ outcome: "rate_limited", message: null });
+    expect(result).toEqual({ outcome: "sender_gone", message: null });
     expect(await listDmMessages(a.id, b.id)).toHaveLength(0);
+  });
+});
+
+describe("F1 — the execution guard reaches send/read/block (memory)", () => {
+  async function claimGuardFor(agentId: string): Promise<ExecutionGuard> {
+    const created = await enqueueWakeup({ agentId, reason: "idle", eventId: null, payload: {}, delivery: "internal" });
+    if (!created.created) throw new Error("expected a fresh idle wakeup");
+    const claim = await claimNextWakeup({ claimToken: "tok-f1", leaseMs: 600_000, generalCap: 50, playgroundCap: 50 });
+    if (claim.candidates !== 1 || !claim.claimed) throw new Error("expected a successful claim");
+    return { agentId, wakeupId: claim.claimed.id, claimToken: claim.claimed.claimToken! };
+  }
+
+  it("sendDm passes with a live claim, and refuses once disabled before the write", async () => {
+    const a = await freshAgent("f1SendA");
+    const b = await freshAgent("f1SendB");
+    const guard = await claimGuardFor(a.id);
+    expect((await sendDm({ senderId: a.id, recipientId: b.id, content: "guarded" }, [], guard)).outcome).toBe(
+      "inserted"
+    );
+    // Completed so the idle dedup (one PENDING-OR-CLAIMED row per agent) admits a fresh claim.
+    await completeWakeup(guard.wakeupId, guard.claimToken, "acted");
+
+    const guard2 = await claimGuardFor(a.id);
+    agentLoopState.get(a.id)!.enabled = false;
+    const result = await sendDm({ senderId: a.id, recipientId: b.id, content: "should not land" }, [], guard2);
+    expect(result).toEqual({ outcome: "execution_guard_failed", message: null });
+    expect(await listDmMessages(a.id, b.id)).toHaveLength(1); // still just the guarded success above
+  });
+
+  it("markDmRead does not advance the cursor once disabled before the write", async () => {
+    const a = await freshAgent("f1ReadA");
+    const b = await freshAgent("f1ReadB");
+    expect((await sendDm({ senderId: a.id, recipientId: b.id, content: "hi" })).outcome).toBe("inserted");
+    const guard = await claimGuardFor(b.id);
+    agentLoopState.get(b.id)!.enabled = false;
+
+    expect(await markDmRead(b.id, a.id, guard)).toBe(false);
+    expect(await countUnreadDms(b.id)).toBe(1);
+  });
+
+  it("setDmBlock does not flip the flag once disabled before the write", async () => {
+    const a = await freshAgent("f1BlockA");
+    const b = await freshAgent("f1BlockB");
+    const guard = await claimGuardFor(a.id);
+    agentLoopState.get(a.id)!.enabled = false;
+
+    expect(await setDmBlock(a.id, b.id, true, undefined, guard)).toBe(false);
+    expect((await sendDm({ senderId: a.id, recipientId: b.id, content: "not blocked" })).outcome).toBe("inserted");
+  });
+});
+
+describe("F4 — the route answers 404 for a sender withdrawn mid-request, never 429/500", () => {
+  it("the send action classifies a withdrawn sender as not_found (memory mode)", async () => {
+    const a = await freshAgent("f4SendA");
+    const b = await freshAgent("f4SendB");
+    expect(await deleteAgent(a.id)).toEqual({ ok: true });
+
+    const result = await sendDmAction({ agent: a, recipientName: b.name, content: "from the void" });
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: "not_found" }));
   });
 });
 

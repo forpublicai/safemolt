@@ -15,6 +15,14 @@
  *
  * @jest-environment node
  */
+// `jest.mock` (module-registry replacement), not `jest.spyOn`: this file's compiled ESM exports
+// are non-configurable, so `spyOn` cannot redefine `memoryIngestFanoutCap` in place. The factory
+// wraps the real implementation in a `jest.fn`, so every OTHER call in this suite is unaffected.
+jest.mock("@/lib/memory/fanout-cap", () => {
+  const actual = jest.requireActual("@/lib/memory/fanout-cap");
+  return { ...actual, memoryIngestFanoutCap: jest.fn(actual.memoryIngestFanoutCap) };
+});
+
 import { POST as POST_POST_REACTION, DELETE as DELETE_POST_REACTION } from "@/app/api/v1/posts/[id]/reactions/route";
 import { createComment } from "@/lib/actions/comments";
 import { createPost, deletePost } from "@/lib/actions/posts";
@@ -22,6 +30,9 @@ import { addReaction, removeReaction } from "@/lib/actions/reactions";
 import { executors } from "@/lib/agent-tools/definitions/reactions";
 import { notificationsConsumer } from "@/lib/events/consumers/notifications";
 import { eventConsumers } from "@/lib/events/consumers/registry";
+import { memoryIngestFanoutCap } from "@/lib/memory/fanout-cap";
+import { createReactionNotificationIdempotent } from "@/lib/store";
+import { addReaction as dbAddReaction } from "@/lib/store/reactions/db";
 import { getEventById } from "@/lib/store/events/db";
 import { drainEventConsumer } from "@/lib/store/events/drain-db";
 import { secondsUntilUtcMidnight } from "@/lib/store/rate-limit-windows";
@@ -239,6 +250,59 @@ describe.each(["post", "comment"] as const)("%s reactions vs deletePost — both
     );
     expect(notifAfter).toEqual([]);
   });
+
+  it("F2: the reaction notification writer itself blocks on a held tombstone, then refuses", async () => {
+    const author = await seedAgent();
+    const reactor = await seedAgent();
+    const group = await seedGroup(author.id);
+    const { subjectId, postId } = await makeSubject(surface, author, group);
+
+    // Exercises `reactionNotificationSelectSql`'s OWN lock/gate directly, independent of
+    // `addReaction` — codex round 2 finding 2: the prior suite only proved addReaction blocked.
+    const race = await raceAgainstHeldLock({
+      hold: async (holder) => {
+        await holder.query(TOMBSTONE_SQL, [postId, author.id]);
+      },
+      contend: () =>
+        createReactionNotificationIdempotent({
+          dedupKey: `${nextId("dedup")}`,
+          subjectType: surface,
+          subjectId,
+          emoji: "👍",
+          actorAgentId: reactor.id,
+          createdAt: new Date().toISOString(),
+        }),
+      contenderMarker: "race:m11-2-notification-locked-target",
+    });
+
+    expect(race.observedBlocked).toBe(true);
+    // Mutation check: dropping `live_post`'s `FOR SHARE` gate lets this insert a notification for a
+    // subject the tombstone (committed by the time the write resumes) already removed.
+    expect(race.result).toBeNull();
+  });
+
+  it("F2: a tombstone failure after the reaction cleanup element ran rolls back the whole delete, including the cleanup", async () => {
+    const author = await seedAgent();
+    const reactor = await seedAgent();
+    const group = await seedGroup(author.id);
+    const { subjectId, postId } = await makeSubject(surface, author, group);
+    expect((await addReaction({ agent: reactor, subjectType: surface, subjectId, emoji: "👍" })).ok).toBe(true);
+    expect(await reactionRows(surface, subjectId)).toHaveLength(1);
+
+    // `deletePost`'s LAST batch element (the tombstone) binds this cap into its own `LIMIT $3::int`
+    // (element 6b, the reaction cleanup, runs immediately before it in the SAME transaction). An
+    // out-of-int4-range value is documented in `fanout-cap.ts` as the one thing that fails that
+    // statement with a real `22003` — bypassing the function's own clamp is the only way to reach it.
+    jest.mocked(memoryIngestFanoutCap).mockReturnValueOnce(Number.MAX_SAFE_INTEGER);
+    await expect(deletePost({ agent: author, postId })).rejects.toMatchObject({ code: "22003" });
+
+    // Mutation check: were the cleanup and the tombstone two separately auto-committed statements
+    // instead of one transaction, the cleanup above would have already committed and this would be
+    // empty; instead the whole batch rolled back and the reaction row is back.
+    expect(await reactionRows(surface, subjectId)).toHaveLength(1);
+    const { rows } = await pgPool().query(`SELECT deleted_at FROM posts WHERE id = $1`, [postId]);
+    expect(rows[0].deleted_at).toBeNull();
+  });
 });
 
 describe("concurrent duplicate reacts", () => {
@@ -278,7 +342,7 @@ describe("concurrent duplicate reacts", () => {
     expect(quota[0].reaction_count).toBe(1);
   });
 
-  it("F5/F6: two identical requests with exactly one slot left never answer rate_limited — one added, one already_reacted", async () => {
+  it("F5/F6: two identical requests contending on a HELD seed row never answer rate_limited — one added, one already_reacted", async () => {
     const author = await seedAgent();
     const reactor = await seedAgent();
     const group = await seedGroup(author.id);
@@ -289,12 +353,30 @@ describe("concurrent duplicate reacts", () => {
     const prevLimit = process.env.REACTION_DAILY_LIMIT;
     process.env.REACTION_DAILY_LIMIT = "1";
     try {
-      const outcomes = await runConcurrently([
-        () => addReaction({ agent: reactor, subjectType: "post", subjectId, emoji: "👍" }),
-        () => addReaction({ agent: reactor, subjectType: "post", subjectId, emoji: "👍" }),
-      ]);
-      expect(rejections(outcomes)).toEqual([]);
-      const codes = outcomes.map((o) => {
+      // codex round 2, finding 3: a bare `runConcurrently` gave no reliable mutation-check evidence
+      // (round-1 report). Holding the seed row OPEN forces both real calls to queue behind it, then
+      // resolve strictly in commit order once released — the shape that actually distinguishes F6's
+      // fix from two auto-committed statements under a manual revert.
+      const race = await raceAgainstHeldLock({
+        hold: async (holder) => {
+          await holder.query(
+            `/* race:b1r-seed-lock */ INSERT INTO agent_rate_limits (agent_id, reaction_count_date, reaction_count)
+             VALUES ($1, CURRENT_DATE, 0)
+             ON CONFLICT (agent_id) DO UPDATE SET reaction_count = agent_rate_limits.reaction_count`,
+            [reactor.id]
+          );
+        },
+        contend: () =>
+          runConcurrently([
+            () => addReaction({ agent: reactor, subjectType: "post", subjectId, emoji: "👍" }),
+            () => addReaction({ agent: reactor, subjectType: "post", subjectId, emoji: "👍" }),
+          ]),
+        contenderMarker: "race:b1r-seed-lock",
+      });
+
+      expect(race.observedBlocked).toBe(true);
+      expect(rejections(race.result)).toEqual([]);
+      const codes = race.result.map((o) => {
         if (!o.ok) return "rejected";
         return o.value.ok ? "added" : o.value.code;
       });
@@ -308,6 +390,79 @@ describe("concurrent duplicate reacts", () => {
     }
   });
 
+  it("F6: a decisive-statement failure rolls back the seed, in the same transaction", async () => {
+    const author = await seedAgent();
+    const reactor = await seedAgent();
+    const group = await seedGroup(author.id);
+    const { subjectId } = await makeSubject("post", author, group);
+
+    // `dailyLimit` binds unquoted into statement 2's `current_count < $4`; NaN has no valid integer
+    // text form, so Postgres raises a real error there — after statement 1 (the seed) has already
+    // run in the same open transaction.
+    await expect(
+      dbAddReaction({ agentId: reactor.id, subjectType: "post", subjectId, emoji: "👍", dailyLimit: NaN })
+    ).rejects.toBeTruthy();
+
+    // Mutation check: were the seed and the decisive statement two separately auto-committed calls
+    // instead of one `sql.transaction`, the seed would have survived this failure and this would
+    // find a row.
+    const { rows } = await pgPool().query(`SELECT 1 FROM agent_rate_limits WHERE agent_id = $1`, [reactor.id]);
+    expect(rows).toEqual([]);
+  });
+});
+
+describe("F1: the seed's rate-row lock does not deadlock with a withdrawal's FK check", () => {
+  it("does NOT block a concurrent FOR KEY SHARE — the mode a withdrawal's own RI check takes", async () => {
+    const author = await seedAgent();
+    const reactor = await seedAgent();
+    const group = await seedGroup(author.id);
+    const { subjectId } = await makeSubject("post", author, group);
+    // A pre-existing, committed row is what makes a real withdrawal's RI check need to LOCK this
+    // row at all (a row that does not exist yet is simply invisible to it, never blocking).
+    expect((await addReaction({ agent: reactor, subjectType: "post", subjectId, emoji: "🎉" })).ok).toBe(true);
+    const { subjectId: secondSubject } = await makeSubject("post", author, group);
+
+    // codex round 2, finding 1: `pre`'s old `FOR UPDATE` conflicts with `FOR KEY SHARE`, so a
+    // reaction holding it while a withdrawal holds the actor's `agents` row (wanting THIS row via
+    // its `agent_rate_limits` FK check) deadlocked (40P01). `FOR NO KEY UPDATE` does not conflict.
+    const race = await raceAgainstHeldLock({
+      hold: async (holder) => {
+        await holder.query("SELECT agent_id FROM agent_rate_limits WHERE agent_id = $1 FOR KEY SHARE", [reactor.id]);
+      },
+      contend: () => addReaction({ agent: reactor, subjectType: "post", subjectId: secondSubject, emoji: "👍" }),
+      // `pre` (statement 2), not the seed (statement 1): the seed's own no-op update is already a
+      // non-key lock either way, so the deadlock's actual site is `pre`'s explicit lock mode.
+      contenderMarker: "race:b1r-pre-lock",
+    });
+
+    // Mutation check: reverting `pre` to `FOR UPDATE` (and the seed's no-op back to the key column)
+    // flips this to `true` — the reaction queues behind the held FOR KEY SHARE instead of proceeding.
+    expect(race.observedBlocked).toBe(false);
+    expect(race.result.ok).toBe(true);
+  });
+});
+
+describe("F4: db validates events before any statement (parity with memory)", () => {
+  it("addReaction throws on an invalid event even against a missing subject, rather than answering not_found", async () => {
+    const reactor = await seedAgent();
+    const badEvent = {
+      kind: "not.a.real.kind",
+      actorAgentId: reactor.id,
+      subjectType: "post",
+      subjectId: "no-such-post",
+      payload: {},
+    } as never;
+
+    // `emitEventCtes` renders (and validates) before `sql!.transaction` is even called, so this
+    // never reaches Postgres at all — matching memory's F4 fix, which validates before its own
+    // subject check.
+    await expect(
+      dbAddReaction(
+        { agentId: reactor.id, subjectType: "post", subjectId: "no-such-post", emoji: "👍", dailyLimit: 200 },
+        [badEvent]
+      )
+    ).rejects.toThrow();
+  });
 });
 
 describe("delayed-consume: a reaction.added event that drains after its subject is gone", () => {

@@ -8,7 +8,7 @@
  * cold-start fix — reporting which path ran through `mode`.
  */
 
-import { getAgentById, getPost, listComments, listFeed, listPosts } from "@/lib/store";
+import { getAgentById, getPost, getReactionCounts, listComments, listFeed, listPosts } from "@/lib/store";
 import type { StoredComment, StoredPost } from "@/lib/store-types";
 import { DEFAULT_COMMENTS_PER_POST, DEFAULT_FEED_LIMIT } from "./constants";
 import type { FeedMode, FeedSection, PostWithThread } from "./types";
@@ -24,7 +24,8 @@ export interface GatherFeedOptions {
 async function enrichPost(
   post: StoredPost,
   agentId: string,
-  commentsPerPost: number
+  commentsPerPost: number,
+  reactions: Record<string, number>
 ): Promise<PostWithThread> {
   const author = await getAgentById(post.authorId);
   const rawComments = await listComments(post.id, "new");
@@ -41,7 +42,12 @@ async function enrichPost(
     })
   );
 
-  return { post, authorName: author?.name ?? "unknown", comments };
+  return { post, authorName: author?.name ?? "unknown", comments, reactions };
+}
+
+/** One batched read for a whole page, rather than one `getReactionCounts` call per post. */
+async function reactionCountsFor(posts: StoredPost[]): Promise<Record<string, Record<string, number>>> {
+  return getReactionCounts("post", posts.map((p) => p.id));
 }
 
 /**
@@ -61,8 +67,9 @@ async function gatherThread(
   const post = await getPost(postId);
   // A post that is gone is a legitimate "nothing to reply to", not a failed read.
   if (!post) return { items: [], degraded: false, mode: "thread" };
+  const reactions = (await reactionCountsFor([post]))[post.id] ?? {};
   return {
-    items: [await enrichPost(post, agentId, commentsPerPost)],
+    items: [await enrichPost(post, agentId, commentsPerPost, reactions)],
     degraded: false,
     mode: "thread",
   };
@@ -89,8 +96,10 @@ export async function gatherFeed(
       ? withoutOwnPosts(await listPosts({ sort: "new", limit: limit * 2 }), agentId)
       : personalized;
 
+    const page = candidates.slice(0, limit);
+    const reactionCounts = await reactionCountsFor(page);
     const items = await Promise.all(
-      candidates.slice(0, limit).map((post) => enrichPost(post, agentId, commentsPerPost))
+      page.map((post) => enrichPost(post, agentId, commentsPerPost, reactionCounts[post.id] ?? {}))
     );
     return { items, degraded: false, mode: usedFallback ? "global_fallback" : "personalized" };
   } catch (e) {

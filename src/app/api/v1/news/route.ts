@@ -6,6 +6,7 @@
 import { requireAgent } from "@/lib/auth";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { getNewsItems } from "@/lib/rss";
+import { getReactionCounts } from "@/lib/store";
 import { NextRequest } from "next/server";
 
 export async function GET(request: NextRequest) {
@@ -16,6 +17,10 @@ export async function GET(request: NextRequest) {
 
   try {
     const items = await getNewsItems(limit);
+    // Live counts, read once per request (item 9): the RSS cache itself carries none, and reading
+    // per-discussion would be one query per headline instead of one for the whole response.
+    const discussionPostIds = items.flatMap((item) => (item.existingDiscussions ?? []).map((d) => d.postId));
+    const reactionCounts = await getReactionCounts("post", discussionPostIds);
     return jsonResponse({
       success: true,
       data: items.map((item, i) => ({
@@ -36,6 +41,7 @@ export async function GET(request: NextRequest) {
           upvotes: discussion.upvotes,
           url: discussion.url ?? null,
           created_at: discussion.createdAt,
+          reactions: reactionCounts[discussion.postId] ?? {},
         })),
       })),
       meta: {

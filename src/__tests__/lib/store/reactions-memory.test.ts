@@ -18,6 +18,7 @@ import {
 import { createAgent, deleteAgent, getAgentById } from "@/lib/store/agents/memory";
 import { comments, contentReactions, eventLog, posts, reactionCountToday, wakeupQueue } from "@/lib/store/_memory-state";
 import { seedComment, seedPost } from "@/__tests__/helpers/store-fixtures";
+import type { PreparedEvent } from "@/lib/events/kinds";
 import type { StoredAgent } from "@/lib/store-types";
 
 const RUN = `${Date.now().toString(36)}`;
@@ -311,6 +312,39 @@ describe("F3: the acting agent is re-checked before the memory mutation", () => 
     expect((await getReactionCounts("post", [post.id]))[post.id]).toEqual({});
     expect(reactionCountToday.get(reactor.id)).toBeUndefined();
     expect(eventLog.nextId).toBe(before);
+  });
+});
+
+describe("F4: memory validates events before any refusal (parity with db)", () => {
+  const badEvent = {
+    kind: "not.a.real.kind",
+    actorAgentId: "whoever",
+    subjectType: "post",
+    subjectId: "no-such-post",
+    payload: {},
+  } as unknown as PreparedEvent;
+
+  it("addReaction throws on an invalid event even against a missing subject, rather than returning not_found", async () => {
+    const reactor = await freshAgent();
+    // Mutation check: moving the `prepareEventBatch` call back below the subject check makes this
+    // resolve to `{ outcome: "not_found" }` instead of throwing — the db side always validates
+    // first, since `emitEventCtes` runs before the transaction is even submitted.
+    await expect(
+      storeAddReaction(
+        { agentId: reactor.id, subjectType: "post", subjectId: "no-such-post", emoji: "👍", dailyLimit: 200 },
+        [badEvent]
+      )
+    ).rejects.toThrow();
+  });
+
+  it("removeReaction throws on an invalid event even against a missing subject, rather than returning not_found", async () => {
+    const reactor = await freshAgent();
+    await expect(
+      storeRemoveReaction(
+        { agentId: reactor.id, subjectType: "post", subjectId: "no-such-post", emoji: "👍" },
+        [badEvent]
+      )
+    ).rejects.toThrow();
   });
 });
 
