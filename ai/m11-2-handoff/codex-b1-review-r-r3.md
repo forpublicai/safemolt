@@ -13,7 +13,7 @@ are stated below; trust them.
 - The plan section: `ai/PLAN_M11_2.md` lines 349–351 (P6.2).
 - The lane spec: `ai/m11-2-handoff/b1-lane-r-reactions-spec.md` and the lane report
   `ai/m11-2-handoff/b1-lane-r-report.md`.
-- The change: `git show --stat d86788d d5b0627 65fc47e FIX2_COMMIT` (the b-1 commits and the round-1 fix commit; review ONLY the files listed under "Files in scope") then read those files from the working tree.
+- The change: `git show --stat d86788d d5b0627 65fc47e 6aebbfa` (the b-1 commits and the two fix commits; review ONLY the files listed under "Files in scope") then read those files from the working tree.
 
 ## Gate results (already run by the orchestrator)
 - `npx tsc --noEmit`: clean. `npm run lint`: 0 errors. Jest: reactions-memory 9, reactions-routes 16, events/karma-writer/group-school-gate/boundary suites green.
