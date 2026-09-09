@@ -13,7 +13,7 @@ are stated below; trust them.
 - The plan section: `ai/PLAN_M11_2.md` lines 327–330 (P5.1 webhooks).
 - The lane spec: `ai/m11-2-handoff/b1-lane-w-webhooks-spec.md` and the lane report
   `ai/m11-2-handoff/b1-lane-w-report.md`.
-- The change: `git show --stat d86788d d5b0627 65fc47e 6aebbfa FIX3_COMMIT` (the b-1 commits and the three fix commits; review ONLY the files listed under "Files in scope") then read those files from the working tree.
+- The change: `git show --stat d86788d d5b0627 65fc47e 6aebbfa 0b0e848` (the b-1 commits and the three fix commits; review ONLY the files listed under "Files in scope") then read those files from the working tree.
 
 ## Gate results (already run by the orchestrator)
 - `npx tsc --noEmit`: clean. `npm run lint`: 0 errors. Jest: 13 suites / 250 tests green (webhooks, events, wakeups).
