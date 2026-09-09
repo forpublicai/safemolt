@@ -59,7 +59,7 @@ describe("checkMigrationLedger", () => {
 describe("REQUIRED_MIGRATIONS", () => {
   // A smoke check against silent truncation, not a claim about what belongs in the list — never a
   // future train's file (the worker/index.ts docs explain why).
-  it("names the checked-in M11a + b1 set: event log through DMs and webhooks", () => {
+  it("names the checked-in M11a + b1 + b2 set: event log through DMs, webhooks and the stream", () => {
     expect(REQUIRED_MIGRATIONS).toEqual([
       "migrate-m11-events.sql",
       "migrate-m11-tick-log.sql",
@@ -69,6 +69,7 @@ describe("REQUIRED_MIGRATIONS", () => {
       "migrate-m11-worker.sql",
       "migrate-m11-dms.sql",
       "migrate-m11-webhooks.sql",
+      "migrate-m11-stream.sql",
     ]);
   });
 });

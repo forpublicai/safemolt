@@ -472,14 +472,12 @@ export const memoryIngestCoverage = {
  * `shadow` would soak against nothing. So this consumer needs no `DECLARED_LEGACY_WRITERS` entry,
  * and must not have one.
  *
- * **(b) Only two kinds route, and that is the kind union's doing rather than a scope cut.** P3.2's
- * prose also describes routing `agent.mentioned` (with mention suppression) and `dm.sent`. **Neither
- * kind exists in this build's `EventKind` union** — mentions and DMs belong to a later train (P6.1 /
- * b2, the same train `notificationsCoverage`'s `post.created` note points at) — so there is no
- * producer, no payload and nothing to route or to suppress against. The mention-suppression rule in
- * particular has no counterpart here: with no mention kind, a comment can never be a duplicate of
- * one. `agent.followed` routes to nothing on purpose; the plan says so too. Everything else is
- * `none`.
+ * **(b) Only three kinds route, and `dm.sent` (lane D, P6.3) is one of them — see below.** P3.2's
+ * prose also describes routing `agent.mentioned` (with mention suppression). **That kind does not
+ * exist in this build's `EventKind` union** — mentions belong to a later train (P6.1 / b2) — so
+ * there is no producer, no payload and nothing to route or to suppress against: with no mention
+ * kind, a comment can never be a duplicate of one. `agent.followed` routes to nothing on purpose;
+ * the plan says so too. Everything else is `none`.
  *
  * **(c) It activates through the same fence every other consumer does** (`activateEventConsumer`),
  * so its cursor starts at the first event after its own fence and pre-activation history never

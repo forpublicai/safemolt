@@ -6,11 +6,12 @@
  *
  *  - concurrent sends between the same pair get DISTINCT, increasing seqs, and commit order equals
  *    actual resolution order — proven with a real held-lock barrier, not wall-clock racing
- *    (codex round 2, F2; see `holdPairRow`/`waitForWaiterCount` below);
+ *    (codex round 2, F2; see `withHeldPairRow`/`stageRace` below);
  *  - a send racing a block on the SAME pair, both genuinely queued behind a barrier, resolves to
  *    exactly one self-consistent outcome, never both "sent" and "blocked-before-it";
  *  - a block, once it lands, refuses BOTH directions;
- *  - a read granted before a held send commits does not count the in-flight message as read;
+ *  - a read granted before a held send commits does not count the in-flight message as read, and a
+ *    REAL held send is what a second send and a read genuinely queue behind (round 4, F2);
  *  - a withdrawn sender is refused as `sender_gone`, never a 500 (F4);
  *  - a withdrawn participant's history survives, tombstoned.
  *
@@ -35,7 +36,7 @@ import type { ExecutionGuard } from "@/lib/store/execution-guard";
 
 type SendDmOutcome = SendDmResult;
 
-import { pidOf } from "./helpers/concurrency";
+import { pidOf, waitersOn } from "./helpers/concurrency";
 import { closeIntegrationConnections, pgClient, pgPool } from "./helpers/db";
 
 const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
@@ -127,37 +128,43 @@ async function withHeldPairRow<T>(
 }
 
 /**
- * How many backends are blocked, directly or transitively, on a query carrying `PAIR_LOCK_MARKER`.
- *
- * NOT `waitersOn(holderPid)`: PostgreSQL QUEUES row-lock waiters, so with two contenders the SECOND
- * is blocked by the FIRST WAITER, not by the original holder — `pg_blocking_pids` reports only the
- * direct blocker (m11-2-u3f-core-classes.test.ts's own `enrollInClass` race hit the identical
- * shape). Counting every marker-bearing backend that is blocked by ANYONE catches the whole chain.
+ * Which backend, if any, is blocked BY `blockerPid` specifically (marker-scoped, `excludePid`
+ * skipped) — round 4, F3: the prior version counted every marker-bearing backend blocked by
+ * ANYONE, so an unrelated blocked DM query could satisfy the count before the real contender ever
+ * reached the pair lock. This identifies the contender's own backend and its actual dependency.
  */
-async function waitForBlockedCount(count: number, timeoutMs = 5000): Promise<number> {
+async function waitForContenderBehind(
+  blockerPid: number,
+  excludePid: number | null,
+  timeoutMs = 5000
+): Promise<number> {
   const deadline = Date.now() + timeoutMs;
-  let blocked = 0;
   while (Date.now() < deadline) {
-    const { rows } = await pgPool().query<{ n: number }>(
-      `SELECT count(*)::int AS n FROM pg_stat_activity
-       WHERE datname = current_database() AND pid <> pg_backend_pid()
-         AND cardinality(pg_blocking_pids(pid)) > 0
-         AND query LIKE $1`,
-      [`%${PAIR_LOCK_MARKER}%`]
-    );
-    blocked = rows[0].n;
-    if (blocked >= count) return blocked;
+    const waiters = (await waitersOn(blockerPid, PAIR_LOCK_MARKER)).filter((w) => w.pid !== excludePid);
+    if (waiters.length > 0) return waiters[0].pid;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  return blocked;
+  throw new Error(`no backend blocked by pid ${blockerPid} within ${timeoutMs}ms`);
+}
+
+/** Like `waitForContenderBehind`, but waits for `count` distinct backends behind `blockerPid`. */
+async function waitForContenderCountBehind(blockerPid: number, count: number, timeoutMs = 5000): Promise<number[]> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const waiters = await waitersOn(blockerPid, PAIR_LOCK_MARKER);
+    if (waiters.length >= count) return waiters.map((w) => w.pid);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`fewer than ${count} backends blocked by pid ${blockerPid} within ${timeoutMs}ms`);
 }
 
 /**
  * Stage two contenders so Postgres's FIFO row-lock queue — not wall-clock scheduling — decides the
- * winner: start `first`, prove it alone is queued behind the holder, THEN start `second` and prove
- * it queues too, and only then release. `first` is thereby guaranteed to commit before `second`, a
- * fact this function establishes rather than a guess from which promise resolves first in JS
- * (codex round 3, finding 2 — response order is never the same thing as commit order).
+ * winner: start `first`, prove ITS OWN backend waits on THIS holder, THEN start `second` and prove
+ * ITS backend waits on `first`'s (PostgreSQL queues row-lock waiters, so the second contender's
+ * direct blocker is the first waiter, never the original holder), and only then release. `first` is
+ * thereby guaranteed to commit before `second` (codex round 4, F3 — by backend, not by a count that
+ * an unrelated blocked query could also satisfy).
  */
 async function stageRace<A, B>(
   agentLow: string,
@@ -165,15 +172,15 @@ async function stageRace<A, B>(
   first: () => Promise<A>,
   second: () => Promise<B>
 ): Promise<{ firstResult: A; secondResult: B }> {
-  const staged = await withHeldPairRow(agentLow, agentHigh, async () => {
+  const staged = await withHeldPairRow(agentLow, agentHigh, async (holderPid) => {
     const firstPromise = first();
-    const firstCount = await waitForBlockedCount(1);
+    const firstPid = await waitForContenderBehind(holderPid, null);
     const secondPromise = second();
-    const secondCount = await waitForBlockedCount(2);
-    return { firstPromise, secondPromise, firstCount, secondCount };
+    const secondPid = await waitForContenderBehind(firstPid, firstPid);
+    return { firstPromise, secondPromise, firstPid, secondPid };
   });
-  expect(staged.firstCount).toBeGreaterThanOrEqual(1);
-  expect(staged.secondCount).toBeGreaterThanOrEqual(2);
+  expect(staged.firstPid).toBeGreaterThan(0);
+  expect(staged.secondPid).toBeGreaterThan(0);
   const [firstResult, secondResult] = await Promise.all([staged.firstPromise, staged.secondPromise]);
   return { firstResult, secondResult };
 }
@@ -282,6 +289,49 @@ describe("F3 — a refused guard on a fresh pair commits no conversation", () =>
 
     const events = await pgPool().query(`SELECT id FROM events WHERE kind = 'dm.sent' AND actor_agent_id = $1`, [a.id]);
     expect(events.rows).toHaveLength(0);
+  });
+});
+
+describe("F4 (round 4) — a rate-limited first-ever send leaves no empty pair", () => {
+  it("statement 1's fresh pair is removed when statement 2's claim is refused", async () => {
+    const a = await seedAgent();
+    const b = await seedAgent();
+    // The sender is already inside their own cooldown — `claim`'s WHERE refuses, `rate_ok` reads 0,
+    // and this is the pair's FIRST-EVER message, so statement 1 (this call) is what created it.
+    await pgPool().query(
+      `INSERT INTO agent_rate_limits (agent_id, last_comment_at, comment_count_date, comment_count)
+       VALUES ($1, $2, CURRENT_DATE, 1)`,
+      [a.id, Date.now()]
+    );
+
+    const result = await sendDm({ senderId: a.id, recipientId: b.id, content: "should not create a pair" });
+    expect(result.outcome).toBe("rate_limited");
+
+    const { agentLow, agentHigh } = canonicalPair(a.id, b.id);
+    const conv = await pgPool().query(`SELECT id FROM dm_conversations WHERE agent_low = $1 AND agent_high = $2`, [
+      agentLow,
+      agentHigh,
+    ]);
+    expect(conv.rows).toHaveLength(0);
+  });
+
+  it("an EXISTING conversation's block state survives the same refusal", async () => {
+    const a = await seedAgent();
+    const b = await seedAgent();
+    // A pre-existing pair, already blocked by b — statement 1's `ON CONFLICT DO NOTHING` no-ops,
+    // so statement 3 must never match this row (its real id was never this call's fresh id).
+    expect(await setDmBlock(b.id, a.id, true)).toBe(true);
+
+    const result = await sendDm({ senderId: a.id, recipientId: b.id, content: "refused either way" });
+    expect(result.outcome).toBe("blocked");
+
+    const { agentLow, agentHigh } = canonicalPair(a.id, b.id);
+    const conv = await pgPool().query(
+      `SELECT low_blocked_high, high_blocked_low FROM dm_conversations WHERE agent_low = $1 AND agent_high = $2`,
+      [agentLow, agentHigh]
+    );
+    expect(conv.rows).toHaveLength(1);
+    expect(conv.rows[0].low_blocked_high || conv.rows[0].high_blocked_low).toBe(true);
   });
 });
 
@@ -435,11 +485,12 @@ describe("both-direction rejection once blocked", () => {
 
 describe("mark-read racing a held send — a real held-lock barrier", () => {
   /**
-   * `markDmRead` is queued FIRST (confirmed via `waitForWaiterCount` before the send even starts),
-   * so Postgres's FIFO row-lock queue grants it before the send — deterministic, not a guess: the
-   * cursor is set from `last_message_seq` as it stood BEFORE the send's `bumped` CTE committed, so
-   * the still-in-flight message must stay unread (codex round 2, F2 — replaces a same-sender burst
-   * that raced its OWN cooldown, since a rate-limited attempt resolving early proved nothing).
+   * `markDmRead` is staged first and proven blocked on the raw holder, THEN the send is staged and
+   * proven blocked on the READ (PostgreSQL queues row-lock waiters FIFO — round 4, F3: two
+   * contenders started at once cannot both be "directly blocked by the holder", since whichever
+   * reaches the lock manager first becomes the other's blocker). The read is thereby guaranteed to
+   * be granted first, so its cursor is set from `last_message_seq` as it stood BEFORE the send's
+   * `bumped` CTE committed — the still-in-flight message must stay unread (codex round 2, F2).
    */
   it("a read granted before a held send commits does not count the in-flight message as read", async () => {
     const a = await seedAgent();
@@ -451,22 +502,75 @@ describe("mark-read racing a held send — a real held-lock barrier", () => {
     await clearRateWindow(a.id);
 
     const { agentLow, agentHigh } = canonicalPair(a.id, b.id);
-    const { pRead, pSend, firstCount, secondCount } = await withHeldPairRow(agentLow, agentHigh, async () => {
-      const read = markDmRead(b.id, a.id);
-      const first = await waitForBlockedCount(1);
-      const send = sendDm({ senderId: a.id, recipientId: b.id, content: "still in flight" });
-      const second = await waitForBlockedCount(2);
-      return { pRead: read, pSend: send, firstCount: first, secondCount: second };
-    });
-    expect(firstCount).toBeGreaterThanOrEqual(1);
-    expect(secondCount).toBeGreaterThanOrEqual(2);
-
-    const [readResult, sendResult] = await Promise.all([pRead, pSend]);
+    const { firstResult: readResult, secondResult: sendResult } = await stageRace(
+      agentLow,
+      agentHigh,
+      () => markDmRead(b.id, a.id),
+      () => sendDm({ senderId: a.id, recipientId: b.id, content: "still in flight" })
+    );
     expect(readResult).toBe(true);
     expect(sendResult.outcome).toBe("inserted");
 
     // The read's cursor predates the send's commit — the new message is excluded, not "stranded".
     expect(await countUnreadDms(b.id)).toBe(1);
+  });
+});
+
+/**
+ * F2 (round 4) — the late-commit read guarantee, proven against a REAL send, chained (round 4, F3).
+ *
+ * The test above proves a raw connection's hold is respected. This one makes a REAL `sendDm` call
+ * the thing everything else queues behind: it is itself queued by the raw holder, and a second send
+ * plus a read are then proven to queue behind THAT send's own backend — never the raw holder
+ * directly — so what releases first is provably the real send's own commit, and the final state
+ * (seqs, cursor) is read only after every contender has actually run.
+ */
+describe("F2 (round 4) — a real held send is what a second send and a read genuinely queue behind", () => {
+  it("a second send and a read both queue behind a real send, and see its committed state", async () => {
+    const a = await seedAgent();
+    const b = await seedAgent();
+    // One prior message, read, so the cursor starts above zero — the same seed the test above uses.
+    expect((await sendDm({ senderId: a.id, recipientId: b.id, content: "seen" })).outcome).toBe("inserted");
+    expect(await markDmRead(b.id, a.id)).toBe(true);
+    await clearRateWindow(a.id);
+
+    const { agentLow, agentHigh } = canonicalPair(a.id, b.id);
+    const staged = await withHeldPairRow(agentLow, agentHigh, async (holderPid) => {
+      // The REAL send under test — not a stand-in connection — queues behind the raw holder.
+      const heldSend = sendDm({ senderId: a.id, recipientId: b.id, content: "held behind the raw lock" });
+      const heldPid = await waitForContenderBehind(holderPid, null);
+
+      const secondSend = sendDm({ senderId: b.id, recipientId: a.id, content: "queued behind the real send" });
+      const read = markDmRead(b.id, a.id);
+      // Both queue behind the REAL SEND specifically, never the raw holder directly.
+      const waiterPids = await waitForContenderCountBehind(heldPid, 2);
+      return { heldSend, secondSend, read, waiterPids };
+    });
+    expect(staged.waiterPids.length).toBeGreaterThanOrEqual(2);
+
+    const [heldResult, secondResult, readResult] = await Promise.all([staged.heldSend, staged.secondSend, staged.read]);
+    expect(heldResult.outcome).toBe("inserted");
+    expect(secondResult.outcome).toBe("inserted");
+    expect(readResult).toBe(true);
+
+    const { rows: messages } = await pgPool().query<{ seq: string }>(
+      `SELECT m.seq FROM dm_messages m JOIN dm_conversations c ON c.id = m.conversation_id
+       WHERE c.agent_low = $1 AND c.agent_high = $2 ORDER BY m.seq ASC`,
+      [agentLow, agentHigh]
+    );
+    // Three distinct, increasing seqs: the seed, the held send, and the second send.
+    // `seq` is a `bigint` column — `pg` returns it as a string, unlike `pgPool()`'s other int casts.
+    expect(messages.map((m) => Number(m.seq))).toEqual([1, 2, 3]);
+
+    const conv = await pgPool().query<{ low_last_read_seq: string; high_last_read_seq: string }>(
+      `SELECT low_last_read_seq, high_last_read_seq FROM dm_conversations WHERE agent_low = $1 AND agent_high = $2`,
+      [agentLow, agentHigh]
+    );
+    // The reader's cursor was set no earlier than the real send's own commit — never stuck at 1, the
+    // pre-hold value (whether it also captured the second send's seq 3 depends on FIFO order between
+    // two DIFFERENT contenders behind the same send, which this test does not pin).
+    const readerCursor = Number(agentLow === b.id ? conv.rows[0].low_last_read_seq : conv.rows[0].high_last_read_seq);
+    expect(readerCursor).toBeGreaterThanOrEqual(2);
   });
 });
 

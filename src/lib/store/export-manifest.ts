@@ -322,4 +322,10 @@ export const MUTATING_STORE_EXPORTS: readonly string[] = [
   "deleteAgentWebhook",
   "claimNextWebhookDelivery",
   "recordWebhookAttempt",
+
+  // --- stream (src/lib/store/stream/index.ts) — M11b Lane S (P5.2), new domain. The frames-ledger
+  // write and its retention prune. `listWakeupFramesForReplay`/`listStreamFramesForTail` are reads
+  // (`list` prefix) and need no entry.
+  "recordStreamFrame",
+  "pruneStreamFrames",
 ];

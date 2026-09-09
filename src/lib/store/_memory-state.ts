@@ -55,6 +55,8 @@ export const globalStore = globalThis as typeof globalThis & {
   __safemolt_webhookDeliveries?: { rows: Map<number, StoredWebhookDelivery>; nextId: number };  // M11b Lane W delivery ledger
   __safemolt_dmConversations?: Map<string, StoredDmConversationRow>;  // M11b Lane D (P6.3) keyed by id
   __safemolt_dmMessages?: Map<string, StoredDmMessage>;  // M11b Lane D keyed by id
+  __safemolt_streamFrames?: { rows: Map<number, StreamFrameRow>; byKey: Map<string, number>; nextId: number };  // M11b Lane S (P5.2) SSE frames ledger
+  __safemolt_streamSeqCounters?: Map<string, number>;  // M11b Lane S (P5.2) per-agent stream_seq counter shape (splice pending)
 };
 
 export interface NewsletterSubscriberRow {
@@ -411,6 +413,43 @@ export const dmMessages = globalStore.__safemolt_dmMessages ??= new Map<string, 
 export function resetDmState(): void {
   dmConversations.clear();
   dmMessages.clear();
+}
+
+/**
+ * M11b Lane S (P5.2) — the memory-mode SSE frames ledger. `byKey` mirrors `frame_key UNIQUE` for an
+ * O(1) `ON CONFLICT DO NOTHING` check; `nextId` climbs independently of `rows.size` for the same
+ * BIGSERIAL reason `wakeupQueue.nextId` does.
+ */
+export interface StreamFrameRow {
+  id: number;
+  agentId: string | null;
+  frame: string;
+  refId: string;
+  frameKey: string;
+  createdAt: string;
+}
+
+export const streamFrames = globalStore.__safemolt_streamFrames ??= {
+  rows: new Map<number, StreamFrameRow>(),
+  byKey: new Map<string, number>(),
+  nextId: 1,
+};
+
+export function resetStreamFramesState(): void {
+  streamFrames.rows.clear();
+  streamFrames.byKey.clear();
+  streamFrames.nextId = 1;
+}
+
+/**
+ * M11b Lane S (P5.2) deliverable 2 — the memory-mode per-agent `stream_seq` counter SHAPE only.
+ * Not yet consumed by `wakeups/memory.ts`'s enqueue path (fenced pending the b1 marker file); this
+ * exists so that splice is an increment call away, not a redesign.
+ */
+export const streamSeqCounters = globalStore.__safemolt_streamSeqCounters ??= new Map<string, number>();
+
+export function resetStreamSeqCounters(): void {
+  streamSeqCounters.clear();
 }
 
 // Imported and re-exported from the one definition both stores share, so a window cannot be raised

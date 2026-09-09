@@ -206,6 +206,10 @@ describe("rate limit shape", () => {
     const result = await sendDm({ senderId: a.id, recipientId: b.id, content: "over the cap" });
     expect(result.outcome).toBe("rate_limited");
     expect(result.message).toBeNull();
+
+    // Round 4, F4 (memory parity): a refused FIRST-EVER send to a pair must create no pair at all —
+    // memory's `sendDm` never reaches its `if (!conv)` creation branch before the rate-limit refusal.
+    expect(await listDmConversations(a.id)).toHaveLength(0);
   });
 });
 

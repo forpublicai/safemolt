@@ -550,6 +550,16 @@ export interface MentionNotificationInput {
 }
 
 /**
+ * Codex round 4 F1: a named comment source must still be live and point at the given post — an
+ * author withdrawal that removes it mid-drain must leave no dead-link notification.
+ */
+function mentionCommentSourceLive(commentId: string | undefined, postId: string): boolean {
+  if (!commentId) return true;
+  const comment = comments.get(commentId);
+  return Boolean(comment && comment.postId === postId);
+}
+
+/**
  * Content-anchored on the RECIPIENT's own row AND the live post (codex round 1, F1) — a withdrawn
  * mentioned agent has nobody to notify, and a post deleted after the consumer's pre-read must not
  * leave a dead-link notification for `deleteNotificationsAnchoredToPost`'s twin to have missed.
@@ -561,6 +571,7 @@ function buildMentionNotification(input: MentionNotificationInput): CreateNotifi
   if (!recipient || isPubliclyHiddenAgent(recipient)) return null;
   const post = posts.get(input.postId);
   if (!post || post.deletedAt) return null;
+  if (!mentionCommentSourceLive(input.commentId, input.postId)) return null;
   const actorRow = agents.get(input.actorAgentId);
   const href = input.commentId
     ? `/post/${input.postId}#comment-${input.commentId}`

@@ -483,13 +483,19 @@ export async function setAgentUnclaimed(id: string): Promise<void> {
 }
 
 /**
+ * Codex round 4 F3/F4: one predicate, comparing `metadata->'system'`/`'test'` as JSON booleans (not
+ * text, which made the string `"true"` read the same as the boolean), defined once and reused
+ * across every branch through the parameterized `sql!(text, params)` form — a tagged template
+ * cannot compose a shared fragment, only `${}` bound values.
+ */
+const HIDDEN_AGENT_PREDICATE = `NOT ((metadata->'system') IS NOT DISTINCT FROM 'true'::jsonb OR (metadata->'test') IS NOT DISTINCT FROM 'true'::jsonb OR (metadata->>'source') IS NOT DISTINCT FROM 'test' OR name ~* '${TEST_NAME_PATTERN.source}')`;
+
+/**
  * Codex round 2 F1: `filter: "active_now"` narrows INSIDE the query, before `LIMIT 500` — the
  * predicate ran in JS after the limit, so 500 dormant agents ahead of one active one hid it.
  * Codex round 3 F1: the route's hidden-agent exclusion ran on the same already-limited rows, so
- * 500 hidden active agents ahead of one visible one hid it too — the `NOT (...)` below is the SQL
- * twin of `isPubliclyHiddenAgent`, applied only where `active_now` already narrows in SQL.
- * Six literal branches (sort x filter): the neon tag binds every `${}` as a parameter, so a raw
- * WHERE fragment cannot be composed in and each combination needs its own template.
+ * 500 hidden active agents ahead of one visible one hid it too — `HIDDEN_AGENT_PREDICATE` is the
+ * SQL twin of `isPubliclyHiddenAgent`, applied only where `active_now` already narrows in SQL.
  */
 export async function listAgents(
     sort: "recent" | "points" | "followers" = "recent",
@@ -498,20 +504,28 @@ export async function listAgents(
 ): Promise<StoredAgent[]> {
     const activeNow = filter === "active_now";
     const activeNowSecs = Math.ceil(ACTIVE_NOW_THRESHOLD_MS / 1000);
-    const hiddenNamePattern = TEST_NAME_PATTERN.source;
     let rows: Record<string, unknown>[];
     if (sort === "points") {
         rows = activeNow
-            ? await sql!`SELECT * FROM agents WHERE last_active_at > NOW() - make_interval(secs => ${activeNowSecs}) AND NOT ((metadata->>'system') IS NOT DISTINCT FROM 'true' OR (metadata->>'test') IS NOT DISTINCT FROM 'true' OR (metadata->>'source') IS NOT DISTINCT FROM 'test' OR name ~* ${hiddenNamePattern}) ORDER BY points DESC LIMIT ${limit}`
+            ? await sql!(
+                  `SELECT * FROM agents WHERE last_active_at > NOW() - make_interval(secs => $1) AND ${HIDDEN_AGENT_PREDICATE} ORDER BY points DESC LIMIT $2`,
+                  [activeNowSecs, limit]
+              )
             : await sql!`SELECT * FROM agents ORDER BY points DESC LIMIT ${limit}`;
     } else if (sort === "followers") {
         // Don't reference x_follower_count in SQL so this works before migration; sort in JS
         rows = activeNow
-            ? await sql!`SELECT * FROM agents WHERE is_claimed = true AND last_active_at > NOW() - make_interval(secs => ${activeNowSecs}) AND NOT ((metadata->>'system') IS NOT DISTINCT FROM 'true' OR (metadata->>'test') IS NOT DISTINCT FROM 'true' OR (metadata->>'source') IS NOT DISTINCT FROM 'test' OR name ~* ${hiddenNamePattern}) LIMIT ${limit}`
+            ? await sql!(
+                  `SELECT * FROM agents WHERE is_claimed = true AND last_active_at > NOW() - make_interval(secs => $1) AND ${HIDDEN_AGENT_PREDICATE} LIMIT $2`,
+                  [activeNowSecs, limit]
+              )
             : await sql!`SELECT * FROM agents WHERE is_claimed = true LIMIT ${limit}`;
     } else {
         rows = activeNow
-            ? await sql!`SELECT * FROM agents WHERE last_active_at > NOW() - make_interval(secs => ${activeNowSecs}) AND NOT ((metadata->>'system') IS NOT DISTINCT FROM 'true' OR (metadata->>'test') IS NOT DISTINCT FROM 'true' OR (metadata->>'source') IS NOT DISTINCT FROM 'test' OR name ~* ${hiddenNamePattern}) ORDER BY created_at DESC LIMIT ${limit}`
+            ? await sql!(
+                  `SELECT * FROM agents WHERE last_active_at > NOW() - make_interval(secs => $1) AND ${HIDDEN_AGENT_PREDICATE} ORDER BY created_at DESC LIMIT $2`,
+                  [activeNowSecs, limit]
+              )
             : await sql!`SELECT * FROM agents ORDER BY created_at DESC LIMIT ${limit}`;
     }
     const agents = (rows as Record<string, unknown>[]).map(rowToAgent);

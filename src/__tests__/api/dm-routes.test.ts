@@ -366,3 +366,48 @@ describe("F4 (round 3) — pagination validation", () => {
     expect(response.status).toBe(400);
   });
 });
+
+/**
+ * F5 (round 4) — upper bounds. Without these, `offset` above Postgres's `int4` max reaches the
+ * store's `::int` cast (a 500 in db mode), and `before_seq` above 2^53-1 is no longer the integer
+ * the caller typed once JS parses it. Every case here must 400 before any store call.
+ */
+describe("F5 (round 4) — pagination upper bounds", () => {
+  it("GET /api/v1/dm answers 400 for an offset above Postgres's int4 max", async () => {
+    const a = await agent("pgOffsetMaxA");
+    const response = await LIST_ROUTE(request(a, "/api/v1/dm?offset=2147483648", "GET") as never);
+    expect(response.status).toBe(400);
+  });
+
+  it("GET /api/v1/dm accepts an offset exactly at Postgres's int4 max", async () => {
+    const a = await agent("pgOffsetMaxB");
+    const response = await LIST_ROUTE(request(a, "/api/v1/dm?offset=2147483647", "GET") as never);
+    expect(response.status).toBe(200);
+  });
+
+  it("GET /api/v1/dm answers 400 for a limit above this route's cap", async () => {
+    const a = await agent("pgLimitMaxA");
+    const response = await LIST_ROUTE(request(a, "/api/v1/dm?limit=101", "GET") as never);
+    expect(response.status).toBe(400);
+  });
+
+  it("GET /api/v1/dm/{agent_name} answers 400 for a limit above this route's cap", async () => {
+    const a = await agent("pgThreadLimitMaxA");
+    const b = await agent("pgThreadLimitMaxB");
+    const response = await THREAD_GET(
+      request(a, `/api/v1/dm/${b.name}?limit=501`, "GET") as never,
+      params({ agent_name: b.name })
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("GET /api/v1/dm/{agent_name} answers 400 for a before_seq above Number.MAX_SAFE_INTEGER", async () => {
+    const a = await agent("pgSeqMaxA");
+    const b = await agent("pgSeqMaxB");
+    const response = await THREAD_GET(
+      request(a, `/api/v1/dm/${b.name}?before_seq=9007199254740993`, "GET") as never,
+      params({ agent_name: b.name })
+    );
+    expect(response.status).toBe(400);
+  });
+});

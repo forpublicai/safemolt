@@ -22,17 +22,13 @@ If the user asks you to plan a milestone, these are the steps to take.
   - Bias toward questions over guessing: if any high-impact ambiguity remains, do NOT plan yet—ask.
   - Once intent is stable, proceed with implementation planning...
   - Once intent is stable, keep asking until the spec is decision complete: approach, interfaces (APIs/schemas/I/O), data flow, edge cases/failure modes, testing + acceptance criteria, rollout/monitoring, and any migrations/compat constraints.
-4. Research milestone-relevant aspects of how `codex app-server` works and how to use it. These are your resources:
-   - Read the official documentation for `codex app-server` at fbsource/third-party/codex/main/codex-rs/app-server/README.md
-   - Read the official client at fbsource/third-party/codex/main/codex-rs/app-server-test-client/README.md
-   - Read as needed the source code implementation of `codex app-server` should we have questions about how it works, at fbsource/third-party/codex/main/codex-rs/app-server
-   - Reverse-engineer as needed OpenAI's Codex extension for VSCode, should we have questions about how they use `codex app-server`. The extension is stored in vsix/vsix.extension.js (for their extension) and vsix/vsix.index.js (for their webview). A user can download a fresh version by running scripts/fetch_vsix.sh (but an AI can't due to sandbox internet restructions).
-5. Research milestone-relevant aspects of how ClaudeMode does the work, starting from xplat/vscode/modules/dvsc-core/src/extension-host/casdk/ClaudeAgent.ts
+4. Research milestone-relevant aspects of SafeMolt's own codebase before planning changes to it. Read `CLAUDE.md` end to end (architecture, store/action invariants, file map) and the source of every domain module the milestone will touch (`src/lib/store/<domain>/`, `src/lib/actions/<domain>.ts`, the relevant `src/app/api/v1/**/route.ts`, `scripts/schema.sql`).
+5. Research how the immediately preceding milestone(s) executed and validated similar changes: read the relevant `PLAN_M{n}.md` sections, their `ai/validation/` artifacts, and any `ai/m11-2-handoff/*` or `ai/decisions/*` notes that record how a comparable chunk was cut over.
 6. Flesh out the milestone deliverables and validation steps as needed, if any are missing
    - You should have a focus on validation in everything you do.
    - The validation steps should be about how someone who implements this milestone can validate that their implementation is good
    - I outlined a few tentative validation steps for each milestone, but they're weak, and I expect you to find better validation for each milestone.
-   - Make sure to include the basics: typechecker clean and `arc lint` clean
+   - Make sure to include the basics: `npx tsc --noEmit` clean and `npm run lint` clean
 7. Develop your plan for the milestone and write it to a new PLAN_M{n}.md file.
    - A great plan is very detailed—intent- and implementation-wise—so that it can be handed to another engineer or agent to be implemented right away. It must be **decision complete**, where the implementer does not need to make any decisions. It must be **self-contained**: the implementor will know nothing of your research other than what's in your PLAN_M{n}.md file.
    - The plan must include validation steps, i.e. how someone implementing the plan will validate that they've done so well.
@@ -51,7 +47,7 @@ If the user asks you to plan a milestone, these are the steps to take.
 10. Ask the user any further important clarifying questions you have that arose as a result of your research and Claude-review.
    - Please postpone these questions until the end, after research and Claude-review. That way you will be able to do as much planning as possible without being slowed down by me.
    - Every course-correction the user gives you will likely represent a gap that should be added to LEARNINGS.md or ARCHITECTURE.md. And similarly for many clarifying questions. Please update with these learnings. The goal is so that, if you're asked to develop a plan in future, you won't even need to ask.
-   - Please be careful to follow the "learnings decision tree" -- LEARNINGS.md for durable engineering wisdom, ARCHITECTURE.md for things that will apply to CodexAgent.ts in its finished state, PLAN_M{n}.md for milestone-specific notes
+   - Please be careful to follow the "learnings decision tree" -- LEARNINGS.md for durable engineering wisdom, ARCHITECTURE.md for things that will apply to SafeMolt's platform architecture in its finished state, PLAN_M{n}.md for milestone-specific notes
 11. Present the plan for user review and signoff.
    - First, double-check that it is a completely self-contained handoff document.
 
@@ -105,7 +101,7 @@ If the user asks you to execute on a plan, these are the steps to take.
    - We aren't looking for "blocker vs non-blocker" decisions. Instead for every suggestion from Claude you must evaluate "will this improve my code? if so then modify your code, and if not then pre-emptively defend (in code comments) why not". And if you made modifications or comments, then circle back with Claude again.
    - Do NOT reference previous rounds when you invoke it: Claude does best if starting from scratch each round, so it can re-examine the whole ask from fundamentals. Note that each time you invoke Claude it has no memory of previous invocations, which is good and will help this goal! Also, avoid asking it something like "please review the updated files" since (1) you should not reference previous rounds implicitly or explicitly, (2) it has no understanding of what the updates were; it only knows about the current state of files+repo on disk.
 4. After implementation, do a "better engineering" phase
-   - Clean up LEARNINGS.md and ARCHITECTURE.md. If any information there is just restating information from other files then delete it. If it would belong better elsewhere, move it. Please be careful to follow the "learnings decision tree" -- LEARNINGS.md for durable engineering wisdom, ARCHITECTURE.md for things that will apply to CodexAgent.ts in its finished state, PLAN_M{n}.md for milestone-specific notes
+   - Clean up LEARNINGS.md and ARCHITECTURE.md. If any information there is just restating information from other files then delete it. If it would belong better elsewhere, move it. Please be careful to follow the "learnings decision tree" -- LEARNINGS.md for durable engineering wisdom, ARCHITECTURE.md for things that will apply to SafeMolt's platform architecture in its finished state, PLAN_M{n}.md for milestone-specific notes
    - You will have several Claude review tasks to do, below. You must launch all the following Claude review tasks in parallel, since they each take some time: prepare all their inputs, then execute them all in parallel. You should start addressing the first findings as soon as you get them, rather than waiting for all to be consolidated. You can be doing your own review while you wait for Claude.
    - (1) Review the code for correctness. Also ask Claude to evaluate this.
    - (2) Validate whether work obeys the codebase style guidelines in AGENTS.md. Also ask Claude to evaluate this. The user is INSISTENT that they must be obeyed.
@@ -146,3 +142,33 @@ Build class and evaluation templates where videos, images, slides, and other vis
 ### Agent Labor Markets
 
 Explore when credentials, affiliation, signaling, and career-office support matter for agents, agent frameworks, and buyers of agent labor.
+
+### M10 deferred items (absorbed at M11-2 P7.4)
+
+- Dashboard frontend consolidation: `dashboardFetch` + `useDashboardResource`/`useDashboardMutation` (16 components, 42 copies of the fetch/error pattern); class pages server-data-first like `evaluations/[sip]`; shared `EvaluationResultView`; `formatDate` canonicalization; `AgentOnboardingWizard` migration to `safemolt-*` tokens; per-class content branches (`isSethFreyClass`) moved into class data.
+- Migrate `src/app/api/dashboard/*` routes onto the B1 wrapper family (a session-auth variant).
+- Memory-ingest prune cost (O(audience × corpus) scan per post) — make pruning periodic/count-gated.
+- Optional: JSON-schema validation of API responses against openapi.json in CI (pending OQ-7).
+- Optional: playground world-state as a real DB-backed feature (M9's open question; only if the mechanic should exist).
+
+### M11 backlog additions (absorbed at M11-2 P7.4)
+
+- Encrypt-at-rest for API keys and webhook secrets (Decision 12).
+- DM report/moderation endpoint + owner dashboard DM reader (OQ-5 ships policy/docs in M11b, the surface lands here); retention policy revisit.
+- Unify about-timeline reactions with content reactions.
+- Vector-provider metadata filtering on semantic query.
+- Ingest recipient ledger (source/chunk × recipient) + ledger-driven deletion cleanup — closes the ex-audience residual documented in P1.1.
+- Canonical mention handle (`agents.handle`) split from display name: derive/backfill, unique case-insensitive index, registration validation — unfreezes P6.1's unmentionable legacy names and kills prefix capture.
+- Events → ATProto PDS projection (if reopened).
+- Computed hot-score column + index at scale.
+- Worker digests ("what you missed") as a wakeup reason.
+- `dependency-cruiser` boundary enforcement (OQ-7).
+- Migrate remaining crons fully into the worker after proven uptime (delete the degraded path deliberately).
+
+### Cleanup-1 still-open items (absorbed at M11-2 P7.4, from the archived `ai/archive/cleanup-1.md`)
+
+- File splits for `session-manager.ts` / `evaluations/db.ts` / `classes/db.ts`, deliberately deferred: only worth doing if navigation pain shows up in practice (a function group confusing in review, genuine reuse outside its file, or a need for a per-file test surface). The archived plan records a worked-out 4/4/3-file split shape for when that day comes.
+- Unified `Conversation` primitive across classes, evaluations, and playground sessions (shared types/helpers only, not a shared schema) — revisit only if the three domains have actually converged in practice.
+- `store-types.ts` per-domain split (`src/lib/store/types/<domain>.ts`) — organizational tidiness, not a fix for a real problem; low value, low risk.
+- `memory-service.ts` internal split + memory API surface shrink (511 lines, 22 exported symbols) — blocked on a platform-experience decision (the audited "slash the surface to 2 endpoints" option) that was never written up as its own doc; do not open a refactor PR against this file until that product decision is made.
+- `scripts/schema.sql` snapshot/squash from a production `pg_dump` (plus seed extraction and `MIGRATION_FILES` archival split) — only worth it if cold-boot migration time becomes a real complaint; the fresh-DB bootstrap runs in seconds today.

@@ -1,7 +1,7 @@
 /**
  * Builds the GET /api/v1/agents/me/home payload.
  *
- * Scope rules (see ai/agent-ux-plans/02-home-identity-trust.md):
+ * Scope rules (see ai/archive/agent-ux-plans/02-home-identity-trust.md):
  * - Sections owned by later chunks ship with `{ items: [], unavailable_reason }`.
  *   Do not duplicate drift-prone producer logic here.
  * - Caps are enforced before serialization; the route never has to clamp.

@@ -266,6 +266,63 @@ describe("runPulseBatch — dm: a read does not end the turn, a reply in the sam
 });
 
 /**
+ * Lane D fix round 4, F1 — a refused NON-terminal call is fence loss too, not an ordinary decline.
+ *
+ * `read_dm_thread` is non-terminal, so `beforeTerminalTool` never runs for it — a stale claim's
+ * `markDmRead` guard refusal is the only signal available, and before this fix it was discarded: the
+ * model then declining to call anything else fell into the `!terminal` branch, which stamps
+ * `recordSkip`'s cooldown on an agent this runner no longer owns.
+ */
+describe("runPulseBatch — dm: a refused non-terminal read is fence loss, not an ordinary skip", () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  it("a stale claim's read_dm_thread refusal writes no loop state and completes nothing", async () => {
+    const author = await agent("dmStale");
+    const other = await agent("dmStaleOther");
+    await setLoopEnabled(author.id, true);
+    const sent = await storeSendDm({ senderId: other.id, recipientId: author.id, content: "hey there" });
+    expect(sent.outcome).toBe("inserted");
+
+    await enqueueWakeup({
+      agentId: author.id,
+      reason: "dm",
+      eventId: 900103,
+      payload: { other_agent_id: other.id },
+      delivery: "internal",
+    });
+    const wakeupId = (await getWakeupByAgentReasonEvent(author.id, "dm", 900103))!.id;
+    const before = { ...agentLoopState.get(author.id)! };
+
+    // Superseded mid-tick: by the time the LLM resolves with `read_dm_thread`, another runner holds
+    // this claim. The model then declines to call `send_dm` — no terminal tool ever executes.
+    const callLLM = jest
+      .fn()
+      .mockImplementationOnce(async () => {
+        wakeupQueue.rows.get(wakeupId)!.claimToken = "another-runners-token";
+        return {
+          content: null,
+          toolCalls: [{ id: "call_1", name: "read_dm_thread", arguments: { other_agent_name: other.name } }],
+        };
+      })
+      .mockResolvedValueOnce({ content: "nothing to add", toolCalls: [] });
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(1);
+
+    expect(result.results[0].outcome).toBe("skip");
+    // No cooldown bump: `recordSkip` must never run for a tick that lost its fence.
+    expect(agentLoopState.get(author.id)!).toEqual(before);
+    // The superseded runner's completion attempt matched zero rows — the new owner's claim stands.
+    const after = wakeupQueue.rows.get(wakeupId)!;
+    expect(after.claimToken).toBe("another-runners-token");
+    expect(after.completedAt).toBeNull();
+  });
+});
+
+/**
  * u6 stitch item 2 (g) — P3.2's "terminal tool invoked" must never be read as "acted".
  *
  * The runtime ends a narrow turn on a terminal call REGARDLESS of that call's `success` flag, and it

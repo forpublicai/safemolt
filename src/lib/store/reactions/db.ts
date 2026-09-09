@@ -43,19 +43,46 @@ interface AddReactionRow {
     guard_passed?: number;
 }
 
-/**
- * Statement 1 of `addReaction`: lock the live SUBJECT alone, no write (codex round 3, F2). Run
- * before the seed, so the seed's own actor-FK `FOR KEY SHARE` (statement 2) always comes AFTER
- * this — keeping the global order posts -> comments -> agents instead of a reaction seeding its
- * rate row (locking the agent) before it ever touches the post, which crossed a withdrawal's own
- * posts -> agents order and deadlocked (40P01).
- */
+/** Statement 1: lock the whole live subject (post, or post+comment) before the seed touches agents. */
 function subjectOnlyLockStatementText(subjectType: "post" | "comment"): string {
     return subjectType === "post"
         ? `/* race:b1r-add-post-lock */ SELECT id FROM posts WHERE id = $1 AND deleted_at IS NULL FOR SHARE`
-        : `/* race:b1r-add-post-lock */ SELECT p.id FROM posts p
-       WHERE p.id = (SELECT post_id FROM comments WHERE id = $1) AND p.deleted_at IS NULL
+        : `/* race:b1r-add-post-lock */ SELECT p.id, c.id FROM posts p
+       JOIN comments c ON c.post_id = p.id
+       WHERE c.id = $1 AND p.deleted_at IS NULL
        FOR SHARE`;
+}
+
+/** The seed's own FK (`agent_rate_limits.agent_id`): a withdrawn actor trips this, not a 500 (F3). */
+const ACTOR_RATE_LIMIT_FK = "agent_rate_limits_agent_id_fkey";
+function isActorForeignKeyViolation(error: unknown): boolean {
+    if (!error || typeof error !== "object") return false;
+    const failure = error as { code?: unknown; constraint?: unknown };
+    return failure.code === "23503" && failure.constraint === ACTOR_RATE_LIMIT_FK;
+}
+
+/**
+ * Runs `run`, translating the seed's own actor-FK violation into a refusal instead of throwing
+ * (F3) — split out so `addReaction`'s own branching stays under the complexity budget.
+ */
+async function runOrActorGone(run: () => Promise<unknown[]>): Promise<{ ok: true; results: unknown[] } | { ok: false }> {
+    try {
+        return { ok: true, results: await run() };
+    } catch (error) {
+        if (isActorForeignKeyViolation(error)) return { ok: false };
+        throw error;
+    }
+}
+
+/** Statement 2: seed the rate row, gated on the guard so a disabled runner creates nothing (F2). */
+function seedStatementText(guardCte: string | null): string {
+    const insert = `
+      /* race:b1r-seed-lock */
+      INSERT INTO agent_rate_limits (agent_id, reaction_count_date, reaction_count)
+      SELECT $1, CURRENT_DATE, 0${guardCte ? " WHERE EXISTS (SELECT 1 FROM guard)" : ""}
+      ON CONFLICT (agent_id) DO UPDATE SET reaction_count = agent_rate_limits.reaction_count
+    `;
+    return guardCte ? `WITH ${guardCte} ${insert}` : insert;
 }
 
 /**
@@ -101,13 +128,13 @@ function addReactionStatementText(subjectType: "post" | "comment", eventCtes: st
       ON CONFLICT (agent_id, subject_type, subject_id, emoji) DO NOTHING
       RETURNING *
     )`,
-        // The ONLY write to agent_rate_limits: rolls the day and adds 1 iff the insert landed.
+        // The ONLY write to agent_rate_limits, gated on `inserted` (F2): a duplicate, an over-cap
+        // call or a failed guard must roll no day and reset nothing, not just skip the +1.
         `rate_updated AS (
       UPDATE agent_rate_limits
-      SET reaction_count = (SELECT current_count FROM pre)
-            + (CASE WHEN EXISTS (SELECT 1 FROM inserted) THEN 1 ELSE 0 END),
+      SET reaction_count = (SELECT current_count FROM pre) + 1,
           reaction_count_date = CURRENT_DATE
-      WHERE agent_id = $1
+      WHERE agent_id = $1 AND EXISTS (SELECT 1 FROM inserted)
       RETURNING reaction_count
     )`,
     ];
@@ -123,10 +150,12 @@ function addReactionStatementText(subjectType: "post" | "comment", eventCtes: st
 }
 
 /**
- * Add a reaction: a three-statement `sql.transaction` (codex round 3, F2). Statement 1 locks the
- * live subject alone; statement 2 seeds+locks the rate row, whose actor FK now comes after the
- * subject lock; statement 3 is decisive and may re-take both locks for free. Events are rendered
- * — and validated — before any statement runs, so a bad event leaves no seed behind.
+ * Add a reaction: a three-statement `sql.transaction`. Statement 1 locks the whole live subject
+ * (post, or post+comment — F1) before statement 2's seed touches the actor's row, keeping the
+ * global order posts -> comments -> agents; statement 3 is decisive and re-takes both locks for
+ * free. The seed and the quota update are both gated (F2): a failed guard or a non-insert leaves
+ * `agent_rate_limits` untouched. The seed's own actor FK is translated to `not_found` (F3), and
+ * events are validated before any statement runs, so a bad event leaves no seed behind.
  */
 export async function addReaction(
     input: AddReactionInput,
@@ -139,25 +168,27 @@ export async function addReaction(
     // (mirrors `sendDm`/`createComment`).
     const guard = buildExecutionGuardCte(executionGuard, params.length + 1 + emitted.params.length);
     const eventCtes = emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : "";
+    // Numbered independently: statement 2 is its own placeholder namespace, starting at $2 (agentId is $1).
+    const seedGuard = buildExecutionGuardCte(executionGuard, 2);
 
-    const results = await sql!.transaction((txn) => [
-        txn(subjectOnlyLockStatementText(input.subjectType), [input.subjectId]),
-        // The no-op update targets `reaction_count`, never `agent_id` (codex round 2, F1): writing
-        // back the row's own key column forces Postgres's strongest tuple lock regardless of the
-        // explicit mode elsewhere, reopening the withdrawal deadlock the weaker mode avoids.
-        txn`
-      /* race:b1r-seed-lock */
-      INSERT INTO agent_rate_limits (agent_id, reaction_count_date, reaction_count)
-      VALUES (${input.agentId}, CURRENT_DATE, 0)
-      ON CONFLICT (agent_id) DO UPDATE SET reaction_count = agent_rate_limits.reaction_count
-    `,
-        txn(addReactionStatementText(input.subjectType, eventCtes, guard.cte), [
-            ...params,
-            ...emitted.params,
-            ...guard.params,
-        ]),
-    ]);
-    const row = (results[2] as AddReactionRow[])[0];
+    const attempt = await runOrActorGone(() =>
+        sql!.transaction((txn) => [
+            txn(subjectOnlyLockStatementText(input.subjectType), [input.subjectId]),
+            txn(seedStatementText(seedGuard.cte), [input.agentId, ...seedGuard.params]),
+            txn(addReactionStatementText(input.subjectType, eventCtes, guard.cte), [
+                ...params,
+                ...emitted.params,
+                ...guard.params,
+            ]),
+        ])
+    );
+    if (!attempt.ok) {
+        // The actor withdrew between the action's lookup and this statement (F3) — the same
+        // refusal memory gives for the identical race.
+        const counts = await getReactionCounts(input.subjectType, [input.subjectId]);
+        return { outcome: "not_found", counts: counts[input.subjectId] ?? {} };
+    }
+    const row = (attempt.results[2] as AddReactionRow[])[0];
 
     // Checked first, matching `sendDm`/`createComment`: it precedes every other refusal causally.
     if (executionGuard && Number(row?.guard_passed ?? 0) === 0) {

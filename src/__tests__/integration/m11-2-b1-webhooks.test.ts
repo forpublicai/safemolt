@@ -30,9 +30,12 @@ import {
 import { deleteAgent } from "@/lib/store/agents/db";
 import { registerWebhook } from "@/lib/actions/webhooks";
 import { deliverWakeup } from "@/lib/webhooks/deliver";
+import { notificationsConsumer } from "@/lib/events/consumers/notifications";
+import { drainEventConsumer } from "@/lib/store/events/drain-db";
 import type { StoredAgent } from "@/lib/store-types";
+import { activateRealConsumers } from "./helpers/activate-consumers";
 import { closeIntegrationConnections, pgClient, pgPool } from "./helpers/db";
-import { pidOf, rejections, runConcurrently, waitForWaiter } from "./helpers/concurrency";
+import { pidOf, raceAgainstHeldLock, rejections, runConcurrently, waitForWaiter } from "./helpers/concurrency";
 
 const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
 let seq = 0;
@@ -74,11 +77,15 @@ async function seedWebhookWakeup(
   return result.wakeup.id;
 }
 
-/** A REAL row in `events` — F5(b) needs a genuinely receipted event, never a synthetic bigint. */
-async function insertRealEvent(kind: string): Promise<number> {
-  const { rows } = await pgPool().query(`INSERT INTO events (kind, payload) VALUES ($1, '{}'::jsonb) RETURNING id`, [
-    kind,
-  ]);
+/**
+ * A REAL `webhook.disabled` event, subject-agent scoped — F5(b) needs a genuine kind a real
+ * consumer covers, never a synthetic string, or `drainEventConsumer` skips it unreceipted.
+ */
+async function insertRealEvent(subjectAgentId: string): Promise<number> {
+  const { rows } = await pgPool().query(
+    `INSERT INTO events (kind, subject_type, subject_id, payload) VALUES ('webhook.disabled', 'agent', $1, '{}'::jsonb) RETURNING id`,
+    [subjectAgentId]
+  );
   return Number(rows[0].id);
 }
 
@@ -535,6 +542,39 @@ describe("F1: no ledger-less webhook-primary wakeup", () => {
   });
 });
 
+describe("F1 (round 4): an enqueue racing a real agent withdrawal never deadlocks", () => {
+  it("blocks on the withdrawal's own agent lock, then refuses cleanly once the agent is gone", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+
+    const observation = await raceAgainstHeldLock({
+      // Verbatim from `deleteAgent`'s own final statement (`agents/db.ts`) -- this agent has no
+      // posts/comments, so this IS the whole withdrawal shape that matters to this race.
+      hold: async (holder) => {
+        await holder.query(`DELETE FROM agents WHERE id = $1`, [agent]);
+      },
+      contend: () =>
+        enqueueWakeup({
+          agentId: agent,
+          reason: "b1w_f1_withdrawal_race",
+          eventId: nextEventId(),
+          payload: { run: RUN },
+          delivery: "webhook",
+        }),
+      contenderMarker: "p5.1:agent-lock",
+    });
+
+    // The REAL enqueueWakeup queued behind the REAL withdrawal's own agent lock -- no substitute
+    // holder standing in for either side (finding 2's complaint about the disposition-sweep test).
+    expect(observation.observedBlocked).toBe(true);
+    // The withdrawal held the lock we raced against, so it committed first: the agent is gone and
+    // the enqueue refuses cleanly -- never a 23503, never a 40P01.
+    expect(observation.result).toEqual({ created: false, wakeup: null });
+    const { rows } = await pgPool().query(`SELECT 1 FROM agents WHERE id = $1`, [agent]);
+    expect(rows).toHaveLength(0);
+  });
+});
+
 describe("F3: an internal re-arm never resets an active mode='both' ledger", () => {
   it("leaves a live-claimed both ledger untouched across an internal re-arm", async () => {
     const agent = await seedAgent();
@@ -576,8 +616,20 @@ describe("F3: an internal re-arm never resets an active mode='both' ledger", () 
 
 describe("F5(b): the disposition sweep sees a REAL enqueueWakeup that commits during deleteAgentWebhook's own lock wait", () => {
   it("terminalizes a delivery the real enqueueWakeup created (with a real receipted event) WHILE deleteAgentWebhook was waiting on the registration lock", async () => {
+    await activateRealConsumers();
     const agent = await seedAgent();
     await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+
+    // A REAL receipted event — drained through the real notifications consumer BEFORE the enqueue
+    // below — so the disposition sweep's completion of this wakeup is proven independent of the
+    // event's own (already-finished) consumer processing, never a synthetic bigint no consumer sees.
+    const realEventId = await insertRealEvent(agent);
+    await drainEventConsumer(notificationsConsumer, { batchSize: 200 });
+    const { rows: receiptRows } = await pgPool().query(
+      `SELECT 1 FROM event_receipts WHERE consumer = $1 AND event_id = $2`,
+      [notificationsConsumer.name, realEventId]
+    );
+    expect(receiptRows).toHaveLength(1);
 
     const holder = await pgClient();
     await holder.query("BEGIN");
@@ -594,9 +646,8 @@ describe("F5(b): the disposition sweep sees a REAL enqueueWakeup that commits du
     const waited = await waitForWaiter(holderPid, "", 5000);
     expect(waited).toBe(true); // deleteAgentWebhook is genuinely blocked on the held registration lock
 
-    // The REAL enqueueWakeup, with a REAL receipted `events` row — not hand-rolled INSERTs — commits
-    // its wakeup+ledger WHILE delete is still waiting, the exact window round 2 finding 2 names.
-    const realEventId = await insertRealEvent("b1w.f5b_test_event");
+    // The REAL enqueueWakeup — not a hand-rolled INSERT — commits its wakeup+ledger WHILE delete is
+    // still waiting, the exact window round 2 finding 2 names.
     const enqueueResult = await enqueueWakeup({
       agentId: agent,
       reason: "b1w_f5b_interrupt",
@@ -628,7 +679,7 @@ describe("F5(b): the disposition sweep sees a REAL enqueueWakeup that commits du
 });
 
 describe("F1: two concurrent successful attempts for one agent never deadlock", () => {
-  it("both complete without a 40P01 when they race the registration lock", async () => {
+  it("both genuinely queue behind a held registration lock, then both complete without a 40P01", async () => {
     const agent = await seedAgent();
     await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
     const wakeupA = await seedWebhookWakeup(agent);
@@ -637,15 +688,53 @@ describe("F1: two concurrent successful attempts for one agent never deadlock", 
     const claimedB = await claimNextWebhookDelivery({ claimToken: `b1w_f1race_b_${RUN}`, leaseMs: 30_000 });
     expect(new Set([claimedA?.wakeupId, claimedB?.wakeupId])).toEqual(new Set([wakeupA, wakeupB]));
 
-    // A real, unforced race: two independent successful attempts for the SAME agent's registration.
-    // A `FOR SHARE`-for-success regression (finding 1) is what would deadlock here; deliberately
-    // holding a lock open via a raw client to force the exact interleaving was tried and abandoned —
-    // it does not resolve the way `deadlock_timeout` implies and can hang a shared-DB test for
-    // minutes, which is worse than a race this is already exercised well by two real round trips.
-    const [resultA, resultB] = await Promise.allSettled([
-      recordWebhookAttempt({ id: claimedA!.id, claimToken: claimedA!.claimToken, status: 200, ok: true }),
-      recordWebhookAttempt({ id: claimedB!.id, claimToken: claimedB!.claimToken, status: 200, ok: true }),
-    ]);
+    // Force the overlap: a THIRD connection holds the same registration row FOR SHARE, which
+    // conflicts with `recordWebhookAttempt`'s own statement-1 `FOR NO KEY UPDATE` -- so BOTH attempts
+    // must genuinely queue before either can proceed. A regression back to `FOR SHARE` (finding 1's
+    // original bug) is compatible with this holder and leaves both attempts unblocked, failing the
+    // assertion below instead of silently passing (round 3's "passed three times" gap).
+    //
+    // Counted by the MARKER, never by `pg_blocking_pids(pid).includes(holderPid)`: once the first
+    // attempt is itself queued on the holder, Postgres serializes the SECOND attempt behind that
+    // first attempt's own transient per-tuple lock (`wait_event = tuple`) rather than behind the
+    // holder directly (`wait_event = transactionid`) -- so the second waiter's blocker is the first
+    // waiter's pid, not the holder's, and a holder-scoped check can never see both at once, on any
+    // fix or any regression. Marker-scoped "is this OUR statement, and is it queued on some lock" is
+    // the query-shape-agnostic property this test actually needs. Holder release and both attempts
+    // are always awaited, in `finally`: an assertion failure here must not leave an open transaction
+    // blocking every later test forever.
+    const holder = await pgClient();
+    let attemptA: ReturnType<typeof recordWebhookAttempt> | undefined;
+    let attemptB: ReturnType<typeof recordWebhookAttempt> | undefined;
+    let waiterCount = 0;
+    try {
+      await holder.query("BEGIN");
+      await holder.query(`SELECT mode FROM agent_webhooks WHERE agent_id = $1 AND disabled_at IS NULL FOR SHARE`, [
+        agent,
+      ]);
+
+      attemptA = recordWebhookAttempt({ id: claimedA!.id, claimToken: claimedA!.claimToken, status: 200, ok: true });
+      attemptB = recordWebhookAttempt({ id: claimedB!.id, claimToken: claimedB!.claimToken, status: 200, ok: true });
+
+      const deadline = Date.now() + 12_000;
+      while (Date.now() < deadline) {
+        const { rows } = await pgPool().query<{ pid: number }>(
+          `SELECT pid FROM pg_stat_activity
+           WHERE datname = current_database() AND pid <> pg_backend_pid()
+             AND cardinality(pg_blocking_pids(pid)) > 0
+             AND query LIKE '%p5.1:webhook-attempt-lock%'`
+        );
+        waiterCount = new Set(rows.map((r) => r.pid)).size;
+        if (waiterCount >= 2) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    } finally {
+      await holder.query("COMMIT").catch(() => {});
+      await holder.end().catch(() => {});
+    }
+    expect(waiterCount).toBe(2); // both attempts genuinely overlapped, queued on the SAME lock
+
+    const [resultA, resultB] = await Promise.allSettled([attemptA!, attemptB!]);
 
     expect(resultA.status).toBe("fulfilled");
     expect(resultB.status).toBe("fulfilled");
@@ -653,7 +742,7 @@ describe("F1: two concurrent successful attempts for one agent never deadlock", 
     if (resultB.status === "fulfilled") expect(resultB.value).toBe("success");
     expect((await ledgerRowForWakeup(wakeupA)).terminal_reason).toBe("delivered");
     expect((await ledgerRowForWakeup(wakeupB)).terminal_reason).toBe("delivered");
-  });
+  }, 30_000);
 });
 
 describe("F1: a late attempt on an expired ledger never deadlocks with a concurrent delete", () => {
@@ -714,6 +803,59 @@ describe("F6: the disposition sweep runs only when this call's own attempt was a
       `UPDATE webhook_deliveries SET claimed_at = NOW(), claim_token = 'b1w_f6_cleanup', lease_expires_at = NOW() + INTERVAL '1 hour' WHERE wakeup_id = ANY($1::bigint[])`,
       [[rejectedWakeup, pendingWakeup]]
     );
+  });
+});
+
+describe("F3 (round 4): a terminal delivery's replayed token sweeps nothing", () => {
+  it("a repeat call with the auto-disabling delivery's own (now terminal) token leaves a sibling's expired lease untouched", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+    await pgPool().query(`UPDATE agent_webhooks SET failure_count = 9 WHERE agent_id = $1`, [agent]);
+
+    const triggeringWakeup = await seedWebhookWakeup(agent);
+    const siblingWakeup = await seedWebhookWakeup(agent);
+    const triggeringClaimed = await claimNextWebhookDelivery({ claimToken: `b1w_f3r4_trig_${RUN}`, leaseMs: 30_000 });
+    const siblingClaimed = await claimNextWebhookDelivery({ claimToken: `b1w_f3r4_sib_${RUN}`, leaseMs: 30_000 });
+    expect(triggeringClaimed!.wakeupId).toBe(triggeringWakeup);
+    expect(siblingClaimed!.wakeupId).toBe(siblingWakeup);
+
+    // Crosses the threshold: terminalizes, but KEEPS its claim_token (only a `retry` outcome clears
+    // it) — the replay below reuses this same real token, never a wrong/never-issued one (that is F6).
+    const firstOutcome = await recordWebhookAttempt({
+      id: triggeringClaimed!.id,
+      claimToken: triggeringClaimed!.claimToken,
+      status: 500,
+      ok: false,
+    });
+    expect(firstOutcome).toBe("disabled");
+    // The sibling was still LIVE-claimed at that moment, so the first call's sweep left it alone.
+    expect((await ledgerRowForWakeup(siblingWakeup)).terminal_reason).toBeNull();
+
+    // Now the sibling's lease expires — the exact window finding 3 names.
+    await pgPool().query(`UPDATE webhook_deliveries SET lease_expires_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, [
+      siblingClaimed!.id,
+    ]);
+
+    const replayOutcome = await recordWebhookAttempt({
+      id: triggeringClaimed!.id,
+      claimToken: triggeringClaimed!.claimToken,
+      status: 500,
+      ok: false,
+    });
+    expect(replayOutcome).toBe("not_found");
+
+    // Mutation check target: the OLD statement re-derived the sweep's agent scope from the (id,
+    // token) pair alone, which still matched (terminal deliveries keep their token) and swept this
+    // now-expired sibling despite the replay itself being refused.
+    expect((await ledgerRowForWakeup(siblingWakeup)).terminal_reason).toBeNull();
+    const siblingWakeupRow = await wakeupRow(siblingWakeup);
+    expect(siblingWakeupRow.completed_at).toBeNull();
+
+    // Left LIVE (claim_token intact) with an expired lease on purpose, the assertions above are
+    // exactly what that state proves — but `claimNextWebhookDelivery` scans globally, so an
+    // untouched reclaimable row here silently becomes the NEXT test's claim. Resolve it for real
+    // through the same statement under test, rather than leaking it into F5(a)/F5(d).
+    await recordWebhookAttempt({ id: siblingClaimed!.id, claimToken: siblingClaimed!.claimToken, status: 200, ok: true });
   });
 });
 

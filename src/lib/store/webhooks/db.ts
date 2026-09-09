@@ -241,9 +241,9 @@ function buildWebhookDisabledEvent(): PreparedEvent<"webhook.disabled"> {
 
 /**
  * Lock order is enforced by STATEMENT order, not CTE order: statement 1 locks the registration
- * (`FOR NO KEY UPDATE`, always — no shared→update upgrade), statement 2 token-fences the ledger and
- * completes the webhook-primary wakeup together, and statement 3 (run only when statement 2 matched
- * the token) sweeps this agent's other now-disabled deliveries under a fresh snapshot.
+ * (`FOR NO KEY UPDATE`, always — no shared→update upgrade), statement 2 token-fences the ledger,
+ * completes the webhook-primary wakeup, and (F3 round 4) sweeps this agent's other now-disabled
+ * deliveries — gated on `disabled_now`, so a rejected/replayed token sweeps nothing.
  */
 export async function recordWebhookAttempt(
   input: RecordWebhookAttemptInput
@@ -266,7 +266,7 @@ export async function recordWebhookAttempt(
   });
   // Statement 1: the registration lock, taken before the ledger is even looked at. The subquery
   // requires the SAME token as the ledger's own fence, so a stale/wrong claim locks nothing at all.
-  const lockText = `SELECT h.agent_id
+  const lockText = `SELECT h.agent_id /* p5.1:webhook-attempt-lock */
      FROM agent_webhooks h
      WHERE h.agent_id = (
        SELECT wd.agent_id FROM webhook_deliveries wd WHERE wd.id = $1::bigint AND wd.claim_token = $2::text
@@ -363,35 +363,30 @@ export async function recordWebhookAttempt(
      ),
      disabled_now AS (
        SELECT agent_id FROM bumped_failure WHERE crosses_threshold
-     )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
-     SELECT ud.outcome FROM updated_delivery ud`;
-  // Statement 3, same transaction as 1 and 2 — the registration lock stays held through it, so a
-  // concurrent re-registration cannot clear `disabled_at` in a gap between statements. F6: the
-  // subquery re-requires THIS call's own (id, token) pair, so a rejected/stale attempt — whose
-  // token never matched statement 2's fence either — finds no agent_id and sweeps nothing.
-  const sweepText = `WITH sweep AS (
+     ),
+     -- F3 round 4: gated on disabled_now (THIS call's own transition), never re-derived from the
+     -- (id, token) pair -- a terminal delivery keeps its token, so a replay found disabled_at already
+     -- set and swept a sibling's expired lease despite its own attempt being refused.
+     sweep AS (
        UPDATE webhook_deliveries wd
        SET terminal_reason = 'webhook_disabled'
-       WHERE wd.agent_id = (
-           SELECT agent_id FROM webhook_deliveries WHERE id = $1::bigint AND claim_token = $2::text
-         )
+       WHERE wd.agent_id = (SELECT agent_id FROM disabled_now)
+         AND wd.id <> $1::bigint
          AND wd.terminal_reason IS NULL
          AND (wd.claimed_at IS NULL OR wd.lease_expires_at < NOW())
-         AND EXISTS (
-           SELECT 1 FROM agent_webhooks h
-           WHERE h.agent_id = wd.agent_id AND h.disabled_at IS NOT NULL
-         )
        RETURNING wd.wakeup_id
-     )
-     UPDATE agent_wakeups w
-     SET completed_at = NOW(), result = 'webhook_disabled'
-     FROM sweep s
-     WHERE w.id = s.wakeup_id AND w.delivery = 'webhook' AND w.completed_at IS NULL
-     RETURNING w.id`;
+     ),
+     swept_wakeup AS (
+       UPDATE agent_wakeups w
+       SET completed_at = NOW(), result = 'webhook_disabled'
+       FROM sweep s
+       WHERE w.id = s.wakeup_id AND w.delivery = 'webhook' AND w.completed_at IS NULL
+       RETURNING w.id
+     )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
+     SELECT ud.outcome FROM updated_delivery ud`;
   const [, attemptRows] = await sql!.transaction((txn) => [
     txn(lockText, [input.id, input.claimToken]),
     txn(attemptText, [...params, ...emitted.params]),
-    txn(sweepText, [input.id, input.claimToken]),
   ]);
   const row = attemptRows[0] as { outcome?: string } | undefined;
   return row?.outcome ? (row.outcome as RecordWebhookAttemptOutcome) : "not_found";

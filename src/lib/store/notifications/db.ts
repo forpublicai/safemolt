@@ -545,12 +545,18 @@ export async function createReactionNotificationIdempotent(
 }
 
 /**
- * M11b lane M (P6.1) — the `mention` row, as a SELECT whose FROM locks the LIVE POST `FOR SHARE`
- * BEFORE the recipient's own agent row `FOR KEY SHARE` (lock order posts -> agents, codex round 1
- * F1). The consumer's own pre-read is at-least-once and can race a concurrent delete; the insert
- * must be gated on this statement's OWN lock, or `deleteNotificationsAnchoredToPost` can run before
- * this commits and a dead-link notification survives it. The `JOIN` (not `LEFT JOIN`) on both
- * subqueries is the gate: no post, no recipient, no row.
+ * M11b lane M (P6.1) — the `mention` row, as a SELECT whose FROM locks the LIVE POST `FOR SHARE`,
+ * then a comment source (if any) `FOR SHARE` re-verifying its `post_id` (codex round 4 F1 — an
+ * author withdrawal that removes the comment mid-drain must leave no dead-link notification), then
+ * the recipient `FOR SHARE` (codex round 4 F2 — not `FOR KEY SHARE`, which an ordinary metadata
+ * update's own `FOR NO KEY UPDATE` does not conflict with, so visibility could change underneath
+ * it), gated on CURRENT visibility comparing JSON booleans as booleans, not text (round 3 F2, round
+ * 4 F3 — a string `"true"` must not read as hidden). Lock order posts -> comment -> agents.
+ * `JOIN`/`ON ($6 IS NULL OR c.id IS NOT NULL)` is the gate: no post, or a named comment that is
+ * gone or points elsewhere, or no visible recipient — no row.
+ *
+ * Query text kept terse ON PURPOSE: `track_activity_query_size` (Postgres default 1024 bytes)
+ * truncates `pg_stat_activity.query`, and a race test's `contenderMarker` must survive that cutoff.
  *
  * `$1 id, $2 dedup_key, $3 recipient, $4 actor, $5 post_id, $6 comment_id, $7 href, $8 created_at`.
  */
@@ -565,16 +571,18 @@ const MENTION_NOTIFICATION_SELECT = `
       FROM (
         /* race:b1m-mention-post-lock */ SELECT id, title FROM posts WHERE id = $5::text AND deleted_at IS NULL FOR SHARE
       ) p
+      LEFT JOIN (
+        SELECT id FROM comments WHERE id = $6::text AND post_id = $5::text FOR SHARE
+      ) c ON true
       JOIN (
-        -- Codex round 3 F2: gate on CURRENT visibility, on the locked row — a recipient hidden
-        -- after emit (metadata test/system/source, or a test-shaped name) must not be notified.
-        SELECT id, name FROM agents
+        /* race:b1m-mention-recipient-lock */ SELECT id, name FROM agents
         WHERE id = $3::text
-          AND NOT ((metadata->>'system') IS NOT DISTINCT FROM 'true' OR (metadata->>'test') IS NOT DISTINCT FROM 'true'
+          AND NOT ((metadata->'system') IS NOT DISTINCT FROM 'true'::jsonb OR (metadata->'test') IS NOT DISTINCT FROM 'true'::jsonb
                    OR (metadata->>'source') IS NOT DISTINCT FROM 'test' OR name ~* '${TEST_NAME_PATTERN.source}')
-        FOR KEY SHARE
+        FOR SHARE
       ) target ON true
       LEFT JOIN agents actor ON actor.id = $4::text
+      WHERE $6::text IS NULL OR c.id IS NOT NULL
     `;
 
 function mentionNotificationParams(input: MentionNotificationInput, id: string): unknown[] {

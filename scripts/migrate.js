@@ -69,6 +69,7 @@ const MIGRATION_FILES = [
   { file: "migrate-m11-reactions.sql", label: "Content reactions and daily rate limit" },
   { file: "migrate-m11-dms.sql", label: "Direct messages: conversations, messages, block state" },
   { file: "migrate-m11-webhooks.sql", label: "Webhook registrations and delivery ledger" },
+  { file: "migrate-m11-stream.sql", label: "SSE stream: per-agent seq counters and frames ledger" },
 ];
 
 /** `KEY=value` from one .env line, or null for a blank, a comment, or anything malformed. */

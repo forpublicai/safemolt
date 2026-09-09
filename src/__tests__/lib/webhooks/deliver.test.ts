@@ -303,6 +303,28 @@ describe("deliverWakeup — real local receiver (no mocking of node:http/https)"
     expect(received).toHaveLength(1); // exactly one request — no chase of Location
   });
 
+  it("F5 (round 4): a receiver that connects at once but answers after 6s still succeeds", async () => {
+    enableSeam();
+    const port = await startServer((_req, res) => {
+      // Connects immediately (localhost); only the RESPONSE is slow. The old `req` inactivity
+      // timeout fired at 5s here; the fix's connect-only timer is cleared long before that.
+      setTimeout(() => {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("ok");
+      }, 6_000);
+    });
+
+    const result = await deliverWakeup({
+      url: `http://127.0.0.1:${port}/hook`,
+      secret: "s",
+      wakeupId: 1,
+      eventId: null,
+      payload: {},
+    });
+
+    expect(result).toEqual({ ok: true, status: 200 });
+  }, 12_000);
+
   it("F8(c): stops at the 64KB cap even against a receiver that streams forever and never ends", async () => {
     enableSeam();
     let timer: NodeJS.Timeout;
@@ -350,4 +372,39 @@ describe("deliverWakeup — F6: the 10s deadline covers DNS", () => {
     // Refused at (roughly) the 10s deadline, never waiting out the resolver's own 11s delay.
     expect(elapsedMs).toBeLessThan(10_500);
   }, 15_000);
+});
+
+describe("deliverWakeup — F4 (round 4): no connection reuse across pinned addresses", () => {
+  it("a second delivery with a DIFFERENT resolved address never reaches the first delivery's receiver", async () => {
+    mutableEnv.WEBHOOK_ALLOW_INSECURE_LOCAL = "true";
+    mutableEnv.NODE_ENV = "test";
+    const receivedA: string[] = [];
+    const serverA = http.createServer((_req, res) => {
+      receivedA.push("hit");
+      res.end();
+    });
+    await new Promise<void>((resolve) => serverA.listen(0, "127.0.0.1", () => resolve()));
+    const port = (serverA.address() as AddressInfo).port;
+
+    try {
+      // Same declared host:port both times (one URL) — a pooled/reused socket would still be
+      // connected to 127.0.0.1 from call 1. Call 2 resolves to 127.0.0.2, where nothing listens: a
+      // reused socket would silently deliver there instead, showing up as a SECOND hit on serverA.
+      let call = 0;
+      const lookupAll: LookupAllFn = async () => {
+        call += 1;
+        return [{ address: call === 1 ? "127.0.0.1" : "127.0.0.2", family: 4 }];
+      };
+      const url = `http://f4-round4.example:${port}/hook`;
+
+      const first = await deliverWakeup({ url, secret: "s", wakeupId: 1, eventId: null, payload: {} }, lookupAll);
+      const second = await deliverWakeup({ url, secret: "s", wakeupId: 2, eventId: null, payload: {} }, lookupAll);
+
+      expect(first).toEqual({ ok: true, status: 200 });
+      expect(second).toEqual({ ok: false, status: null }); // genuinely dialed 127.0.0.2, refused
+      expect(receivedA).toHaveLength(1); // never a second hit from a reused connection
+    } finally {
+      await new Promise<void>((resolve) => serverA.close(() => resolve()));
+    }
+  }, 12_000);
 });

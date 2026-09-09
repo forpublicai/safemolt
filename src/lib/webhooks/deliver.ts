@@ -299,10 +299,15 @@ function sendSignedRequest(
 
   return new Promise((resolvePromise) => {
     let settled = false;
+    let connectTimer: NodeJS.Timeout | undefined;
+    const clearConnectTimer = () => {
+      if (connectTimer) clearTimeout(connectTimer);
+    };
     const resolve = (r: DeliverWakeupResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(totalTimer);
+      clearConnectTimer();
       resolvePromise(r);
     };
 
@@ -314,13 +319,21 @@ function sendSignedRequest(
         path: `${parsed.pathname}${parsed.search}`,
         headers,
         lookup: pinnedLookup(pinnedIp),
-        timeout: CONNECT_TIMEOUT_MS,
+        // F4: never the pooled default agent — a reused socket could still be talking to a PRIOR
+        // pinned IP for this same hostname, bypassing this attempt's own DNS re-resolution.
+        agent: false,
         ...(isHttps ? { servername: parsed.hostname } : {}),
       },
       (res) => handleResponse(res, resolve)
     );
 
-    req.on("timeout", () => req.destroy(new Error("connect timeout")));
+    // F5: a SEPARATE connect-only bound, cleared the instant the socket connects — `req`'s own
+    // `timeout` option measures inactivity for the request's whole life, so it fired on a receiver
+    // that connects at once but answers slowly, misreporting a slow response as a connect failure.
+    req.once("socket", (socket) => {
+      connectTimer = setTimeout(() => req.destroy(new Error("connect timeout")), CONNECT_TIMEOUT_MS);
+      socket.once("connect", clearConnectTimer);
+    });
     req.on("error", () => resolve({ ok: false, status: null }));
 
     // F6: `totalTimeoutMs` is what remains of the 10s deadline AFTER DNS — never a fresh 10s here —
@@ -349,19 +362,9 @@ function afterMs<T>(ms: number, value: T): [Promise<T>, NodeJS.Timeout] {
 }
 
 /**
- * Delivers one signed webhook POST. F6: re-validates the URL on EVERY attempt — a stored row
- * predates whatever hygiene ran at registration — and re-resolves fresh (DNS can change between
- * attempts), picking the first validated address. A resolution failure is reported the same as any
- * other total failure (`status: null`), never thrown, so claim→deliver→record needs no second path.
- *
- * **The 10s deadline is started BEFORE resolving, not after** — a `Promise.race` against a timer, so
- * a resolver that answers late is refused before any socket work runs, and the socket then gets only
- * whatever time remains. A shared 30s claim lease is what this protects: DNS time used to be free,
- * letting a slow resolution push the whole attempt past the lease and invite a duplicate send from a
- * reclaiming worker.
- *
- * `lookupAll` is test-only injection (default real DNS) — it is what lets a test pin a NAMED host to
- * a chosen address without mocking `node:dns` globally.
+ * Delivers one signed webhook POST, re-validating the URL and re-resolving DNS on every attempt.
+ * The 10s deadline starts BEFORE resolving (`Promise.race` against a timer): a slow resolver used to
+ * be free time, letting one attempt run past the 30s claim lease and inviting a duplicate send.
  */
 export async function deliverWakeup(
   input: DeliverWakeupInput,

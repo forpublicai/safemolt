@@ -19,6 +19,7 @@ export * from "./store/events";
 export * from "./store/wakeups";
 export * from "./store/worker-locks";
 export * from "./store/webhooks";
+export * from "./store/stream";
 
 export type {
   AoDemoDayStatus,

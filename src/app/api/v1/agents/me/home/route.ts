@@ -2,7 +2,7 @@
  * GET /api/v1/agents/me/home — agent command center.
  *
  * Returns a small, cap-bounded payload that points to detail endpoints rather
- * than duplicating feeds/transcripts. See ai/agent-ux-plans/02-home-identity-trust.md.
+ * than duplicating feeds/transcripts. See ai/archive/agent-ux-plans/02-home-identity-trust.md.
  *
  * Access-gate exemption: `GET /api/v1/agents/me/home` is an exact entry in
  * `ACCESS_GATE_EXEMPTIONS` (src/lib/auth.ts) because onboarding next actions are

@@ -11,6 +11,7 @@ import {
   drainEventConsumer,
   eventDrainPhaseBudgetMs,
   pruneEventLedgers,
+  pruneStreamFrames,
   pruneTerminalWakeups,
   recordEventDrainHeartbeat,
   sweepEventConsumer,
@@ -38,6 +39,10 @@ function wakeupRetentionDays(): number {
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_WAKEUP_RETENTION_DAYS;
 }
 
+/** M11b Lane S (P5.2) deliverable 6: `stream_frames` retention, same P2.2 30-day schedule. */
+const STREAM_FRAME_RETENTION_DAYS = 30;
+const STREAM_FRAME_PRUNE_BATCH_SIZE = 1_000;
+
 export interface ConsumerReport {
   name: string;
   processed: number;
@@ -57,6 +62,8 @@ export interface HourlyReport {
   pruned: PruneCounts;
   /** M11-2 u6 stitch item 4: completed wakeups older than the retention window. */
   prunedWakeups: number;
+  /** M11b Lane S (P5.2): stream frames older than the retention window. */
+  prunedStreamFrames: number;
   maintenance: MaintenanceCounts;
 }
 
@@ -115,7 +122,8 @@ async function runHourlyDuties(deadline: number): Promise<HourlyReport> {
   const pruned = await pruneEventLedgers({ deadline });
   const maintenance = await runPulseMaintenance();
   const prunedWakeups = await pruneTerminalWakeups(wakeupRetentionDays(), WAKEUP_PRUNE_BATCH_SIZE);
-  return { swept, pruned, prunedWakeups, maintenance };
+  const prunedStreamFrames = await pruneStreamFrames(STREAM_FRAME_RETENTION_DAYS, STREAM_FRAME_PRUNE_BATCH_SIZE);
+  return { swept, pruned, prunedWakeups, prunedStreamFrames, maintenance };
 }
 
 /**

@@ -49,8 +49,10 @@ export async function GET(
 
     // Codex round 3, F4: validated before either store call, so `before_seq=abc` never reaches a
     // `::bigint` cast (a 500 in db mode, silently ignored in memory mode).
-    const limitParsed = parsePaginationInt(request.nextUrl.searchParams.get("limit"), "positive");
-    if (limitParsed === INVALID_PAGINATION) return errorResponse("limit must be a positive integer");
+    // `limit` bounded at this route's own 500 clamp below (round 4, F5); `before_seq` needs no
+    // extra cap beyond `parsePaginationInt`'s safe-integer check — a `seq` never approaches it.
+    const limitParsed = parsePaginationInt(request.nextUrl.searchParams.get("limit"), "positive", 500);
+    if (limitParsed === INVALID_PAGINATION) return errorResponse("limit must be a positive integer up to 500");
     const beforeSeqParsed = parsePaginationInt(request.nextUrl.searchParams.get("before_seq"), "positive");
     if (beforeSeqParsed === INVALID_PAGINATION) return errorResponse("before_seq must be a positive integer");
 

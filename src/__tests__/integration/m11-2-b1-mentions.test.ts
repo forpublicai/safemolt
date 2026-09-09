@@ -70,6 +70,15 @@ async function seedPost(authorId: string, groupId: string): Promise<string> {
   return id;
 }
 
+async function seedComment(authorId: string, postId: string): Promise<string> {
+  const id = nextId("comment");
+  await pgPool().query(
+    `INSERT INTO comments (id, post_id, author_id, content, created_at) VALUES ($1, $2, $3, 'hi', NOW())`,
+    [id, postId, authorId]
+  );
+  return id;
+}
+
 async function clearPostCooldown(agentId: string): Promise<void> {
   await pgPool().query(`DELETE FROM agent_rate_limits WHERE agent_id = $1`, [agentId]);
 }
@@ -503,5 +512,80 @@ describe("createMentionNotificationIdempotent (db) — codex round 3 F2", () => 
     expect(result).toBeNull();
     const { rows } = await pgPool().query(`SELECT id FROM notifications WHERE agent_id = $1`, [recipient.id]);
     expect(rows).toEqual([]);
+  });
+});
+
+describe("createMentionNotificationIdempotent (db) — codex round 4 F1", () => {
+  it("creates nothing when the source comment is gone though its post is live", async () => {
+    const postAuthor = await seedAgent();
+    const commentAuthor = await seedAgent();
+    const recipient = await seedAgent();
+    const group = await seedGroup(postAuthor.id);
+    const post = await seedPost(postAuthor.id, group);
+    const comment = await seedComment(commentAuthor.id, post);
+    // Simulates the comment author's withdrawal removing the comment; the post (a different
+    // author's) stays live.
+    await pgPool().query(`DELETE FROM comments WHERE id = $1`, [comment]);
+
+    const result = await createMentionNotificationIdempotent({
+      dedupKey: nextId("dedup"),
+      recipientAgentId: recipient.id,
+      actorAgentId: commentAuthor.id,
+      postId: post,
+      commentId: comment,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result).toBeNull();
+    const { rows } = await pgPool().query(`SELECT id FROM notifications WHERE agent_id = $1`, [recipient.id]);
+    expect(rows).toEqual([]);
+  });
+
+  it("still creates a notification for a live comment source (control)", async () => {
+    const postAuthor = await seedAgent();
+    const commentAuthor = await seedAgent();
+    const recipient = await seedAgent();
+    const group = await seedGroup(postAuthor.id);
+    const post = await seedPost(postAuthor.id, group);
+    const comment = await seedComment(commentAuthor.id, post);
+
+    const result = await createMentionNotificationIdempotent({
+      dedupKey: nextId("dedup"),
+      recipientAgentId: recipient.id,
+      actorAgentId: commentAuthor.id,
+      postId: post,
+      commentId: comment,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.metadata).toMatchObject({ comment_id: comment });
+  });
+});
+
+describe("createMentionNotificationIdempotent (db) — codex round 4 F2", () => {
+  it("blocks on an uncommitted recipient metadata update, then refuses once it commits", async () => {
+    const author = await seedAgent();
+    const recipient = await seedAgent();
+    const group = await seedGroup(author.id);
+    const post = await seedPost(author.id, group);
+
+    const race = await raceAgainstHeldLock({
+      hold: async (holder) => {
+        await holder.query(`UPDATE agents SET metadata = '{"test": true}'::jsonb WHERE id = $1`, [recipient.id]);
+      },
+      contend: () =>
+        createMentionNotificationIdempotent({
+          dedupKey: nextId("dedup"),
+          recipientAgentId: recipient.id,
+          actorAgentId: author.id,
+          postId: post,
+          createdAt: new Date().toISOString(),
+        }),
+      contenderMarker: "race:b1m-mention-recipient-lock",
+    });
+
+    expect(race.observedBlocked).toBe(true);
+    expect(race.result).toBeNull();
   });
 });

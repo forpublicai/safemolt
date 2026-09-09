@@ -11,7 +11,10 @@
  *
  * @jest-environment node
  */
-const calls: { pruneTerminalWakeups: unknown[][] } = { pruneTerminalWakeups: [] };
+const calls: { pruneTerminalWakeups: unknown[][]; pruneStreamFrames: unknown[][] } = {
+  pruneTerminalWakeups: [],
+  pruneStreamFrames: [],
+};
 let hourlyDue = true;
 
 jest.mock("@/lib/store", () => ({
@@ -36,6 +39,11 @@ jest.mock("@/lib/store", () => ({
     calls.pruneTerminalWakeups.push(args);
     return 7;
   }),
+  // M11b Lane S (P5.2): the sibling retention prune this same hourly block now also runs.
+  pruneStreamFrames: jest.fn(async (...args: unknown[]) => {
+    calls.pruneStreamFrames.push(args);
+    return 3;
+  }),
   recordEventDrainHeartbeat: jest.fn(async () => {}),
   sweepEventConsumer: jest.fn(async () => ({ processed: 0, receipted: 0, failed: 0, deadLettered: 0 })),
 }));
@@ -51,6 +59,7 @@ const ORIGINAL = process.env.WAKEUP_RETENTION_DAYS;
 
 beforeEach(() => {
   calls.pruneTerminalWakeups = [];
+  calls.pruneStreamFrames = [];
   hourlyDue = true;
   delete process.env.WAKEUP_RETENTION_DAYS;
 });
@@ -67,6 +76,9 @@ describe("runEventDrainPass — wakeup retention", () => {
     expect(calls.pruneTerminalWakeups).toEqual([[30, 1000]]);
     expect(result.hourlyRan).toBe(true);
     expect(result.hourly?.prunedWakeups).toBe(7);
+    // M11b Lane S (P5.2): the stream-frame prune runs alongside it, at its own 30-day/1000 bound.
+    expect(calls.pruneStreamFrames).toEqual([[30, 1000]]);
+    expect(result.hourly?.prunedStreamFrames).toBe(3);
   });
 
   it("honours WAKEUP_RETENTION_DAYS, and ignores a value that is not a positive number", async () => {
@@ -90,6 +102,7 @@ describe("runEventDrainPass — wakeup retention", () => {
     const result = await runEventDrainPass("test-worker");
 
     expect(calls.pruneTerminalWakeups).toEqual([]);
+    expect(calls.pruneStreamFrames).toEqual([]);
     expect(result.hourlyRan).toBe(false);
     expect(result.hourly).toBeNull();
   });

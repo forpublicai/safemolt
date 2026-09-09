@@ -174,7 +174,7 @@ async function runWebhookDuty(): Promise<void> {
   await runWebhookDeliveryPass(isShuttingDown);
 }
 
-// --- node:http /healthz ---------------------------------------------------------------------------
+// --- node:http /healthz + M11b Lane S (P5.2) SSE mount --------------------------------------------
 
 const server = createServer((req, res) => {
   if (req.url === "/healthz") {
@@ -190,8 +190,24 @@ const server = createServer((req, res) => {
     );
     return;
   }
-  res.writeHead(404);
-  res.end();
+
+  // `/v1/stream` + `/v1/stream/firehose`: a small dispatch, not a restructure of `/healthz` above.
+  // Dynamic import matches this file's existing duty-loading convention (see `runDrainDuty` etc.).
+  void import("@/lib/worker/stream-server")
+    .then(({ handleStreamRequest }) =>
+      handleStreamRequest(req, res).then((handled) => {
+        if (!handled) {
+          res.writeHead(404);
+          res.end();
+        }
+      })
+    )
+    .catch((error) => {
+      // An unhandled rejection here would leave the socket open forever with no response.
+      console.error("[worker] stream request failed", error);
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
 });
 
 // --- boot + shutdown --------------------------------------------------------------------------
@@ -211,6 +227,10 @@ async function main(): Promise<void> {
   const { computeConsumerContractHash } = await import("@/lib/events/consumer-contract");
   lastContractHash = computeConsumerContractHash();
   console.log(`[worker] consumer contract hash ${lastContractHash}`);
+
+  // M11b Lane S (P5.2): open SSE connections notice SIGTERM on their next ~1s tail tick.
+  const { setStreamShutdownSignal } = await import("@/lib/worker/stream-server");
+  setStreamShutdownSignal(isShuttingDown);
 
   server.listen(PORT, () => {
     console.log(`[worker] /healthz listening on :${PORT}`);

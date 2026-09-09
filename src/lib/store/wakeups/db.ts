@@ -130,13 +130,23 @@ export function rowToWakeup(row: unknown): StoredWakeup {
 }
 
 /**
- * F1/F3: the registration lock the WHOLE domain takes first — `FOR SHARE`, one agent ($1) per
- * statement — so every enqueue/re-arm serializes against `deleteAgentWebhook`'s row-owning `DELETE`
- * and against `recordWebhookAttempt`'s own registration lock (same order there, F4).
+ * F1 (round 4): the agent row is locked FIRST, `FOR KEY SHARE`, before the registration — matching
+ * withdrawal's own `DELETE FROM agents` then cascade order. The reverse order deadlocked: enqueue
+ * held the registration `FOR SHARE` while withdrawal held the agent and waited to cascade-delete it.
+ * `afterCte` chains a caller's own earlier lock (the playground path's session row) so the true
+ * evaluation order is a real data dependency, not just WITH-list position — `EXISTS` alone does not
+ * guarantee Postgres evaluates CTEs in listed order.
  */
-function registrationCte(name: string): string {
-  return `${name} AS (
-      SELECT mode FROM agent_webhooks WHERE agent_id = $1 AND disabled_at IS NULL FOR SHARE
+function registrationCte(name: string, afterCte?: string): string {
+  const gate = afterCte ? ` AND EXISTS (SELECT 1 FROM ${afterCte})` : "";
+  return `agent_lock AS (
+      /* p5.1:agent-lock */
+      SELECT 1 FROM agents WHERE id = $1${gate} FOR KEY SHARE
+    ),
+    ${name} AS (
+      SELECT mode FROM agent_webhooks WHERE agent_id = $1 AND disabled_at IS NULL
+        AND EXISTS (SELECT 1 FROM agent_lock)
+      FOR SHARE
     )`;
 }
 
@@ -332,9 +342,9 @@ export const PLAYGROUND_ROUND_REASON = "playground_round";
  * correctness. Both arms — the insert AND the re-arm — gate on `live`, so a dead round can neither
  * gain a new row nor resurrect a completed one.
  *
- * Lock order is `playground_sessions → agents` (the insert's FK takes `FOR KEY SHARE` on the
- * agent), the same order `submitAction`'s gated insert takes; nothing in the tree takes an agent
- * lock before a session lock, so no cycle is introduced.
+ * Lock order is `playground_sessions → agents → agent_webhooks` (F1 round 4: `registrationCte("reg",
+ * "live")` chains its own agent lock after `live`), the same session-then-agent order `submitAction`'s
+ * gated insert takes.
  *
  * F1: `ins`/`rearmed` also gate on the locked webhook registration when `delivery = 'webhook'` —
  * see `insertWakeupSql`'s own doc comment for why a ledger-less webhook-primary row is a defect.
@@ -354,7 +364,7 @@ export async function createOrReArmPlaygroundRoundWakeup(
         )
       FOR SHARE OF s
     ),
-    ${registrationCte("reg")},
+    ${registrationCte("reg", "live")},
     ins AS (
       INSERT INTO agent_wakeups (agent_id, reason, event_id, payload, delivery, due_at)
       SELECT $1, $2, $3, $4::jsonb, $5, COALESCE($6::timestamptz, NOW())

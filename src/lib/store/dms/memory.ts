@@ -52,8 +52,9 @@ function withCreatedDmMessageId(events: readonly PreparedEvent[], messageId: str
 }
 
 /**
- * Send a DM. Mirrors db.ts: re-check both agents synchronously, check block state, check rate limit,
- * then claim allowance + upsert conversation + insert message in one section (no await between).
+ * Send a DM. Mirrors db.ts: re-check the SENDER synchronously (the recipient is deliberately
+ * FK-less, see below), check block state, check rate limit, then claim allowance + upsert
+ * conversation + insert message in one section (no await between).
  */
 export async function sendDm(
   input: { senderId: string; recipientId: string; content: string },

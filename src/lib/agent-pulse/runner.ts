@@ -53,7 +53,7 @@ import {
   type LoopDomain,
   type NormalizedToolCall,
 } from "@/lib/agent-runtime";
-import { PLATFORM_TOOLS, type ToolDefinition } from "@/lib/agent-tools";
+import { PLATFORM_TOOLS, type ToolCallResult, type ToolDefinition } from "@/lib/agent-tools";
 import {
   buildDecisionPrompt,
   cooldownMinutesFor,
@@ -282,6 +282,17 @@ async function completeAfterFenceLoss(wakeup: StoredWakeup, claimToken: string):
   return "skip";
 }
 
+/** True when a NON-terminal executed tool (e.g. `read_dm_thread`) was refused by the execution
+ *  guard — `beforeTerminalTool` never sees such a call, so `fence.fenceLost()` alone misses it. */
+function anyToolGuardRefused(executed: { result: ToolCallResult }[]): boolean {
+  return executed.some((t) => (t.result.data as { code?: unknown } | undefined)?.code === "execution_guard_failed");
+}
+
+/** Combines both fence-loss signals (extracted to keep `runNarrowWakeup`'s own complexity down). */
+function fenceOrGuardLost(fence: PulseTickBundle, executed: { result: ToolCallResult }[]): boolean {
+  return fence.fenceLost() || anyToolGuardRefused(executed);
+}
+
 /**
  * `idle`: delegation to `tickAgent`, now carrying the same fence and guard every other reason gets —
  * see this module's header. The tick's own routing, journalling and cooldown bookkeeping are still
@@ -384,8 +395,10 @@ async function runNarrowWakeup(
   // The fence refused: ownership is gone, so this tick writes nothing but its own token-fenced
   // completion (u6 D fix round 1, finding 2). Checked BEFORE the `!terminal` branch, which used to
   // treat a fenced-off turn as an ordinary decline and stamp `recordSkip`'s cooldown on an agent this
-  // runner no longer owned.
-  if (fence.fenceLost()) return completeAfterFenceLoss(wakeup, claimToken);
+  // runner no longer owned. `anyToolGuardRefused` extends this to a NON-terminal refusal too (lane D
+  // fix round 4, F1): `read_dm_thread`'s guarded `markDmRead` can refuse without ever reaching
+  // `beforeTerminalTool`, and the model can then simply stop — `fence.fenceLost()` alone misses that.
+  if (fenceOrGuardLost(fence, turn.toolCallsExecuted)) return completeAfterFenceLoss(wakeup, claimToken);
 
   const terminal = turn.terminalToolExecuted;
   if (!terminal) {

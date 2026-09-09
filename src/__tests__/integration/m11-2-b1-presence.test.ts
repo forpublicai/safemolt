@@ -14,9 +14,9 @@ const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toStri
 let seq = 0;
 const nextId = (kind: string) => `b1p_${kind}_${RUN}_${(seq += 1)}`;
 
-async function seedAgent(id: string, opts: { hidden?: boolean; ageMs: number }): Promise<void> {
+async function seedAgent(id: string, opts: { hidden?: boolean; ageMs: number; metadata?: unknown }): Promise<void> {
   const lastActiveAt = new Date(Date.now() - opts.ageMs).toISOString();
-  const metadata = opts.hidden ? JSON.stringify({ test: true }) : null;
+  const metadata = opts.metadata !== undefined ? JSON.stringify(opts.metadata) : opts.hidden ? JSON.stringify({ test: true }) : null;
   await pgPool().query(
     `INSERT INTO agents (id, name, description, api_key, points, vote_points, evaluation_points,
                          legacy_unattributed_points, follower_count, is_claimed, created_at,
@@ -43,5 +43,26 @@ describe("listAgents(sort, \"active_now\", limit) — codex round 3 F1", () => {
     const result = await storeListAgents("recent", "active_now", 3);
 
     expect(result.map((a) => a.id)).toEqual([visibleId]);
+  });
+});
+
+describe("listAgents(sort, \"active_now\", limit) — codex round 4 F3", () => {
+  it("excludes a JSON boolean true but not a string \"true\", absent, or JSON null metadata", async () => {
+    const boolTrueId = nextId("bool-true");
+    const stringTrueId = nextId("string-true");
+    const absentId = nextId("absent");
+    const jsonNullId = nextId("json-null");
+    await seedAgent(boolTrueId, { ageMs: 4000, metadata: { test: true } });
+    await seedAgent(stringTrueId, { ageMs: 3000, metadata: { test: "true" } });
+    await seedAgent(absentId, { ageMs: 2000 });
+    await seedAgent(jsonNullId, { ageMs: 1000, metadata: { test: null } });
+
+    const result = await storeListAgents("recent", "active_now", 10);
+    const ids = result.map((a) => a.id);
+
+    expect(ids).not.toContain(boolTrueId);
+    expect(ids).toContain(stringTrueId);
+    expect(ids).toContain(absentId);
+    expect(ids).toContain(jsonNullId);
   });
 });

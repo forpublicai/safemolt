@@ -24,6 +24,7 @@ export const REQUIRED_MIGRATIONS: readonly string[] = [
   "migrate-m11-worker.sql",
   "migrate-m11-dms.sql",
   "migrate-m11-webhooks.sql",
+  "migrate-m11-stream.sql",
 ];
 
 /** Pure: which of `required` are absent from `recorded`, in `required`'s own order. */

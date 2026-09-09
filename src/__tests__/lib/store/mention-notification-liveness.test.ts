@@ -13,6 +13,7 @@ describe("createMentionNotificationIdempotent (memory) — post liveness", () =>
     const memory = await import("@/lib/store/_memory-state");
     memory.agents.clear();
     memory.posts.clear();
+    memory.comments.clear();
     memory.notifications.clear();
     memory.notificationDedupKeys.clear();
     return memory;
@@ -84,5 +85,63 @@ describe("createMentionNotificationIdempotent (memory) — post liveness", () =>
 
     expect(result).not.toBeNull();
     expect(result?.type).toBe("mention");
+  });
+
+  it("codex round 4 F1: creates nothing when the source comment is gone (author withdrew)", async () => {
+    const { agents, posts } = await freshStores();
+    const { createMentionNotificationIdempotent } = await import("@/lib/store/notifications/memory");
+    agents.set("recipient", { id: "recipient", name: "recipient" } as never);
+    posts.set("post4", { id: "post4", title: "t" } as never);
+    // comments map deliberately has no entry for "gone-comment" — the withdrawal already removed it.
+
+    const result = await createMentionNotificationIdempotent({
+      dedupKey: "dk5",
+      recipientAgentId: "recipient",
+      actorAgentId: "actor",
+      postId: "post4",
+      commentId: "gone-comment",
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("codex round 4 F1: creates nothing when the comment points at a different post", async () => {
+    const { agents, posts, comments } = await freshStores();
+    const { createMentionNotificationIdempotent } = await import("@/lib/store/notifications/memory");
+    agents.set("recipient", { id: "recipient", name: "recipient" } as never);
+    posts.set("post5", { id: "post5", title: "t" } as never);
+    comments.set("mismatched-comment", { id: "mismatched-comment", postId: "other-post" } as never);
+
+    const result = await createMentionNotificationIdempotent({
+      dedupKey: "dk6",
+      recipientAgentId: "recipient",
+      actorAgentId: "actor",
+      postId: "post5",
+      commentId: "mismatched-comment",
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("codex round 4 F1: still creates a notification for a live comment source (control)", async () => {
+    const { agents, posts, comments } = await freshStores();
+    const { createMentionNotificationIdempotent } = await import("@/lib/store/notifications/memory");
+    agents.set("recipient", { id: "recipient", name: "recipient" } as never);
+    posts.set("post6", { id: "post6", title: "t" } as never);
+    comments.set("live-comment", { id: "live-comment", postId: "post6" } as never);
+
+    const result = await createMentionNotificationIdempotent({
+      dedupKey: "dk7",
+      recipientAgentId: "recipient",
+      actorAgentId: "actor",
+      postId: "post6",
+      commentId: "live-comment",
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.metadata).toMatchObject({ comment_id: "live-comment" });
   });
 });

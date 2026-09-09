@@ -221,6 +221,17 @@ export async function sendDm(
     `,
         allParams
       ),
+      // Statement 3 (round 4, F4): self-gating on THIS call's own fresh id — a pre-existing pair
+      // never matches (its real id differs), and a successful send bumps `last_message_seq` past 0
+      // — so this is a safe no-op except for the one case it exists to fix: statement 1 created a
+      // pair this transaction and statement 2 refused (rate-limited; blocked/guard are excluded
+      // upstream already), leaving nothing else to preserve.
+      txn(
+        `DELETE FROM dm_conversations
+         WHERE id = $1::text AND last_message_seq = 0
+           AND NOT low_blocked_high AND NOT high_blocked_low`,
+        [conversationId]
+      ),
     ]);
   } catch (error) {
     // The sender can withdraw between the action's lookup and this statement; the same refusal in
