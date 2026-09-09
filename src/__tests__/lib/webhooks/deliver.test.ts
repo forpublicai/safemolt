@@ -112,6 +112,11 @@ describe("resolvePublicAddresses — rejection table (injected resolver, no real
     ["deprecated site-local fec0::/10", "fec0::1", 6],
     ["6to4 2002::/16 wrapping PRIVATE 192.168/16", "2002:c0a8:101::", 6],
     ["NAT64 64:ff9b::/96 wrapping LOOPBACK", "64:ff9b::7f00:1", 6],
+    // F4 round 3 additions — special-purpose ranges INSIDE the 2000::/3 allowlist.
+    ["IETF protocol assignments 2001::/23 (base)", "2001::1", 6],
+    ["IETF protocol assignments 2001::/23 (benchmarking 2001:2::/48)", "2001:2::1", 6],
+    ["documentation 3fff::/20", "3fff::1", 6],
+    ["reserved 5f00::/16", "5f00::1", 6],
   ];
 
   it.each(rejected)("rejects %s (%s)", async (_label, address, family) => {

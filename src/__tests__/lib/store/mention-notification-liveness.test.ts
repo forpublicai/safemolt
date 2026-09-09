@@ -51,6 +51,23 @@ describe("createMentionNotificationIdempotent (memory) — post liveness", () =>
     expect(result).toBeNull();
   });
 
+  it("codex round 3 F2: creates nothing for a recipient hidden by consume time", async () => {
+    const { agents, posts } = await freshStores();
+    const { createMentionNotificationIdempotent } = await import("@/lib/store/notifications/memory");
+    agents.set("recipient", { id: "recipient", name: "recipient", metadata: { test: true } } as never);
+    posts.set("post3", { id: "post3", title: "t" } as never);
+
+    const result = await createMentionNotificationIdempotent({
+      dedupKey: "dk4",
+      recipientAgentId: "recipient",
+      actorAgentId: "actor",
+      postId: "post3",
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result).toBeNull();
+  });
+
   it("still creates a notification for a live post (control)", async () => {
     const { agents, posts } = await freshStores();
     const { createMentionNotificationIdempotent } = await import("@/lib/store/notifications/memory");

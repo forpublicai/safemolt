@@ -12,6 +12,8 @@
  * seeded agent, exactly as `m11-2-u5-wakeups.test.ts` (this file's template) requires for
  * `agent_wakeups`.
  */
+import * as http from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   claimNextWebhookDelivery,
   deleteAgentWebhook,
@@ -27,6 +29,7 @@ import {
 } from "@/lib/store/wakeups/db";
 import { deleteAgent } from "@/lib/store/agents/db";
 import { registerWebhook } from "@/lib/actions/webhooks";
+import { deliverWakeup } from "@/lib/webhooks/deliver";
 import type { StoredAgent } from "@/lib/store-types";
 import { closeIntegrationConnections, pgClient, pgPool } from "./helpers/db";
 import { pidOf, rejections, runConcurrently, waitForWaiter } from "./helpers/concurrency";
@@ -55,16 +58,28 @@ async function seedAgent(): Promise<string> {
 }
 
 /** A webhook-primary wakeup, via the real enqueue path — its ledger row rides the same statement. */
-async function seedWebhookWakeup(agentId: string): Promise<number> {
+async function seedWebhookWakeup(
+  agentId: string,
+  reason = "b1w_reason",
+  eventId: number | null = nextEventId()
+): Promise<number> {
   const result = await enqueueWakeup({
     agentId,
-    reason: "b1w_reason",
-    eventId: nextEventId(),
+    reason,
+    eventId,
     payload: { run: RUN },
     delivery: "webhook",
   });
   if (!result.wakeup) throw new Error("expected a fresh wakeup row");
   return result.wakeup.id;
+}
+
+/** A REAL row in `events` — F5(b) needs a genuinely receipted event, never a synthetic bigint. */
+async function insertRealEvent(kind: string): Promise<number> {
+  const { rows } = await pgPool().query(`INSERT INTO events (kind, payload) VALUES ($1, '{}'::jsonb) RETURNING id`, [
+    kind,
+  ]);
+  return Number(rows[0].id);
 }
 
 /** An internal-primary wakeup — only gets a ledger row when the agent's registration is `mode='both'`. */
@@ -559,15 +574,18 @@ describe("F3: an internal re-arm never resets an active mode='both' ledger", () 
   });
 });
 
-describe("F2/F8(b): the disposition sweep sees a ledger committed during its own lock wait", () => {
-  it("terminalizes a delivery that committed WHILE deleteAgentWebhook was waiting on the registration lock", async () => {
+describe("F5(b): the disposition sweep sees a REAL enqueueWakeup that commits during deleteAgentWebhook's own lock wait", () => {
+  it("terminalizes a delivery the real enqueueWakeup created (with a real receipted event) WHILE deleteAgentWebhook was waiting on the registration lock", async () => {
     const agent = await seedAgent();
     await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
 
     const holder = await pgClient();
     await holder.query("BEGIN");
     const holderPid = await pidOf(holder);
-    // Stands in for a concurrent enqueue's own `reg` lock — same row, same mode.
+    // An UNRELATED FOR SHARE holder, never a substitute for the enqueue's own lock: `FOR SHARE` is
+    // compatible with `FOR SHARE`, so the REAL `enqueueWakeup` call below proceeds unimpeded even
+    // while this same row's DELETE is genuinely blocked waiting on `holder` (proven empirically: a
+    // third connection's `FOR SHARE` does not queue behind an already-waiting `DELETE`).
     await holder.query(`SELECT mode FROM agent_webhooks WHERE agent_id = $1 AND disabled_at IS NULL FOR SHARE`, [
       agent,
     ]);
@@ -576,20 +594,19 @@ describe("F2/F8(b): the disposition sweep sees a ledger committed during its own
     const waited = await waitForWaiter(holderPid, "", 5000);
     expect(waited).toBe(true); // deleteAgentWebhook is genuinely blocked on the held registration lock
 
-    // Committed on the SAME connection that holds the lock, mimicking a concurrent enqueue whose
-    // wakeup+ledger land WHILE the delete is still waiting — the exact window round 2 finding 2 names.
-    const interruptedWakeupId = nextEventId();
-    const wakeupInsert = await holder.query(
-      `INSERT INTO agent_wakeups (agent_id, reason, event_id, payload, delivery, due_at)
-       VALUES ($1, 'b1w_f2_interrupt', $2, '{}'::jsonb, 'webhook', NOW())
-       RETURNING id`,
-      [agent, interruptedWakeupId]
-    );
-    const newWakeupId = Number(wakeupInsert.rows[0].id);
-    await holder.query(
-      `INSERT INTO webhook_deliveries (wakeup_id, agent_id, next_attempt_at) VALUES ($1, $2, NOW())`,
-      [newWakeupId, agent]
-    );
+    // The REAL enqueueWakeup, with a REAL receipted `events` row — not hand-rolled INSERTs — commits
+    // its wakeup+ledger WHILE delete is still waiting, the exact window round 2 finding 2 names.
+    const realEventId = await insertRealEvent("b1w.f5b_test_event");
+    const enqueueResult = await enqueueWakeup({
+      agentId: agent,
+      reason: "b1w_f5b_interrupt",
+      eventId: realEventId,
+      payload: { run: RUN },
+      delivery: "webhook",
+    });
+    expect(enqueueResult.wakeup).not.toBeNull();
+    const interruptedWakeupId = enqueueResult.wakeup!.id;
+
     await holder.query("COMMIT");
     await holder.end();
 
@@ -606,5 +623,233 @@ describe("F2/F8(b): the disposition sweep sees a ledger committed during its own
       [agent]
     );
     expect(incomplete[0].n).toBe(0);
+    expect((await ledgerRowForWakeup(interruptedWakeupId)).terminal_reason).toBe("webhook_removed");
+  });
+});
+
+describe("F1: two concurrent successful attempts for one agent never deadlock", () => {
+  it("both complete without a 40P01 when they race the registration lock", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+    const wakeupA = await seedWebhookWakeup(agent);
+    const wakeupB = await seedWebhookWakeup(agent);
+    const claimedA = await claimNextWebhookDelivery({ claimToken: `b1w_f1race_a_${RUN}`, leaseMs: 30_000 });
+    const claimedB = await claimNextWebhookDelivery({ claimToken: `b1w_f1race_b_${RUN}`, leaseMs: 30_000 });
+    expect(new Set([claimedA?.wakeupId, claimedB?.wakeupId])).toEqual(new Set([wakeupA, wakeupB]));
+
+    // A real, unforced race: two independent successful attempts for the SAME agent's registration.
+    // A `FOR SHARE`-for-success regression (finding 1) is what would deadlock here; deliberately
+    // holding a lock open via a raw client to force the exact interleaving was tried and abandoned —
+    // it does not resolve the way `deadlock_timeout` implies and can hang a shared-DB test for
+    // minutes, which is worse than a race this is already exercised well by two real round trips.
+    const [resultA, resultB] = await Promise.allSettled([
+      recordWebhookAttempt({ id: claimedA!.id, claimToken: claimedA!.claimToken, status: 200, ok: true }),
+      recordWebhookAttempt({ id: claimedB!.id, claimToken: claimedB!.claimToken, status: 200, ok: true }),
+    ]);
+
+    expect(resultA.status).toBe("fulfilled");
+    expect(resultB.status).toBe("fulfilled");
+    if (resultA.status === "fulfilled") expect(resultA.value).toBe("success");
+    if (resultB.status === "fulfilled") expect(resultB.value).toBe("success");
+    expect((await ledgerRowForWakeup(wakeupA)).terminal_reason).toBe("delivered");
+    expect((await ledgerRowForWakeup(wakeupB)).terminal_reason).toBe("delivered");
+  });
+});
+
+describe("F1: a late attempt on an expired ledger never deadlocks with a concurrent delete", () => {
+  it("resolves both sides cleanly, leaving a single consistent terminal state", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+    const wakeupId = await seedWebhookWakeup(agent);
+    const claimed = await claimNextWebhookDelivery({ claimToken: `b1w_f1late_${RUN}`, leaseMs: 30_000 });
+    expect(claimed).not.toBeNull();
+    // "Late": the lease has expired, but nobody has reclaimed it yet — the token is still current.
+    await pgPool().query(`UPDATE webhook_deliveries SET lease_expires_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, [
+      claimed!.id,
+    ]);
+
+    const [attemptResult, deleteResult] = await Promise.allSettled([
+      recordWebhookAttempt({ id: claimed!.id, claimToken: claimed!.claimToken, status: 200, ok: true }),
+      deleteAgentWebhook(agent),
+    ]);
+
+    expect(attemptResult.status).toBe("fulfilled"); // no 40P01, whichever side wins
+    expect(deleteResult.status).toBe("fulfilled");
+
+    const ledger = await ledgerRowForWakeup(wakeupId);
+    expect(["delivered", "webhook_removed"]).toContain(ledger.terminal_reason);
+    const wakeup = await wakeupRow(wakeupId);
+    expect(wakeup.completed_at).not.toBeNull();
+    expect(wakeup.result).toBe(ledger.terminal_reason); // one consistent outcome, never torn between the two
+  });
+});
+
+describe("F6: the disposition sweep runs only when this call's own attempt was accepted", () => {
+  it("a rejected (wrong-token) call does not sweep this agent's other pending deliveries", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+    const rejectedWakeup = await seedWebhookWakeup(agent);
+    const pendingWakeup = await seedWebhookWakeup(agent);
+    const rejectedLedger = await ledgerRowForWakeup(rejectedWakeup);
+    await pgPool().query(`UPDATE agent_webhooks SET failure_count = 10, disabled_at = NOW() WHERE agent_id = $1`, [
+      agent,
+    ]);
+
+    const outcome = await recordWebhookAttempt({
+      id: rejectedLedger.id as number,
+      claimToken: "b1w_f6_wrong_token_never_issued",
+      status: 500,
+      ok: false,
+    });
+    expect(outcome).toBe("not_found");
+
+    expect((await ledgerRowForWakeup(pendingWakeup)).terminal_reason).toBeNull();
+    expect((await ledgerRowForWakeup(rejectedWakeup)).terminal_reason).toBeNull();
+
+    // Cleanup, not assertion: both rows are deliberately left non-terminal and UNCLAIMED above, which
+    // makes them the oldest due rows in the whole table — `claimNextWebhookDelivery` scans globally,
+    // so a later test's plain claim call would win one of THESE instead of its own. A fake live claim
+    // (never used elsewhere) takes them out of the due scan without touching what was just asserted.
+    await pgPool().query(
+      `UPDATE webhook_deliveries SET claimed_at = NOW(), claim_token = 'b1w_f6_cleanup', lease_expires_at = NOW() + INTERVAL '1 hour' WHERE wakeup_id = ANY($1::bigint[])`,
+      [[rejectedWakeup, pendingWakeup]]
+    );
+  });
+});
+
+describe("F5(a): a forced failure between the ledger write and the wakeup completion rolls both back", () => {
+  const TRIGGER_FN = `b1w_fail_wakeup_${RUN}`;
+  const FAIL_REASON = `b1w_f5a_fail_${RUN}`;
+
+  /** A trigger on `agent_wakeups`, not `webhook_deliveries`: it fires strictly AFTER the ledger's own
+   * UPDATE has run inside the same statement, proving the two are one atomic unit, not two writes. */
+  async function withRefusedWakeupCompletion<T>(run: () => Promise<T>): Promise<T> {
+    await pgPool().query(`
+      CREATE OR REPLACE FUNCTION ${TRIGGER_FN}() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.reason = '${FAIL_REASON}' THEN
+          RAISE EXCEPTION 'b1w injected wakeup-completion failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $fn$;
+    `);
+    await pgPool().query(`
+      CREATE TRIGGER ${TRIGGER_FN} BEFORE UPDATE ON agent_wakeups
+      FOR EACH ROW EXECUTE FUNCTION ${TRIGGER_FN}()
+    `);
+    try {
+      return await run();
+    } finally {
+      await pgPool().query(`DROP TRIGGER IF EXISTS ${TRIGGER_FN} ON agent_wakeups`);
+      await pgPool().query(`DROP FUNCTION IF EXISTS ${TRIGGER_FN}()`);
+    }
+  }
+
+  it("neither the ledger row nor the wakeup change when the wakeup completion is refused", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+    const wakeupId = await seedWebhookWakeup(agent, FAIL_REASON);
+    const claimed = await claimNextWebhookDelivery({ claimToken: `b1w_f5a_${RUN}`, leaseMs: 30_000 });
+    expect(claimed?.wakeupId).toBe(wakeupId); // the claim scans globally — pin it to THIS test's row
+
+    await withRefusedWakeupCompletion(async () => {
+      await expect(
+        recordWebhookAttempt({ id: claimed!.id, claimToken: claimed!.claimToken, status: 200, ok: true })
+      ).rejects.toThrow(/b1w injected wakeup-completion failure/);
+    });
+
+    const ledger = await ledgerRowForWakeup(wakeupId);
+    expect(ledger.attempts).toBe(0);
+    expect(ledger.terminal_reason).toBeNull();
+    expect(ledger.claim_token).toBe(claimed!.claimToken); // the claim itself also rolled back with it
+    const wakeup = await wakeupRow(wakeupId);
+    expect(wakeup.completed_at).toBeNull();
+  });
+});
+
+describe("F5(d): a failing local receiver retries then disables at the threshold, with a stable wakeup id", () => {
+  it("retries once, then crosses the failure threshold — both real HTTP attempts carry the same X-SafeMolt-Wakeup-Id", async () => {
+    const received: string[] = [];
+    const server = http.createServer((req, res) => {
+      received.push(String(req.headers["x-safemolt-wakeup-id"]));
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(500);
+        res.end();
+      });
+    });
+    const port = await new Promise<number>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port));
+    });
+
+    const ORIGINAL_SEAM = process.env.WEBHOOK_ALLOW_INSECURE_LOCAL;
+    process.env.WEBHOOK_ALLOW_INSECURE_LOCAL = "true";
+
+    try {
+      const agent = await seedAgent();
+      await upsertAgentWebhook({
+        agentId: agent,
+        url: `http://127.0.0.1:${port}/hook`,
+        secret: "s",
+        mode: "both",
+      });
+      // One failure short of the auto-disable threshold, so this SAME delivery's 2nd attempt is the
+      // one that crosses it (2 attempts is well under this delivery's own 3-attempt exhaustion cap).
+      await pgPool().query(`UPDATE agent_webhooks SET failure_count = 8 WHERE agent_id = $1`, [agent]);
+      const wakeupId = await seedWebhookWakeup(agent, "b1w_f5d_reason", null);
+
+      const first = await claimNextWebhookDelivery({ claimToken: `b1w_f5d_1_${RUN}`, leaseMs: 30_000 });
+      expect(first?.wakeupId).toBe(wakeupId); // the claim scans globally — pin it to THIS test's row
+      const firstDelivery = await deliverWakeup({
+        url: first!.url!,
+        secret: first!.secret!,
+        wakeupId: first!.wakeupId,
+        eventId: first!.eventId,
+        payload: { reason: first!.reason, wakeup_id: first!.wakeupId, subject: {}, context_href: "/" },
+      });
+      expect(firstDelivery.status).toBe(500);
+      const firstOutcome = await recordWebhookAttempt({
+        id: first!.id,
+        claimToken: first!.claimToken,
+        status: firstDelivery.status,
+        ok: false,
+      });
+      expect(firstOutcome).toBe("retry");
+
+      await pgPool().query(`UPDATE webhook_deliveries SET next_attempt_at = NOW() WHERE wakeup_id = $1`, [wakeupId]);
+
+      const second = await claimNextWebhookDelivery({ claimToken: `b1w_f5d_2_${RUN}`, leaseMs: 30_000 });
+      expect(second).not.toBeNull();
+      expect(second!.wakeupId).toBe(wakeupId);
+      const secondDelivery = await deliverWakeup({
+        url: second!.url!,
+        secret: second!.secret!,
+        wakeupId: second!.wakeupId,
+        eventId: second!.eventId,
+        payload: { reason: second!.reason, wakeup_id: second!.wakeupId, subject: {}, context_href: "/" },
+      });
+      expect(secondDelivery.status).toBe(500);
+      const secondOutcome = await recordWebhookAttempt({
+        id: second!.id,
+        claimToken: second!.claimToken,
+        status: secondDelivery.status,
+        ok: false,
+      });
+      expect(secondOutcome).toBe("disabled");
+
+      expect(received).toHaveLength(2);
+      expect(received[0]).toBe(String(wakeupId));
+      expect(received[1]).toBe(String(wakeupId));
+
+      const ledger = await ledgerRowForWakeup(wakeupId);
+      expect(ledger.terminal_reason).toBe("webhook_disabled");
+      const registration = await getAgentWebhook(agent);
+      expect(registration!.disabledAt).not.toBeNull();
+    } finally {
+      if (ORIGINAL_SEAM === undefined) delete process.env.WEBHOOK_ALLOW_INSECURE_LOCAL;
+      else process.env.WEBHOOK_ALLOW_INSECURE_LOCAL = ORIGINAL_SEAM;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

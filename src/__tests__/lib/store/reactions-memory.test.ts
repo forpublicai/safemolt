@@ -16,9 +16,11 @@ import {
   listNotifications,
 } from "@/lib/store";
 import { createAgent, deleteAgent, getAgentById } from "@/lib/store/agents/memory";
-import { comments, contentReactions, eventLog, posts, reactionCountToday, wakeupQueue } from "@/lib/store/_memory-state";
+import { agentLoopState, comments, contentReactions, eventLog, posts, reactionCountToday, wakeupQueue } from "@/lib/store/_memory-state";
+import { claimNextWakeup, completeWakeup, enqueueWakeup } from "@/lib/store/wakeups/memory";
 import { seedComment, seedPost } from "@/__tests__/helpers/store-fixtures";
 import type { PreparedEvent } from "@/lib/events/kinds";
+import type { ExecutionGuard } from "@/lib/store/execution-guard";
 import type { StoredAgent } from "@/lib/store-types";
 
 const RUN = `${Date.now().toString(36)}`;
@@ -346,6 +348,43 @@ describe("F4: memory validates events before any refusal (parity with db)", () =
       )
     ).rejects.toThrow();
   });
+
+  it("a valid-shape event whose idemKey already exists answers not_found against a missing subject, never throws (codex round 3, F4)", async () => {
+    const reactor = await freshAgent();
+    const dupeIdemKey = `b1r-f4-dupe-${Date.now().toString(36)}`;
+    eventLog.rows.push({
+      id: eventLog.nextId++,
+      kind: "reaction.added",
+      actorAgentId: reactor.id,
+      subjectType: "post",
+      subjectId: "some-other-post",
+      secondarySubjectId: null,
+      schoolId: null,
+      idemKey: dupeIdemKey,
+      payload: {},
+      createdAt: new Date().toISOString(),
+    });
+    const conflictingEvent = (kind: "reaction.added" | "reaction.removed"): PreparedEvent => ({
+      kind,
+      actorAgentId: reactor.id,
+      subjectType: "post",
+      subjectId: "no-such-post",
+      idemKey: dupeIdemKey,
+      payload: { subject_type: "post", subject_id: "no-such-post", emoji: "👍", author_id: reactor.id },
+    });
+
+    // Mutation check: running the full `prepareEventBatch` idemKey preflight before the subject
+    // check throws `23505` here; the db side never attempts that insert, because its event CTE is
+    // gated on the same `inserted` row the subject-missing case leaves empty.
+    expect((await storeAddReaction(
+      { agentId: reactor.id, subjectType: "post", subjectId: "no-such-post", emoji: "👍", dailyLimit: 200 },
+      [conflictingEvent("reaction.added")]
+    )).outcome).toBe("not_found");
+    expect((await storeRemoveReaction(
+      { agentId: reactor.id, subjectType: "post", subjectId: "no-such-post", emoji: "👍" },
+      [conflictingEvent("reaction.removed")]
+    )).outcome).toBe("not_found");
+  });
 });
 
 describe("F7: removal is gated on the live subject", () => {
@@ -380,5 +419,83 @@ describe("F7: removal is gated on the live subject", () => {
     // in `contentReactions` — the whole point of F7 is that the subject's liveness gates it too.
     expect(result.outcome).toBe("not_found");
     expect(eventLog.nextId).toBe(before);
+  });
+});
+
+describe("F1: the execution guard reaches addReaction/removeReaction (memory, codex round 3)", () => {
+  async function agentWithLoop(): Promise<StoredAgent> {
+    const a = await freshAgent();
+    agentLoopState.set(a.id, {
+      agentId: a.id,
+      enabled: true,
+      lastSeenAt: null,
+      lastActionAt: null,
+      nextEligibleAt: null,
+      lastError: null,
+      actionsTaken: 0,
+      errors: 0,
+    });
+    return a;
+  }
+
+  async function claimGuardFor(agentId: string): Promise<ExecutionGuard> {
+    const created = await enqueueWakeup({ agentId, reason: "idle", eventId: null, payload: {}, delivery: "internal" });
+    if (!created.created) throw new Error("expected a fresh idle wakeup");
+    const claim = await claimNextWakeup({ claimToken: "tok-b1r-f1", leaseMs: 600_000, generalCap: 50, playgroundCap: 50 });
+    if (claim.candidates !== 1 || !claim.claimed) throw new Error("expected a successful claim");
+    return { agentId, wakeupId: claim.claimed.id, claimToken: claim.claimed.claimToken! };
+  }
+
+  it("addReaction passes with a live claim, then refuses once disabled before the write", async () => {
+    const author = await freshAgent();
+    const reactor = await agentWithLoop();
+    const post = await seedPost(author.id, GROUP, "guarded add");
+    const guard = await claimGuardFor(reactor.id);
+
+    expect((await storeAddReaction(
+      { agentId: reactor.id, subjectType: "post", subjectId: post.id, emoji: "👍", dailyLimit: 200 },
+      [],
+      guard
+    )).outcome).toBe("added");
+    await completeWakeup(guard.wakeupId, guard.claimToken, "acted");
+
+    const post2 = await seedPost(author.id, GROUP, "guarded add disabled");
+    const guard2 = await claimGuardFor(reactor.id);
+    agentLoopState.get(reactor.id)!.enabled = false;
+    const before = eventLog.nextId;
+
+    const refused = await storeAddReaction(
+      { agentId: reactor.id, subjectType: "post", subjectId: post2.id, emoji: "👍", dailyLimit: 200 },
+      [],
+      guard2
+    );
+
+    // Mutation check: removing the `executionGuardPasses` check makes this resolve to "added" and
+    // advance `eventLog.nextId` even though the loop was disabled before the write.
+    expect(refused.outcome).toBe("execution_guard_failed");
+    expect(eventLog.nextId).toBe(before);
+    expect((await getReactionCounts("post", [post2.id]))[post2.id] ?? {}).toEqual({});
+  });
+
+  it("removeReaction does not delete once disabled before the write", async () => {
+    const author = await freshAgent();
+    const reactor = await agentWithLoop();
+    const post = await seedPost(author.id, GROUP, "guarded remove");
+    expect((await storeAddReaction(
+      { agentId: reactor.id, subjectType: "post", subjectId: post.id, emoji: "🎉", dailyLimit: 200 }
+    )).outcome).toBe("added");
+
+    const guard = await claimGuardFor(reactor.id);
+    agentLoopState.get(reactor.id)!.enabled = false;
+
+    const result = await storeRemoveReaction(
+      { agentId: reactor.id, subjectType: "post", subjectId: post.id, emoji: "🎉" },
+      [],
+      guard
+    );
+
+    // Mutation check: removing the guard check lets this delete the row and report "removed".
+    expect(result.outcome).toBe("execution_guard_failed");
+    expect((await getReactionCounts("post", [post.id]))[post.id]).toEqual({ "🎉": 1 });
   });
 });

@@ -33,6 +33,11 @@ function forbiddenWithReason<T>(message: string, reason: string): ActionResult<T
   return { ok: false, code: "forbidden", message, reason };
 }
 
+/** Shared refusal for every store guard sentinel below (codex round 3, F1). */
+function guardRefusal<T>(): ActionResult<T> {
+  return actionError("execution_guard_failed", "Execution guard failed: autonomy disabled or claim superseded");
+}
+
 /** The rate-limit refusal, built the same way `actions/comments.ts`'s does — DMs share the comment quota. */
 function dmRateLimitRefusal<T>(rate: Awaited<ReturnType<typeof checkCommentRateLimit>>): ActionResult<T> {
   return actionError("rate_limited", "DM cooldown", {
@@ -97,7 +102,7 @@ export async function sendDm(input: SendDmInput): Promise<ActionResult<{ message
 
   // M11-2 P3.3: checked first, matching `createComment` (codex round 2, F1).
   if (outcome.outcome === "execution_guard_failed") {
-    return actionError("execution_guard_failed", "Execution guard failed: autonomy disabled or claim superseded");
+    return guardRefusal();
   }
   // The sender withdrew between the action's lookup and the store's write — the same missing-actor
   // refusal in both stores, answering 404 rather than a stray 429/500 (codex round 2, F4).
@@ -123,13 +128,13 @@ export interface MarkDmReadInput {
 /**
  * Idempotent no-op success (Tier B — no event) whether or not a conversation existed.
  * `otherName` accepts a name or (once withdrawn) an id — see `resolveDmCounterpart`. A failed guard
- * simply leaves the cursor unmoved (the store no-ops) — non-terminal, so there is no distinct
- * refusal to surface.
+ * now propagates as a distinct refusal (codex round 3, F1), rather than reading as a silent no-op.
  */
 export async function markDmRead(input: MarkDmReadInput): Promise<ActionResult<{ otherName: string }>> {
   const otherId = await resolveDmCounterpart(input.agent.id, input.otherName);
   if (!otherId) return actionError("not_found", `Agent "@${input.otherName}" not found`);
-  await storeMarkDmRead(input.agent.id, otherId, input.executionGuard);
+  const outcome = await storeMarkDmRead(input.agent.id, otherId, input.executionGuard);
+  if (outcome === "execution_guard_failed") return guardRefusal();
   return actionOk({ otherName: input.otherName });
 }
 
@@ -153,22 +158,22 @@ function blockEvent(kind: "dm.blocked" | "dm.unblocked", blockerId: string, targ
 }
 
 /**
- * Block a target (name or id — see `resolveDmCounterpart`). Always `actionOk` once resolved — a
- * failed guard just leaves the flag unset (the store no-ops), matching the existing duplicate-
- * suppressing "no change" case (no distinct refusal for this Tier-B write).
+ * Block a target (name or id — see `resolveDmCounterpart`). A failed guard is now a distinct
+ * refusal (codex round 3, F1), never the same `actionOk` an already-blocked no-op would answer.
  */
 export async function blockAgent(input: BlockAgentInput): Promise<ActionResult<{ targetName: string }>> {
   const targetId = await resolveDmCounterpart(input.agent.id, input.targetName);
   if (!targetId) return actionError("not_found", `Agent "@${input.targetName}" not found`);
   if (targetId === input.agent.id) return actionError("bad_request", "Cannot block yourself");
 
-  await storeSetDmBlock(
+  const outcome = await storeSetDmBlock(
     input.agent.id,
     targetId,
     true,
     [blockEvent("dm.blocked", input.agent.id, targetId)],
     input.executionGuard
   );
+  if (outcome === "execution_guard_failed") return guardRefusal();
   return actionOk({ targetName: input.targetName });
 }
 
@@ -179,17 +184,18 @@ export interface UnblockAgentInput {
   executionGuard?: ExecutionGuard;
 }
 
-/** Unblock a target (name or id). Always `actionOk`, mirroring `blockAgent` (no self-check needed). */
+/** Unblock a target (name or id), mirroring `blockAgent`'s guard handling (no self-check needed). */
 export async function unblockAgent(input: UnblockAgentInput): Promise<ActionResult<{ targetName: string }>> {
   const targetId = await resolveDmCounterpart(input.agent.id, input.targetName);
   if (!targetId) return actionError("not_found", `Agent "@${input.targetName}" not found`);
 
-  await storeSetDmBlock(
+  const outcome = await storeSetDmBlock(
     input.agent.id,
     targetId,
     false,
     [blockEvent("dm.unblocked", input.agent.id, targetId)],
     input.executionGuard
   );
+  if (outcome === "execution_guard_failed") return guardRefusal();
   return actionOk({ targetName: input.targetName });
 }

@@ -78,8 +78,8 @@ describe("runWebhookDeliveryPass — F8(a): a disabled registration makes no req
   });
 });
 
-describe("runWebhookDeliveryPass — F8(d): the sent payload carries only ids + context_href", () => {
-  it("never spreads the wakeup's own payload fields (e.g. title/content) into the top level", async () => {
+describe("runWebhookDeliveryPass — F3 round 3: subject is an ALLOWLIST of ids, never content", () => {
+  it("drops title/content anywhere in the outbound body and keeps only allowlisted ids", async () => {
     const agent = await seedAgent("payload");
     await upsertAgentWebhook({ agentId: agent.id, url: "https://example.com/hook", secret: "s", mode: "primary" });
     mockDeliver.mockResolvedValue({ ok: true, status: 200 });
@@ -88,7 +88,7 @@ describe("runWebhookDeliveryPass — F8(d): the sent payload carries only ids + 
       agentId: agent.id,
       reason: "wp-payload",
       eventId: 42,
-      payload: { title: "should not leak", content: "should not leak either" },
+      payload: { title: "should not leak", content: "should not leak either", post_id: "p_1", group_id: "g_1" },
       delivery: "webhook",
     });
     if (!enq.wakeup) throw new Error("fixture: expected a fresh wakeup row");
@@ -100,8 +100,8 @@ describe("runWebhookDeliveryPass — F8(d): the sent payload carries only ids + 
     const sentPayload = mockDeliver.mock.calls[0][0].payload as Record<string, unknown>;
 
     expect(Object.keys(sentPayload).sort()).toEqual(["context_href", "event_id", "reason", "subject", "wakeup_id"]);
-    expect(sentPayload).not.toHaveProperty("title");
-    expect(sentPayload).not.toHaveProperty("content");
-    expect(sentPayload.subject).toEqual({ title: "should not leak", content: "should not leak either" });
+    // Checked at any depth, not just the top level — a nested leak under `subject` is the exact bug F3 closes.
+    expect(JSON.stringify(sentPayload)).not.toContain("should not leak");
+    expect(sentPayload.subject).toEqual({ post_id: "p_1", group_id: "g_1" });
   });
 });

@@ -1,7 +1,7 @@
 import { sql } from "@/lib/db";
 import type { AgentClaimOutcome, CompleteVettingOutcome, DeleteAgentResult, StoredAgent, VettingChallenge, VettingChallengeStartOutcome } from "@/lib/store-types";
 import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
-import { ACTIVE_NOW_THRESHOLD_MS, isPubliclyHiddenAgent } from "@/lib/agent-public";
+import { ACTIVE_NOW_THRESHOLD_MS, isPubliclyHiddenAgent, TEST_NAME_PATTERN } from "@/lib/agent-public";
 import {
     generateChallengeValues,
     generateNonce,
@@ -485,29 +485,34 @@ export async function setAgentUnclaimed(id: string): Promise<void> {
 /**
  * Codex round 2 F1: `filter: "active_now"` narrows INSIDE the query, before `LIMIT 500` — the
  * predicate ran in JS after the limit, so 500 dormant agents ahead of one active one hid it.
+ * Codex round 3 F1: the route's hidden-agent exclusion ran on the same already-limited rows, so
+ * 500 hidden active agents ahead of one visible one hid it too — the `NOT (...)` below is the SQL
+ * twin of `isPubliclyHiddenAgent`, applied only where `active_now` already narrows in SQL.
  * Six literal branches (sort x filter): the neon tag binds every `${}` as a parameter, so a raw
  * WHERE fragment cannot be composed in and each combination needs its own template.
  */
 export async function listAgents(
     sort: "recent" | "points" | "followers" = "recent",
-    filter?: "active_now"
+    filter?: "active_now",
+    limit: number = 500
 ): Promise<StoredAgent[]> {
     const activeNow = filter === "active_now";
     const activeNowSecs = Math.ceil(ACTIVE_NOW_THRESHOLD_MS / 1000);
+    const hiddenNamePattern = TEST_NAME_PATTERN.source;
     let rows: Record<string, unknown>[];
     if (sort === "points") {
         rows = activeNow
-            ? await sql!`SELECT * FROM agents WHERE last_active_at > NOW() - make_interval(secs => ${activeNowSecs}) ORDER BY points DESC LIMIT 500`
-            : await sql!`SELECT * FROM agents ORDER BY points DESC LIMIT 500`;
+            ? await sql!`SELECT * FROM agents WHERE last_active_at > NOW() - make_interval(secs => ${activeNowSecs}) AND NOT ((metadata->>'system') IS NOT DISTINCT FROM 'true' OR (metadata->>'test') IS NOT DISTINCT FROM 'true' OR (metadata->>'source') IS NOT DISTINCT FROM 'test' OR name ~* ${hiddenNamePattern}) ORDER BY points DESC LIMIT ${limit}`
+            : await sql!`SELECT * FROM agents ORDER BY points DESC LIMIT ${limit}`;
     } else if (sort === "followers") {
         // Don't reference x_follower_count in SQL so this works before migration; sort in JS
         rows = activeNow
-            ? await sql!`SELECT * FROM agents WHERE is_claimed = true AND last_active_at > NOW() - make_interval(secs => ${activeNowSecs}) LIMIT 500`
-            : await sql!`SELECT * FROM agents WHERE is_claimed = true LIMIT 500`;
+            ? await sql!`SELECT * FROM agents WHERE is_claimed = true AND last_active_at > NOW() - make_interval(secs => ${activeNowSecs}) AND NOT ((metadata->>'system') IS NOT DISTINCT FROM 'true' OR (metadata->>'test') IS NOT DISTINCT FROM 'true' OR (metadata->>'source') IS NOT DISTINCT FROM 'test' OR name ~* ${hiddenNamePattern}) LIMIT ${limit}`
+            : await sql!`SELECT * FROM agents WHERE is_claimed = true LIMIT ${limit}`;
     } else {
         rows = activeNow
-            ? await sql!`SELECT * FROM agents WHERE last_active_at > NOW() - make_interval(secs => ${activeNowSecs}) ORDER BY created_at DESC LIMIT 500`
-            : await sql!`SELECT * FROM agents ORDER BY created_at DESC LIMIT 500`;
+            ? await sql!`SELECT * FROM agents WHERE last_active_at > NOW() - make_interval(secs => ${activeNowSecs}) AND NOT ((metadata->>'system') IS NOT DISTINCT FROM 'true' OR (metadata->>'test') IS NOT DISTINCT FROM 'true' OR (metadata->>'source') IS NOT DISTINCT FROM 'test' OR name ~* ${hiddenNamePattern}) ORDER BY created_at DESC LIMIT ${limit}`
+            : await sql!`SELECT * FROM agents ORDER BY created_at DESC LIMIT ${limit}`;
     }
     const agents = (rows as Record<string, unknown>[]).map(rowToAgent);
     if (sort === "followers") {

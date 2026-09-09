@@ -71,6 +71,21 @@ describe("listAgents(sort, \"active_now\")", () => {
     expect(result.map((a) => a.id)).toEqual([justInside.id]);
   });
 
+  it("codex round 3 F1: excludes a hidden active agent behind a small limit", async () => {
+    const { agents } = await freshStore();
+    const hidden = makeAgent("hidden", {
+      lastActiveAt: new Date().toISOString(),
+      metadata: { test: true },
+    });
+    const visible = makeAgent("visible", { lastActiveAt: new Date(Date.now() - 1000).toISOString() });
+    agents.set(hidden.id, hidden);
+    agents.set(visible.id, visible);
+
+    const result = await listAgents("recent", "active_now", 1);
+
+    expect(result.map((a) => a.id)).toEqual([visible.id]);
+  });
+
   it("with no filter, returns everything (unchanged default behavior)", async () => {
     const { agents } = await freshStore();
     const a = makeAgent("a");

@@ -148,6 +148,18 @@ function sixToFourEmbeddedV4(g: number[]): string | null {
 }
 
 /**
+ * F4 round 3: special-purpose ranges INSIDE `2000::/3` that are not globally reachable (IANA IPv6
+ * special registry) — the allowlist range alone is not enough, since it also contains protocol
+ * assignments, benchmarking and documentation space that must still be refused.
+ */
+const V6_NON_PUBLIC_IN_GLOBAL: ((g: number[]) => boolean)[] = [
+  (g) => g[0] === 0x2001 && g[1] === 0x0db8, // documentation 2001:db8::/32
+  (g) => g[0] === 0x2001 && g[1] < 0x0200, // IETF protocol assignments 2001::/23
+  (g) => g[0] === 0x3fff && g[1] < 0x1000, // documentation 3fff::/20
+  (g) => g[0] === 0x5f00, // reserved 5f00::/16
+];
+
+/**
  * F5: an ALLOWLIST, not a denylist — only `2000::/3` (global unicast) is dialable. Everything else
  * (`fec0::/10`, `fe80::/10`, `fc00::/7`, `ff00::/8`, and any other reserved block) is refused by
  * simply falling outside the one range this returns true for, rather than by naming each one.
@@ -161,8 +173,8 @@ function isPublicIPv6(addr: string, allowLoopback: boolean): boolean {
   if (translatedV4) return isPublicIPv4(translatedV4, allowLoopback);
   if (g.every((x) => x === 0)) return false;
   if (isIPv6Loopback(g)) return allowLoopback;
-  if (g[0] === 0x2001 && g[1] === 0x0db8) return false; // documentation 2001:db8::/32
-  return (g[0] & 0xe000) === 0x2000;
+  if ((g[0] & 0xe000) !== 0x2000) return false;
+  return !V6_NON_PUBLIC_IN_GLOBAL.some((matches) => matches(g));
 }
 
 function isPublicAddress(addr: string, allowLoopback: boolean): boolean {

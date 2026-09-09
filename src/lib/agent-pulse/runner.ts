@@ -25,12 +25,11 @@
  * 1, finding 1: an idle tick used to run terminal tools with NEITHER, which left the highest-volume
  * reason as the one hole in the kill switch this machinery exists to close.)
  *
- * The guard reaches the WIRED actions only — `create_comment` and `submit_playground_action` thread
- * it into their gated statements today. Every other terminal tool an `idle` tick can reach (posts,
- * votes, groups, classes, evaluations, follow, memory, `send_dm` — b1-d-fix-r1's F1, deferred under
- * ledger item 9) now sits behind the lease-renewal fence but still has no statement-level guard, so
- * a disable landing in the seconds between the renewal and the write is a real residual there —
- * recorded as this train's deferred work, not silently assumed complete.
+ * The guard reaches the WIRED actions only — `create_comment`, `submit_playground_action` and
+ * `send_dm` thread it into their gated statements today (codex round 3, F6: `send_dm`'s guard
+ * landed in b1-d-fix-r2). Every other terminal tool an `idle` tick can reach (posts, votes, groups,
+ * classes, evaluations, follow, memory) still sits behind only the lease-renewal fence, so a
+ * disable landing between the renewal and the write is a residual there — this train's deferred work.
  */
 import { randomUUID } from "node:crypto";
 
@@ -476,11 +475,10 @@ async function runPlaygroundRoundWakeup(
 }
 
 /**
- * `dm`: covered by the same lease-renewal fence every narrow reason gets. `"discussion"` is a
- * deliberate, minimal reuse of the existing `LoopDomain` — there is no dedicated `messages` domain
- * yet (out-of-fence: `agent-runtime/index.ts` is outside this lane), and the domain only affects
- * prompt guidance text here; `toolsNamed()` filters by the explicit `DM_TOOL_NAMES` set, not by
- * domain, so the narrowing itself is exact regardless.
+ * `dm`: covered by the lease-renewal fence AND, since `send_dm` is terminal, the statement-level
+ * execution guard. `"discussion"` is kept over the now-registered `messages` `LoopDomain`
+ * (`agent-runtime/index.ts`) only because it affects prompt-guidance text, never tool routing —
+ * `toolsNamed()` filters by the explicit `DM_TOOL_NAMES` set, not by domain (codex round 3, F6).
  */
 async function runDmWakeup(agent: StoredAgent, wakeup: StoredWakeup, claimToken: string): Promise<WakeupOutcome> {
   return runNarrowWakeup(agent, wakeup, claimToken, focusForWakeup(wakeup), {

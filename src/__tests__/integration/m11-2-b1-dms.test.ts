@@ -42,6 +42,27 @@ const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toStri
 let seq = 0;
 const nextId = (kind: string) => `b1dm_${kind}_${RUN}_${(seq += 1)}`;
 
+/** Force one event kind's insert to fail, mirroring `m11-2-u3e-evaluations.test.ts`'s own helper. */
+async function withEventFailure<T>(kind: string, run: () => Promise<T>): Promise<T> {
+  const suffix = `b1dm_${RUN}_${(seq += 1)}`;
+  const functionName = `b1dm_fail_event_${suffix}`;
+  const triggerName = `b1dm_fail_event_trigger_${suffix}`;
+  await pgPool().query(`
+    CREATE OR REPLACE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS $fn$
+    BEGIN
+      IF NEW.kind = '${kind}' THEN RAISE EXCEPTION 'b1dm injected ${kind} failure'; END IF;
+      RETURN NEW;
+    END; $fn$;
+  `);
+  await pgPool().query(`CREATE TRIGGER ${triggerName} AFTER INSERT ON events FOR EACH ROW EXECUTE FUNCTION ${functionName}()`);
+  try {
+    return await run();
+  } finally {
+    await pgPool().query(`DROP TRIGGER IF EXISTS ${triggerName} ON events`);
+    await pgPool().query(`DROP FUNCTION IF EXISTS ${functionName}()`);
+  }
+}
+
 async function seedAgent(): Promise<{ id: string; name: string }> {
   const id = nextId("agent");
   await pgPool().query(
@@ -131,6 +152,32 @@ async function waitForBlockedCount(count: number, timeoutMs = 5000): Promise<num
   return blocked;
 }
 
+/**
+ * Stage two contenders so Postgres's FIFO row-lock queue — not wall-clock scheduling — decides the
+ * winner: start `first`, prove it alone is queued behind the holder, THEN start `second` and prove
+ * it queues too, and only then release. `first` is thereby guaranteed to commit before `second`, a
+ * fact this function establishes rather than a guess from which promise resolves first in JS
+ * (codex round 3, finding 2 — response order is never the same thing as commit order).
+ */
+async function stageRace<A, B>(
+  agentLow: string,
+  agentHigh: string,
+  first: () => Promise<A>,
+  second: () => Promise<B>
+): Promise<{ firstResult: A; secondResult: B }> {
+  const staged = await withHeldPairRow(agentLow, agentHigh, async () => {
+    const firstPromise = first();
+    const firstCount = await waitForBlockedCount(1);
+    const secondPromise = second();
+    const secondCount = await waitForBlockedCount(2);
+    return { firstPromise, secondPromise, firstCount, secondCount };
+  });
+  expect(staged.firstCount).toBeGreaterThanOrEqual(1);
+  expect(staged.secondCount).toBeGreaterThanOrEqual(2);
+  const [firstResult, secondResult] = await Promise.all([staged.firstPromise, staged.secondPromise]);
+  return { firstResult, secondResult };
+}
+
 /** A real claimed wakeup, for the execution-guard tests — mirrors `m11-2-u6-pulse-runner.test.ts`. */
 async function claimGuardFor(agentId: string): Promise<ExecutionGuard> {
   await pgPool().query(`INSERT INTO agent_loop_state (agent_id, enabled) VALUES ($1, true)`, [agentId]);
@@ -183,129 +230,193 @@ describe("F1 — the execution guard reaches sendDm's decisive statement", () =>
     ]);
     expect(rows[0].n).toBe(0);
   });
+
+  it("markDmRead answers execution_guard_failed, not a bare false, once disabled (codex round 3, F1)", async () => {
+    const a = await seedAgent();
+    const b = await seedAgent();
+    expect((await sendDm({ senderId: a.id, recipientId: b.id, content: "seed" })).outcome).toBe("inserted");
+    const guard = await claimGuardFor(b.id);
+    await pgPool().query(`UPDATE agent_loop_state SET enabled = false WHERE agent_id = $1`, [b.id]);
+
+    expect(await markDmRead(b.id, a.id, guard)).toBe("execution_guard_failed");
+    expect(await countUnreadDms(b.id)).toBe(1);
+  });
+
+  it("setDmBlock answers execution_guard_failed, not a bare false, once disabled (codex round 3, F1)", async () => {
+    const a = await seedAgent();
+    const b = await seedAgent();
+    const guard = await claimGuardFor(a.id);
+    await pgPool().query(`UPDATE agent_loop_state SET enabled = false WHERE agent_id = $1`, [a.id]);
+
+    expect(await setDmBlock(a.id, b.id, true, undefined, guard)).toBe("execution_guard_failed");
+    expect((await sendDm({ senderId: b.id, recipientId: a.id, content: "not blocked" })).outcome).toBe("inserted");
+  });
 });
 
-describe("concurrent sends — a real held-lock barrier, seq order = actual commit order", () => {
+describe("F3 — a refused guard on a fresh pair commits no conversation", () => {
+  it("a guard failure on a pair's first-ever send leaves no conversation, message, quota, or event", async () => {
+    const a = await seedAgent();
+    const b = await seedAgent();
+    const guard = await claimGuardFor(a.id);
+    await pgPool().query(`UPDATE agent_loop_state SET enabled = false WHERE agent_id = $1`, [a.id]);
+
+    const result = await sendDm(
+      { senderId: a.id, recipientId: b.id, content: "must not create anything" },
+      [dmSentEvent(a.id, b.id)],
+      guard
+    );
+    expect(result).toEqual({ outcome: "execution_guard_failed", message: null });
+
+    const { agentLow, agentHigh } = canonicalPair(a.id, b.id);
+    const conv = await pgPool().query(`SELECT id FROM dm_conversations WHERE agent_low = $1 AND agent_high = $2`, [
+      agentLow,
+      agentHigh,
+    ]);
+    expect(conv.rows).toHaveLength(0);
+
+    const msgs = await pgPool().query(`SELECT id FROM dm_messages WHERE sender_agent_id = $1`, [a.id]);
+    expect(msgs.rows).toHaveLength(0);
+
+    const quota = await pgPool().query(`SELECT agent_id FROM agent_rate_limits WHERE agent_id = $1`, [a.id]);
+    expect(quota.rows).toHaveLength(0);
+
+    const events = await pgPool().query(`SELECT id FROM events WHERE kind = 'dm.sent' AND actor_agent_id = $1`, [a.id]);
+    expect(events.rows).toHaveLength(0);
+  });
+});
+
+describe("concurrent sends — staged so the FIFO queue's order is the PREDETERMINED commit order", () => {
   /**
    * **A pair has exactly two possible senders, and each is capped at one send per cooldown
    * window** (DMs share the comment cooldown), so the only genuine two-writer race for one pair
-   * is the two directions firing at once. The barrier holds the pair row on a dedicated `pg`
-   * session, confirms BOTH sends are genuinely queued behind it (not merely racing in wall-clock
-   * time), then releases — whichever promise resolves first in JS cannot be reordered relative to
-   * the DB, because the second session's statement cannot even begin executing until the first
-   * commits and releases the row (codex round 2, F2).
+   * is the two directions firing at once. `stageRace` proves which one queues first, so the
+   * committed seq order is asserted from that fact, never from which promise resolved first in JS
+   * (codex round 3, finding 2 — the prior version compared committed rows to JS resolution order).
    */
-  it("two different senders overlapping both succeed, and seq order matches actual resolution order", async () => {
+  it("the first-staged sender gets the lower seq", async () => {
     const a = await seedAgent();
     const b = await seedAgent();
     const { agentLow, agentHigh } = canonicalPair(a.id, b.id);
     const conversationId = await seedConversation(a.id, b.id);
 
-    const resolveOrder: string[] = [];
-    const blocked = await withHeldPairRow(agentLow, agentHigh, async () => {
-      const pA = sendDm({ senderId: a.id, recipientId: b.id, content: "from a" }).then((r) => {
-        resolveOrder.push("a");
-        return r;
-      });
-      const pB = sendDm({ senderId: b.id, recipientId: a.id, content: "from b" }).then((r) => {
-        resolveOrder.push("b");
-        return r;
-      });
-      const count = await waitForBlockedCount(2);
-      return { count, pA, pB };
-    });
-    expect(blocked.count).toBeGreaterThanOrEqual(2);
+    const { firstResult, secondResult } = await stageRace(
+      agentLow,
+      agentHigh,
+      () => sendDm({ senderId: a.id, recipientId: b.id, content: "from a" }),
+      () => sendDm({ senderId: b.id, recipientId: a.id, content: "from b" })
+    );
+    expect(firstResult.outcome).toBe("inserted");
+    expect(secondResult.outcome).toBe("inserted");
 
-    const [rA, rB] = await Promise.all([blocked.pA, blocked.pB]);
-    expect(rA.outcome).toBe("inserted");
-    expect(rB.outcome).toBe("inserted");
-
-    // Read seq assignment straight from the row, keyed by SENDER — not sorted — and compare
-    // against the order the promises actually resolved in.
-    const { rows } = await pgPool().query<{ sender_agent_id: string; seq: number }>(
-      `SELECT sender_agent_id, seq FROM dm_messages WHERE conversation_id = $1 ORDER BY seq ASC`,
+    const { rows } = await pgPool().query<{ sender_agent_id: string }>(
+      `SELECT sender_agent_id FROM dm_messages WHERE conversation_id = $1 ORDER BY seq ASC`,
       [conversationId]
     );
-    expect(rows.map((r) => (r.sender_agent_id === a.id ? "a" : "b"))).toEqual(resolveOrder);
+    expect(rows.map((r) => r.sender_agent_id)).toEqual([a.id, b.id]);
+  });
+
+  it("staging the other sender first flips which one gets the lower seq", async () => {
+    const a = await seedAgent();
+    const b = await seedAgent();
+    const { agentLow, agentHigh } = canonicalPair(a.id, b.id);
+    const conversationId = await seedConversation(a.id, b.id);
+
+    const { firstResult, secondResult } = await stageRace(
+      agentLow,
+      agentHigh,
+      () => sendDm({ senderId: b.id, recipientId: a.id, content: "from b" }),
+      () => sendDm({ senderId: a.id, recipientId: b.id, content: "from a" })
+    );
+    expect(firstResult.outcome).toBe("inserted");
+    expect(secondResult.outcome).toBe("inserted");
+
+    const { rows } = await pgPool().query<{ sender_agent_id: string }>(
+      `SELECT sender_agent_id FROM dm_messages WHERE conversation_id = $1 ORDER BY seq ASC`,
+      [conversationId]
+    );
+    expect(rows.map((r) => r.sender_agent_id)).toEqual([b.id, a.id]);
   });
 });
 
-describe("send-vs-block linearization — a real held-lock barrier", () => {
+describe("send-vs-block linearization — staged so the FIFO queue's order is the PREDETERMINED outcome", () => {
   /**
-   * Exactly one self-consistent outcome: either the send won the row first (block applies after,
-   * so a FOLLOW-UP send from the same sender is what gets refused), or the block won first (the
-   * racing send itself comes back `blocked`). The barrier proves both operations were genuinely
-   * queued on the SAME row before either runs, so the branch taken below reflects the real winner
-   * rather than whichever call happened to be scheduled first in JS.
+   * Which one is staged first now DECIDES the outcome, rather than describing it after the fact:
+   * a send staged before the block still sees the flag unset (the block commits after) and a send
+   * staged after an already-committed block sees it set. Both operation orders, both directions —
+   * four deterministic cases replacing the two response-order-branching ones (codex round 3, F2).
    */
   async function raceSendAgainstBlock(
+    order: "send-first" | "block-first",
     sendArgs: Parameters<typeof sendDm>[0],
     blockerId: string,
     targetId: string
-  ): Promise<{ resolveOrder: string[]; sendOutcome: SendDmOutcome; blockChanged: boolean }> {
+  ): Promise<{ sendOutcome: SendDmOutcome; blockChanged: boolean }> {
     const { agentLow, agentHigh } = canonicalPair(sendArgs.senderId, sendArgs.recipientId);
     // The pair row must exist before a raw connection can lock it.
     await seedConversation(sendArgs.senderId, sendArgs.recipientId);
 
-    const resolveOrder: string[] = [];
-    const { count, pSend, pBlock } = await withHeldPairRow(agentLow, agentHigh, async () => {
-      const send = sendDm(sendArgs).then((r) => {
-        resolveOrder.push("send");
-        return r;
-      });
-      const block = setDmBlock(blockerId, targetId, true).then((r) => {
-        resolveOrder.push("block");
-        return r;
-      });
-      return { count: await waitForBlockedCount(2), pSend: send, pBlock: block };
-    });
-    expect(count).toBeGreaterThanOrEqual(2);
+    const send = () => sendDm(sendArgs);
+    const block = () => setDmBlock(blockerId, targetId, true);
+    const { firstResult, secondResult } =
+      order === "send-first" ? await stageRace(agentLow, agentHigh, send, block) : await stageRace(agentLow, agentHigh, block, send);
 
-    const [sendOutcome, blockChanged] = await Promise.all([pSend, pBlock]);
-    return { resolveOrder, sendOutcome, blockChanged };
+    return order === "send-first"
+      ? { sendOutcome: firstResult as SendDmOutcome, blockChanged: secondResult as boolean }
+      : { sendOutcome: secondResult as SendDmOutcome, blockChanged: firstResult as boolean };
   }
 
-  it("the blocker's own send races their own block (forward direction)", async () => {
+  it("forward, send staged first: the blocker's own send still lands before their block applies", async () => {
     const a = await seedAgent();
     const b = await seedAgent();
+    const { sendOutcome, blockChanged } = await raceSendAgainstBlock(
+      "send-first",
+      { senderId: a.id, recipientId: b.id, content: "racing my own block" },
+      a.id,
+      b.id
+    );
+    expect(sendOutcome.outcome).toBe("inserted");
+    expect(blockChanged).toBe(true);
+    expect((await sendDm({ senderId: a.id, recipientId: b.id, content: "after settling" })).outcome).toBe("blocked");
+  });
 
-    const { resolveOrder, sendOutcome, blockChanged } = await raceSendAgainstBlock(
+  it("forward, block staged first: the blocker's own send is refused by their own already-committed block", async () => {
+    const a = await seedAgent();
+    const b = await seedAgent();
+    const { sendOutcome, blockChanged } = await raceSendAgainstBlock(
+      "block-first",
       { senderId: a.id, recipientId: b.id, content: "racing my own block" },
       a.id,
       b.id
     );
     expect(blockChanged).toBe(true);
-
-    if (resolveOrder[0] === "send") {
-      // The send's statement was granted the lock first, so `not_blocked` still saw no flag set.
-      expect(sendOutcome.outcome).toBe("inserted");
-    } else {
-      // The block was granted first, so the send's own `not_blocked` CTE already saw it.
-      expect(sendOutcome.outcome).toBe("blocked");
-    }
-    // Whichever order won, the pair is blocked once both operations have settled.
-    const followUp = await sendDm({ senderId: a.id, recipientId: b.id, content: "after settling" });
-    expect(followUp.outcome).toBe("blocked");
+    expect(sendOutcome.outcome).toBe("blocked");
   });
 
-  it("the about-to-be-blocked agent races a send against the block (reverse direction)", async () => {
+  it("reverse, send staged first: the about-to-be-blocked agent's send lands before the block applies", async () => {
     const a = await seedAgent();
     const b = await seedAgent();
+    const { sendOutcome, blockChanged } = await raceSendAgainstBlock(
+      "send-first",
+      { senderId: b.id, recipientId: a.id, content: "racing the block against me" },
+      a.id,
+      b.id
+    );
+    expect(sendOutcome.outcome).toBe("inserted");
+    expect(blockChanged).toBe(true);
+    expect((await sendDm({ senderId: b.id, recipientId: a.id, content: "after settling" })).outcome).toBe("blocked");
+  });
 
-    const { resolveOrder, sendOutcome, blockChanged } = await raceSendAgainstBlock(
+  it("reverse, block staged first: the about-to-be-blocked agent's send is refused by the already-committed block", async () => {
+    const a = await seedAgent();
+    const b = await seedAgent();
+    const { sendOutcome, blockChanged } = await raceSendAgainstBlock(
+      "block-first",
       { senderId: b.id, recipientId: a.id, content: "racing the block against me" },
       a.id,
       b.id
     );
     expect(blockChanged).toBe(true);
-
-    if (resolveOrder[0] === "send") {
-      expect(sendOutcome.outcome).toBe("inserted");
-    } else {
-      expect(sendOutcome.outcome).toBe("blocked");
-    }
-    const followUp = await sendDm({ senderId: b.id, recipientId: a.id, content: "after settling" });
-    expect(followUp.outcome).toBe("blocked");
+    expect(sendOutcome.outcome).toBe("blocked");
   });
 });
 
@@ -381,6 +492,69 @@ describe("F5 — block event payload names the real conversation, not the store-
     const row = rows[0] as { subject_id: string; payload: { conversation_id: string } };
     expect(row.payload.conversation_id).toBe(row.subject_id);
     expect(row.payload.conversation_id).not.toBe(STORE_ASSIGNED_PAYLOAD_ID);
+  });
+});
+
+function dmSentEvent(actorId: string, recipientId: string): PreparedEvent<"dm.sent"> {
+  return {
+    kind: "dm.sent",
+    actorAgentId: actorId,
+    subjectType: "dm_message",
+    subjectId: STORE_ASSIGNED_PAYLOAD_ID,
+    secondarySubjectId: recipientId,
+    schoolId: null,
+    payload: {
+      conversation_id: STORE_ASSIGNED_PAYLOAD_ID,
+      message_id: STORE_ASSIGNED_PAYLOAD_ID,
+      seq: 0,
+      recipient_agent_id: recipientId,
+    },
+  };
+}
+
+describe("F5 (round 3) — a database send emits a real dm.sent event", () => {
+  it("stores the message id, conversation id, seq, and an ids-only payload", async () => {
+    const a = await seedAgent();
+    const b = await seedAgent();
+
+    const result = await sendDm({ senderId: a.id, recipientId: b.id, content: "a real event" }, [dmSentEvent(a.id, b.id)]);
+    expect(result.outcome).toBe("inserted");
+    const message = result.message!;
+
+    const { rows } = await pgPool().query(
+      `SELECT subject_id, payload FROM events WHERE kind = 'dm.sent' AND actor_agent_id = $1 ORDER BY id DESC LIMIT 1`,
+      [a.id]
+    );
+    const row = rows[0] as { subject_id: string; payload: Record<string, unknown> };
+    expect(row.subject_id).toBe(message.id);
+    expect(row.payload).toEqual({
+      conversation_id: message.conversationId,
+      message_id: message.id,
+      seq: message.seq,
+      recipient_agent_id: b.id,
+    });
+  });
+
+  it("rolls back the message, quota claim, and seq bump when the event insert fails", async () => {
+    const a = await seedAgent();
+    const b = await seedAgent();
+
+    await withEventFailure("dm.sent", async () => {
+      await expect(
+        sendDm({ senderId: a.id, recipientId: b.id, content: "should roll back" }, [dmSentEvent(a.id, b.id)])
+      ).rejects.toThrow(/injected/);
+    });
+
+    const msgs = await pgPool().query(`SELECT id FROM dm_messages WHERE sender_agent_id = $1`, [a.id]);
+    expect(msgs.rows).toHaveLength(0);
+    const quota = await pgPool().query(`SELECT agent_id FROM agent_rate_limits WHERE agent_id = $1`, [a.id]);
+    expect(quota.rows).toHaveLength(0);
+    const { agentLow, agentHigh } = canonicalPair(a.id, b.id);
+    const conv = await pgPool().query(`SELECT id FROM dm_conversations WHERE agent_low = $1 AND agent_high = $2`, [
+      agentLow,
+      agentHigh,
+    ]);
+    expect(conv.rows).toHaveLength(0);
   });
 });
 

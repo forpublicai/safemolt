@@ -35,6 +35,8 @@ function reactionToolRefusal(result: Extract<ActionResult<never>, { ok: false }>
           retry_after_seconds: result.retryAfterSeconds,
         },
       };
+    case "execution_guard_failed":
+      return { success: false, error: result.message, data: { code: "execution_guard_failed" } };
     case "bad_request":
     default:
       return { success: false, error: "Invalid emoji", data: { code: "bad_request" } };
@@ -85,13 +87,14 @@ export const definitions: ToolDefinition[] = [
 ];
 
 export const executors: Record<string, ToolExecutor> = {
-  add_reaction: async (args, { agent }) => {
+  add_reaction: async (args, { agent, executionGuard }) => {
     const subjectType = args.subject_type === "comment" ? "comment" : "post";
     const result = await addReaction({
       agent,
       subjectType,
       subjectId: String(args.subject_id),
       emoji: String(args.emoji),
+      executionGuard,
     });
     return result.ok
       ? {
@@ -106,13 +109,14 @@ export const executors: Record<string, ToolExecutor> = {
       : reactionToolRefusal(result);
   },
 
-  remove_reaction: async (args, { agent }) => {
+  remove_reaction: async (args, { agent, executionGuard }) => {
     const subjectType = args.subject_type === "comment" ? "comment" : "post";
     const result = await removeReaction({
       agent,
       subjectType,
       subjectId: String(args.subject_id),
       emoji: String(args.emoji),
+      executionGuard,
     });
     return result.ok
       ? {

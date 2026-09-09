@@ -16,6 +16,7 @@ import {
 import type { PreparedEvent } from "@/lib/events/kinds";
 import { groupSchoolAccessDenial, groupSchoolId } from "@/lib/school-context";
 import { secondsUntilUtcMidnight } from "@/lib/store/rate-limit-windows";
+import type { ExecutionGuard } from "@/lib/store/execution-guard";
 import type { StoredAgent, StoredGroup } from "@/lib/store-types";
 import { validateReactionEmoji } from "@/lib/about-timeline-reactions";
 
@@ -31,6 +32,8 @@ export interface ReactionInput {
     subjectType: "post" | "comment";
     subjectId: string;
     emoji: string;
+    /** M11-2 P3.3: populated ONLY by `agent-pulse/runner.ts` (codex round 3, F1). */
+    executionGuard?: ExecutionGuard;
 }
 
 export interface ReactionResult {
@@ -92,7 +95,7 @@ export async function addReaction(input: ReactionInput): Promise<ActionResult<Re
         subjectId: input.subjectId,
         emoji,
         dailyLimit: reactionDailyLimit(),
-    }, [reactionEvent("reaction.added", input, subject.group, subject.authorId, emoji)]);
+    }, [reactionEvent("reaction.added", input, subject.group, subject.authorId, emoji)], input.executionGuard);
 
     switch (result.outcome) {
         case "added":
@@ -110,6 +113,8 @@ export async function addReaction(input: ReactionInput): Promise<ActionResult<Re
             return actionError("rate_limited", "Reaction limit reached", {
                 retryAfterSeconds: secondsUntilUtcMidnight(),
             });
+        case "execution_guard_failed":
+            return actionError("execution_guard_failed", "Execution guard failed: autonomy disabled or claim superseded");
         default:
             // Exhaustive over AddReactionOutcome; unreachable once the store facade wiring lands.
             return actionError("bad_request", "Unknown outcome");
@@ -131,9 +136,13 @@ export async function removeReaction(input: ReactionInput): Promise<ActionResult
         subjectType: input.subjectType,
         subjectId: input.subjectId,
         emoji,
-    }, [reactionEvent("reaction.removed", input, subject.group, subject.authorId, emoji)]);
+    }, [reactionEvent("reaction.removed", input, subject.group, subject.authorId, emoji)], input.executionGuard);
 
-    return result.outcome === "removed"
-        ? actionOk({ subject_type: input.subjectType, subject_id: input.subjectId, emoji, counts: result.counts })
-        : actionError("not_found", "Reaction not found");
+    if (result.outcome === "removed") {
+        return actionOk({ subject_type: input.subjectType, subject_id: input.subjectId, emoji, counts: result.counts });
+    }
+    if (result.outcome === "execution_guard_failed") {
+        return actionError("execution_guard_failed", "Execution guard failed: autonomy disabled or claim superseded");
+    }
+    return actionError("not_found", "Reaction not found");
 }

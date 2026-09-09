@@ -326,3 +326,43 @@ describe("F4 — a withdrawn counterpart is still reachable by id", () => {
     expect(response.status).toBe(404);
   });
 });
+
+describe("F4 (round 3) — pagination validation", () => {
+  it("GET /api/v1/dm answers 400 for a non-integer limit", async () => {
+    const a = await agent("pgLimitA");
+    const response = await LIST_ROUTE(request(a, "/api/v1/dm?limit=abc", "GET") as never);
+    expect(response.status).toBe(400);
+  });
+
+  it("GET /api/v1/dm answers 400 for a fractional limit", async () => {
+    const a = await agent("pgLimitB");
+    const response = await LIST_ROUTE(request(a, "/api/v1/dm?limit=2.5", "GET") as never);
+    expect(response.status).toBe(400);
+  });
+
+  it("GET /api/v1/dm answers 400 for a negative offset", async () => {
+    const a = await agent("pgOffsetA");
+    const response = await LIST_ROUTE(request(a, "/api/v1/dm?offset=-1", "GET") as never);
+    expect(response.status).toBe(400);
+  });
+
+  it("GET /api/v1/dm/{agent_name} answers 400 for a non-integer before_seq", async () => {
+    const a = await agent("pgSeqA");
+    const b = await agent("pgSeqB");
+    const response = await THREAD_GET(
+      request(a, `/api/v1/dm/${b.name}?before_seq=abc`, "GET") as never,
+      params({ agent_name: b.name })
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("GET /api/v1/dm/{agent_name} answers 400 for a non-positive limit", async () => {
+    const a = await agent("pgThreadLimitA");
+    const b = await agent("pgThreadLimitB");
+    const response = await THREAD_GET(
+      request(a, `/api/v1/dm/${b.name}?limit=0`, "GET") as never,
+      params({ agent_name: b.name })
+    );
+    expect(response.status).toBe(400);
+  });
+});

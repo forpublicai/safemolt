@@ -34,6 +34,24 @@ function blockFlagColumn(isLow: boolean): "low_blocked_high" | "high_blocked_low
   return isLow ? "low_blocked_high" : "high_blocked_low";
 }
 
+/** The `, (SELECT count(*) FROM guard)::int AS guard_passed` fragment, or nothing without a guard. */
+function guardPassedSelectSql(guard: { cte: string | null }): string {
+  return guard.cte ? ",\n     (SELECT count(*) FROM guard)::int AS guard_passed" : "";
+}
+
+/**
+ * Shared classification for `markDmRead`/`setDmBlock` (codex round 3, F1): a supplied guard that
+ * did not pass is a distinct refusal, checked independently of whatever else the row shows —
+ * never the same `false` a legitimate no-op reports.
+ */
+function guardRefusal(
+  row: { guard_passed?: number } | undefined,
+  executionGuard: ExecutionGuard | undefined
+): "execution_guard_failed" | null {
+  if (executionGuard && Number(row?.guard_passed ?? 0) === 0) return "execution_guard_failed";
+  return null;
+}
+
 interface DmMessageRow {
   id: string;
   conversation_id: string;
@@ -137,14 +155,19 @@ export async function sendDm(
   // moves when `emitted.params` grows or shrinks (mirrors `createComment`).
   const guard = buildExecutionGuardCte(executionGuard, params.length + 1 + emitted.params.length);
   const allParams = [...params, ...emitted.params, ...guard.params];
+  // A guard fragment of its own — statement 1 has its own $-numbering, independent of statement 2's
+  // (codex round 3, F3): without it, a refused guard still committed an empty fresh-pair
+  // conversation, since only statement 2 was ever gated.
+  const guard1 = buildExecutionGuardCte(executionGuard, 5);
   let results: unknown[];
   try {
     results = await sql!.transaction((txn) => [
-      txn`
-      INSERT INTO dm_conversations (id, agent_low, agent_high, created_at, last_message_seq)
-      VALUES (${conversationId}::text, ${agentLow}::text, ${agentHigh}::text, ${createdAt}::timestamptz, 0)
-      ON CONFLICT (agent_low, agent_high) DO NOTHING
-    `,
+      txn(
+        `${guard1.cte ? `WITH ${guard1.cte}\n      ` : ""}INSERT INTO dm_conversations (id, agent_low, agent_high, created_at, last_message_seq)
+      SELECT $1::text, $2::text, $3::text, $4::timestamptz, 0${guard1.cte ? "\n      FROM guard" : ""}
+      ON CONFLICT (agent_low, agent_high) DO NOTHING`,
+        [conversationId, agentLow, agentHigh, createdAt, ...guard1.params]
+      ),
       txn(
         `
     WITH target AS (
@@ -249,17 +272,21 @@ export async function markDmRead(
   readerId: string,
   otherId: string,
   executionGuard?: ExecutionGuard
-): Promise<boolean> {
+): Promise<boolean | "execution_guard_failed"> {
   const { agentLow, agentHigh, aIsLow } = canonicalizePair(readerId, otherId);
   const column = readCursorColumn(aIsLow);
   const guard = buildExecutionGuardCte(executionGuard, 3);
   const rows = await sql!(
-    `${guard.cte ? `WITH ${guard.cte} ` : ""}UPDATE dm_conversations /* race:dm-send-pair-lock */ SET ${column} = last_message_seq
-     WHERE agent_low = $1::text AND agent_high = $2::text${guard.cte ? " AND EXISTS (SELECT 1 FROM guard)" : ""}
-     RETURNING id`,
+    `WITH ${guard.cte ? `${guard.cte},\n     ` : ""}changed AS (
+       UPDATE dm_conversations /* race:dm-send-pair-lock */ SET ${column} = last_message_seq
+       WHERE agent_low = $1::text AND agent_high = $2::text${guard.cte ? " AND EXISTS (SELECT 1 FROM guard)" : ""}
+       RETURNING id
+     )
+     SELECT (SELECT count(*) FROM changed)::int AS changed_count${guardPassedSelectSql(guard)}`,
     [agentLow, agentHigh, ...guard.params]
   );
-  return rows.length > 0;
+  const row = rows[0] as { changed_count?: number; guard_passed?: number } | undefined;
+  return guardRefusal(row, executionGuard) ?? Number(row?.changed_count ?? 0) > 0;
 }
 
 /**
@@ -273,7 +300,7 @@ export async function setDmBlock(
   blocked: boolean,
   events?: readonly PreparedEvent[],
   executionGuard?: ExecutionGuard
-): Promise<boolean> {
+): Promise<boolean | "execution_guard_failed"> {
   const { agentLow, agentHigh, aIsLow } = canonicalizePair(blockerId, otherId);
   const flagColumn = blockFlagColumn(aIsLow);
   const conversationId = `dmc_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -310,10 +337,11 @@ export async function setDmBlock(
 
   const rows = await sql!(
     `WITH ${guard.cte ? `${guard.cte},\n     ` : ""}changed AS (${changedSql})${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
-     SELECT (SELECT count(*) FROM changed)::int AS changed_count`,
+     SELECT (SELECT count(*) FROM changed)::int AS changed_count${guardPassedSelectSql(guard)}`,
     [...params, ...emitted.params, ...guard.params]
   );
-  return Number((rows[0] as { changed_count?: number } | undefined)?.changed_count ?? 0) > 0;
+  const row = rows[0] as { changed_count?: number; guard_passed?: number } | undefined;
+  return guardRefusal(row, executionGuard) ?? Number(row?.changed_count ?? 0) > 0;
 }
 
 /**

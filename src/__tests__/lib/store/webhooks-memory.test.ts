@@ -419,6 +419,27 @@ describe("delete/disable disposition of ledger rows", () => {
     expect(wakeupQueue.rows.get(wakeup.id)!.completedAt).not.toBeNull();
     expect(wakeupQueue.rows.get(wakeup.id)!.result).toBe("webhook_removed");
   });
+
+  it("F7: a repeat delete still sweeps a lease that expired since the first call, and reports its own deleted:false", async () => {
+    const agent = await seedAgent("delrepeat");
+    await upsertAgentWebhook({ agentId: agent.id, url: "https://a.example/hook", secret: "s", mode: "primary" });
+    const wakeup = await enqueueForAgent(agent.id);
+    const ledger = ledgerFor(wakeup.id)!;
+    ledger.claimedAt = new Date().toISOString();
+    ledger.claimToken = "crashed-after-first-delete";
+    ledger.leaseExpiresAt = new Date(Date.now() + 60_000).toISOString(); // still live at the FIRST delete
+
+    expect(await deleteAgentWebhook(agent.id)).toEqual({ deleted: true });
+    expect(ledgerFor(wakeup.id)!.terminalReason).toBeNull(); // live claim, left alone (F4)
+
+    ledger.leaseExpiresAt = new Date(Date.now() - 1_000).toISOString(); // the claimant crashed
+
+    const second = await deleteAgentWebhook(agent.id);
+    expect(second).toEqual({ deleted: false }); // the registration was already gone
+
+    expect(ledgerFor(wakeup.id)!.terminalReason).toBe("webhook_removed");
+    expect(wakeupQueue.rows.get(wakeup.id)!.completedAt).not.toBeNull();
+  });
 });
 
 describe("re-arm resets a stale terminal ledger row (F2)", () => {

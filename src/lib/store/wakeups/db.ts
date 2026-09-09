@@ -141,25 +141,11 @@ function registrationCte(name: string): string {
 }
 
 /**
- * M11b Lane W (P5.1) — the shared ledger-row CTE every enqueue/re-arm insert path splices in.
- *
- * A `webhook_deliveries` row rides the SAME statement as the wakeup it belongs to (`UNIQUE
- * (wakeup_id)`) — never a second auto-committed call, which would let a crash between the two leave
- * a webhook-primary wakeup with no ledger to claim it through. Reached by bare table name
- * (`agent_webhooks`), never by importing `store/webhooks/*`: this module is "kind-agnostic on
- * purpose" (see the file header) and a domain import here would be a layering edge.
- *
- * `rowCteNames` are UNION'd because `ins` and `rearmed` are mutually exclusive by construction (see
- * `createOrReArmWakeup`'s own doc comment) — whichever one actually produced a row is the row this
- * fires for. `regName` is the caller's already-locked `registrationCte` — reused, never re-taken,
- * so this fires under the SAME lock that also gated the wakeup insert/re-arm (F1).
- *
- * **F3: a stale ledger row is reset ONLY when it is both TERMINAL and belongs to a webhook-PRIMARY
- * wakeup.** `ON CONFLICT`'s `WHERE` cannot see `rowName`'s `delivery` column through `EXCLUDED` (it
- * is not an inserted column of `webhook_deliveries`), so it re-derives it from `rowName` itself by
- * id. Without the terminal/primary guard, an internal re-arm of a `mode='both'` wakeup (whose
- * webhook ledger can still be live, mid-attempt, on the independent channel) clobbered that
- * in-flight claim — the exact race codex round 2 finding 3 reports.
+ * The ledger row is a CTE of the SAME insert as its wakeup, never a second auto-committed call, so a
+ * crash between the two cannot leave a webhook-primary wakeup with no ledger. `regName` is the
+ * caller's already-locked `registrationCte`, reused under the same lock (F1). A stale row resets only
+ * when TERMINAL and its wakeup is webhook-primary — re-derived by id, since `EXCLUDED` cannot see it
+ * — or an internal re-arm of a `mode='both'` wakeup would clobber a live webhook attempt (F3).
  */
 function webhookLedgerCte(rowCteNames: readonly string[], namePrefix: string, rearmCteName: string | undefined, regName: string): string {
   const rowName = `${namePrefix}_row`;

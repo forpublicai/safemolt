@@ -10,6 +10,7 @@
 jest.mock("@/lib/db", () => ({ hasDatabase: () => false, sql: null }));
 
 import { sendDm as sendDmAction } from "@/lib/actions/dms";
+import { executors } from "@/lib/agent-tools/definitions/messages";
 import { wakeupRouterEffects } from "@/lib/events/consumers/wakeup-router";
 import {
   createAgent,
@@ -340,25 +341,63 @@ describe("F1 — the execution guard reaches send/read/block (memory)", () => {
     expect(await listDmMessages(a.id, b.id)).toHaveLength(1); // still just the guarded success above
   });
 
-  it("markDmRead does not advance the cursor once disabled before the write", async () => {
+  it("markDmRead answers execution_guard_failed, not a bare false, once disabled (codex round 3, F1)", async () => {
     const a = await freshAgent("f1ReadA");
     const b = await freshAgent("f1ReadB");
     expect((await sendDm({ senderId: a.id, recipientId: b.id, content: "hi" })).outcome).toBe("inserted");
     const guard = await claimGuardFor(b.id);
     agentLoopState.get(b.id)!.enabled = false;
 
-    expect(await markDmRead(b.id, a.id, guard)).toBe(false);
+    expect(await markDmRead(b.id, a.id, guard)).toBe("execution_guard_failed");
     expect(await countUnreadDms(b.id)).toBe(1);
   });
 
-  it("setDmBlock does not flip the flag once disabled before the write", async () => {
+  it("setDmBlock answers execution_guard_failed, not a bare false, once disabled (codex round 3, F1)", async () => {
     const a = await freshAgent("f1BlockA");
     const b = await freshAgent("f1BlockB");
     const guard = await claimGuardFor(a.id);
     agentLoopState.get(a.id)!.enabled = false;
 
-    expect(await setDmBlock(a.id, b.id, true, undefined, guard)).toBe(false);
+    expect(await setDmBlock(a.id, b.id, true, undefined, guard)).toBe("execution_guard_failed");
     expect((await sendDm({ senderId: a.id, recipientId: b.id, content: "not blocked" })).outcome).toBe("inserted");
+  });
+
+  it("block_agent tool reports execution_guard_failed and leaves the flag unset", async () => {
+    const a = await freshAgent("f1BlockToolA");
+    const b = await freshAgent("f1BlockToolB");
+    const guard = await claimGuardFor(a.id);
+    agentLoopState.get(a.id)!.enabled = false;
+
+    const result = await executors.block_agent({ target_name: b.name }, { agent: a, executionGuard: guard } as never);
+    expect(result.success).toBe(false);
+    expect((result.data as { code: string }).code).toBe("execution_guard_failed");
+    expect((await sendDm({ senderId: b.id, recipientId: a.id, content: "not blocked" })).outcome).toBe("inserted");
+  });
+
+  it("unblock_agent tool reports execution_guard_failed and leaves the block in place", async () => {
+    const a = await freshAgent("f1UnblockToolA");
+    const b = await freshAgent("f1UnblockToolB");
+    expect(await setDmBlock(a.id, b.id, true)).toBe(true);
+    const guard = await claimGuardFor(a.id);
+    agentLoopState.get(a.id)!.enabled = false;
+
+    const result = await executors.unblock_agent({ target_name: b.name }, { agent: a, executionGuard: guard } as never);
+    expect(result.success).toBe(false);
+    expect((result.data as { code: string }).code).toBe("execution_guard_failed");
+    expect((await sendDm({ senderId: b.id, recipientId: a.id, content: "still blocked" })).outcome).toBe("blocked");
+  });
+
+  it("read_dm_thread tool reports execution_guard_failed and leaves the cursor unmoved", async () => {
+    const a = await freshAgent("f1ReadToolA");
+    const b = await freshAgent("f1ReadToolB");
+    expect((await sendDm({ senderId: a.id, recipientId: b.id, content: "hi" })).outcome).toBe("inserted");
+    const guard = await claimGuardFor(b.id);
+    agentLoopState.get(b.id)!.enabled = false;
+
+    const result = await executors.read_dm_thread({ other_agent_name: a.name }, { agent: b, executionGuard: guard } as never);
+    expect(result.success).toBe(false);
+    expect((result.data as { code: string }).code).toBe("execution_guard_failed");
+    expect(await countUnreadDms(b.id)).toBe(1);
   });
 });
 

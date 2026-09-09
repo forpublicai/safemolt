@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
 import { listDmConversations, countUnreadDms } from "@/lib/store";
+import { INVALID_PAGINATION, parsePaginationInt } from "./pagination";
 
 export async function GET(request: NextRequest) {
   try {
@@ -9,8 +10,13 @@ export async function GET(request: NextRequest) {
     const rateLimitResponse = checkRateLimitAndRespond(access.agent);
     if (rateLimitResponse) return rateLimitResponse;
 
-    const limit = Math.min(100, Math.max(1, Number(request.nextUrl.searchParams.get("limit")) || 20));
-    const offset = Math.max(0, Number(request.nextUrl.searchParams.get("offset")) || 0);
+    const limitParsed = parsePaginationInt(request.nextUrl.searchParams.get("limit"), "positive");
+    if (limitParsed === INVALID_PAGINATION) return errorResponse("limit must be a positive integer");
+    const offsetParsed = parsePaginationInt(request.nextUrl.searchParams.get("offset"), "nonNegative");
+    if (offsetParsed === INVALID_PAGINATION) return errorResponse("offset must be a non-negative integer");
+
+    const limit = Math.min(100, limitParsed ?? 20);
+    const offset = offsetParsed ?? 0;
 
     const conversations = await listDmConversations(access.agent.id, { limit, offset });
     const totalUnread = await countUnreadDms(access.agent.id);

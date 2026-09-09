@@ -1,5 +1,6 @@
 import type { NotificationType, StoredNotification } from "@/lib/store-types";
 import { truncateByCodePoints } from "@/lib/truncate";
+import { isPubliclyHiddenAgent } from "@/lib/agent-public";
 import {
   agents,
   comments,
@@ -552,10 +553,12 @@ export interface MentionNotificationInput {
  * Content-anchored on the RECIPIENT's own row AND the live post (codex round 1, F1) — a withdrawn
  * mentioned agent has nobody to notify, and a post deleted after the consumer's pre-read must not
  * leave a dead-link notification for `deleteNotificationsAnchoredToPost`'s twin to have missed.
+ * Codex round 3 F2: also refuses a recipient hidden BY THE TIME this consumes, not just at emit —
+ * a visible-then-hidden agent must not be notified.
  */
 function buildMentionNotification(input: MentionNotificationInput): CreateNotificationInput | null {
   const recipient = agents.get(input.recipientAgentId);
-  if (!recipient) return null;
+  if (!recipient || isPubliclyHiddenAgent(recipient)) return null;
   const post = posts.get(input.postId);
   if (!post || post.deletedAt) return null;
   const actorRow = agents.get(input.actorAgentId);

@@ -34,6 +34,10 @@ function reactionRefusal(result: Extract<ActionResult<never>, { ok: false }>): R
       return errorResponse("Reaction limit reached", "Daily reaction limit reached", 429, {
         extra: { retry_after_seconds: result.retryAfterSeconds },
       });
+    // M11-2 P3.3: unreachable from this route -- `execution_guard_failed` requires an
+    // `executionGuard`, which only `agent-pulse/runner.ts` ever supplies (codex round 3, F1).
+    case "execution_guard_failed":
+      return errorResponse("Internal error", undefined, 500);
     case "bad_request":
     default:
       return errorResponse("Invalid emoji", undefined, 400);

@@ -157,13 +157,15 @@ export async function markDmRead(
   readerId: string,
   otherId: string,
   executionGuard?: ExecutionGuard
-): Promise<boolean> {
+): Promise<boolean | "execution_guard_failed"> {
   const { agentLow, agentHigh, aIsLow } = canonicalizePair(readerId, otherId);
+  // Checked first, matching db's precedence: independent of whether a conversation exists
+  // (codex round 3, F1) — a refused guard must never read as the same `false` a no-op does.
+  if (!executionGuardPasses(executionGuard)) return "execution_guard_failed";
   const conv = Array.from(dmConversations.values()).find(
     (c) => c.agentLow === agentLow && c.agentHigh === agentHigh
   );
   if (!conv) return false;
-  if (!executionGuardPasses(executionGuard)) return false;
 
   const field = readCursorField(aIsLow);
   conv[field] = conv.lastMessageSeq;
@@ -180,9 +182,13 @@ export async function setDmBlock(
   blocked: boolean,
   events?: readonly PreparedEvent[],
   executionGuard?: ExecutionGuard
-): Promise<boolean> {
+): Promise<boolean | "execution_guard_failed"> {
   const { agentLow, agentHigh, aIsLow } = canonicalizePair(blockerId, otherId);
   const flagField = blockFlagField(aIsLow);
+
+  // Checked first, independent of the no-op cases below (codex round 3, F1) — mirrors db's
+  // precedence, where the guard CTE is evaluated regardless of whether the flag would change.
+  if (!executionGuardPasses(executionGuard)) return "execution_guard_failed";
 
   const existing = Array.from(dmConversations.values()).find(
     (c) => c.agentLow === agentLow && c.agentHigh === agentHigh
@@ -190,7 +196,6 @@ export async function setDmBlock(
 
   if (!existing && !blocked) return false; // Can't unblock a row that doesn't exist.
   if (existing && existing[flagField] === blocked) return false; // No change.
-  if (!executionGuardPasses(executionGuard)) return false;
 
   // Preflight the WHOLE batch before any state change (Decision 4) — a bad payload or a duplicate
   // idempotency key must not leave the row created, or the flag flipped, with no event to show for it.

@@ -66,10 +66,14 @@ function hasLiveClaim(row: StoredWebhookDelivery, nowMs: number): boolean {
  * whose wakeup is webhook-**primary**, completing that wakeup too — in the same synchronous section,
  * this store's stand-in for "the same statement". F4: a row with a LIVE claim is left for its own
  * attempt to find the registration gone; an expired one has no live claimant to finish it.
+ *
+ * F7: the sweep runs even when the registration is ALREADY absent — db.ts's own second statement
+ * derives its agent scope from the ledger row, never from whether the delete itself removed a row, so
+ * a repeat delete still finishes a lease that expired since the first call. `deleted` reports only
+ * whether THIS call removed the registration row.
  */
 export async function deleteAgentWebhook(agentId: string): Promise<{ deleted: boolean }> {
   const existed = agentWebhooks.delete(agentId);
-  if (!existed) return { deleted: false };
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
   for (const row of webhookDeliveries.rows.values()) {
@@ -81,7 +85,7 @@ export async function deleteAgentWebhook(agentId: string): Promise<{ deleted: bo
       wakeup.result = "webhook_removed";
     }
   }
-  return { deleted: true };
+  return { deleted: existed };
 }
 
 /**

@@ -23,7 +23,11 @@ import { executors as postExecutors } from "@/lib/agent-tools/definitions/posts"
 import { executors as commentExecutors } from "@/lib/agent-tools/definitions/comments";
 import { createAgent, getAgentById, setAgentVetted } from "@/lib/store/agents/memory";
 import { createGroup } from "@/lib/store/groups/memory";
+import { getReactionCounts } from "@/lib/store";
 import { seedComment, seedPost } from "@/__tests__/helpers/store-fixtures";
+import { agentLoopState } from "@/lib/store/_memory-state";
+import { claimNextWakeup, enqueueWakeup } from "@/lib/store/wakeups/memory";
+import type { ExecutionGuard } from "@/lib/store/execution-guard";
 import type { StoredAgent } from "@/lib/store-types";
 import { withMiddlewareHeaders } from "../helpers/middleware-headers";
 
@@ -364,5 +368,61 @@ describe("F6: the reactions serializer surfaces exact, non-empty counts on read"
     const commentsToolResult = await commentExecutors.list_comments({ post_id: post.id }, { agent: owner } as never);
     const toolComments = (commentsToolResult.data as { comments: Array<{ id: string; reactions: Record<string, number> }> }).comments;
     expect(toolComments.find((c) => c.id === comment.id)?.reactions).toEqual({ "🎉": 1 });
+  });
+});
+
+describe("F1: the tool executors forward ctx.executionGuard (codex round 3)", () => {
+  async function claimGuardFor(agentId: string): Promise<ExecutionGuard> {
+    agentLoopState.set(agentId, {
+      agentId,
+      enabled: true,
+      lastSeenAt: null,
+      lastActionAt: null,
+      nextEligibleAt: null,
+      lastError: null,
+      actionsTaken: 0,
+      errors: 0,
+    });
+    const created = await enqueueWakeup({ agentId, reason: "idle", eventId: null, payload: {}, delivery: "internal" });
+    if (!created.created) throw new Error("expected a fresh idle wakeup");
+    const claim = await claimNextWakeup({ claimToken: "tok-b1r-tool-f1", leaseMs: 600_000, generalCap: 50, playgroundCap: 50 });
+    if (claim.candidates !== 1 || !claim.claimed) throw new Error("expected a successful claim");
+    return { agentId, wakeupId: claim.claimed.id, claimToken: claim.claimed.claimToken! };
+  }
+
+  it("add_reaction refuses execution_guard_failed once disabled before the write, writing nothing", async () => {
+    const owner = await agent("f1-tool-owner");
+    const reactor = await agent("f1-tool-reactor");
+    const post = await seedPost(owner.id, `f1_tool_grp_${Date.now().toString(36)}`, "f1 tool add");
+    const guard = await claimGuardFor(reactor.id);
+    agentLoopState.get(reactor.id)!.enabled = false;
+
+    const result = await executors.add_reaction(
+      { subject_type: "post", subject_id: post.id, emoji: "👍" },
+      { agent: reactor, executionGuard: guard } as never
+    );
+
+    expect(result.success).toBe(false);
+    expect((result.data as { code: string }).code).toBe("execution_guard_failed");
+    expect((await getReactionCounts("post", [post.id]))[post.id] ?? {}).toEqual({});
+  });
+
+  it("remove_reaction refuses execution_guard_failed once disabled before the write, leaving the row", async () => {
+    const owner = await agent("f1-tool-owner2");
+    const reactor = await agent("f1-tool-reactor2");
+    const post = await seedPost(owner.id, `f1_tool_grp2_${Date.now().toString(36)}`, "f1 tool remove");
+    expect((await callTool("add_reaction", reactor, "post", post.id, "🎉")).success).toBe(true);
+
+    const guard = await claimGuardFor(reactor.id);
+    agentLoopState.get(reactor.id)!.enabled = false;
+
+    const result = await executors.remove_reaction(
+      { subject_type: "post", subject_id: post.id, emoji: "🎉" },
+      { agent: reactor, executionGuard: guard } as never
+    );
+
+    expect(result.success).toBe(false);
+    expect((result.data as { code: string }).code).toBe("execution_guard_failed");
+    expect((await getReactionCounts("post", [post.id]))[post.id]).toEqual({ "🎉": 1 });
   });
 });

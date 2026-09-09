@@ -32,16 +32,18 @@ import { notificationsConsumer } from "@/lib/events/consumers/notifications";
 import { eventConsumers } from "@/lib/events/consumers/registry";
 import { memoryIngestFanoutCap } from "@/lib/memory/fanout-cap";
 import { createReactionNotificationIdempotent } from "@/lib/store";
-import { addReaction as dbAddReaction } from "@/lib/store/reactions/db";
+import { addReaction as dbAddReaction, removeReaction as dbRemoveReaction } from "@/lib/store/reactions/db";
 import { getEventById } from "@/lib/store/events/db";
 import { drainEventConsumer } from "@/lib/store/events/drain-db";
 import { secondsUntilUtcMidnight } from "@/lib/store/rate-limit-windows";
+import { claimNextWakeup, completeWakeup, enqueueWakeup } from "@/lib/store/wakeups/db";
+import type { ExecutionGuard } from "@/lib/store/execution-guard";
 import type { StoredAgent, StoredEvent } from "@/lib/store-types";
 
 import { withMiddlewareHeaders } from "../helpers/middleware-headers";
 import { activateRealConsumers } from "./helpers/activate-consumers";
-import { raceAgainstHeldLock, rejections, runConcurrently } from "./helpers/concurrency";
-import { closeIntegrationConnections, pgPool } from "./helpers/db";
+import { pidOf, raceAgainstHeldLock, rejections, runConcurrently, waitForWaiter } from "./helpers/concurrency";
+import { closeIntegrationConnections, pgClient, pgPool } from "./helpers/db";
 
 const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
 let seq = 0;
@@ -131,6 +133,20 @@ function reactionRequest(caller: StoredAgent, subjectId: string, method: "POST" 
 }
 const routeParams = (id: string) => ({ params: Promise.resolve({ id }) });
 
+/** A real claimed wakeup, for the execution-guard tests — mirrors `m11-2-u6-pulse-runner.test.ts`. */
+async function claimGuardFor(agentId: string): Promise<ExecutionGuard> {
+  await pgPool().query(
+    `INSERT INTO agent_loop_state (agent_id, enabled) VALUES ($1, true)
+     ON CONFLICT (agent_id) DO UPDATE SET enabled = true`,
+    [agentId]
+  );
+  const created = await enqueueWakeup({ agentId, reason: "idle", eventId: null, payload: {}, delivery: "internal" });
+  if (!created.created) throw new Error("expected a fresh idle wakeup");
+  const claim = await claimNextWakeup({ claimToken: nextId("token"), leaseMs: 600_000, generalCap: 50, playgroundCap: 50 });
+  if (claim.candidates !== 1 || !claim.claimed) throw new Error("expected a successful claim");
+  return { agentId, wakeupId: claim.claimed.id, claimToken: claim.claimed.claimToken! };
+}
+
 beforeAll(async () => {
   baselineEventId = await maxEventId();
 });
@@ -148,6 +164,8 @@ afterAll(async () => {
   await pgPool().query(`DELETE FROM content_reactions WHERE agent_id LIKE $1`, [like]);
   await pgPool().query(`DELETE FROM notifications WHERE agent_id LIKE $1`, [like]);
   await pgPool().query(`DELETE FROM agent_rate_limits WHERE agent_id LIKE $1`, [like]);
+  await pgPool().query(`DELETE FROM agent_wakeups WHERE agent_id LIKE $1`, [like]);
+  await pgPool().query(`DELETE FROM agent_loop_state WHERE agent_id LIKE $1`, [like]);
   await pgPool().query(
     `DELETE FROM comments WHERE author_id LIKE $1 OR post_id IN (SELECT id FROM posts WHERE author_id LIKE $1)`,
     [like]
@@ -220,18 +238,20 @@ describe.each(["post", "comment"] as const)("%s reactions vs deletePost — both
     expect(await reactionRows(surface, subjectId)).toHaveLength(1);
   });
 
-  it("reaction-first: the reaction succeeds, its drained notification exists, and the subsequent delete removes both in the same transaction", async () => {
+  it("reaction-first: deletePost genuinely BLOCKS behind an uncommitted reaction, then cleans up the reaction and a prior drained notification (codex round 3, F3)", async () => {
     const author = await seedAgent();
     const reactor = await seedAgent();
+    const secondReactor = await seedAgent();
     const group = await seedGroup(author.id);
     const { subjectId, postId } = await makeSubject(surface, author, group);
 
+    // Establish and drain a real reaction+notification FIRST — the effect the old sequential
+    // version of this test already covered. This test's own job is proving deletePost actually
+    // WAITS on a still-uncommitted reaction, which a sequential call can never demonstrate
+    // (codex round 3, finding 3).
     const marker = await maxEventId();
-    const reacted = await addReaction({ agent: reactor, subjectType: surface, subjectId, emoji: "👍" });
-    expect(reacted.ok).toBe(true);
+    expect((await addReaction({ agent: reactor, subjectType: surface, subjectId, emoji: "👍" })).ok).toBe(true);
     expect((await eventsSince(marker)).map((e) => e.kind)).toEqual(["reaction.added"]);
-    expect(await reactionRows(surface, subjectId)).toHaveLength(1);
-
     await drainEventConsumer(notificationsConsumer, { batchSize: 200 });
     const { rows: notifBefore } = await pgPool().query(
       `SELECT 1 FROM notifications WHERE metadata->>'subject_id' = $1 AND metadata->>'subject_type' = $2`,
@@ -239,11 +259,35 @@ describe.each(["post", "comment"] as const)("%s reactions vs deletePost — both
     );
     expect(notifBefore).toHaveLength(1);
 
-    expect((await deletePost({ agent: author, postId })).ok).toBe(true);
-    expect(await reactionRows(surface, subjectId)).toEqual([]);
+    // A SECOND reactor's add is held OPEN (uncommitted) on a raw connection — `addReaction`'s own
+    // `sql.transaction` cannot be paused mid-flight from JS, so this reproduces its exact lock
+    // shape (subject FOR SHARE, then the insert) to prove `deletePost` genuinely queues behind it.
+    // `d1:post-delete-lock` marks `deletePost`'s own FIRST statement (`posts/db.ts`), the one that
+    // must wait for our held FOR SHARE.
+    const race = await raceAgainstHeldLock({
+      hold: async (holder) => {
+        await holder.query(
+          surface === "post"
+            ? `SELECT id FROM posts WHERE id = $1 AND deleted_at IS NULL FOR SHARE`
+            : `SELECT p.id FROM posts p WHERE p.id = (SELECT post_id FROM comments WHERE id = $1) AND p.deleted_at IS NULL FOR SHARE`,
+          [surface === "post" ? postId : subjectId]
+        );
+        await holder.query(
+          `INSERT INTO content_reactions (agent_id, subject_type, subject_id, emoji, created_at) VALUES ($1, $2, $3, $4, NOW())`,
+          [secondReactor.id, surface, subjectId, "🎉"]
+        );
+      },
+      contend: () => deletePost({ agent: author, postId }),
+      contenderMarker: "d1:post-delete-lock",
+    });
 
-    // F1: the notification carries `metadata.post_id` (the post itself, or the comment's post), so
-    // `deleteNotificationsAnchoredToPost` finds and removes it along with the tombstone.
+    expect(race.observedBlocked).toBe(true);
+    expect(race.result.ok).toBe(true);
+
+    // Both cleanup effects: the reaction rows (including the one committed only once the hold
+    // released) and the first reaction's drained notification are gone, cleaned by the SAME
+    // transaction as the tombstone.
+    expect(await reactionRows(surface, subjectId)).toEqual([]);
     const { rows: notifAfter } = await pgPool().query(
       `SELECT 1 FROM notifications WHERE metadata->>'subject_id' = $1 AND metadata->>'subject_type' = $2`,
       [subjectId, surface]
@@ -342,36 +386,37 @@ describe("concurrent duplicate reacts", () => {
     expect(quota[0].reaction_count).toBe(1);
   });
 
-  it("F5/F6: two identical requests contending on a HELD seed row never answer rate_limited — one added, one already_reacted", async () => {
+  it("F5: two identical requests contending on the rate row's COMMITTED lock never answer rate_limited — one added, one already_reacted (codex round 3)", async () => {
     const author = await seedAgent();
     const reactor = await seedAgent();
     const group = await seedGroup(author.id);
     const { subjectId } = await makeSubject("post", author, group);
-    // The seed and the decisive statement land in ONE transaction (F6), so the daily limit can be
-    // set to exactly 1 with no prior reaction charged against it — the "one slot left" shape F5
-    // names, rather than needing a separate reaction to consume the first slot.
+    // Committed BEFORE the race (codex round 3, finding 5): an uncommitted seed insert blocks any
+    // second writer trivially, whether or not the fix is present, so it proved nothing — reverting
+    // to two separately auto-committed statements still passed the old version of this test (round
+    // 2's own mutation-check said as much). Locking an ALREADY-COMMITTED row is a real, deterministic
+    // contention both real callers' seed statements must genuinely wait on.
+    await pgPool().query(
+      `INSERT INTO agent_rate_limits (agent_id, reaction_count_date, reaction_count) VALUES ($1, CURRENT_DATE, 0)`,
+      [reactor.id]
+    );
     const prevLimit = process.env.REACTION_DAILY_LIMIT;
     process.env.REACTION_DAILY_LIMIT = "1";
     try {
-      // codex round 2, finding 3: a bare `runConcurrently` gave no reliable mutation-check evidence
-      // (round-1 report). Holding the seed row OPEN forces both real calls to queue behind it, then
-      // resolve strictly in commit order once released — the shape that actually distinguishes F6's
-      // fix from two auto-committed statements under a manual revert.
       const race = await raceAgainstHeldLock({
         hold: async (holder) => {
-          await holder.query(
-            `/* race:b1r-seed-lock */ INSERT INTO agent_rate_limits (agent_id, reaction_count_date, reaction_count)
-             VALUES ($1, CURRENT_DATE, 0)
-             ON CONFLICT (agent_id) DO UPDATE SET reaction_count = agent_rate_limits.reaction_count`,
-            [reactor.id]
-          );
+          await holder.query("SELECT agent_id FROM agent_rate_limits WHERE agent_id = $1 FOR NO KEY UPDATE", [
+            reactor.id,
+          ]);
         },
         contend: () =>
           runConcurrently([
             () => addReaction({ agent: reactor, subjectType: "post", subjectId, emoji: "👍" }),
             () => addReaction({ agent: reactor, subjectType: "post", subjectId, emoji: "👍" }),
           ]),
-        contenderMarker: "race:b1r-seed-lock",
+        // No marker: the fixed shape blocks at the seed statement, but the mutation this test
+        // guards against (the seed's lock dropped) moves the wait into the decisive statement's
+        // `pre` CTE instead — both are the SAME row, held by the SAME connection.
       });
 
       expect(race.observedBlocked).toBe(true);
@@ -380,9 +425,11 @@ describe("concurrent duplicate reacts", () => {
         if (!o.ok) return "rejected";
         return o.value.ok ? "added" : o.value.code;
       });
-      // Mutation check: before F5, the loser's snapshot could pre-date the winner's commit and see
-      // `current_count` still at the cap with no matching `existing` row — this asserts it never
-      // reports `rate_limited` (the wrong refusal), only `already_reacted` (the right one).
+      // Mutation check (recorded in the fix report): weakening the seed's lock so it no longer
+      // conflicts with the held row lets both real calls proceed straight into the decisive
+      // statement, where the loser's `existing` CTE keeps its pre-wait snapshot while `pre` is
+      // refreshed by the wait — reporting the wrong refusal, `rate_limited`, instead of the right
+      // one, `already_reacted`.
       expect(codes.sort()).toEqual(["added", "already_reacted"]);
     } finally {
       if (prevLimit === undefined) delete process.env.REACTION_DAILY_LIMIT;
@@ -396,8 +443,8 @@ describe("concurrent duplicate reacts", () => {
     const group = await seedGroup(author.id);
     const { subjectId } = await makeSubject("post", author, group);
 
-    // `dailyLimit` binds unquoted into statement 2's `current_count < $4`; NaN has no valid integer
-    // text form, so Postgres raises a real error there — after statement 1 (the seed) has already
+    // `dailyLimit` binds unquoted into statement 3's `current_count < $4`; NaN has no valid integer
+    // text form, so Postgres raises a real error there — after statement 2 (the seed) has already
     // run in the same open transaction.
     await expect(
       dbAddReaction({ agentId: reactor.id, subjectType: "post", subjectId, emoji: "👍", dailyLimit: NaN })
@@ -430,7 +477,7 @@ describe("F1: the seed's rate-row lock does not deadlock with a withdrawal's FK 
         await holder.query("SELECT agent_id FROM agent_rate_limits WHERE agent_id = $1 FOR KEY SHARE", [reactor.id]);
       },
       contend: () => addReaction({ agent: reactor, subjectType: "post", subjectId: secondSubject, emoji: "👍" }),
-      // `pre` (statement 2), not the seed (statement 1): the seed's own no-op update is already a
+      // `pre` (statement 3), not the seed (statement 2): the seed's own no-op update is already a
       // non-key lock either way, so the deadlock's actual site is `pre`'s explicit lock mode.
       contenderMarker: "race:b1r-pre-lock",
     });
@@ -439,6 +486,124 @@ describe("F1: the seed's rate-row lock does not deadlock with a withdrawal's FK 
     // flips this to `true` — the reaction queues behind the held FOR KEY SHARE instead of proceeding.
     expect(race.observedBlocked).toBe(false);
     expect(race.result.ok).toBe(true);
+  });
+});
+
+describe("F2: a self-reaction with no existing rate row does not deadlock with a withdrawal (codex round 3)", () => {
+  it("addReaction queues behind a held withdrawal post-lock and both sides resolve without a 40P01", async () => {
+    const author = await seedAgent();
+    const dummyOwner = await seedAgent();
+    const group = await seedGroup(author.id);
+    const { postId } = await makeSubject("post", author, group);
+    // No prior `agent_rate_limits` row: the seed's insert is genuinely NEW, so its FK check
+    // actually takes the `agents` lock the finding describes (an existing row's no-op update
+    // takes a weaker lock that never triggers this).
+    await clearRateWindow(author.id);
+    // A withdrawal's own group-ownership refusal lives in the action layer, not in this raw
+    // reproduction of its store-level SQL — reassign ownership so it cannot mask the lock-order
+    // question this test is actually about.
+    await pgPool().query(`UPDATE groups SET owner_id = $1 WHERE id = $2`, [dummyOwner.id, group]);
+
+    const holder = await pgClient();
+    let holderError: { code?: string } | null = null;
+    let reactionSettled: { ok: true; value: Awaited<ReturnType<typeof addReaction>> } | { ok: false; error: { code?: string } };
+    try {
+      await holder.query("BEGIN");
+      const holderPid = await pidOf(holder);
+      // Mirrors `deleteAgent`'s own FIRST lock (`agents/db.ts`, `d1:agent-delete-post-lock`) —
+      // taken and held BEFORE the reaction starts, so it is guaranteed to still be there to queue
+      // behind.
+      await holder.query(
+        "/* d1:agent-delete-post-lock */ SELECT id FROM posts WHERE author_id = $1 ORDER BY id FOR UPDATE",
+        [author.id]
+      );
+
+      const reactionPromise = addReaction({ agent: author, subjectType: "post", subjectId: postId, emoji: "👍" }).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error: error as { code?: string } })
+      );
+
+      // Only run withdrawal's remaining steps once the reaction is GENUINELY queued behind this
+      // post lock — the exact interleaving codex round 3 finding 2 describes, not a guess at timing.
+      await waitForWaiter(holderPid, "race:b1r-add-post-lock");
+      await holder.query("SELECT id FROM comments WHERE author_id = $1 ORDER BY id FOR UPDATE", [author.id]);
+      try {
+        await holder.query("DELETE FROM agents WHERE id = $1", [author.id]);
+      } catch (error) {
+        holderError = error as { code?: string };
+      }
+      await holder.query(holderError ? "ROLLBACK" : "COMMIT");
+      reactionSettled = await reactionPromise;
+    } finally {
+      await holder.end();
+    }
+
+    // Mutation check: reverting `addReaction` to seed-before-subject-lock (the pre-round-3 order)
+    // lets its seed grab the `agents` FOR KEY SHARE lock before it ever reaches this post lock, so
+    // withdrawal's DELETE then waits on THAT lock while the reaction waits on withdrawal's post
+    // lock — a genuine 40P01 on one side (recorded in the fix report).
+    expect(holderError?.code).not.toBe("40P01");
+    expect(reactionSettled.ok ? undefined : reactionSettled.error.code).not.toBe("40P01");
+    // The post still exists (this path never deletes it), so withdrawal's own FK check refuses it
+    // — "one side refuses", exactly as the finding names — and the reaction completes normally.
+    expect(holderError?.code).toBe("23503");
+    expect(reactionSettled.ok && reactionSettled.value.ok).toBe(true);
+  });
+});
+
+describe("F1: the execution guard gates the decisive statement (db, codex round 3)", () => {
+  it("addReaction writes and emits with a live claim, then refuses execution_guard_failed once disabled before the write", async () => {
+    const author = await seedAgent();
+    const reactor = await seedAgent();
+    const group = await seedGroup(author.id);
+    const { subjectId } = await makeSubject("post", author, group);
+    const guard = await claimGuardFor(reactor.id);
+    const marker = await maxEventId();
+
+    const ok = await dbAddReaction(
+      { agentId: reactor.id, subjectType: "post", subjectId, emoji: "👍", dailyLimit: 200 },
+      [],
+      guard
+    );
+    expect(ok.outcome).toBe("added");
+    // Completed so the idle dedup (one pending-or-claimed row per agent) admits a fresh claim.
+    await completeWakeup(guard.wakeupId, guard.claimToken, "acted");
+
+    const { subjectId: subjectId2 } = await makeSubject("post", author, group);
+    const guard2 = await claimGuardFor(reactor.id);
+    await pgPool().query(`UPDATE agent_loop_state SET enabled = false WHERE agent_id = $1`, [reactor.id]);
+
+    const refused = await dbAddReaction(
+      { agentId: reactor.id, subjectType: "post", subjectId: subjectId2, emoji: "👍", dailyLimit: 200 },
+      [],
+      guard2
+    );
+
+    // Mutation check: dropping `guard` from the `inserted` CTE's cross-joined `FROM` list lets
+    // this insert and emit despite the disabled loop state.
+    expect(refused.outcome).toBe("execution_guard_failed");
+    expect(await reactionRows("post", subjectId2)).toEqual([]);
+    expect((await eventsSince(marker)).filter((e) => e.kind === "reaction.added")).toEqual([]);
+  });
+
+  it("removeReaction refuses execution_guard_failed once disabled before the write, leaving the row", async () => {
+    const author = await seedAgent();
+    const reactor = await seedAgent();
+    const group = await seedGroup(author.id);
+    const { subjectId } = await makeSubject("post", author, group);
+    expect((await dbAddReaction({ agentId: reactor.id, subjectType: "post", subjectId, emoji: "🎉", dailyLimit: 200 })).outcome).toBe("added");
+
+    const guard = await claimGuardFor(reactor.id);
+    await pgPool().query(`UPDATE agent_loop_state SET enabled = false WHERE agent_id = $1`, [reactor.id]);
+
+    const result = await dbRemoveReaction(
+      { agentId: reactor.id, subjectType: "post", subjectId, emoji: "🎉" },
+      [],
+      guard
+    );
+
+    expect(result.outcome).toBe("execution_guard_failed");
+    expect(await reactionRows("post", subjectId)).toHaveLength(1);
   });
 });
 

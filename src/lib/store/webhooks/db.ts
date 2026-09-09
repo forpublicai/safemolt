@@ -91,17 +91,11 @@ export async function getAgentWebhook(agentId: string): Promise<StoredAgentWebho
 }
 
 /**
- * Deletes the registration, then — as a SEPARATE statement in the same transaction — terminalizes
- * every UNCLAIMED-or-expired ledger row for this agent whose wakeup is webhook-**primary**, completing
- * each such wakeup too (CLAUDE.md's terminal-coupling rule).
- *
- * **F2: two statements, not one.** A single statement's CTEs all share ONE snapshot, taken before the
- * `DELETE` waits for the registration's row lock — so a concurrent enqueue that commits its ledger row
- * DURING that wait was invisible to the coupled sweep, which never saw the row it was meant to close
- * out. Statement 2 runs after statement 1 commits its lock, under Postgres's own fresh
- * READ-COMMITTED snapshot for the next statement — no application-level re-read is needed. A `mode=
- * 'both'` ledger's wakeup is internal and is deliberately left untouched; a row with a LIVE claim is
- * left for `recordWebhookAttempt`'s own fenced update to terminalize.
+ * Two statements in the SAME transaction, not one: a single statement's CTEs share one snapshot taken
+ * before `DELETE` waits for the registration lock, so a concurrent enqueue committing its ledger row
+ * during that wait was invisible to a sweep sharing that snapshot. Statement 2 runs after statement 1
+ * acquires the lock — the transaction stays open, but each statement gets its own fresh READ COMMITTED
+ * snapshot. A `mode='both'` wakeup and a live-claimed row are left untouched (F4 covers them).
  */
 export async function deleteAgentWebhook(agentId: string): Promise<{ deleted: boolean }> {
   const [deletedRows] = await sql!.transaction((txn) => [
@@ -246,12 +240,10 @@ function buildWebhookDisabledEvent(): PreparedEvent<"webhook.disabled"> {
 }
 
 /**
- * Lock order: registration (`reg`) → ledger (`target`/`updated_delivery`) → wakeup
- * (`completed_wakeup`) — the same order `deleteAgentWebhook` and every enqueue/re-arm take (F4).
- * `success`/`gone`/`disabled`/`exhausted` complete the webhook-primary wakeup in this SAME statement
- * as the ledger (CLAUDE.md's coupling rule); a `mode='both'` ledger's internal wakeup is untouched.
- * F2: the disposition sweep for this agent's OTHER ledger rows is a SEPARATE statement below, run
- * after this one commits, so it sees a fresh snapshot rather than reusing this statement's own.
+ * Lock order is enforced by STATEMENT order, not CTE order: statement 1 locks the registration
+ * (`FOR NO KEY UPDATE`, always — no shared→update upgrade), statement 2 token-fences the ledger and
+ * completes the webhook-primary wakeup together, and statement 3 (run only when statement 2 matched
+ * the token) sweeps this agent's other now-disabled deliveries under a fresh snapshot.
  */
 export async function recordWebhookAttempt(
   input: RecordWebhookAttemptInput
@@ -272,15 +264,18 @@ export async function recordWebhookAttempt(
       },
     ],
   });
-  // F4: the registration lock is taken FIRST, by a plain (unlocked, immutable-column) lookup of the
-  // delivery's own agent_id — never from the target/token-fenced row, so the lock order holds even
-  // when the token fence itself will end up refusing this attempt.
-  const regLock = input.ok ? "FOR SHARE" : "FOR NO KEY UPDATE";
+  // Statement 1: the registration lock, taken before the ledger is even looked at. The subquery
+  // requires the SAME token as the ledger's own fence, so a stale/wrong claim locks nothing at all.
+  const lockText = `SELECT h.agent_id
+     FROM agent_webhooks h
+     WHERE h.agent_id = (
+       SELECT wd.agent_id FROM webhook_deliveries wd WHERE wd.id = $1::bigint AND wd.claim_token = $2::text
+     )
+     FOR NO KEY UPDATE`;
   const attemptText = `WITH reg AS (
        SELECT h.agent_id, h.disabled_at, h.failure_count
        FROM agent_webhooks h
        WHERE h.agent_id = (SELECT wd.agent_id FROM webhook_deliveries wd WHERE wd.id = $1::bigint)
-       ${regLock}
      ),
      target AS (
        SELECT wd.id, wd.wakeup_id, wd.agent_id, wd.attempts, w.delivery AS wakeup_delivery
@@ -370,13 +365,16 @@ export async function recordWebhookAttempt(
        SELECT agent_id FROM bumped_failure WHERE crosses_threshold
      )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
      SELECT ud.outcome FROM updated_delivery ud`;
-  // F2: statement 2 is a SEPARATE query in the same transaction, gated on a fresh read of
-  // `disabled_at` — it therefore covers a ledger row a concurrent enqueue committed DURING
-  // statement 1's own lock wait, which one shared snapshot could never see (round 2 finding 2).
+  // Statement 3, same transaction as 1 and 2 — the registration lock stays held through it, so a
+  // concurrent re-registration cannot clear `disabled_at` in a gap between statements. F6: the
+  // subquery re-requires THIS call's own (id, token) pair, so a rejected/stale attempt — whose
+  // token never matched statement 2's fence either — finds no agent_id and sweeps nothing.
   const sweepText = `WITH sweep AS (
        UPDATE webhook_deliveries wd
        SET terminal_reason = 'webhook_disabled'
-       WHERE wd.agent_id = (SELECT agent_id FROM webhook_deliveries WHERE id = $1::bigint)
+       WHERE wd.agent_id = (
+           SELECT agent_id FROM webhook_deliveries WHERE id = $1::bigint AND claim_token = $2::text
+         )
          AND wd.terminal_reason IS NULL
          AND (wd.claimed_at IS NULL OR wd.lease_expires_at < NOW())
          AND EXISTS (
@@ -390,11 +388,11 @@ export async function recordWebhookAttempt(
      FROM sweep s
      WHERE w.id = s.wakeup_id AND w.delivery = 'webhook' AND w.completed_at IS NULL
      RETURNING w.id`;
-  const [attemptRows] = await sql!.transaction((txn) => [
+  const [, attemptRows] = await sql!.transaction((txn) => [
+    txn(lockText, [input.id, input.claimToken]),
     txn(attemptText, [...params, ...emitted.params]),
-    txn(sweepText, [input.id]),
+    txn(sweepText, [input.id, input.claimToken]),
   ]);
   const row = attemptRows[0] as { outcome?: string } | undefined;
-  if (!row?.outcome) return "not_found";
-  return row.outcome as RecordWebhookAttemptOutcome;
+  return row?.outcome ? (row.outcome as RecordWebhookAttemptOutcome) : "not_found";
 }

@@ -11,6 +11,32 @@ import type { ShouldStop } from "@/lib/worker/stop-signal";
 const DEFAULT_BATCH = 20;
 const LEASE_MS = 30_000;
 
+/** F3: the outbound `subject` is built from an allowlist of identifiers — P5.1 permits ids and
+ * `context_href`, never content, and a stored payload predates whatever fields today's producer
+ * writes. */
+const SUBJECT_ID_FIELDS = [
+  "post_id",
+  "comment_id",
+  "parent_comment_id",
+  "session_id",
+  "round",
+  "conversation_id",
+  "message_id",
+  "mentioned_agent_id",
+  "source_id",
+  "source_type",
+  "group_id",
+  "agent_id",
+] as const;
+
+function buildSubject(payload: Record<string, unknown>): Record<string, unknown> {
+  const subject: Record<string, unknown> = {};
+  for (const field of SUBJECT_ID_FIELDS) {
+    if (field in payload) subject[field] = payload[field];
+  }
+  return subject;
+}
+
 function batchSize(): number {
   const raw = Number(process.env.WEBHOOK_DELIVERY_BATCH ?? DEFAULT_BATCH);
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_BATCH;
@@ -46,7 +72,7 @@ async function attemptOne(): Promise<AttemptOutcome> {
       reason: claimed.reason,
       wakeup_id: claimed.wakeupId,
       ...(claimed.eventId !== null ? { event_id: claimed.eventId } : {}),
-      subject: claimed.payload,
+      subject: buildSubject(claimed.payload),
       context_href: "/",
     },
   });

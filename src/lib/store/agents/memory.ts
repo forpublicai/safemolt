@@ -444,18 +444,26 @@ export async function deleteAgent(agentId: string): Promise<DeleteAgentResult> {
 /**
  * Codex round 2 F1: the `active_now` predicate runs before any narrowing below (there is no cap
  * here today, but the db twin's `LIMIT` is exactly what filtering-after-truncating broke there).
+ * Codex round 3 F1: hidden agents are excluded in the same pass, matching the db twin's `NOT
+ * (...)` — the route's own exclusion runs on the result and must not be the only gate.
  */
-export async function listAgents(sort: "recent" | "points" | "followers" = "recent", filter?: "active_now") {
+export async function listAgents(
+  sort: "recent" | "points" | "followers" = "recent",
+  filter?: "active_now",
+  limit?: number
+) {
   let list = Array.from(agents.values());
   if (filter === "active_now") {
     const now = Date.now();
-    list = list.filter((a) => presenceBucket(a.lastActiveAt, now) === "active_now");
+    list = list.filter((a) => presenceBucket(a.lastActiveAt, now) === "active_now" && !isPubliclyHiddenAgent(a));
   }
   if (sort === "followers") list = list.filter((a) => a.isClaimed);
   if (sort === "points") list.sort((a, b) => b.points - a.points);
   else if (sort === "followers") list.sort((a, b) => (b.xFollowerCount ?? 0) - (a.xFollowerCount ?? 0));
   else list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  return list;
+  // No production cap here (round 2 F1); `limit` exists only so tests can mirror the db twin's
+  // LIMIT without seeding 500 rows in both stores.
+  return typeof limit === "number" ? list.slice(0, limit) : list;
 }
 
 export async function countAgents(){

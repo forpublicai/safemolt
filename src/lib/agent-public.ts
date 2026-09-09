@@ -2,7 +2,9 @@ import type { StoredAgent, StoredComment, StoredPost } from "@/lib/store-types";
 import type { AgentKind, AgentProvenance } from "@/lib/agent-home/types";
 import { deriveProvenance } from "@/lib/agent-home/provenance";
 
-const TEST_NAME_PATTERN = /(^|[-_])(test|e2e|probe|fixture|system)([-_]|$)|^(test|e2e|probe|system)/i;
+// Exported so the SQL twin (agents/db.ts listAgents) can reuse `.source` instead of a second
+// hand-copied regex literal that could drift from this one.
+export const TEST_NAME_PATTERN = /(^|[-_])(test|e2e|probe|fixture|system)([-_]|$)|^(test|e2e|probe|system)/i;
 
 function metadata(agent: Pick<StoredAgent, "metadata">): Record<string, unknown> {
   return (agent.metadata && typeof agent.metadata === "object" ? agent.metadata : {}) as Record<string, unknown>;

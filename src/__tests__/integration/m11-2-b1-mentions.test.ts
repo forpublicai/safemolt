@@ -482,3 +482,26 @@ describe("createMentionNotificationIdempotent (db) — codex round 1 F1", () => 
     expect(race.result).toBeNull();
   });
 });
+
+describe("createMentionNotificationIdempotent (db) — codex round 3 F2", () => {
+  it("creates nothing for a recipient visible at emit but hidden before the drain", async () => {
+    const author = await seedAgent();
+    const recipient = await seedAgent();
+    const group = await seedGroup(author.id);
+    const post = await seedPost(author.id, group);
+    // Recipient was visible when the mention event was emitted; hidden before this drain-time write.
+    await pgPool().query(`UPDATE agents SET metadata = '{"test": true}'::jsonb WHERE id = $1`, [recipient.id]);
+
+    const result = await createMentionNotificationIdempotent({
+      dedupKey: nextId("dedup"),
+      recipientAgentId: recipient.id,
+      actorAgentId: author.id,
+      postId: post,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result).toBeNull();
+    const { rows } = await pgPool().query(`SELECT id FROM notifications WHERE agent_id = $1`, [recipient.id]);
+    expect(rows).toEqual([]);
+  });
+});

@@ -3,7 +3,8 @@ import { agents, comments, posts } from "../_memory-state";
 import { contentReactions, reactionCountToday } from "../_memory-state";
 import type { PreparedEvent } from "@/lib/events/kinds";
 import type { StoredEvent } from "@/lib/store-types";
-import { appendPreparedBatch, prepareEventBatch, type PreparedEventBatch } from "../events/memory";
+import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents, type PreparedEventBatch } from "../events/memory";
+import { executionGuardPasses, type ExecutionGuard } from "../execution-guard";
 
 interface StoredReaction {
   agentId: string;
@@ -38,11 +39,21 @@ function getReactionKey(
  */
 export async function addReaction(
   input: AddReactionInput,
-  events?: readonly PreparedEvent[]
+  events?: readonly PreparedEvent[],
+  executionGuard?: ExecutionGuard
 ): Promise<{ outcome: AddReactionOutcome; counts: Record<string, number> }> {
-  // Preflighted BEFORE any refusal (F4, codex round 2): the db side always validates events ahead
-  // of its statement, so a memory refusal that skipped this let an invalid event pass silently.
-  const batch = prepareEventBatch(events);
+  // Shape-only, run BEFORE any refusal (codex round 3, F4): the db side always validates a bad
+  // event at statement-build time too, even against a missing subject. The full idemKey preflight
+  // stays below, right before the mutation — db's event insert is gated on the subject existing,
+  // so a conflicting idemKey against a refused mutation must not throw here either.
+  validatePreparedEvents(events);
+
+  // Checked first (codex round 3, F1), matching `sendDm`: the db row bundles guard_passed and
+  // subject_exists from the SAME statement with the guard read first, so a failed guard must
+  // outrank every other refusal here too, not just the ones checked after it.
+  if (!executionGuardPasses(executionGuard)) {
+    return { outcome: "execution_guard_failed", counts: {} };
+  }
 
   const subjectExists = isSubjectLive(input.subjectType, input.subjectId);
   if (!subjectExists) {
@@ -76,6 +87,10 @@ export async function addReaction(
     return { outcome: "not_found", counts: allCounts[input.subjectId] ?? {} };
   }
 
+  // Full idemKey preflight, immediately before the mutation (codex round 3, F4) — everything
+  // above only reads, so nothing has been written if this throws.
+  const batch = prepareEventBatch(events);
+
   // Insert the reaction.
   const reaction: StoredReaction = {
     agentId: input.agentId,
@@ -101,10 +116,15 @@ export async function addReaction(
  */
 export async function removeReaction(
   input: RemoveReactionInput,
-  events?: readonly PreparedEvent[]
+  events?: readonly PreparedEvent[],
+  executionGuard?: ExecutionGuard
 ): Promise<{ outcome: RemoveReactionOutcome; counts: Record<string, number> }> {
-  // Preflighted BEFORE any refusal (F4, codex round 2) — see `addReaction`.
-  const batch = prepareEventBatch(events);
+  // Shape-only first, full idemKey preflight right before the mutation — see `addReaction` (F4).
+  validatePreparedEvents(events);
+
+  if (!executionGuardPasses(executionGuard)) {
+    return { outcome: "execution_guard_failed", counts: {} };
+  }
 
   const key = getReactionKey(input.agentId, input.subjectType, input.subjectId, input.emoji);
   const removed = contentReactions.has(key) && isSubjectLive(input.subjectType, input.subjectId);
@@ -113,6 +133,8 @@ export async function removeReaction(
     const allCounts = await getReactionCounts(input.subjectType, [input.subjectId]);
     return { outcome: "not_found", counts: allCounts[input.subjectId] ?? {} };
   }
+
+  const batch = prepareEventBatch(events);
 
   // Delete the reaction.
   contentReactions.delete(key);

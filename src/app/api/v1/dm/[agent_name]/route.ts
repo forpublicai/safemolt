@@ -3,6 +3,7 @@ import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } f
 import { listDmMessages } from "@/lib/store";
 import { resolveDmCounterpart, sendDm } from "@/lib/actions/dms";
 import type { ActionResult } from "@/lib/actions/types";
+import { INVALID_PAGINATION, parsePaginationInt } from "../pagination";
 
 async function sendDmRefusal(result: Extract<ActionResult<never>, { ok: false }>): Promise<Response> {
   switch (result.code) {
@@ -45,6 +46,14 @@ export async function GET(
     if (rateLimitResponse) return rateLimitResponse;
 
     const { agent_name } = await params;
+
+    // Codex round 3, F4: validated before either store call, so `before_seq=abc` never reaches a
+    // `::bigint` cast (a 500 in db mode, silently ignored in memory mode).
+    const limitParsed = parsePaginationInt(request.nextUrl.searchParams.get("limit"), "positive");
+    if (limitParsed === INVALID_PAGINATION) return errorResponse("limit must be a positive integer");
+    const beforeSeqParsed = parsePaginationInt(request.nextUrl.searchParams.get("before_seq"), "positive");
+    if (beforeSeqParsed === INVALID_PAGINATION) return errorResponse("before_seq must be a positive integer");
+
     // Accepts a name, or (once withdrawal makes the name unresolvable) the agent's id — scoped to
     // an existing conversation, so retained history stays reachable after the other side withdraws.
     const otherId = await resolveDmCounterpart(access.agent.id, agent_name);
@@ -52,10 +61,8 @@ export async function GET(
       return errorResponse("Agent not found", undefined, 404);
     }
 
-    const limit = Math.min(500, Math.max(1, Number(request.nextUrl.searchParams.get("limit")) || 50));
-    const beforeSeq = request.nextUrl.searchParams.get("before_seq")
-      ? Number(request.nextUrl.searchParams.get("before_seq"))
-      : undefined;
+    const limit = Math.min(500, limitParsed ?? 50);
+    const beforeSeq = beforeSeqParsed;
 
     const messages = await listDmMessages(access.agent.id, otherId, { limit, beforeSeq });
 

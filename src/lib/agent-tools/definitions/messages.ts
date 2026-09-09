@@ -182,8 +182,12 @@ export const executors: Record<string, ToolExecutor> = {
     const messages = await listDmMessages(agent.id, otherId, {});
 
     // Side-effect: advance the read cursor (Tier B, no event). Guarded (codex round 2, F1): a
-    // superseded runner must not move the cursor even for a non-terminal call.
-    await markDmRead({ agent, otherName: otherRef, executionGuard });
+    // superseded runner must not move the cursor even for a non-terminal call. A refused guard is
+    // now surfaced as a failure (codex round 3, F1), not silently swallowed.
+    const readResult = await markDmRead({ agent, otherName: otherRef, executionGuard });
+    if (!readResult.ok) {
+      return { success: false, error: readResult.message, data: { code: readResult.code } };
+    }
 
     return {
       success: true,

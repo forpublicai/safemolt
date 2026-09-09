@@ -1,4 +1,5 @@
 import { sql } from "@/lib/db";
+import { TEST_NAME_PATTERN } from "@/lib/agent-public";
 import type { StoredNotification } from "@/lib/store-types";
 import { NOTIFICATION_TITLE_MAX } from "./memory";
 import type {
@@ -565,7 +566,13 @@ const MENTION_NOTIFICATION_SELECT = `
         /* race:b1m-mention-post-lock */ SELECT id, title FROM posts WHERE id = $5::text AND deleted_at IS NULL FOR SHARE
       ) p
       JOIN (
-        SELECT id, name FROM agents WHERE id = $3::text FOR KEY SHARE
+        -- Codex round 3 F2: gate on CURRENT visibility, on the locked row — a recipient hidden
+        -- after emit (metadata test/system/source, or a test-shaped name) must not be notified.
+        SELECT id, name FROM agents
+        WHERE id = $3::text
+          AND NOT ((metadata->>'system') IS NOT DISTINCT FROM 'true' OR (metadata->>'test') IS NOT DISTINCT FROM 'true'
+                   OR (metadata->>'source') IS NOT DISTINCT FROM 'test' OR name ~* '${TEST_NAME_PATTERN.source}')
+        FOR KEY SHARE
       ) target ON true
       LEFT JOIN agents actor ON actor.id = $4::text
     `;
