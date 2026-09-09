@@ -67,6 +67,7 @@ function fakeWakeup(overrides: Partial<StoredWakeup>): StoredWakeup {
     leaseExpiresAt: null,
     completedAt: null,
     result: null,
+    streamSeq: null,
     ...overrides,
   };
 }
@@ -316,6 +317,60 @@ describe("runPulseBatch — dm: a refused non-terminal read is fence loss, not a
     // No cooldown bump: `recordSkip` must never run for a tick that lost its fence.
     expect(agentLoopState.get(author.id)!).toEqual(before);
     // The superseded runner's completion attempt matched zero rows — the new owner's claim stands.
+    const after = wakeupQueue.rows.get(wakeupId)!;
+    expect(after.claimToken).toBe("another-runners-token");
+    expect(after.completedAt).toBeNull();
+  });
+});
+
+/**
+ * Lane D fix round 5, F1 — the same guard loss, but the SECOND model call THROWS instead of
+ * declining. `turn` is never assigned, so the `catch` around `runAgenticTurn` is the only place
+ * that can see it — and it must check `fence.guardRefused()` (tracked live via `onToolExecuted`)
+ * BEFORE `recordError`, or a superseded runner still stamps an error on an agent it no longer owns.
+ */
+describe("runPulseBatch — dm: a refused non-terminal read followed by a throwing model call is still fence loss", () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  it("writes no loop state and completes nothing when the second model call throws", async () => {
+    const author = await agent("dmThrow");
+    const other = await agent("dmThrowOther");
+    await setLoopEnabled(author.id, true);
+    const sent = await storeSendDm({ senderId: other.id, recipientId: author.id, content: "hey there" });
+    expect(sent.outcome).toBe("inserted");
+
+    await enqueueWakeup({
+      agentId: author.id,
+      reason: "dm",
+      eventId: 900104,
+      payload: { other_agent_id: other.id },
+      delivery: "internal",
+    });
+    const wakeupId = (await getWakeupByAgentReasonEvent(author.id, "dm", 900104))!.id;
+    const before = { ...agentLoopState.get(author.id)! };
+
+    const callLLM = jest
+      .fn()
+      .mockImplementationOnce(async () => {
+        wakeupQueue.rows.get(wakeupId)!.claimToken = "another-runners-token";
+        return {
+          content: null,
+          toolCalls: [{ id: "call_1", name: "read_dm_thread", arguments: { other_agent_name: other.name } }],
+        };
+      })
+      .mockImplementationOnce(async () => {
+        throw new Error("inference transport error");
+      });
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(1);
+
+    expect(result.results[0].outcome).toBe("skip");
+    // No error bookkeeping: `recordError` must never run for a tick that lost its fence.
+    expect(agentLoopState.get(author.id)!).toEqual(before);
     const after = wakeupQueue.rows.get(wakeupId)!;
     expect(after.claimToken).toBe("another-runners-token");
     expect(after.completedAt).toBeNull();

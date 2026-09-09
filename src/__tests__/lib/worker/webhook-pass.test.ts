@@ -103,5 +103,7 @@ describe("runWebhookDeliveryPass — F3 round 3: subject is an ALLOWLIST of ids,
     // Checked at any depth, not just the top level — a nested leak under `subject` is the exact bug F3 closes.
     expect(JSON.stringify(sentPayload)).not.toContain("should not leak");
     expect(sentPayload.subject).toEqual({ post_id: "p_1", group_id: "g_1" });
+    // F4 round 5: the receiver's own authenticated context endpoint, never the home page.
+    expect(sentPayload.context_href).toBe("/api/v1/agents/me/context");
   });
 });

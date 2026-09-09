@@ -12,6 +12,7 @@ import {
   playgroundSessions,
   posts,
 } from "../_memory-state";
+import { recordStreamFrame } from "../stream/memory";
 
 export interface CreateNotificationInput {
   agentId: string;
@@ -134,6 +135,19 @@ export type NotificationLegacyRead =
   | { state: "missing" }
   | { state: "subject_gone" };
 
+/**
+ * M11b Lane S (P5.2) — the memory twin of `db.ts`'s `notificationFrameCte`: same key shape
+ * (`dedup_key`, or the row's own id when there is none), fired synchronously beside the insert.
+ */
+function recordNotificationFrame(row: StoredNotification, dedupKey: string | null): void {
+  void recordStreamFrame({
+    agentId: row.agent_id,
+    frame: "notification",
+    refId: row.id,
+    frameKey: `notification:${dedupKey ?? row.id}`,
+  });
+}
+
 export async function createNotification(input: CreateNotificationInput): Promise<StoredNotification> {
   const row: StoredNotification = {
     id: generateId("notif"),
@@ -150,6 +164,7 @@ export async function createNotification(input: CreateNotificationInput): Promis
     metadata: input.metadata ?? {},
   };
   notifications.set(row.id, row);
+  recordNotificationFrame(row, null);
   return row;
 }
 
@@ -271,9 +286,15 @@ function projectionOf(built: CreateNotificationInput, dedupKey: string | null): 
  * the whole decision unreachable by an interleaved promise, which is the same guarantee
  * `ON CONFLICT (dedup_key) DO NOTHING` gives in Postgres.
  */
+/**
+ * `withFrame` is false only for the follow writer — see `db.ts`'s `insertNotificationFromSelect`
+ * for why: the decisive statement's CTE splice already frames a real follow, so this path only
+ * ever runs when that one already won (a no-op) or never ran at all (an eventless fixture write).
+ */
 function insertNotificationIdempotentSync(
   built: CreateNotificationInput,
-  dedupKey: string | null
+  dedupKey: string | null,
+  withFrame = true
 ): StoredNotification | null {
   // A null key names no event and deduplicates nothing — the memory twin of a NULL column under a
   // unique index, which Postgres never treats as a conflict (M11-2 P1.2).
@@ -295,6 +316,7 @@ function insertNotificationIdempotentSync(
   };
   notifications.set(row.id, row);
   if (dedupKey !== null) notificationDedupKeys.set(dedupKey, row.id);
+  if (withFrame) recordNotificationFrame(row, dedupKey);
   return row;
 }
 
@@ -311,7 +333,7 @@ export async function createFollowNotificationIdempotent(
 ): Promise<StoredNotification | null> {
   const built = buildFollowNotification(input);
   if (!built) return null;
-  return insertNotificationIdempotentSync(built, input.dedupKey);
+  return insertNotificationIdempotentSync(built, input.dedupKey, false);
 }
 
 /**

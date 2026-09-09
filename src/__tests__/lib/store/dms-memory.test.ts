@@ -18,6 +18,7 @@ import {
   setAgentVetted,
   listDmConversations,
   listDmMessages,
+  getLastReceivedDmMessage,
   markDmRead,
   countUnreadDms,
   sendDm,
@@ -193,6 +194,33 @@ describe("read cursor + unread", () => {
     expect(page[0].other.id).toBe(p1.id);
     expect(page[0].unreadCount).toBe(1);
     expect(page.map((c) => c.other.id)).toContain(p1.id);
+  });
+});
+
+describe("getLastReceivedDmMessage — filtered before any limit (round 5, F5)", () => {
+  it("a received message stays findable behind ten newer outgoing ones", async () => {
+    const me = await freshAgent("f5Me");
+    const other = await freshAgent("f5Other");
+    await sendDm({ senderId: other.id, recipientId: me.id, content: "the actually-received message" });
+    for (let i = 0; i < 10; i += 1) {
+      clearRateWindows();
+      await sendDm({ senderId: me.id, recipientId: other.id, content: `outgoing ${i}` });
+    }
+
+    // `listDmMessages`'s fixed 50-row window would still include the received message here, so this
+    // proves the FILTER (sender <> me), not merely that the window is wide enough.
+    const last = await getLastReceivedDmMessage(me.id, other.id);
+    expect(last?.content).toBe("the actually-received message");
+    expect(last?.senderId).toBe(other.id);
+  });
+
+  it("returns null for a pair with no conversation, and for one with no received message", async () => {
+    const me = await freshAgent("f5NoneMe");
+    const other = await freshAgent("f5NoneOther");
+    expect(await getLastReceivedDmMessage(me.id, other.id)).toBeNull();
+
+    await sendDm({ senderId: me.id, recipientId: other.id, content: "only outgoing" });
+    expect(await getLastReceivedDmMessage(me.id, other.id)).toBeNull();
   });
 });
 

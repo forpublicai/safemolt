@@ -40,6 +40,8 @@ export interface StoredWakeup {
   leaseExpiresAt: string | null;
   completedAt: string | null;
   result: string | null;
+  /** M11b Lane S (P5.2) — the per-recipient SSE replay cursor. `null` on a pre-splice row. */
+  streamSeq: number | null;
 }
 
 export interface EnqueueWakeupInput {
@@ -101,6 +103,7 @@ interface WakeupRow {
   lease_expires_at: unknown;
   completed_at: unknown;
   result: string | null;
+  stream_seq: number | string | null;
 }
 
 /**
@@ -126,7 +129,27 @@ export function rowToWakeup(row: unknown): StoredWakeup {
     leaseExpiresAt: toIsoOrNull(r.lease_expires_at),
     completedAt: toIsoOrNull(r.completed_at),
     result: r.result == null ? null : String(r.result),
+    streamSeq: r.stream_seq == null ? null : Number(r.stream_seq),
   };
+}
+
+/**
+ * The per-recipient `stream_seq` counter, upserted under its own row lock and held to commit — so
+ * commit order equals seq order (P5.2). Gated on the SAME `agent_lock` every caller's
+ * `registrationCte` already defines: `agent_stream_counters.agent_id` carries the same FK-cascade
+ * policy as `agent_wakeups`, so an ungated insert here raised a 23503 instead of refusing cleanly
+ * when a withdrawal wins the race (caught by the F1 withdrawal-race gate). Otherwise unconditional —
+ * a call whose insert/re-arm ultimately no-ops for some OTHER reason still burns one seq value,
+ * which is harmless, since the stream only needs monotonic order, not a count.
+ */
+function streamSeqCte(name: string): string {
+  return `${name} AS (
+    /* race:m11-2-stream-seq */
+    INSERT INTO agent_stream_counters (agent_id, last_seq)
+    SELECT $1, 1 WHERE EXISTS (SELECT 1 FROM agent_lock)
+    ON CONFLICT (agent_id) DO UPDATE SET last_seq = agent_stream_counters.last_seq + 1
+    RETURNING last_seq
+  )`;
 }
 
 /**
@@ -190,11 +213,18 @@ function webhookLedgerCte(rowCteNames: readonly string[], namePrefix: string, re
  * F1: the wakeup row itself, gated on the locked registration whenever it would be webhook-primary
  * — a fresh row for a delivery no live registration backs would have no ledger to ever claim it
  * through. `$5` is `delivery`; non-webhook deliveries (internal/none) need no registration at all.
+ *
+ * `LEFT JOIN ${seqName}`, never a plain `FROM`: an internal/none delivery to a genuinely unknown
+ * agent must still ATTEMPT this insert and fail loud on `agent_wakeups`'s own agent FK (a pinned
+ * gate) — `streamSeqCte` correctly inserts nothing for that agent, and an inner join here would
+ * silently swallow the attempt instead of letting the real constraint raise.
  */
-function insertWakeupSql(regName: string): string {
+function insertWakeupSql(regName: string, seqName: string): string {
   return `
-    INSERT INTO agent_wakeups (agent_id, reason, event_id, payload, delivery, due_at)
-    SELECT $1, $2, $3, $4::jsonb, $5, COALESCE($6::timestamptz, NOW())
+    INSERT INTO agent_wakeups (agent_id, reason, event_id, payload, delivery, due_at, stream_seq)
+    SELECT $1, $2, $3, $4::jsonb, $5, COALESCE($6::timestamptz, NOW()), seq.last_seq
+    FROM (VALUES (1)) AS one_row
+    LEFT JOIN ${seqName} seq ON true
     WHERE $5::text <> 'webhook' OR EXISTS (SELECT 1 FROM ${regName})
     ON CONFLICT DO NOTHING`;
 }
@@ -233,8 +263,9 @@ function insertParams(input: EnqueueWakeupInput | CreateOrReArmWakeupInput): unk
 export async function enqueueWakeup(input: EnqueueWakeupInput): Promise<EnqueueWakeupResult> {
   const rows = await sql!(
     `WITH ${registrationCte("reg")},
+    ${streamSeqCte("seq")},
     ins AS (
-      ${insertWakeupSql("reg")}
+      ${insertWakeupSql("reg", "seq")}
       RETURNING *
     ),
     ${webhookLedgerCte(["ins"], "wh", undefined, "reg")}
@@ -275,13 +306,15 @@ export async function createOrReArmWakeup(
     `
     /* p3.2:create-or-rearm */
     WITH ${registrationCte("reg")},
+    ${streamSeqCte("seq")},
     ins AS (
-      ${insertWakeupSql("reg")}
+      ${insertWakeupSql("reg", "seq")}
       RETURNING *
     ),
     rearmed AS (
       UPDATE agent_wakeups
-      SET claimed_at = NULL, claim_token = NULL, lease_expires_at = NULL, completed_at = NULL, result = NULL
+      SET claimed_at = NULL, claim_token = NULL, lease_expires_at = NULL, completed_at = NULL, result = NULL,
+          stream_seq = (SELECT last_seq FROM seq)
       WHERE agent_id = $1 AND reason = $2 AND event_id = $3
         AND completed_at IS NOT NULL
         AND result IS DISTINCT FROM 'acted'
@@ -365,17 +398,20 @@ export async function createOrReArmPlaygroundRoundWakeup(
       FOR SHARE OF s
     ),
     ${registrationCte("reg", "live")},
+    ${streamSeqCte("seq")},
     ins AS (
-      INSERT INTO agent_wakeups (agent_id, reason, event_id, payload, delivery, due_at)
-      SELECT $1, $2, $3, $4::jsonb, $5, COALESCE($6::timestamptz, NOW())
+      INSERT INTO agent_wakeups (agent_id, reason, event_id, payload, delivery, due_at, stream_seq)
+      SELECT $1, $2, $3, $4::jsonb, $5, COALESCE($6::timestamptz, NOW()), seq.last_seq
       FROM live
+      LEFT JOIN seq ON true
       WHERE $5::text <> 'webhook' OR EXISTS (SELECT 1 FROM reg)
       ON CONFLICT DO NOTHING
       RETURNING *
     ),
     rearmed AS (
       UPDATE agent_wakeups
-      SET claimed_at = NULL, claim_token = NULL, lease_expires_at = NULL, completed_at = NULL, result = NULL
+      SET claimed_at = NULL, claim_token = NULL, lease_expires_at = NULL, completed_at = NULL, result = NULL,
+          stream_seq = (SELECT last_seq FROM seq)
       WHERE agent_id = $1 AND reason = $2 AND event_id = $3
         AND EXISTS (SELECT 1 FROM live)
         AND completed_at IS NOT NULL

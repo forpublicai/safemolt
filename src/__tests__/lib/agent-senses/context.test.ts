@@ -29,7 +29,7 @@ jest.mock("@/lib/store", () => ({
   getPlaygroundSession: jest.fn(),
   // M11b lane D (P6.3): `gatherInbox` also reads the DM domain now.
   listDmConversations: jest.fn(),
-  listDmMessages: jest.fn(),
+  getLastReceivedDmMessage: jest.fn(),
   countUnreadDms: jest.fn(),
 }));
 jest.mock("@/lib/playground/games", () => ({
@@ -68,7 +68,7 @@ import {
   listPlaygroundSessions,
   listPosts,
   listDmConversations,
-  listDmMessages,
+  getLastReceivedDmMessage,
   countUnreadDms,
 } from "@/lib/store";
 import { getNewsItems } from "@/lib/rss";
@@ -113,7 +113,7 @@ function stubPopulatedPlatform(): void {
     },
   ] as never);
   jest.mocked(listDmConversations).mockResolvedValue([] as never);
-  jest.mocked(listDmMessages).mockResolvedValue([] as never);
+  jest.mocked(getLastReceivedDmMessage).mockResolvedValue(null as never);
   jest.mocked(countUnreadDms).mockResolvedValue(0 as never);
   jest.mocked(getAgentClasses).mockResolvedValue([{ classId: "c1" }] as never);
   jest.mocked(getClassById).mockResolvedValue({ id: "c1", name: "Rhetoric" } as never);

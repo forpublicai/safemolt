@@ -250,16 +250,30 @@ async function claimOneWakeup(maxAttempts = 1000): Promise<{ wakeup: StoredWakeu
  * (the hook never fired) from "ownership is gone" (the hook fired and refused), which the caller
  * cannot otherwise tell apart — both leave the turn with no terminal tool executed.
  */
-function createPulseFence(wakeup: StoredWakeup, claimToken: string): PulseTickBundle {
+/** `createPulseFence`'s return type, widened with the live guard-refusal tracker F1 (round 5) needs:
+ *  `onToolExecuted` fires as each tool completes, so a THROW later in the same turn (the model's
+ *  next call fails) still leaves `guardRefused()` readable in the `catch` — `turn.toolCallsExecuted`
+ *  is not, because `turn` is never assigned when `runAgenticTurn` itself throws. */
+interface PulseFence extends PulseTickBundle {
+  onToolExecuted: (call: NormalizedToolCall, result: ToolCallResult) => Promise<void>;
+  guardRefused: () => boolean;
+}
+
+function createPulseFence(wakeup: StoredWakeup, claimToken: string): PulseFence {
   let lost = false;
+  let guardRefused = false;
   return {
     beforeTerminalTool: async (_call: NormalizedToolCall) => {
       const renewed = await renewWakeupLease(wakeup.id, claimToken, pulseLeaseMs());
       if (!renewed) lost = true;
       return renewed;
     },
+    onToolExecuted: async (_call: NormalizedToolCall, result: ToolCallResult) => {
+      if ((result.data as { code?: unknown } | undefined)?.code === "execution_guard_failed") guardRefused = true;
+    },
     executionGuard: { agentId: wakeup.agentId, wakeupId: wakeup.id, claimToken },
     fenceLost: () => lost,
+    guardRefused: () => guardRefused,
   };
 }
 
@@ -282,15 +296,24 @@ async function completeAfterFenceLoss(wakeup: StoredWakeup, claimToken: string):
   return "skip";
 }
 
-/** True when a NON-terminal executed tool (e.g. `read_dm_thread`) was refused by the execution
- *  guard — `beforeTerminalTool` never sees such a call, so `fence.fenceLost()` alone misses it. */
-function anyToolGuardRefused(executed: { result: ToolCallResult }[]): boolean {
-  return executed.some((t) => (t.result.data as { code?: unknown } | undefined)?.code === "execution_guard_failed");
+/** Combines both fence-loss signals (extracted to keep `runNarrowWakeup`'s own complexity down). */
+function fenceOrGuardLost(fence: PulseFence): boolean {
+  return fence.fenceLost() || fence.guardRefused();
 }
 
-/** Combines both fence-loss signals (extracted to keep `runNarrowWakeup`'s own complexity down). */
-function fenceOrGuardLost(fence: PulseTickBundle, executed: { result: ToolCallResult }[]): boolean {
-  return fence.fenceLost() || anyToolGuardRefused(executed);
+/** `runAgenticTurn`'s `catch` (round 5, F1): guard loss checked before any error bookkeeping, since
+ *  `turn` is never assigned on a throw. Extracted to keep `runNarrowWakeup`'s own complexity down. */
+async function completeAfterTurnThrow(
+  agent: StoredAgent,
+  wakeup: StoredWakeup,
+  claimToken: string,
+  fence: PulseFence,
+  error: unknown
+): Promise<WakeupOutcome> {
+  if (fenceOrGuardLost(fence)) return completeAfterFenceLoss(wakeup, claimToken);
+  await recordError(agent.id, error instanceof Error ? error.message : "runner turn failed").catch(() => {});
+  await completeWakeup(wakeup.id, claimToken, "error");
+  return "error";
 }
 
 /**
@@ -385,20 +408,17 @@ async function runNarrowWakeup(
       // the turn without invoking the tool — see `beforeTerminalTool`'s own doc comment in
       // `agent-runtime/index.ts` for exactly what that means for `turn.terminalToolExecuted` below.
       beforeTerminalTool: fence.beforeTerminalTool,
+      onToolExecuted: fence.onToolExecuted,
     });
   } catch (e) {
-    await recordError(agent.id, e instanceof Error ? e.message : "runner turn failed").catch(() => {});
-    await completeWakeup(wakeup.id, claimToken, "error");
-    return "error";
+    return completeAfterTurnThrow(agent, wakeup, claimToken, fence, e);
   }
 
-  // The fence refused: ownership is gone, so this tick writes nothing but its own token-fenced
-  // completion (u6 D fix round 1, finding 2). Checked BEFORE the `!terminal` branch, which used to
-  // treat a fenced-off turn as an ordinary decline and stamp `recordSkip`'s cooldown on an agent this
-  // runner no longer owned. `anyToolGuardRefused` extends this to a NON-terminal refusal too (lane D
-  // fix round 4, F1): `read_dm_thread`'s guarded `markDmRead` can refuse without ever reaching
-  // `beforeTerminalTool`, and the model can then simply stop — `fence.fenceLost()` alone misses that.
-  if (fenceOrGuardLost(fence, turn.toolCallsExecuted)) return completeAfterFenceLoss(wakeup, claimToken);
+  // Ownership is gone: nothing but the token-fenced completion below. Checked BEFORE `!terminal`,
+  // which would otherwise treat a fenced-off turn as an ordinary decline and stamp a cooldown on an
+  // agent this runner no longer owns (u6 D fix round 1, finding 2; lane D fix round 4, F1 for the
+  // non-terminal guard-refusal case, e.g. `read_dm_thread`).
+  if (fenceOrGuardLost(fence)) return completeAfterFenceLoss(wakeup, claimToken);
 
   const terminal = turn.terminalToolExecuted;
   if (!terminal) {

@@ -7,5 +7,6 @@ export const markDmRead = pickStore(db.markDmRead, mem.markDmRead);
 export const setDmBlock = pickStore(db.setDmBlock, mem.setDmBlock);
 export const listDmConversations = pickStore(db.listDmConversations, mem.listDmConversations);
 export const listDmMessages = pickStore(db.listDmMessages, mem.listDmMessages);
+export const getLastReceivedDmMessage = pickStore(db.getLastReceivedDmMessage, mem.getLastReceivedDmMessage);
 export const countUnreadDms = pickStore(db.countUnreadDms, mem.countUnreadDms);
 export const isDmBlocked = pickStore(db.isDmBlocked, mem.isDmBlocked);

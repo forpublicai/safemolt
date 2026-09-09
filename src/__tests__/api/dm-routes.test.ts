@@ -327,6 +327,25 @@ describe("F4 — a withdrawn counterpart is still reachable by id", () => {
   });
 });
 
+describe("F4 (round 5) — a caller-scoped id resolves before a live agent's name", () => {
+  it("a live agent's name equal to a withdrawn participant's id does not steal the retained thread", async () => {
+    const a = await agent("idFirstA");
+    const b = await agent("idFirstB");
+    await THREAD_POST(request(a, `/api/v1/dm/${b.name}`, "POST", { content: "before withdrawal" }) as never, params({ agent_name: b.name }));
+    expect(await deleteAgent(b.id)).toEqual({ ok: true });
+
+    // A live, unrelated agent whose registered NAME equals the withdrawn agent's id.
+    const impostor = await createAgent(b.id, "impostor fixture");
+    await setAgentVetted(impostor.id, "# impostor\n");
+
+    const response = await THREAD_GET(request(a, `/api/v1/dm/${b.id}`, "GET") as never, params({ agent_name: b.id }));
+    expect(response.status).toBe(200);
+    const data = (await body(response)).data as { messages: Array<{ content: string }> };
+    // The retained thread with the WITHDRAWN agent, never a fresh (empty) thread with the impostor.
+    expect(data.messages.map((m) => m.content)).toEqual(["before withdrawal"]);
+  });
+});
+
 describe("F4 (round 3) — pagination validation", () => {
   it("GET /api/v1/dm answers 400 for a non-integer limit", async () => {
     const a = await agent("pgLimitA");

@@ -27,8 +27,8 @@ import { createPost as storeCreatePost } from "@/lib/store/posts/db";
 import { createMentionNotificationIdempotent } from "@/lib/store/notifications/db";
 import type { StoredEvent } from "@/lib/store-types";
 
-import { closeIntegrationConnections, pgPool } from "./helpers/db";
-import { raceAgainstHeldLock } from "./helpers/concurrency";
+import { closeIntegrationConnections, pgClient, pgPool } from "./helpers/db";
+import { pidOf, raceAgainstHeldLock, waitForWaiter, waitersOn } from "./helpers/concurrency";
 
 const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
 let seq = 0;
@@ -583,6 +583,84 @@ describe("createMentionNotificationIdempotent (db) — codex round 4 F2", () => 
           createdAt: new Date().toISOString(),
         }),
       contenderMarker: "race:b1m-mention-recipient-lock",
+    });
+
+    expect(race.observedBlocked).toBe(true);
+    expect(race.result).toBeNull();
+  });
+});
+
+describe("createMentionNotificationIdempotent (db) — codex round 5 F1", () => {
+  /**
+   * The order proof. A holder mirrors a real post-vote transaction (`posts/db.ts`'s
+   * `votePost`): it locks the post, then the author's agent row, and holds both. The mention's
+   * recipient is that SAME author, so the old single-statement writer — whose three subqueries
+   * had no fixed evaluation order — could lock the agent first and deadlock against this holder.
+   * With three ordered statements, the writer can only ever be waiting on the POST while the
+   * holder has it: it never reaches the recipient lock at all, and no 40P01 fires once released.
+   */
+  it("blocks on the post statement (never the recipient) while a vote-shaped transaction holds both, then completes with no deadlock", async () => {
+    const author = await seedAgent();
+    const actor = await seedAgent();
+    const group = await seedGroup(author.id);
+    const post = await seedPost(author.id, group);
+
+    const holder = await pgClient();
+    let settled: { ok: true; value: unknown } | { ok: false; error: { code?: string } };
+    try {
+      await holder.query("BEGIN");
+      const holderPid = await pidOf(holder);
+      await holder.query("UPDATE posts SET upvotes = upvotes + 1 WHERE id = $1", [post]);
+      await holder.query("SELECT id FROM agents WHERE id = $1 FOR NO KEY UPDATE", [author.id]);
+
+      const contending = createMentionNotificationIdempotent({
+        dedupKey: nextId("dedup"),
+        recipientAgentId: author.id,
+        actorAgentId: actor.id,
+        postId: post,
+        createdAt: new Date().toISOString(),
+      }).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error: error as { code?: string } })
+      );
+
+      expect(await waitForWaiter(holderPid, "race:b1m-mention-post-lock")).toBe(true);
+      expect(await waitersOn(holderPid, "race:b1m-mention-recipient-lock")).toEqual([]);
+
+      await holder.query("COMMIT");
+      settled = await contending;
+    } finally {
+      await holder.end();
+    }
+
+    expect(settled.ok ? undefined : settled.error.code).not.toBe("40P01");
+    expect(settled.ok && settled.value).not.toBeNull();
+  });
+});
+
+describe("createMentionNotificationIdempotent (db) — codex round 5 F2", () => {
+  it("blocks on an uncommitted comment deletion, then refuses once it commits", async () => {
+    const postAuthor = await seedAgent();
+    const commentAuthor = await seedAgent();
+    const recipient = await seedAgent();
+    const group = await seedGroup(postAuthor.id);
+    const post = await seedPost(postAuthor.id, group);
+    const comment = await seedComment(commentAuthor.id, post);
+
+    const race = await raceAgainstHeldLock({
+      hold: async (holder) => {
+        await holder.query(`DELETE FROM comments WHERE id = $1`, [comment]);
+      },
+      contend: () =>
+        createMentionNotificationIdempotent({
+          dedupKey: nextId("dedup"),
+          recipientAgentId: recipient.id,
+          actorAgentId: commentAuthor.id,
+          postId: post,
+          commentId: comment,
+          createdAt: new Date().toISOString(),
+        }),
+      contenderMarker: "race:b1m-mention-comment-lock",
     });
 
     expect(race.observedBlocked).toBe(true);

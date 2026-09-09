@@ -1,5 +1,10 @@
 # b2 Lane C — P7.1 handoff (marker still absent at session end)
 
+> **Gen-2 update (2026-09-08):** the marker now exists. Gen-2 re-ran every check named below
+> against the post-fix-loop tree and reconfirmed all of them — still zero safe deletions. See
+> `ai/m11-2-handoff/b2-lane-c-report.md` §8 for the full re-verification and gate results. This
+> file is kept as-is below for its historical detail.
+
 `ai/m11-2-handoff/b1-fixes-landed.md` did not exist at any point in this session. Per the
 concurrency rule in `ai/m11-2-handoff/b2-lane-c-cleanup-spec.md`, P7.1's deletions in
 `src/lib/agent-loop.ts`, `src/lib/agent-pulse/runner.ts` and

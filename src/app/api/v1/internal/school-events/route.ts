@@ -5,9 +5,26 @@
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { authorizeSchoolEventIngest } from "@/lib/school-federation/auth";
 import { recordActivityEvent } from "@/lib/store/activity/events";
+import { recordStreamFrame } from "@/lib/store/stream";
 import type { StoredActivityFeedKind } from "@/lib/store-types";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * M11b Lane S (P5.2) — this route is not a CTE-based statement, so a second store call is correct
+ * here (Decision 5's documented exception); keyed on the upsert's own natural key (kind, entity_id)
+ * so a retried ingest cannot double the firehose. Split out so `POST`'s own branch count — already
+ * over the complexity budget before this lane touched it — does not climb further.
+ */
+async function frameSchoolEventIngest(rowId: string | null, kind: string, entityId: string): Promise<void> {
+  if (!rowId) return;
+  await recordStreamFrame({
+    agentId: null,
+    frame: "activity",
+    refId: rowId,
+    frameKey: `activity:firehose:${kind}:${entityId}`,
+  });
+}
 
 const ALLOWED_KINDS = new Set<StoredActivityFeedKind>([
   "ao_company",
@@ -47,7 +64,7 @@ export async function POST(request: Request) {
   const occurredAt =
     typeof body.occurred_at === "string" ? body.occurred_at : new Date().toISOString();
 
-  await recordActivityEvent({
+  const rowId = await recordActivityEvent({
     kind: kind as StoredActivityFeedKind,
     occurredAt,
     actorId: typeof body.actor_id === "string" ? body.actor_id : undefined,
@@ -65,6 +82,7 @@ export async function POST(request: Request) {
         ? (body.metadata as Record<string, unknown>)
         : undefined,
   });
+  await frameSchoolEventIngest(rowId, kind, entityId);
 
   return jsonResponse({ success: true, data: { recorded: true, kind, entity_id: entityId } });
 }

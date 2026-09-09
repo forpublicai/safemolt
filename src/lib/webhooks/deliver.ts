@@ -75,6 +75,9 @@ const V4_NON_PUBLIC_RANGES: ((a: number, b: number, c: number) => boolean)[] = [
   (a, b, c) => a === 192 && b === 0 && c === 2,
   (a, b, c) => a === 198 && b === 51 && c === 100,
   (a, b, c) => a === 203 && b === 0 && c === 113,
+  // F2 round 5: 192.88.99.0/24, the deprecated 6to4 relay anycast prefix — IANA marks it
+  // not globally reachable, so a hostname resolving there must be refused like any other block.
+  (a, b, c) => a === 192 && b === 88 && c === 99,
 ];
 
 function isPublicIPv4Octets(o: number[], allowLoopback: boolean): boolean {
@@ -182,6 +185,15 @@ function isPublicAddress(addr: string, allowLoopback: boolean): boolean {
   if (family === 4) return isPublicIPv4(addr, allowLoopback);
   if (family === 6) return isPublicIPv6(addr, allowLoopback);
   return false;
+}
+
+/**
+ * F5 round 5: `URL.hostname` keeps the `[...]` WHATWG wraps an IPv6 literal in for URL syntax, but
+ * `dns.lookup`/`getaddrinfo` reject that literal and answer `ENOTFOUND` — resolution and pinning need
+ * the bare address. `Host`/SNI keep the bracketed form Node expects; only this call site changes.
+ */
+export function stripIPv6Brackets(hostname: string): string {
+  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
 }
 
 export type LookupAllFn = (
@@ -378,7 +390,7 @@ export async function deliverWakeup(
     return { ok: false, status: null };
   }
   const deadline = Date.now() + TOTAL_TIMEOUT_MS;
-  const dnsPromise = resolvePublicAddresses(parsed.hostname, lookupAll);
+  const dnsPromise = resolvePublicAddresses(stripIPv6Brackets(parsed.hostname), lookupAll);
   dnsPromise.catch(() => {}); // observed via the race below; a late rejection must not go unhandled
   const [timeoutPromise, timer] = afterMs<null>(Math.max(deadline - Date.now(), 0), null);
   let addresses: string[] | null;

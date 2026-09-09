@@ -117,6 +117,9 @@ describe("resolvePublicAddresses — rejection table (injected resolver, no real
     ["IETF protocol assignments 2001::/23 (benchmarking 2001:2::/48)", "2001:2::1", 6],
     ["documentation 3fff::/20", "3fff::1", 6],
     ["reserved 5f00::/16", "5f00::1", 6],
+    // F2 round 5 — the deprecated 6to4 relay anycast prefix, in both forms.
+    ["6to4 relay anycast 192.88.99/24", "192.88.99.2", 4],
+    ["6to4 relay anycast, IPv4-mapped", "::ffff:192.88.99.2", 6],
   ];
 
   it.each(rejected)("rejects %s (%s)", async (_label, address, family) => {
@@ -249,6 +252,29 @@ describe("deliverWakeup — real local receiver (no mocking of node:http/https)"
     expect(result).toEqual({ ok: true, status: 200 });
     expect(received).toHaveLength(1);
     expect(received[0].headers.host).toBe(`my-webhook-target.example:${port}`);
+  });
+
+  it("F5 round 5: strips the [] from an IPv6 literal URL before resolving, keeps them in Host", async () => {
+    enableSeam();
+    const port = await startServer((_req, res) => {
+      res.writeHead(200);
+      res.end();
+    });
+    // A resolver that rejects a bracketed hostname the way real `dns.lookup` does — proof the bare
+    // address, not the URL literal, reaches resolution.
+    const lookupAll: LookupAllFn = jest.fn(async (hostname) => {
+      if (hostname !== "2606:4700::1111") throw Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" });
+      return [{ address: "127.0.0.1", family: 4 }];
+    });
+
+    const result = await deliverWakeup(
+      { url: `http://[2606:4700::1111]:${port}/hook`, secret: "s", wakeupId: 1, eventId: null, payload: {} },
+      lookupAll
+    );
+
+    expect(lookupAll).toHaveBeenCalledWith("2606:4700::1111", { all: true });
+    expect(result).toEqual({ ok: true, status: 200 });
+    expect(received[0].headers.host).toBe(`[2606:4700::1111]:${port}`);
   });
 
   it("F6: validates the URL on every attempt — a bad stored URL never reaches DNS or the socket", async () => {

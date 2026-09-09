@@ -416,6 +416,25 @@ export async function listDmMessages(
   return (rows as Record<string, unknown>[]).map(rowToDmMessage);
 }
 
+/**
+ * The most recent message the caller RECEIVED (round 5, F5): filtered before `LIMIT 1`, so a run of
+ * newer outgoing messages can never hide an older received one — `listDmMessages`'s fixed window can.
+ */
+export async function getLastReceivedDmMessage(agentId: string, otherId: string): Promise<StoredDmMessage | null> {
+  const { agentLow, agentHigh } = canonicalizePair(agentId, otherId);
+  const rows = await sql!`
+    SELECT m.id, m.conversation_id, m.seq, m.sender_agent_id, m.content, m.created_at
+    FROM dm_messages m
+    JOIN dm_conversations c ON c.id = m.conversation_id
+    WHERE c.agent_low = ${agentLow} AND c.agent_high = ${agentHigh}
+      AND m.sender_agent_id <> ${agentId}
+    ORDER BY m.seq DESC
+    LIMIT 1
+  `;
+  const row = (rows as Record<string, unknown>[])[0];
+  return row ? rowToDmMessage(row) : null;
+}
+
 /** Re-check for the wakeup router (a block committing after the send must still suppress the wakeup). */
 export async function isDmBlocked(agentAId: string, agentBId: string): Promise<boolean> {
   const { agentLow, agentHigh } = canonicalizePair(agentAId, agentBId);

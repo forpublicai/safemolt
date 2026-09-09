@@ -5,6 +5,7 @@ import {
   playgroundActions,
   playgroundSessions,
   pulseBudgetCounters,
+  streamSeqCounters,
   wakeupQueue,
   webhookDeliveries,
 } from "../_memory-state";
@@ -95,6 +96,16 @@ function rows(): StoredWakeup[] {
 }
 
 /**
+ * The memory twin of `db.ts`'s `streamSeqCte`: a per-agent counter, incremented on every
+ * insert/re-arm — unconditional, same reasoning as the db side (a wasted seq is harmless).
+ */
+function nextStreamSeq(agentId: string): number {
+  const next = (streamSeqCounters.get(agentId) ?? 0) + 1;
+  streamSeqCounters.set(agentId, next);
+  return next;
+}
+
+/**
  * The memory twin of the two enqueue-dedup indexes — the ONLY place either predicate is spelled.
  *
  * `idx_wakeups_dedup_event` is `UNIQUE (agent_id, reason, event_id) WHERE event_id IS NOT NULL`: not
@@ -164,24 +175,16 @@ function insertRow(
     leaseExpiresAt: null,
     completedAt: null,
     result: null,
+    streamSeq: nextStreamSeq(input.agentId),
   };
   wakeupQueue.rows.set(row.id, row);
   return row;
 }
 
 /**
- * M11b Lane W (P5.1) — the memory twin of `db.ts`'s `webhookLedgerCte`: a `webhook_deliveries` row
- * rides the SAME synchronous section as the wakeup it belongs to, never a second `await`-separated
- * call. The linear scan is this store's `ON CONFLICT` twin — cheap at memory-mode scale, and the
- * only way to enforce the uniqueness without a second index to keep in sync.
- *
- * F3: eligibility requires a LIVE registration (`disabledAt === null`) for BOTH branches — matching
- * `db.ts`'s `FOR SHARE`-gated read, which the synchronous section stands in for here (no `await`
- * splits the check from the write, so nothing can disable/delete the registration in between).
- *
- * F2: `resetOnRearm` resets a pre-existing (stale, terminal) row instead of leaving it — the memory
- * twin of the db `ON CONFLICT ... DO UPDATE` gated on the re-arm CTE's `RETURNING`. Callers pass it
- * only on the re-arm branch; the fresh-insert branch can never find an existing row for a new id.
+ * The memory twin of `db.ts`'s `webhookLedgerCte`, in the SAME synchronous section as the wakeup —
+ * no `await` splits the eligibility check from the write, standing in for `FOR SHARE`. `resetOnRearm`
+ * resets a stale terminal row only on the re-arm branch, matching the db `ON CONFLICT ... DO UPDATE`.
  */
 function createWebhookLedgerRowIfNeeded(wakeup: StoredWakeup, resetOnRearm = false): void {
   const registration = agentWebhooks.get(wakeup.agentId);
@@ -345,13 +348,20 @@ export async function createOrReArmPlaygroundRoundWakeup(
   return { created: false, reArmed: true };
 }
 
-/** The re-arm UPDATE's SET list, in one place, so both re-arm paths clear the same five columns. */
+/**
+ * The re-arm UPDATE's SET list, in one place, so both re-arm paths clear the same columns.
+ *
+ * A fresh `streamSeq` on re-arm — matching `db.ts`'s `rearmed` arm — is what makes a re-armed row a
+ * NEW event for a replaying client: leaving the old seq would mean a client that already saw it
+ * never replays the reactivation.
+ */
 function clearClaimAndCompletion(row: StoredWakeup): void {
   row.claimedAt = null;
   row.claimToken = null;
   row.leaseExpiresAt = null;
   row.completedAt = null;
   row.result = null;
+  row.streamSeq = nextStreamSeq(row.agentId);
 }
 
 /** See `db.ts`: the normative predicate, by a known numeric id. */

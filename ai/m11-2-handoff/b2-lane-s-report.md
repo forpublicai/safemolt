@@ -156,3 +156,130 @@ No changes were made to `public/*.md`, `public/openapi.json`, `CLAUDE.md`, `agen
   `REQUIRED_MIGRATIONS` list was updated to include `migrate-m11-stream.sql` (a one-line, purely
   additive fix to a smoke-check assertion, not a behavior change).
 - Everything else matches the spec as written; no other deviations.
+
+## 8. Gen-2 section — the gated splice (marker landed 2026-09-08)
+
+`ai/m11-2-handoff/b1-fixes-landed.md` appeared; this session did the remaining handoff §1–4 work
+(the seq CTE, the notification/activity frame CTEs, the school-events frame) plus the two
+integration cases from handoff §6, in a tree with the b1 codex fix loop still actively editing
+`wakeups/*`, `notifications/*` and `activity/events.ts` underneath this work (several transient
+`tsc` errors mid-edit from that concurrent process, all resolved by a retry with no change from
+this session).
+
+### 8.1 Deliverables
+
+| # | Deliverable | Files |
+|---|---|---|
+| 1 | Seq-allocating CTE, both stores | `src/lib/store/wakeups/db.ts` (`streamSeqCte`, `insertWakeupSql`, all 3 insert/re-arm paths, `rowToWakeup`), `src/lib/store/wakeups/memory.ts` (`nextStreamSeq`, wired into `insertRow` and `clearClaimAndCompletion`) |
+| 2 | Frame CTE on all 8 notification insert paths | `src/lib/store/notifications/db.ts` (`notificationFrameCte`, `createNotification`, `insertNotificationFromSelect` + `withFrame` param, `buildFollowNotificationCte`), `src/lib/store/notifications/memory.ts` (`recordNotificationFrame`, wired into `createNotification` and `insertNotificationIdempotentSync` + `withFrame` param) |
+| 3 | Firehose frame on the activity-trail consumer's 7 `apply*` writers | `src/lib/store/activity/events.ts` (`activityFrameCte`, `upsertActivityEventFromSelect` + `emitFrame` param now returning the row id, `buildCommentActivityUpsert` + `emitFrame` option, `memoryUpsertActivityProjection` + `emitFrame` param, all 7 `apply*ActivityFromEvent` call sites) |
+| 4 | School-events route's own firehose frame | `src/app/api/v1/internal/school-events/route.ts` (`frameSchoolEventIngest`; `recordActivityEvent` now returns the written row's id — `string \| null` — instead of `void`, so this route can key its frame without a second read) |
+| 6/8 | Integration tests for the real seq CTE | `src/__tests__/integration/m11-2-b2-stream.test.ts` (new): seq-blocking (real held lock via `raceAgainstHeldLock`), two idle wakeups get distinct seqs, concurrent re-drain of one notification insert writes one frame, school-ingest frames once. The reconciliation-script case from handoff §6 was already covered by `m11-2-b2-stream-migration.test.ts` from gen-1 — not duplicated. |
+| — | New unit test for the memory-mode `emitFrame` gate | `src/__tests__/lib/store/activity/events.test.ts` (`applyPostActivityFromEvent` frames, `recordPostActivityEvent` does not) |
+| 7 | `npm run gen:boundary` re-run | No diff — no new store export needed a boundary entry |
+
+### 8.2 Two real defects found and fixed during this session (both by the required gates, not by inspection)
+
+1. **F1-class regression, wakeups/db.ts**: the first cut of `streamSeqCte` inserted into
+   `agent_stream_counters` unconditionally. That table carries the same
+   `agent_id REFERENCES agents(id) ON DELETE CASCADE` policy `agent_wakeups` does, and the existing
+   F1 withdrawal-race gate (`m11-2-b1-webhooks.test.ts`) caught it immediately: a withdrawal winning
+   the race against `enqueueWakeup` now raised `agent_stream_counters_agent_id_fkey` instead of the
+   pinned "refuses cleanly, no error" outcome. Fixed by gating the counter insert on
+   `EXISTS (SELECT 1 FROM agent_lock)` — the same `agent_lock` CTE `registrationCte` already defines
+   in all three callers.
+2. **A second-order break from fix 1**: gating the counter insert then had to feed `stream_seq` into
+   the wakeup row via `FROM seq`, which — for internal/none delivery, which has NO existing
+   `agent_lock` gate on its own insert — silently suppressed the whole `agent_wakeups` insert instead
+   of letting it fail loud on ITS OWN agent FK for a genuinely unknown agent id (a separate pinned
+   gate, `m11-2-u5-wakeups.test.ts`'s "the agent foreign key" case). Fixed by `LEFT JOIN` on the seq
+   CTE instead of an inner `FROM`, so the wakeup insert still attempts (and still correctly raises)
+   when the counter has nothing, while `stream_seq` degrades to `NULL` in that case. Both gates are
+   green together now; neither regressed the other.
+
+### 8.3 Gate results (exact commands + tails, this session)
+
+```
+npx tsc --noEmit          -> exit 0 (clean; two transient errors mid-session were the concurrent
+                              b1 fix loop editing shared files, both gone on retry with no change here)
+npm run lint               -> 0 errors; same pre-existing complexity warnings on files this lane
+                              touched (school-events POST: 19, activity/events.ts's
+                              readActivityProjectionByKey: 15 and listActivityEventsFromDatabase: 17,
+                              notifications/memory.ts's buildCommentNotification: 16) — none raised
+                              by this session's diff (verified against `git diff` hunks per function)
+npm test -- src/__tests__/lib/store src/__tests__/lib/events src/__tests__/lib/worker \
+  src/__tests__/lib/stream src/__tests__/lib/boundary
+  -> Test Suites: 63 passed, 63 total / Tests: 565 passed, 565 total
+
+npm run test:integration -- src/__tests__/integration/m11-2-b2-stream.test.ts \
+  src/__tests__/integration/m11-2-b1-webhooks.test.ts src/__tests__/integration/m11-2-u5-wakeups.test.ts
+  -> Test Suites: 3 passed, 3 total / Tests: 50 passed, 50 total
+
+npm run gen:boundary       -> "wrote the generated block into .eslintrc.json"; `git diff --stat
+                              .eslintrc.json` empty (no new export needed a boundary entry)
+```
+
+One flake along the way, diagnosed and closed rather than waived: an early combined run of the
+three integration files above showed 5 failures in `m11-2-b1-webhooks.test.ts`, all wrong-wakeup-id
+or wrong-claim-count assertions. Direct inspection of the reserved DB found a genuine orphaned
+`webhook_deliveries`/`agent_wakeups`/`agents` row set from an EARLIER interrupted run in this same
+session (RUN prefix `mtto1fyl_eq8s`, created ~05:36, well before this session's fix — most likely
+stranded by a crash during the pre-fix FK-violation failures in §8.2.1, which cut a test file off
+before its own `afterAll` ran). It was global-scan-visible to `claimNextWebhookDelivery`'s "exactly
+one claimant" gate. It disappeared on its own between two solo re-runs of the same file (almost
+certainly another concurrently-running lane's own webhook `afterAll`, which matches on a `LIKE
+'b1w_agent_%'` prefix broad enough to catch it) — not touched destructively by this session (a
+direct `DELETE` was attempted to confirm the diagnosis and was refused by the environment's own
+safety classifier, which is correct: it is not this session's data to delete by hand). The
+combined 3-file run above, taken AFTER it cleared, is 50/50 green.
+
+### 8.4 Mutation-check evidence (verbatim)
+
+**streamSeqCte's agent_lock gate** (finding 1 above): reverted the gated `SELECT $1, 1 WHERE
+EXISTS (SELECT 1 FROM agent_lock)` to a bare `VALUES ($1, 1)`. The F1 withdrawal-race test failed
+with `NeonDbError: insert or update on table "agent_stream_counters" violates foreign key
+constraint "agent_stream_counters_agent_id_fkey"` — the exact forbidden state. Restored -> green.
+
+**insertWakeupSql's LEFT JOIN on seq** (finding 2 above): reverted `FROM (VALUES (1)) AS one_row
+LEFT JOIN seq ON true` to a plain `FROM seq`. The u5-wakeups "refuses a wakeup for an unknown
+agent" test failed: `Received promise resolved instead of rejected — {"created": false, "wakeup":
+null}` in place of the required FK throw. Restored -> green.
+
+**Notification frame gating** (`insertNotificationFromSelect`'s `withFrame`): forced `frameCte` to
+`""` unconditionally. The new `m11-2-b2-stream.test.ts` "concurrent re-drain... writes exactly one
+frame" test failed: `Expected length: 1 / Received length: 0`. Restored -> green.
+
+**School-events frame key** (`frameSchoolEventIngest`): appended `${Math.random()}` to the frame
+key. The new "re-ingesting the same (kind, entity_id) frames the firehose once" test failed the
+same way (`Expected length: 1 / Received length: 0`, since the fixed-key lookup no longer matched
+either randomized row). Restored -> green.
+
+**Activity emitFrame gate** (`memoryUpsertActivityProjection`): short-circuited `if (emitFrame)` to
+`if (false && emitFrame)`. The new `events.test.ts` case "applyPostActivityFromEvent... records one
+firehose frame" failed: `Expected length: 1 / Received length: 0`. The paired case (the legacy
+writer never frames) stayed green throughout, confirming it does not depend on the mutated branch.
+Restored -> green.
+
+### 8.5 Docs delta addition (for the docs agent, beyond gen-1's four texts)
+
+**CLAUDE.md invariant, one bullet, to sit beside gen-1's `stream_seq` bullet:**
+> **A notification/activity frame rides the SAME statement as the write it announces, gated on that
+> write's own success — never a second unconditional call.** `notification:{dedup_key or id}` and
+> `activity:firehose:{drained event id}` are the two frame-key shapes; both use `ON CONFLICT
+> (frame_key) DO NOTHING` for at-least-once safety, but the real guarantee is structural: the frame
+> CTE selects `FROM` the write's own result CTE, so a write that no-ops (a duplicate, a refused
+> target) can never leave an orphaned frame behind it. `agent.followed`'s consumer-side idempotent
+> writer and its playground-eventless sibling are the one documented exception — the decisive
+> statement's own CTE (`buildFollowNotificationCte`) already carries the frame, so these paths stay
+> unframed on purpose (see `insertNotificationFromSelect`'s `withFrame` doc comment).
+
+### 8.6 Known gap, out of this lane's enumerated scope (recorded, not fixed)
+
+`agent.followed` frames only via `buildFollowNotificationCte`, the decisive statement spliced into
+`followAgent`'s own transaction — matching the handoff's literal "eight insert paths" list, which
+excludes `createFollowNotificationIdempotent`. In DB mode this is provably harmless (the CTE always
+wins the dedup race for a real, event-carrying follow). In MEMORY mode there is no separate CTE
+splice at all — `followAgent`'s own inline call IS `createFollowNotificationIdempotent`, so a
+memory-mode follow notification never carries a firehose frame today. Flagged rather than fixed:
+the handoff's enumerated 8 paths deliberately did not include this function in either store, and
+inventing a memory-only exception would break store parity in the other direction.

@@ -17,6 +17,7 @@ import {
   playgroundSessions,
   posts,
 } from "../_memory-state";
+import { recordStreamFrame } from "../stream/memory";
 
 export interface ActivityEventInput {
   kind: StoredActivityFeedKind;
@@ -187,37 +188,62 @@ function actorCanonicalSql(idExpr: string): string {
 }
 
 /**
+ * M11b Lane S (P5.2) — the firehose frame CTE, appended only by the CONSUMER's public `apply*`
+ * writers (never a legacy inline writer, some of which also stamp `sourceEventParam` for the
+ * transitional correlation but carry no frame). Keyed on the DRAINED EVENT's id, not the row's, so
+ * a retried drain of the same event cannot double the firehose; `ref_id` is the row's own id, which
+ * `isFirehoseActorHidden` needs to re-read the actor.
+ */
+function activityFrameCte(insertCteName: string, sourceEventParam: string): string {
+  return `activity_frame AS (
+    INSERT INTO stream_frames (agent_id, frame, ref_id, frame_key)
+    SELECT NULL, 'activity', row.id, ('activity:firehose:' || ${sourceEventParam}::text)
+    FROM ${insertCteName} row
+    ON CONFLICT (frame_key) DO NOTHING
+  )`;
+}
+
+/**
  * Run one idempotent activity-event upsert whose row is produced by
  * `selectSql` (a SELECT projecting exactly the shared column list), then
  * invalidate the event's cached contexts.
  */
+/** Returns the row's own `id` when the upsert wrote, or `null` — school-events ingestion (P5.2) needs it to key its own firehose frame. */
 async function upsertActivityEventFromSelect(
   kind: StoredActivityFeedKind,
   entityId: string,
   selectSql: string,
   params: unknown[],
-  sourceEventParam: string | null = null
-): Promise<void> {
+  sourceEventParam: string | null = null,
+  emitFrame = false
+): Promise<string | null> {
+  const frameCte = emitFrame && sourceEventParam ? `,\n${activityFrameCte("ins", sourceEventParam)}` : "";
   const rows = await sql!(
     `
-      INSERT INTO activity_events (
-        ${activityEventColumns(sourceEventParam !== null)}
-      )
-      ${selectSql}
-      ${activityEventOnConflict(sourceEventParam)}
-      RETURNING entity_id
+      WITH ins AS (
+        INSERT INTO activity_events (
+          ${activityEventColumns(sourceEventParam !== null)}
+        )
+        ${selectSql}
+        ${activityEventOnConflict(sourceEventParam)}
+        RETURNING entity_id, id
+      )${frameCte}
+      SELECT * FROM ins
     `,
     params
   );
+  const row = rows[0] as { entity_id: unknown; id: unknown } | undefined;
   // **Only when the upsert actually wrote.** Two ways it writes nothing, and the cache must survive
   // both: the locked target was empty (the subject is gone, and `deletePost` already removed its
   // contexts), or the monotonic guard REFUSED a stale older event — in which case the row on disk
   // belongs to a newer event, and blowing away its cached contexts would make a late arrival
   // silently discard work that is still current.
-  if (rows.length > 0) await deleteCachedActivityContextsForEvent(kind, entityId);
+  if (!row) return null;
+  await deleteCachedActivityContextsForEvent(kind, entityId);
+  return String(row.id);
 }
 
-async function recordActivityEventInDatabase(input: ActivityEventInput): Promise<void> {
+async function recordActivityEventInDatabase(input: ActivityEventInput): Promise<string | null> {
   // `post` and `comment` have DEDICATED writers, and the reason is the liveness lock: this generic
   // path takes pre-built fields and cannot prove the post is still live, so writing one of those
   // kinds through it would recreate exactly the dead link `deletePost` removes (M11-1b D1). Refuse
@@ -228,7 +254,7 @@ async function recordActivityEventInDatabase(input: ActivityEventInput): Promise
       `recordActivityEvent cannot write '${input.kind}' events: use recordPostActivityEvent or buildCommentActivityUpsert, which gate on a live post`
     );
   }
-  await upsertActivityEventFromSelect(
+  return upsertActivityEventFromSelect(
     input.kind,
     input.entityId,
     `
@@ -257,17 +283,25 @@ function recordActivityEventInMemory(input: ActivityEventInput): void {
   activityEvents.set(activityEventKey(input.kind, input.entityId), inputToStoredEvent(input));
 }
 
-/** Best-effort projection write: entity writes remain authoritative if this fails. */
-export async function recordActivityEvent(input: ActivityEventInput): Promise<void> {
+/**
+ * Best-effort projection write: entity writes remain authoritative if this fails.
+ *
+ * Returns the row's identifier — the db row's own `id`, or (memory mode has no separate row id)
+ * the entity id itself, matching what `lookupActorIdFromMemory` keys on — or `null` on failure, so
+ * the one external caller (`school-events` ingestion, P5.2) can key its own firehose frame's
+ * `ref_id` without a second read.
+ */
+export async function recordActivityEvent(input: ActivityEventInput): Promise<string | null> {
   try {
     if (hasDatabase()) {
-      await recordActivityEventInDatabase(input);
-      return;
+      return await recordActivityEventInDatabase(input);
     }
     recordActivityEventInMemory(input);
     await deleteCachedActivityContextsForEvent(input.kind, input.entityId);
+    return input.entityId;
   } catch (error) {
     console.error("[activity-events] failed to record activity event", error, "input:", input);
+    return null;
   }
 }
 
@@ -530,7 +564,7 @@ export function buildCommentActivityUpsertCte(options: {
 
 export function buildCommentActivityUpsert(
   input: CommentActivityInput,
-  options: { requireCommitted?: boolean; sourceEventId?: number } = {}
+  options: { requireCommitted?: boolean; sourceEventId?: number; emitFrame?: boolean } = {}
 ): { text: string; params: unknown[] } {
   // Batch elements always execute, so a caller carrying this inside a transaction whose comment
   // insert may write nothing must gate it on the comment row existing. `requireCommitted` adds
@@ -540,14 +574,20 @@ export function buildCommentActivityUpsert(
   // gone by consume time) and it stamps `source_event_id` so a late older event cannot drag the
   // projection backward. `$7` is free because the params below occupy $1..$6.
   const sourceEventParam = options.sourceEventId === undefined ? null : "$7";
+  // `emitFrame` only ever accompanies the consumer's own call (`applyCommentActivityFromEvent`) —
+  // see `activityFrameCte`'s doc comment for why a legacy correlation stamp alone is not enough.
+  const frameCte = options.emitFrame && sourceEventParam ? `,\n${activityFrameCte("ins", sourceEventParam)}` : "";
   return {
     text: `
-      INSERT INTO activity_events (
-        ${activityEventColumns(sourceEventParam !== null)}
-      )
-      ${commentActivitySelectSql(options)}
-      ${activityEventOnConflict(sourceEventParam)}
-      RETURNING entity_id
+      WITH ins AS (
+        INSERT INTO activity_events (
+          ${activityEventColumns(sourceEventParam !== null)}
+        )
+        ${commentActivitySelectSql(options)}
+        ${activityEventOnConflict(sourceEventParam)}
+        RETURNING entity_id, id
+      )${frameCte}
+      SELECT * FROM ins
     `,
     params: commentActivityParams(input, options.sourceEventId),
   };
@@ -1310,13 +1350,14 @@ export async function applyPlaygroundSessionActivityFromEvent(
       ACTIVITY_CONSUMER_RACE_MARKER +
         playgroundSessionActivitySelectSql({ sourceEventSql: "$2", lockSession: true }),
       [sessionId, sourceEventId],
-      "$2"
+      "$2",
+      true
     );
     return;
   }
   const built = buildMemoryPlaygroundSessionActivityInput(sessionId);
   if (!built) return;
-  if (memoryUpsertActivityProjection(built, sourceEventId)) {
+  if (memoryUpsertActivityProjection(built, sourceEventId, true)) {
     await deleteCachedActivityContextsForEvent("playground_session", sessionId);
   }
 }
@@ -1345,13 +1386,14 @@ export async function applyPlaygroundActionActivityFromEvent(
       ACTIVITY_CONSUMER_RACE_MARKER +
         playgroundActionActivitySelectSql({ sourceEventSql: "$2", lockAction: true }),
       [actionId, sourceEventId],
-      "$2"
+      "$2",
+      true
     );
     return;
   }
   const built = buildMemoryPlaygroundActionActivityInput(actionId);
   if (!built) return;
-  if (memoryUpsertActivityProjection(built, sourceEventId)) {
+  if (memoryUpsertActivityProjection(built, sourceEventId, true)) {
     await deleteCachedActivityContextsForEvent("playground_action", actionId);
   }
 }
@@ -1832,11 +1874,29 @@ export async function describeFollowActivityProjection(
  * `?? 0` mirrors the SQL's `COALESCE(…, 0)`: a row an inline writer created carries no source id
  * and yields to any event. `<=` rather than `<`, so re-consuming the same event still converges.
  */
-function memoryUpsertActivityProjection(input: ActivityEventInput, sourceEventId: number): boolean {
+/**
+ * `emitFrame` is true only from the CONSUMER's `apply*` writers (see `activityFrameCte`'s db twin)
+ * — a legacy inline writer passing a source event id for the transitional correlation stamp does
+ * not also get a firehose frame. `frame_key` is keyed on the DRAINED EVENT, matching the db side,
+ * so a retried drain of the same event cannot double the firehose.
+ */
+function memoryUpsertActivityProjection(
+  input: ActivityEventInput,
+  sourceEventId: number,
+  emitFrame = false
+): boolean {
   const key = activityEventKey(input.kind, input.entityId);
   if (activityEvents.has(key) && (activityEventSourceIds.get(key) ?? 0) > sourceEventId) return false;
   activityEvents.set(key, inputToStoredEvent(input));
   activityEventSourceIds.set(key, sourceEventId);
+  if (emitFrame) {
+    void recordStreamFrame({
+      agentId: null,
+      frame: "activity",
+      refId: input.entityId,
+      frameKey: `activity:firehose:${sourceEventId}`,
+    });
+  }
   return true;
 }
 
@@ -1859,13 +1919,14 @@ export async function applyPostActivityFromEvent(
       input.id,
       ACTIVITY_CONSUMER_RACE_MARKER + postActivitySelectSql("$8"),
       [...postActivityParams(input), sourceEventId],
-      "$8"
+      "$8",
+      true
     );
     return;
   }
   const built = buildMemoryPostActivityInput(input);
   if (!built) return;
-  if (memoryUpsertActivityProjection(built, sourceEventId)) {
+  if (memoryUpsertActivityProjection(built, sourceEventId, true)) {
     await deleteCachedActivityContextsForEvent("post", input.id);
   }
 }
@@ -1877,14 +1938,14 @@ export async function applyCommentActivityFromEvent(
   if (hasDatabase()) {
     // `requireCommitted` is the consumer's own liveness half: the comment row must still exist, and
     // the post join beside it takes the lock. A comment whose post was deleted matches neither.
-    const prepared = buildCommentActivityUpsert(input, { requireCommitted: true, sourceEventId });
+    const prepared = buildCommentActivityUpsert(input, { requireCommitted: true, sourceEventId, emitFrame: true });
     const rows = await sql!(prepared.text, prepared.params);
     if (rows.length > 0) await deleteCachedActivityContextsForEvent("comment", input.id);
     return;
   }
   const built = buildMemoryCommentActivityInput(input);
   if (!built || !comments.has(input.id)) return;
-  if (memoryUpsertActivityProjection(built, sourceEventId)) {
+  if (memoryUpsertActivityProjection(built, sourceEventId, true)) {
     await deleteCachedActivityContextsForEvent("comment", input.id);
   }
 }
@@ -1899,13 +1960,14 @@ export async function applyFollowActivityFromEvent(
       followActivityEntityId(input),
       followActivitySelectSql({ lockFollowee: true, sourceEventParam: "$7" }),
       [...followActivityParams(input), sourceEventId],
-      "$7"
+      "$7",
+      true
     );
     return;
   }
   const built = buildMemoryFollowActivityInput(input);
   if (!built) return;
-  if (memoryUpsertActivityProjection(built, sourceEventId)) {
+  if (memoryUpsertActivityProjection(built, sourceEventId, true)) {
     await deleteCachedActivityContextsForEvent("follow", followActivityEntityId(input));
   }
 }
@@ -2128,13 +2190,14 @@ export async function applyGroupJoinActivityFromEvent(
       groupJoinActivityEntityId(input),
       ACTIVITY_CONSUMER_RACE_MARKER + groupJoinActivitySelectSql({ lockGroup: true, sourceEventParam: "$7" }),
       [...groupJoinActivityParams(input), sourceEventId],
-      "$7"
+      "$7",
+      true
     );
     return;
   }
   const built = buildMemoryGroupJoinActivityInput(input);
   if (!built) return;
-  if (memoryUpsertActivityProjection(built, sourceEventId)) {
+  if (memoryUpsertActivityProjection(built, sourceEventId, true)) {
     await deleteCachedActivityContextsForEvent("group_join", groupJoinActivityEntityId(input));
   }
 }
@@ -2234,7 +2297,8 @@ export async function applyAgentLoopActivityFromEvent(
     logId,
     ACTIVITY_CONSUMER_RACE_MARKER + agentLoopActivitySelectSql({ sourceEventSql: "$2", lockLog: true }),
     [logId, sourceEventId],
-    "$2"
+    "$2",
+    true
   );
 }
 

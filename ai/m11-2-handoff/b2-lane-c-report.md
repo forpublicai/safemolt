@@ -161,3 +161,89 @@ internal implementation detail with no user-visible contract change.
   content required judgment (which "still-relevant" items to fold in, how to phrase the SafeMolt
   tooling equivalents) — safer to make those calls directly than to hand a Haiku agent open-ended
   judgment calls over planning prose.
+
+## 8. Gen-2 — P7.1, marker present, re-verified: still zero deletions
+
+`ai/m11-2-handoff/b1-fixes-landed.md` now exists ("b-1 round-4 fixes committed; lanes S and C may
+now edit the wakeup store, the notification writers, the consumers, the runner and the tool
+definitions"). Gen-1's handoff named three checks to re-run before deleting anything. All three
+were re-run against the current tree, post-fix-loop, and every one reconfirms gen-1's finding —
+**no code was deleted this session.**
+
+### Re-verification, line by line
+
+1. **Tool executors (`src/lib/agent-tools/definitions/*`, all 12 files).** Grepped every file's
+   `@/lib/store` import (multi-line imports expanded) — every imported name still starts with
+   `get`/`list`/`is` (e.g. `getAgentByName`, `listClasses`, `isFollowing`). Grepped every file's
+   `@/lib/actions/*` import — all ten mutating executors (agents, classes, comments, evaluations,
+   groups, messages, playground, posts, reactions; announcements/memory/schools have no mutations)
+   call an action, never a store mutator directly. `messages.ts` and `reactions.ts` — the b-1 fix
+   loop's two active files — were checked first as instructed: `messages.ts` imports only
+   `listDmConversations`/`listDmMessages` from the store and `sendDm`/etc. from
+   `@/lib/actions/dms`; `reactions.ts` imports nothing from `@/lib/store` at all, only
+   `addReaction`/`removeReaction` from `@/lib/actions/reactions`. No mutating store import was
+   reintroduced anywhere. Nothing to delete.
+2. **`listEligibleAgents` / batch plumbing (`agent-loop.ts` line 181, `runAgentLoopBatch` line
+   1140).** Re-read both files' current headers. `runAgentLoopBatch` is still the documented
+   "DEGRADED wrapper": in db mode it defers to `worker/idle-scheduler.ts`'s SQL scan, and in
+   memory mode (no `hasDatabase()`) it still calls `listEligibleAgents` as `runIdleSweep`'s
+   documented memory twin, then enqueues an idle wakeup per id via `enqueueIdleWakeup` — this is
+   exactly the "batch plumbing... required by the degraded wrapper" the spec says to keep, not
+   dead code. `runner.ts`'s header (re-read, since the b-1 fix loop edits this file directly)
+   still states the `idle` reason "is dispatched to the EXISTING `tickAgent`" as the "loop-surface
+   minimal resolver" — the division of labor named in gen-1's handoff has not moved. Nothing to
+   delete.
+3. **Loop-side gatherers duplicating `agent-senses` (P4.3).** Grepped `agent-loop.ts` for any
+   local feed/context-gathering function — none exists; `buildAgentContext` (imported from
+   `@/lib/agent-senses`) is called once, at line 965, inside `tickAgent`. Repo-wide grep for
+   `buildAgentContext` callers outside `agent-senses/*` itself: `agent-loop.ts`,
+   `agent-pulse/runner.ts`, `agents/me/context/route.ts`, `agent-home/service.ts` — the same four
+   call sites gen-1 found, all consuming the one builder, none duplicating it. Nothing to delete.
+4. **Coverage-state table (inventory §9, `src/lib/events/consumers/coverage.ts`).** Re-checked
+   every kind across `notificationsCoverage`, `activityTrailCoverage`, `memoryIngestCoverage` —
+   still `shadow`/`legacy`/`none` throughout, none flipped to `on`. (`wakeupRouterCoverage` shows
+   `comment.created: "on"`, but that manifest belongs to Lane S's fence — `wakeup-router.ts` is on
+   this lane's DO-NOT-TOUCH list — and it is not "on" in the other three consumers anyway, so the
+   rule's "on in every consumer that declares one" is not met even if it were in scope.) Per
+   `CLAUDE.md`'s store invariant, every declared legacy writer stays. Nothing to delete, and none
+   of the writer sites live in this lane's three gated files regardless.
+
+### Line counts (before = after — no deletions made)
+
+| File | Lines |
+|---|---|
+| `src/lib/agent-loop.ts` | 1178 |
+| `src/lib/agent-pulse/runner.ts` | 601 |
+| `src/lib/agent-tools/definitions/*` (12 files) | 4303 total |
+
+### Gate results (gen-2)
+
+```
+$ npx tsc --noEmit
+(clean, no output)
+
+$ npm run lint
+0 errors — pre-existing complexity warnings only, none in agent-loop.ts / runner.ts /
+agent-tools/definitions/*
+
+$ npm test -- src/__tests__/lib/agent-loop-tools.test.ts src/__tests__/lib/agent-loop-prompt.test.ts \
+  src/__tests__/lib/agent-pulse src/__tests__/lib/agent-tools src/__tests__/lib/agent-senses \
+  src/__tests__/lib/boundary src/__tests__/lib/group-school-gate.test.ts
+Test Suites: 22 passed, 22 total
+Tests:       154 passed, 154 total
+
+$ npm run gen:boundary && git status --short .eslintrc.json
+gen-eslint-boundary: wrote the generated block into .eslintrc.json
+(no output — file unchanged, already at the permanent set)
+```
+
+### Conclusion
+
+P7.1 remains fully blocked from making any deletion, not by the marker (which is now present) but
+because every candidate site named in the plan is either already an adapter (tool executors),
+already required by the degraded wrapper (`listEligibleAgents`), already de-duplicated (P4.3), or
+still pinned `shadow`/`legacy` in coverage (out of this lane's three files regardless). No files
+were modified this session. `git status` shows no lane-C files touched. This lane's P7.1 work is
+complete as a verification pass; a future run should re-check the coverage table only if a
+consumer flip to `on` is recorded for a kind whose legacy writer lives in one of this lane's three
+files (none do today).

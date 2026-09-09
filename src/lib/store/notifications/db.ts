@@ -1,5 +1,5 @@
 import { sql } from "@/lib/db";
-import { TEST_NAME_PATTERN } from "@/lib/agent-public";
+import { HIDDEN_AGENT_PREDICATE } from "../agent-visibility-sql";
 import type { StoredNotification } from "@/lib/store-types";
 import { NOTIFICATION_TITLE_MAX } from "./memory";
 import type {
@@ -33,23 +33,53 @@ function rowToNotification(row: Record<string, unknown>): StoredNotification {
   };
 }
 
+/**
+ * M11b Lane S (P5.2) — the frame CTE every notification insert path appends, riding the SAME
+ * statement as its insert (never a second call: an at-least-once retry must see one frame, not
+ * two). `frame_key` reuses `dedup_key` when the row has one (already `{type}:{recipient}:
+ * {event_id}`, Decision 6) — unique and idempotent for free — and falls back to the row's own id
+ * for the transitional inline writers that pass no dedup key.
+ */
+function notificationFrameCte(insertCteName: string, namePrefix: string): string {
+  return `${namePrefix} AS (
+    INSERT INTO stream_frames (agent_id, frame, ref_id, frame_key)
+    SELECT n.agent_id, 'notification', n.id, ('notification:' || COALESCE(n.dedup_key, n.id))
+    FROM ${insertCteName} n
+    ON CONFLICT (frame_key) DO NOTHING
+  )`;
+}
+
 export async function createNotification(input: CreateNotificationInput): Promise<StoredNotification> {
   const id = `notif_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
   const createdAt = input.createdAt ?? new Date().toISOString();
-  const rows = await sql!`
-    INSERT INTO notifications (
-      id, agent_id, type, priority, created_at, read_at, actor, target, href, web_url, deadline_at, metadata
-    ) VALUES (
-      ${id}, ${input.agentId}, ${input.type}, ${input.priority}, ${createdAt}::timestamptz, NULL,
-      ${JSON.stringify(input.actor)}::jsonb,
-      ${JSON.stringify(input.target)}::jsonb,
-      ${input.href},
-      ${input.webUrl ?? null},
-      ${input.deadlineAt ?? null}::timestamptz,
-      ${JSON.stringify(input.metadata ?? {})}::jsonb
-    )
-    RETURNING *
-  `;
+  // Function-call form, not the tagged template: the frame CTE is SQL TEXT spliced in, and the tag
+  // form would bind it as a parameter value instead of inlining it as syntax.
+  const rows = await sql!(
+    `WITH ins AS (
+      INSERT INTO notifications (
+        id, agent_id, type, priority, created_at, read_at, actor, target, href, web_url, deadline_at, metadata
+      ) VALUES (
+        $1, $2, $3, $4, $5::timestamptz, NULL,
+        $6::jsonb, $7::jsonb, $8, $9, $10::timestamptz, $11::jsonb
+      )
+      RETURNING *
+    ),
+    ${notificationFrameCte("ins", "frame")}
+    SELECT * FROM ins`,
+    [
+      id,
+      input.agentId,
+      input.type,
+      input.priority,
+      createdAt,
+      JSON.stringify(input.actor),
+      JSON.stringify(input.target),
+      input.href,
+      input.webUrl ?? null,
+      input.deadlineAt ?? null,
+      JSON.stringify(input.metadata ?? {}),
+    ]
+  );
   return rowToNotification(rows[0] as Record<string, unknown>);
 }
 
@@ -204,7 +234,9 @@ export function buildFollowNotificationCte(options: {
     LEFT JOIN agents actor ON actor.id = f.follower_id
     CROSS JOIN ${options.sourceEventCte} ev
     ON CONFLICT (dedup_key) DO NOTHING
-  )`;
+    RETURNING id, agent_id, dedup_key
+  ),
+  ${notificationFrameCte(prefix, `${prefix}_frame`)}`;
 }
 
 function followNotificationParams(input: FollowNotificationInput, id: string): unknown[] {
@@ -268,16 +300,26 @@ function playgroundRoundOpenParams(
  */
 const NOTIFICATION_CONSUMER_RACE_MARKER = "/* race:m11-2-notification-locked-target */";
 
+/**
+ * `withFrame` is false only for the follow writer: its decisive-statement CTE
+ * (`buildFollowNotificationCte`) already carries the frame, so this call — the consumer's shadow
+ * attempt at the SAME dedup_key — only ever conflicts and writes nothing when it runs after that.
+ */
 async function insertNotificationFromSelect(
   selectSql: string,
-  params: unknown[]
+  params: unknown[],
+  withFrame = true
 ): Promise<StoredNotification | null> {
+  const frameCte = withFrame ? `,\n${notificationFrameCte("ins", "frame")}` : "";
   const rows = await sql!(
     `${NOTIFICATION_CONSUMER_RACE_MARKER}
-     INSERT INTO notifications (${NOTIFICATION_COLUMNS})
-     ${selectSql}
-     ON CONFLICT (dedup_key) DO NOTHING
-     RETURNING *`,
+     WITH ins AS (
+       INSERT INTO notifications (${NOTIFICATION_COLUMNS})
+       ${selectSql}
+       ON CONFLICT (dedup_key) DO NOTHING
+       RETURNING *
+     )${frameCte}
+     SELECT * FROM ins`,
     params
   );
   const row = rows[0] as Record<string, unknown> | undefined;
@@ -404,7 +446,8 @@ export async function createFollowNotificationIdempotent(
 ): Promise<StoredNotification | null> {
   return insertNotificationFromSelect(
     FOLLOW_NOTIFICATION_SELECT,
-    followNotificationParams(input, generateNotificationId())
+    followNotificationParams(input, generateNotificationId()),
+    false
   );
 }
 
@@ -545,47 +588,51 @@ export async function createReactionNotificationIdempotent(
 }
 
 /**
- * M11b lane M (P6.1) — the `mention` row, as a SELECT whose FROM locks the LIVE POST `FOR SHARE`,
- * then a comment source (if any) `FOR SHARE` re-verifying its `post_id` (codex round 4 F1 — an
- * author withdrawal that removes the comment mid-drain must leave no dead-link notification), then
- * the recipient `FOR SHARE` (codex round 4 F2 — not `FOR KEY SHARE`, which an ordinary metadata
- * update's own `FOR NO KEY UPDATE` does not conflict with, so visibility could change underneath
- * it), gated on CURRENT visibility comparing JSON booleans as booleans, not text (round 3 F2, round
- * 4 F3 — a string `"true"` must not read as hidden). Lock order posts -> comment -> agents.
- * `JOIN`/`ON ($6 IS NULL OR c.id IS NOT NULL)` is the gate: no post, or a named comment that is
- * gone or points elsewhere, or no visible recipient — no row.
- *
- * Query text kept terse ON PURPOSE: `track_activity_query_size` (Postgres default 1024 bytes)
- * truncates `pg_stat_activity.query`, and a race test's `contenderMarker` must survive that cutoff.
- *
- * `$1 id, $2 dedup_key, $3 recipient, $4 actor, $5 post_id, $6 comment_id, $7 href, $8 created_at`.
+ * The `mention` row: three ORDERED statements — post `FOR SHARE`, then a comment source (if any)
+ * `FOR SHARE` re-verifying `post_id`, then the recipient `FOR SHARE` (shared visibility) plus the
+ * idempotent insert — because one statement's independent subqueries let the planner lock them in
+ * any order (round 5 F1). Statement 3 re-takes all three locks for free and alone decides the row.
+ * Terse text: `pg_stat_activity.query` truncates at 1024 bytes and a race marker must survive it.
  */
-const MENTION_NOTIFICATION_SELECT = `
-      SELECT $1::text, target.id, 'mention'::text, 'normal'::text, $8::timestamptz, NULL::timestamptz,
-        jsonb_build_object('id', $4::text, 'name', COALESCE(actor.name, $4::text), 'display_name', actor.display_name),
-        jsonb_build_object('type', 'post', 'id', $5::text, 'title', COALESCE(p.title, 'Post')),
-        $7::text,
-        NULL::text, NULL::timestamptz,
-        jsonb_strip_nulls(jsonb_build_object('post_id', $5::text, 'comment_id', $6::text)),
-        $2::text
-      FROM (
-        /* race:b1m-mention-post-lock */ SELECT id, title FROM posts WHERE id = $5::text AND deleted_at IS NULL FOR SHARE
-      ) p
-      LEFT JOIN (
+const MENTION_POST_LOCK_STATEMENT = `/* race:b1m-mention-post-lock */ SELECT id FROM posts WHERE id = $1::text AND deleted_at IS NULL FOR SHARE`;
+
+const MENTION_COMMENT_LOCK_STATEMENT = `/* race:b1m-mention-comment-lock */ SELECT id FROM comments WHERE id = $1::text AND post_id = $2::text FOR SHARE`;
+
+/** `$1 id, $2 dedup_key, $3 recipient, $4 actor, $5 post_id, $6 comment_id, $7 href, $8 created_at`. */
+const MENTION_INSERT_STATEMENT = `
+      WITH p AS (
+        SELECT id, title FROM posts WHERE id = $5::text AND deleted_at IS NULL FOR SHARE
+      ),
+      c AS (
         SELECT id FROM comments WHERE id = $6::text AND post_id = $5::text FOR SHARE
-      ) c ON true
-      JOIN (
+      ),
+      target AS (
         /* race:b1m-mention-recipient-lock */ SELECT id, name FROM agents
-        WHERE id = $3::text
-          AND NOT ((metadata->'system') IS NOT DISTINCT FROM 'true'::jsonb OR (metadata->'test') IS NOT DISTINCT FROM 'true'::jsonb
-                   OR (metadata->>'source') IS NOT DISTINCT FROM 'test' OR name ~* '${TEST_NAME_PATTERN.source}')
+        WHERE id = $3::text AND ${HIDDEN_AGENT_PREDICATE}
         FOR SHARE
-      ) target ON true
-      LEFT JOIN agents actor ON actor.id = $4::text
-      WHERE $6::text IS NULL OR c.id IS NOT NULL
+      ),
+      ins AS (
+        INSERT INTO notifications (${NOTIFICATION_COLUMNS})
+        SELECT $1::text, target.id, 'mention'::text, 'normal'::text, $8::timestamptz, NULL::timestamptz,
+          jsonb_build_object('id', $4::text, 'name', COALESCE(actor.name, $4::text), 'display_name', actor.display_name),
+          jsonb_build_object('type', 'post', 'id', $5::text, 'title', COALESCE(p.title, 'Post')),
+          $7::text,
+          NULL::text, NULL::timestamptz,
+          jsonb_strip_nulls(jsonb_build_object('post_id', $5::text, 'comment_id', $6::text)),
+          $2::text
+        FROM p
+        JOIN target ON true
+        LEFT JOIN c ON true
+        LEFT JOIN agents actor ON actor.id = $4::text
+        WHERE $6::text IS NULL OR c.id IS NOT NULL
+        ON CONFLICT (dedup_key) DO NOTHING
+        RETURNING *
+      ),
+      ${notificationFrameCte("ins", "frame")}
+      SELECT * FROM ins
     `;
 
-function mentionNotificationParams(input: MentionNotificationInput, id: string): unknown[] {
+function mentionInsertParams(input: MentionNotificationInput, id: string): unknown[] {
   const href = input.commentId
     ? `/post/${input.postId}#comment-${input.commentId}`
     : `/post/${input.postId}`;
@@ -604,10 +651,14 @@ function mentionNotificationParams(input: MentionNotificationInput, id: string):
 export async function createMentionNotificationIdempotent(
   input: MentionNotificationInput
 ): Promise<StoredNotification | null> {
-  return insertNotificationFromSelect(
-    MENTION_NOTIFICATION_SELECT,
-    mentionNotificationParams(input, generateNotificationId())
-  );
+  const params = mentionInsertParams(input, generateNotificationId());
+  const results = await sql!.transaction((txn) => [
+    txn(MENTION_POST_LOCK_STATEMENT, [input.postId]),
+    ...(input.commentId ? [txn(MENTION_COMMENT_LOCK_STATEMENT, [input.commentId, input.postId])] : []),
+    txn(MENTION_INSERT_STATEMENT, params),
+  ]);
+  const row = (results[results.length - 1] as Record<string, unknown>[])[0];
+  return row ? rowToNotification(row) : null;
 }
 
 export async function describeCommentNotification(

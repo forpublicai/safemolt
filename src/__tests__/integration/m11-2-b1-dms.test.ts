@@ -113,8 +113,11 @@ async function withHeldPairRow<T>(
   body: (pid: number) => Promise<T>
 ): Promise<T> {
   const client = await pgClient();
-  const pid = await pidOf(client);
+  // Round 5, F3: pid read AFTER `BEGIN` — a pooled endpoint may hand a different backend to the
+  // session before its transaction starts, and the lock (and any later wait) belongs to the pid
+  // that holds it, not to whichever backend answered before `BEGIN`.
   await client.query("BEGIN");
+  const pid = await pidOf(client);
   await client.query(
     `SELECT id FROM dm_conversations WHERE agent_low = $1 AND agent_high = $2 FOR NO KEY UPDATE`,
     [agentLow, agentHigh]
@@ -147,15 +150,48 @@ async function waitForContenderBehind(
   throw new Error(`no backend blocked by pid ${blockerPid} within ${timeoutMs}ms`);
 }
 
-/** Like `waitForContenderBehind`, but waits for `count` distinct backends behind `blockerPid`. */
-async function waitForContenderCountBehind(blockerPid: number, count: number, timeoutMs = 5000): Promise<number[]> {
+/**
+ * Every backend that is blocked, and by whom — unfiltered, for the transitive check below. Postgres
+ * reports only the IMMEDIATE blocker(s) via `pg_blocking_pids`, and two contenders kicked off
+ * concurrently race for which one becomes the other's immediate blocker (round 5, F2: unlike the
+ * staged tests elsewhere in this file, these two are not sequenced against each other) — so the
+ * caller must walk the chain rather than assume either contender blocks on `rootPid` directly.
+ */
+async function blockedBackends(): Promise<Map<number, number[]>> {
+  const { rows } = await pgPool().query<{ pid: number; blockers: number[] }>(
+    `SELECT pid, pg_blocking_pids(pid) AS blockers
+     FROM pg_stat_activity
+     WHERE datname = current_database() AND pid <> pg_backend_pid() AND cardinality(pg_blocking_pids(pid)) > 0`
+  );
+  return new Map(rows.map((r) => [r.pid, r.blockers]));
+}
+
+/** Does `pid`'s blocker chain reach `rootPid`, walking through any number of intermediate waiters? */
+function chainReaches(graph: Map<number, number[]>, pid: number, rootPid: number, seen = new Set<number>()): boolean {
+  if (seen.has(pid)) return false;
+  seen.add(pid);
+  const blockers = graph.get(pid) ?? [];
+  return blockers.includes(rootPid) || blockers.some((b) => chainReaches(graph, b, rootPid, seen));
+}
+
+/**
+ * Wait until at least `count` DISTINCT backends (other than `excludePids`) are transitively blocked
+ * by `rootPid` — never assuming a fixed chain order between two contenders started concurrently.
+ */
+async function waitUntilCountTransitivelyBlockedBy(
+  rootPid: number,
+  count: number,
+  excludePids: number[],
+  timeoutMs = 5000
+): Promise<number[]> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const waiters = await waitersOn(blockerPid, PAIR_LOCK_MARKER);
-    if (waiters.length >= count) return waiters.map((w) => w.pid);
+    const graph = await blockedBackends();
+    const matched = [...graph.keys()].filter((pid) => !excludePids.includes(pid) && chainReaches(graph, pid, rootPid));
+    if (matched.length >= count) return matched;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  throw new Error(`fewer than ${count} backends blocked by pid ${blockerPid} within ${timeoutMs}ms`);
+  throw new Error(`fewer than ${count} backends transitively blocked by pid ${rootPid} within ${timeoutMs}ms`);
 }
 
 /**
@@ -517,60 +553,99 @@ describe("mark-read racing a held send — a real held-lock barrier", () => {
 });
 
 /**
- * F2 (round 4) — the late-commit read guarantee, proven against a REAL send, chained (round 4, F3).
+ * F2 (round 5) — the counter bump and the message insert commit as ONE unit, proven by pausing the
+ * REAL send AFTER both (not merely after the raw pair-row lock is granted, which round 4's version
+ * did — codex round 5 finding 2). A test-only `AFTER INSERT` trigger on `dm_messages`, scoped by a
+ * content marker, takes `FOR UPDATE` on a gate-table row the raw holder already holds — so the paused
+ * backend has already run `bumped` and `inserted` and is still inside its own open transaction. A
+ * second send and a read are then proven to queue behind THAT backend's own pid, never the raw
+ * holder directly, and only after release do they see the committed seqs and cursor.
  *
- * The test above proves a raw connection's hold is respected. This one makes a REAL `sendDm` call
- * the thing everything else queues behind: it is itself queued by the raw holder, and a second send
- * plus a read are then proven to queue behind THAT send's own backend — never the raw holder
- * directly — so what releases first is provably the real send's own commit, and the final state
- * (seqs, cursor) is read only after every contender has actually run.
+ * Mutation evidence (see `b1-d-fix-r5-report.md`): splitting the bump into its own earlier,
+ * separately-committed statement (releasing the pair lock before the insert) makes the second send
+ * and the read stop waiting on the paused send's pid at all — this test times out instead of passing.
  */
-describe("F2 (round 4) — a real held send is what a second send and a read genuinely queue behind", () => {
-  it("a second send and a read both queue behind a real send, and see its committed state", async () => {
+describe("F2 (round 5) — a real send paused AFTER its own insert is what a second send and a read queue behind", () => {
+  const PAUSE_MARKER = `b1dm_pause_marker_${RUN}`;
+  const gateTable = `b1dm_pause_gate_${RUN}`;
+  const pauseFn = `b1dm_pause_fn_${RUN}`;
+  const pauseTrigger = `b1dm_pause_trigger_${RUN}`;
+
+  beforeAll(async () => {
+    await pgPool().query(`CREATE TABLE ${gateTable} (id int PRIMARY KEY)`);
+    await pgPool().query(`INSERT INTO ${gateTable} (id) VALUES (1)`);
+    await pgPool().query(`
+      CREATE OR REPLACE FUNCTION ${pauseFn}() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF NEW.content = '${PAUSE_MARKER}' THEN
+          PERFORM 1 FROM ${gateTable} WHERE id = 1 FOR UPDATE;
+        END IF;
+        RETURN NEW;
+      END; $fn$;
+    `);
+    await pgPool().query(`CREATE TRIGGER ${pauseTrigger} AFTER INSERT ON dm_messages FOR EACH ROW EXECUTE FUNCTION ${pauseFn}()`);
+  });
+
+  afterAll(async () => {
+    await pgPool().query(`DROP TRIGGER IF EXISTS ${pauseTrigger} ON dm_messages`);
+    await pgPool().query(`DROP FUNCTION IF EXISTS ${pauseFn}()`);
+    await pgPool().query(`DROP TABLE IF EXISTS ${gateTable}`);
+  });
+
+  it("a second send and a read both wait on the paused send's own backend, and see its committed state", async () => {
     const a = await seedAgent();
     const b = await seedAgent();
-    // One prior message, read, so the cursor starts above zero — the same seed the test above uses.
     expect((await sendDm({ senderId: a.id, recipientId: b.id, content: "seen" })).outcome).toBe("inserted");
     expect(await markDmRead(b.id, a.id)).toBe(true);
     await clearRateWindow(a.id);
 
-    const { agentLow, agentHigh } = canonicalPair(a.id, b.id);
-    const staged = await withHeldPairRow(agentLow, agentHigh, async (holderPid) => {
-      // The REAL send under test — not a stand-in connection — queues behind the raw holder.
-      const heldSend = sendDm({ senderId: a.id, recipientId: b.id, content: "held behind the raw lock" });
-      const heldPid = await waitForContenderBehind(holderPid, null);
+    const gateHolder = await pgClient();
+    await gateHolder.query("BEGIN");
+    const gateHolderPid = await pidOf(gateHolder);
+    await gateHolder.query(`SELECT id FROM ${gateTable} WHERE id = 1 FOR UPDATE`);
+    let released = false;
 
-      const secondSend = sendDm({ senderId: b.id, recipientId: a.id, content: "queued behind the real send" });
+    try {
+      // The REAL send under test: its trigger fires only after `inserted` (which itself depends on
+      // `bumped`), so this backend is paused strictly after both, still inside its own transaction.
+      const realSend = sendDm({ senderId: a.id, recipientId: b.id, content: PAUSE_MARKER });
+      const realSendPid = await waitForContenderBehind(gateHolderPid, null);
+
+      // Started together, so the chain shape is not assumed: Postgres's FIFO row-lock queue lets
+      // either contender become the other's immediate blocker (round 4, F3's lesson extended — two
+      // contenders started concurrently, not staged, can chain either way). Both must still
+      // TRANSITIVELY trace back to the real send's own pid.
       const read = markDmRead(b.id, a.id);
-      // Both queue behind the REAL SEND specifically, never the raw holder directly.
-      const waiterPids = await waitForContenderCountBehind(heldPid, 2);
-      return { heldSend, secondSend, read, waiterPids };
-    });
-    expect(staged.waiterPids.length).toBeGreaterThanOrEqual(2);
+      const secondSend = sendDm({ senderId: b.id, recipientId: a.id, content: "queued behind the paused send" });
+      const waiterPids = await waitUntilCountTransitivelyBlockedBy(realSendPid, 2, [gateHolderPid, realSendPid]);
+      expect(waiterPids.length).toBeGreaterThanOrEqual(2);
 
-    const [heldResult, secondResult, readResult] = await Promise.all([staged.heldSend, staged.secondSend, staged.read]);
-    expect(heldResult.outcome).toBe("inserted");
-    expect(secondResult.outcome).toBe("inserted");
-    expect(readResult).toBe(true);
+      await gateHolder.query("COMMIT");
+      released = true;
 
-    const { rows: messages } = await pgPool().query<{ seq: string }>(
-      `SELECT m.seq FROM dm_messages m JOIN dm_conversations c ON c.id = m.conversation_id
-       WHERE c.agent_low = $1 AND c.agent_high = $2 ORDER BY m.seq ASC`,
-      [agentLow, agentHigh]
-    );
-    // Three distinct, increasing seqs: the seed, the held send, and the second send.
-    // `seq` is a `bigint` column — `pg` returns it as a string, unlike `pgPool()`'s other int casts.
-    expect(messages.map((m) => Number(m.seq))).toEqual([1, 2, 3]);
+      const [realResult, secondResult, readResult] = await Promise.all([realSend, secondSend, read]);
+      expect(realResult.outcome).toBe("inserted");
+      expect(secondResult.outcome).toBe("inserted");
+      expect(readResult).toBe(true);
 
-    const conv = await pgPool().query<{ low_last_read_seq: string; high_last_read_seq: string }>(
-      `SELECT low_last_read_seq, high_last_read_seq FROM dm_conversations WHERE agent_low = $1 AND agent_high = $2`,
-      [agentLow, agentHigh]
-    );
-    // The reader's cursor was set no earlier than the real send's own commit — never stuck at 1, the
-    // pre-hold value (whether it also captured the second send's seq 3 depends on FIFO order between
-    // two DIFFERENT contenders behind the same send, which this test does not pin).
-    const readerCursor = Number(agentLow === b.id ? conv.rows[0].low_last_read_seq : conv.rows[0].high_last_read_seq);
-    expect(readerCursor).toBeGreaterThanOrEqual(2);
+      const { agentLow, agentHigh } = canonicalPair(a.id, b.id);
+      const { rows: messages } = await pgPool().query<{ seq: string }>(
+        `SELECT m.seq FROM dm_messages m JOIN dm_conversations c ON c.id = m.conversation_id
+         WHERE c.agent_low = $1 AND c.agent_high = $2 ORDER BY m.seq ASC`,
+        [agentLow, agentHigh]
+      );
+      expect(messages.map((m) => Number(m.seq))).toEqual([1, 2, 3]);
+
+      const conv = await pgPool().query<{ low_last_read_seq: string; high_last_read_seq: string }>(
+        `SELECT low_last_read_seq, high_last_read_seq FROM dm_conversations WHERE agent_low = $1 AND agent_high = $2`,
+        [agentLow, agentHigh]
+      );
+      const readerCursor = Number(agentLow === b.id ? conv.rows[0].low_last_read_seq : conv.rows[0].high_last_read_seq);
+      expect(readerCursor).toBeGreaterThanOrEqual(2);
+    } finally {
+      if (!released) await gateHolder.query("COMMIT").catch(() => {});
+      await gateHolder.end().catch(() => {});
+    }
   });
 });
 

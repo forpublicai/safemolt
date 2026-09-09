@@ -14,7 +14,8 @@ jest.mock("@/lib/store", () => ({
   listClasses: jest.fn(),
   // M11b lane D (P6.3): `gatherInbox` also reads the DM domain now.
   listDmConversations: jest.fn(),
-  listDmMessages: jest.fn(),
+  // Round 5, F5: the preview reads the filtered-before-limit store function, not `listDmMessages`.
+  getLastReceivedDmMessage: jest.fn(),
   countUnreadDms: jest.fn(),
 }));
 
@@ -29,7 +30,7 @@ import {
   listClasses,
   listNotifications,
   listDmConversations,
-  listDmMessages,
+  getLastReceivedDmMessage,
   countUnreadDms,
 } from "@/lib/store";
 
@@ -41,7 +42,7 @@ const mockedListClassEvals = jest.mocked(listClassEvaluations);
 const mockedGetResults = jest.mocked(getStudentClassResults);
 const mockedListClasses = jest.mocked(listClasses);
 const mockedListDmConversations = jest.mocked(listDmConversations);
-const mockedListDmMessages = jest.mocked(listDmMessages);
+const mockedGetLastReceivedDmMessage = jest.mocked(getLastReceivedDmMessage);
 const mockedCountUnreadDms = jest.mocked(countUnreadDms);
 
 interface NotificationOverride {
@@ -70,7 +71,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   // Neutral DM defaults: the `gatherInbox` tests below exercise the notification half only.
   mockedListDmConversations.mockResolvedValue([]);
-  mockedListDmMessages.mockResolvedValue([]);
+  mockedGetLastReceivedDmMessage.mockResolvedValue(null);
   mockedCountUnreadDms.mockResolvedValue(0);
 });
 
@@ -165,14 +166,42 @@ describe("gatherInbox", () => {
       [unreadConvo, readConvo(5), readConvo(4), readConvo(3), readConvo(2)] as never
     );
     mockedCountUnreadDms.mockResolvedValue(3);
-    mockedListDmMessages.mockResolvedValue([
-      { senderId: "agent_unread", content: "hi", id: "m1", conversationId: "conv_unread_old", seq: 1, createdAt: "" },
-    ] as never);
+    mockedGetLastReceivedDmMessage.mockResolvedValue({
+      senderId: "agent_unread",
+      content: "hi",
+      id: "m1",
+      conversationId: "conv_unread_old",
+      seq: 1,
+      createdAt: "",
+    } as never);
 
     const section = await gatherInbox("me");
 
     expect(mockedListDmConversations).toHaveBeenCalledWith("me", { limit: 5, unreadFirst: true });
     expect((section.dmThreads ?? []).map((t) => t.otherAgentId)).toEqual(["agent_unread"]);
+  });
+
+  it("F5 (round 5): the preview is whatever the store's filtered read returns, never a self-sent message", async () => {
+    mockedListNotifications.mockResolvedValue([]);
+    mockedListDmConversations.mockResolvedValue([
+      { id: "conv1", other: { id: "other", name: "other_agent", deleted: false }, lastMessageAt: "2026-08-01T00:00:00.000Z", unreadCount: 1 },
+    ] as never);
+    mockedCountUnreadDms.mockResolvedValue(1);
+    // The store, not `gatherInbox`, is what filters sender <> me before any limit (round 5, F5) —
+    // this test only proves `gatherInbox` renders that answer, not that it re-derives it.
+    mockedGetLastReceivedDmMessage.mockResolvedValue({
+      senderId: "other",
+      content: "the actually-received message",
+      id: "m_received",
+      conversationId: "conv1",
+      seq: 1,
+      createdAt: "",
+    } as never);
+
+    const section = await gatherInbox("me");
+
+    expect(mockedGetLastReceivedDmMessage).toHaveBeenCalledWith("me", "other");
+    expect(section.dmThreads?.[0]?.preview).toBe("the actually-received message");
   });
 });
 

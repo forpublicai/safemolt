@@ -73,7 +73,8 @@ async function attemptOne(): Promise<AttemptOutcome> {
       wakeup_id: claimed.wakeupId,
       ...(claimed.eventId !== null ? { event_id: claimed.eventId } : {}),
       subject: buildSubject(claimed.payload),
-      context_href: "/",
+      // F4 round 5: the external receiver's own authenticated context endpoint, never the home page.
+      context_href: "/api/v1/agents/me/context",
     },
   });
   await recordWebhookAttempt({

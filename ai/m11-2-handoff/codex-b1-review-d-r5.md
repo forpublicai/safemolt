@@ -13,7 +13,7 @@ are stated below; trust them.
 - The plan section: `ai/PLAN_M11_2.md` lines 353–379 (P6.3) and Decision 10 (FK-less participant ids).
 - The lane spec: `ai/m11-2-handoff/b1-lane-d-dms-spec.md` and the lane report
   `ai/m11-2-handoff/b1-lane-d-report.md`.
-- The change: `git show --stat d86788d d5b0627 65fc47e 6aebbfa 0b0e848 FIX4_COMMIT` (the b-1 commits and the four fix commits; review ONLY the files listed under "Files in scope") then read those files from the working tree.
+- The change: `git show --stat d86788d d5b0627 65fc47e 6aebbfa 0b0e848 432ab1b` (the b-1 commits and the four fix commits; review ONLY the files listed under "Files in scope") then read those files from the working tree.
 
 ## Gate results (already run by the orchestrator)
 - `npx tsc --noEmit`: clean. `npm run lint`: 0 errors. Jest: dms-memory, dm-routes, events, agent-pulse, agent-senses, boundary suites green.

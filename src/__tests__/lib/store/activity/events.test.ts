@@ -3,8 +3,9 @@ jest.mock("@/lib/db", () => ({
   sql: null,
 }));
 
-import { activityContextKey, activityContexts, activityEvents } from "@/lib/store/_memory-state";
-import { listActivityEvents, recordActivityEvent } from "@/lib/store/activity/events";
+import { activityContextKey, activityContexts, activityEvents, posts, resetStreamFramesState, streamFrames } from "@/lib/store/_memory-state";
+import { applyPostActivityFromEvent, listActivityEvents, recordActivityEvent, recordPostActivityEvent } from "@/lib/store/activity/events";
+import type { StoredPost } from "@/lib/store-types";
 
 describe("activity events memory store", () => {
   beforeEach(() => {
@@ -114,5 +115,41 @@ describe("activity events memory store", () => {
     });
 
     expect(activityContexts.has(activityContextKey("playground_session", "session-1", "activity-trail-enriched-v1"))).toBe(false);
+  });
+});
+
+describe("M11b Lane S (P5.2) — the firehose frame, memory mode", () => {
+  const post: StoredPost = {
+    id: "p_frame_1",
+    title: "a post",
+    authorId: "author_1",
+    groupId: "group_1",
+    upvotes: 0,
+    downvotes: 0,
+    commentCount: 0,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  beforeEach(() => {
+    posts.set(post.id, { ...post });
+    resetStreamFramesState();
+  });
+
+  it("applyPostActivityFromEvent (the consumer's write) records one firehose frame, keyed on the event id", async () => {
+    await applyPostActivityFromEvent(
+      { id: post.id, authorId: post.authorId, groupId: post.groupId, title: post.title, createdAt: post.createdAt },
+      42
+    );
+    const frames = Array.from(streamFrames.rows.values());
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toMatchObject({ agentId: null, frame: "activity", refId: post.id, frameKey: "activity:firehose:42" });
+  });
+
+  it("recordPostActivityEvent (the legacy inline writer) never records a frame, even with a source event id", async () => {
+    await recordPostActivityEvent(
+      { id: post.id, authorId: post.authorId, groupId: post.groupId, title: post.title, createdAt: post.createdAt },
+      { sourceEventId: 42 }
+    );
+    expect(streamFrames.rows.size).toBe(0);
   });
 });

@@ -1,7 +1,8 @@
 import { sql } from "@/lib/db";
 import type { AgentClaimOutcome, CompleteVettingOutcome, DeleteAgentResult, StoredAgent, VettingChallenge, VettingChallengeStartOutcome } from "@/lib/store-types";
 import { pickRandomAgentEmoji } from "@/lib/agent-emoji";
-import { ACTIVE_NOW_THRESHOLD_MS, isPubliclyHiddenAgent, TEST_NAME_PATTERN } from "@/lib/agent-public";
+import { ACTIVE_NOW_THRESHOLD_MS, isPubliclyHiddenAgent } from "@/lib/agent-public";
+import { HIDDEN_AGENT_PREDICATE } from "../agent-visibility-sql";
 import {
     generateChallengeValues,
     generateNonce,
@@ -482,13 +483,6 @@ export async function setAgentUnclaimed(id: string): Promise<void> {
     await sql!`UPDATE agents SET is_claimed = false, owner = null WHERE id = ${id}`;
 }
 
-/**
- * Codex round 4 F3/F4: one predicate, comparing `metadata->'system'`/`'test'` as JSON booleans (not
- * text, which made the string `"true"` read the same as the boolean), defined once and reused
- * across every branch through the parameterized `sql!(text, params)` form — a tagged template
- * cannot compose a shared fragment, only `${}` bound values.
- */
-const HIDDEN_AGENT_PREDICATE = `NOT ((metadata->'system') IS NOT DISTINCT FROM 'true'::jsonb OR (metadata->'test') IS NOT DISTINCT FROM 'true'::jsonb OR (metadata->>'source') IS NOT DISTINCT FROM 'test' OR name ~* '${TEST_NAME_PATTERN.source}')`;
 
 /**
  * Codex round 2 F1: `filter: "active_now"` narrows INSIDE the query, before `LIMIT 500` — the

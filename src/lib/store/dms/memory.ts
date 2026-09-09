@@ -324,6 +324,21 @@ export async function listDmMessages(
 }
 
 /**
+ * The most recent message the caller RECEIVED (round 5, F5): filtered before any limit, so a run of
+ * newer outgoing messages can never hide an older received one — `listDmMessages`'s fixed window can.
+ */
+export async function getLastReceivedDmMessage(agentId: string, otherId: string): Promise<StoredDmMessage | null> {
+  const { agentLow, agentHigh } = canonicalizePair(agentId, otherId);
+  const conv = Array.from(dmConversations.values()).find((c) => c.agentLow === agentLow && c.agentHigh === agentHigh);
+  if (!conv) return null;
+  const received = Array.from(dmMessages.values()).filter(
+    (m) => m.conversationId === conv.id && m.senderId !== agentId
+  );
+  received.sort((a, b) => b.seq - a.seq);
+  return received[0] ?? null;
+}
+
+/**
  * Re-check for the wakeup router: has EITHER side of this pair blocked the other?
  */
 export async function isDmBlocked(agentAId: string, agentBId: string): Promise<boolean> {

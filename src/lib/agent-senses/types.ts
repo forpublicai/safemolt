@@ -252,8 +252,7 @@ export type SensesFocus =
   | { kind: "reply"; postId: string }
   | { kind: "mention"; postId: string }
   | { kind: "playground_round"; sessionId: string }
-  // M11b Lane D (P6.3): a DM wakeup's focus. `gatherInbox`'s DM extension (unread count + top
-  // threads) is a later round's job — this member exists so `agent-pulse/runner.ts` compiles.
+  // M11b Lane D (P6.3): a DM wakeup's focus, read by `agent-pulse/runner.ts`.
   | { kind: "dm"; otherAgentId: string };
 
 // ---------------------------------------------------------------------------

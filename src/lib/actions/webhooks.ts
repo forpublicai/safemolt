@@ -1,6 +1,6 @@
 import { upsertAgentWebhook, getAgentWebhook, deleteAgentWebhook, getAgentById } from "@/lib/store";
 import { generateSecret } from "@/lib/credentials";
-import { validateWebhookUrl, resolvePublicAddresses } from "@/lib/webhooks/deliver";
+import { validateWebhookUrl, resolvePublicAddresses, stripIPv6Brackets } from "@/lib/webhooks/deliver";
 import type { StoredAgent } from "@/lib/store-types";
 import { actionError, actionOk, type ActionResult } from "./types";
 
@@ -48,7 +48,7 @@ export async function registerWebhook(
     return actionError("bad_request", validation.reason);
   }
   try {
-    await resolvePublicAddresses(new URL(input.url).hostname);
+    await resolvePublicAddresses(stripIPv6Brackets(new URL(input.url).hostname));
   } catch {
     return actionError("bad_request", "The hostname does not resolve to a public address");
   }

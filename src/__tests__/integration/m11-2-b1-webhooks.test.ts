@@ -35,7 +35,7 @@ import { drainEventConsumer } from "@/lib/store/events/drain-db";
 import type { StoredAgent } from "@/lib/store-types";
 import { activateRealConsumers } from "./helpers/activate-consumers";
 import { closeIntegrationConnections, pgClient, pgPool } from "./helpers/db";
-import { pidOf, raceAgainstHeldLock, rejections, runConcurrently, waitForWaiter } from "./helpers/concurrency";
+import { pidOf, raceAgainstHeldLock, rejections, runConcurrently, waitersOn, waitForWaiter } from "./helpers/concurrency";
 
 const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
 let seq = 0;
@@ -136,14 +136,43 @@ async function assertLedgerWakeupCoupling(wakeupId: number): Promise<void> {
   }
 }
 
+/**
+ * F3 (round 5): a real gate `enqueueWakeup` pauses ON, inside its OWN transaction, once it has
+ * inserted the interrupted delivery — proving `deleteAgentWebhook` waits on ENQUEUE's own
+ * registration lock, never a substitute holder (finding 3). Gated by `reason` so only this file's
+ * one designated call pauses; every other insert here passes through untouched.
+ */
+const PAUSE_TABLE = `b1w_pause_gate_${RUN}`;
+const PAUSE_FN = `b1w_pause_fn_${RUN}`;
+const PAUSE_REASON = `b1w_f3r5_pause_${RUN}`;
+
 beforeAll(async () => {
   // No neutralization needed here (unlike the wakeup router's "one live session" index): every
   // constraint `webhook_deliveries` carries — `UNIQUE (wakeup_id)`, the two claim-scan indexes — is
   // scoped to a wakeup or keyed off a RUN-suffixed agent, so a prior interrupted run leaves nothing
   // that can block a fresh row here the way a cross-run "one per scope" index can.
+  await pgPool().query(`CREATE TABLE ${PAUSE_TABLE} (id int PRIMARY KEY)`);
+  await pgPool().query(`INSERT INTO ${PAUSE_TABLE} VALUES (1)`);
+  await pgPool().query(`
+    CREATE OR REPLACE FUNCTION ${PAUSE_FN}() RETURNS trigger LANGUAGE plpgsql AS $fn$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM agent_wakeups w WHERE w.id = NEW.wakeup_id AND w.reason = '${PAUSE_REASON}') THEN
+        PERFORM 1 FROM ${PAUSE_TABLE} FOR UPDATE;
+      END IF;
+      RETURN NEW;
+    END;
+    $fn$;
+  `);
+  await pgPool().query(`
+    CREATE TRIGGER ${PAUSE_FN} AFTER INSERT ON webhook_deliveries
+    FOR EACH ROW EXECUTE FUNCTION ${PAUSE_FN}()
+  `);
 });
 
 afterAll(async () => {
+  await pgPool().query(`DROP TRIGGER IF EXISTS ${PAUSE_FN} ON webhook_deliveries`);
+  await pgPool().query(`DROP FUNCTION IF EXISTS ${PAUSE_FN}()`);
+  await pgPool().query(`DROP TABLE IF EXISTS ${PAUSE_TABLE}`);
   // Explicit, ordered deletes first (cascades would also get there, but a failed cascade must not
   // strand this run's rows for the next one) — same discipline as m11-2-u5-wakeups.test.ts.
   await pgPool().query(`DELETE FROM webhook_deliveries WHERE agent_id LIKE $1`, [`b1w_agent_${RUN}%`]);
@@ -575,6 +604,41 @@ describe("F1 (round 4): an enqueue racing a real agent withdrawal never deadlock
   });
 });
 
+describe("F1 (round 5): recordWebhookAttempt and deleteAgentWebhook both start with the agent row", () => {
+  it("both queue behind a real withdrawal's own agent lock, then resolve cleanly, never a 40P01", async () => {
+    const agent = await seedAgent();
+    await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
+    const wakeupId = await seedWebhookWakeup(agent);
+    const claimed = await claimNextWebhookDelivery({ claimToken: `b1w_f1r5_${RUN}`, leaseMs: 30_000 });
+    expect(claimed?.wakeupId).toBe(wakeupId);
+
+    const observation = await raceAgainstHeldLock({
+      // Same withdrawal shape as F1 (round 4): this agent's cascade holds the agent row and every
+      // row it owns — `agent_webhooks`, this ledger row, this wakeup.
+      hold: async (holder) => {
+        await holder.query(`DELETE FROM agents WHERE id = $1`, [agent]);
+      },
+      contend: () =>
+        Promise.allSettled([
+          recordWebhookAttempt({ id: claimed!.id, claimToken: claimed!.claimToken, status: 200, ok: true }),
+          deleteAgentWebhook(agent),
+        ]),
+      contenderMarker: "p5.1:agent-lock",
+    });
+
+    // Mutation target: without statement 1's `agents ... FOR KEY SHARE` in both functions, neither
+    // query carries this marker and this assertion goes false (see the r5 report for the failing run).
+    expect(observation.observedBlocked).toBe(true);
+    const [attemptOutcome, deleteOutcome] = observation.result;
+    expect(attemptOutcome.status).toBe("fulfilled"); // never a 40P01
+    expect(deleteOutcome.status).toBe("fulfilled");
+    if (attemptOutcome.status === "fulfilled") expect(attemptOutcome.value).toBe("not_found");
+    if (deleteOutcome.status === "fulfilled") expect(deleteOutcome.value).toEqual({ deleted: false });
+    const { rows } = await pgPool().query(`SELECT 1 FROM agents WHERE id = $1`, [agent]);
+    expect(rows).toHaveLength(0);
+  });
+});
+
 describe("F3: an internal re-arm never resets an active mode='both' ledger", () => {
   it("leaves a live-claimed both ledger untouched across an internal re-arm", async () => {
     const agent = await seedAgent();
@@ -614,8 +678,8 @@ describe("F3: an internal re-arm never resets an active mode='both' ledger", () 
   });
 });
 
-describe("F5(b): the disposition sweep sees a REAL enqueueWakeup that commits during deleteAgentWebhook's own lock wait", () => {
-  it("terminalizes a delivery the real enqueueWakeup created (with a real receipted event) WHILE deleteAgentWebhook was waiting on the registration lock", async () => {
+describe("F3 (round 5): deleteAgentWebhook genuinely waits on enqueueWakeup's OWN registration lock", () => {
+  it("delete blocks on enqueue's own held lock (proven by backend pid), then sweeps what enqueue committed", async () => {
     await activateRealConsumers();
     const agent = await seedAgent();
     await upsertAgentWebhook({ agentId: agent, url: "https://example.com/hook", secret: "s", mode: "primary" });
@@ -631,37 +695,51 @@ describe("F5(b): the disposition sweep sees a REAL enqueueWakeup that commits du
     );
     expect(receiptRows).toHaveLength(1);
 
-    const holder = await pgClient();
-    await holder.query("BEGIN");
-    const holderPid = await pidOf(holder);
-    // An UNRELATED FOR SHARE holder, never a substitute for the enqueue's own lock: `FOR SHARE` is
-    // compatible with `FOR SHARE`, so the REAL `enqueueWakeup` call below proceeds unimpeded even
-    // while this same row's DELETE is genuinely blocked waiting on `holder` (proven empirically: a
-    // third connection's `FOR SHARE` does not queue behind an already-waiting `DELETE`).
-    await holder.query(`SELECT mode FROM agent_webhooks WHERE agent_id = $1 AND disabled_at IS NULL FOR SHARE`, [
-      agent,
-    ]);
+    // The controller holds the pause-gate row FIRST, so the `AFTER INSERT` trigger — firing inside
+    // enqueue's OWN transaction right after it inserts this delivery — blocks enqueue mid-flight,
+    // AFTER its own registration `FOR SHARE` lock is already taken and still held (finding 3: a
+    // stand-in holder never proves this; only enqueue's own statement, paused mid-flight, does).
+    const controller = await pgClient();
+    let enqueuePromise: ReturnType<typeof enqueueWakeup> | null = null;
+    let deletePromise: ReturnType<typeof deleteAgentWebhook> | null = null;
+    try {
+      await controller.query("BEGIN");
+      await controller.query(`SELECT 1 FROM ${PAUSE_TABLE} FOR UPDATE`);
+      const controllerPid = await pidOf(controller);
 
-    const deletePromise = deleteAgentWebhook(agent);
-    const waited = await waitForWaiter(holderPid, "", 5000);
-    expect(waited).toBe(true); // deleteAgentWebhook is genuinely blocked on the held registration lock
+      enqueuePromise = enqueueWakeup({
+        agentId: agent,
+        reason: PAUSE_REASON,
+        eventId: realEventId,
+        payload: { run: RUN },
+        delivery: "webhook",
+      });
 
-    // The REAL enqueueWakeup — not a hand-rolled INSERT — commits its wakeup+ledger WHILE delete is
-    // still waiting, the exact window round 2 finding 2 names.
-    const enqueueResult = await enqueueWakeup({
-      agentId: agent,
-      reason: "b1w_f5b_interrupt",
-      eventId: realEventId,
-      payload: { run: RUN },
-      delivery: "webhook",
-    });
+      const enqueuePaused = await waitForWaiter(controllerPid, "p5.1:agent-lock", 5000);
+      expect(enqueuePaused).toBe(true); // enqueue is genuinely mid-statement, past its own registration lock
+      const [enqueueWaiter] = await waitersOn(controllerPid, "p5.1:agent-lock");
+      const enqueuePid = enqueueWaiter.pid;
+
+      deletePromise = deleteAgentWebhook(agent);
+      // Mutation target: remove `reg`'s `FOR SHARE` in `registrationCte` and this goes false — delete
+      // then has nothing of ENQUEUE's left to wait on (see the r5 report for the failing run).
+      const deleteWaitedOnEnqueue = await waitForWaiter(enqueuePid, "p5.1:delete-registration", 5000);
+      expect(deleteWaitedOnEnqueue).toBe(true);
+    } finally {
+      // Release the pause gate and drain both calls here too: a failed assertion above must not
+      // leave either one still running into the next test (round 4's own "Bug A" leak).
+      await controller.query("COMMIT").catch(() => {});
+      await controller.end().catch(() => {});
+      await Promise.allSettled([enqueuePromise, deletePromise]);
+    }
+
+    // The REAL enqueueWakeup — not a hand-rolled INSERT — commits its wakeup+ledger only once
+    // released, the exact window finding 3 names.
+    const enqueueResult = await enqueuePromise!;
     expect(enqueueResult.wakeup).not.toBeNull();
     const interruptedWakeupId = enqueueResult.wakeup!.id;
 
-    await holder.query("COMMIT");
-    await holder.end();
-
-    const result = await deletePromise;
+    const result = await deletePromise!;
     expect(result.deleted).toBe(true);
 
     const { rows: nonterminal } = await pgPool().query(

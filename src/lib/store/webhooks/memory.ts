@@ -171,13 +171,9 @@ function terminalReasonFor(outcome: RecordWebhookAttemptOutcome): string {
 }
 
 /**
- * Apply one attempt's outcome to the ledger row, its webhook-primary wakeup and the registration's
- * failure counter — the memory twin of `recordWebhookAttempt`'s single token-fenced statement, done
- * as one synchronous mutation instead.
- *
- * `liveFailure` (not `outcome`) gates the counter bump — matching `db.ts`'s `live_failure`: a failed
- * attempt against a registration that is present and not yet disabled bumps it, whether this attempt
- * itself ends up `retry`, `exhausted`, or (crossing the threshold) `disabled`.
+ * The memory twin of `recordWebhookAttempt`'s statement, applied synchronously. `liveFailure` (not
+ * `outcome`) gates the counter bump, matching `db.ts`'s `live_failure`: a failed attempt against a
+ * present, not-yet-disabled registration bumps it regardless of which terminal outcome it lands on.
  */
 function applyRecordedAttempt(
   row: StoredWebhookDelivery,

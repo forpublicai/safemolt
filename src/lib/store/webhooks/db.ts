@@ -91,15 +91,19 @@ export async function getAgentWebhook(agentId: string): Promise<StoredAgentWebho
 }
 
 /**
- * Two statements in the SAME transaction, not one: a single statement's CTEs share one snapshot taken
- * before `DELETE` waits for the registration lock, so a concurrent enqueue committing its ledger row
- * during that wait was invisible to a sweep sharing that snapshot. Statement 2 runs after statement 1
- * acquires the lock — the transaction stays open, but each statement gets its own fresh READ COMMITTED
- * snapshot. A `mode='both'` wakeup and a live-claimed row are left untouched (F4 covers them).
+ * THREE statements in the SAME transaction. Statement 1 (F1 round 5) locks `agents FOR KEY SHARE`
+ * first, matching the enqueue/re-arm order (`registrationCte`) — a withdrawal's `DELETE FROM agents`
+ * needs a stronger lock on that same row, so it now waits out this whole transaction instead of
+ * racing its cascade against statement 2's delete in the opposite table order. Statement 2 runs after
+ * statement 1 acquires the lock — the transaction stays open, but each statement gets its own fresh
+ * READ COMMITTED snapshot, so a concurrent enqueue's ledger row committed during the wait is visible
+ * to statement 3's sweep. A `mode='both'` wakeup and a live-claimed row are left untouched (F4 covers
+ * them).
  */
 export async function deleteAgentWebhook(agentId: string): Promise<{ deleted: boolean }> {
-  const [deletedRows] = await sql!.transaction((txn) => [
-    txn`DELETE FROM agent_webhooks WHERE agent_id = ${agentId} RETURNING agent_id`,
+  const [, deletedRows] = await sql!.transaction((txn) => [
+    txn`SELECT 1 /* p5.1:agent-lock */ FROM agents WHERE id = ${agentId} FOR KEY SHARE`,
+    txn`DELETE /* p5.1:delete-registration */ FROM agent_webhooks WHERE agent_id = ${agentId} RETURNING agent_id`,
     txn`
       WITH terminalized AS (
         UPDATE webhook_deliveries wd
@@ -240,10 +244,12 @@ function buildWebhookDisabledEvent(): PreparedEvent<"webhook.disabled"> {
 }
 
 /**
- * Lock order is enforced by STATEMENT order, not CTE order: statement 1 locks the registration
- * (`FOR NO KEY UPDATE`, always — no shared→update upgrade), statement 2 token-fences the ledger,
- * completes the webhook-primary wakeup, and (F3 round 4) sweeps this agent's other now-disabled
- * deliveries — gated on `disabled_now`, so a rejected/replayed token sweeps nothing.
+ * Lock order is enforced by STATEMENT order, not CTE order: statement 1 (F1 round 5) locks `agents
+ * FOR KEY SHARE` first, so a withdrawal's `DELETE FROM agents` waits out this whole call rather than
+ * racing its cascade against statement 3's opposite-order table locking. Statement 2 locks the
+ * registration (`FOR NO KEY UPDATE`, always — no shared→update upgrade). Statement 3 token-fences the
+ * ledger, completes the webhook-primary wakeup, and (F3 round 4) sweeps this agent's other
+ * now-disabled deliveries — gated on `disabled_now`, so a rejected/replayed token sweeps nothing.
  */
 export async function recordWebhookAttempt(
   input: RecordWebhookAttemptInput
@@ -264,7 +270,16 @@ export async function recordWebhookAttempt(
       },
     ],
   });
-  // Statement 1: the registration lock, taken before the ledger is even looked at. The subquery
+  // Statement 1 (F1 round 5): the agent row, before the registration is even looked at — matching
+  // `registrationCte`'s enqueue-side order, so this call and a withdrawal can never both be mid-flight
+  // on the wakeup/ledger/registration rows at once.
+  const agentLockText = `SELECT 1 /* p5.1:agent-lock */
+     FROM agents
+     WHERE id = (
+       SELECT wd.agent_id FROM webhook_deliveries wd WHERE wd.id = $1::bigint AND wd.claim_token = $2::text
+     )
+     FOR KEY SHARE`;
+  // Statement 2: the registration lock, taken before the ledger is even looked at. The subquery
   // requires the SAME token as the ledger's own fence, so a stale/wrong claim locks nothing at all.
   const lockText = `SELECT h.agent_id /* p5.1:webhook-attempt-lock */
      FROM agent_webhooks h
@@ -384,7 +399,8 @@ export async function recordWebhookAttempt(
        RETURNING w.id
      )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
      SELECT ud.outcome FROM updated_delivery ud`;
-  const [, attemptRows] = await sql!.transaction((txn) => [
+  const [, , attemptRows] = await sql!.transaction((txn) => [
+    txn(agentLockText, [input.id, input.claimToken]),
     txn(lockText, [input.id, input.claimToken]),
     txn(attemptText, [...params, ...emitted.params]),
   ]);

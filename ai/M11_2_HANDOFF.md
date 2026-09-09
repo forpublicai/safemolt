@@ -1,248 +1,295 @@
-# M11-2 execution handoff — stop point 2026-08-26: M11a CODE COMPLETE
+# M11-2 execution handoff — stop point 2026-09-08 (late): M11b wave b-1 in codex round 5, wave b-2 landing
 
-Work on `ai/PLAN_M11_2.md` reached the end of M11a's code: every code phase (P1.5/P1.6, P4,
-P3.2, P3.3, P3.1, P3.4) is implemented, codex-reviewed to convergence, and committed. This file
-is the pickup point for the next session. Companion state lives in the orchestrator memory file
-`~/.claude/projects/-Users-mohsin-Github-safemolt/memory/m11-2-execution-state.md`.
+Work on `ai/PLAN_M11_2.md` moved from "M11a CODE COMPLETE" (the previous stop, commit `acc9490`) into
+M11b. This file is the pickup point for the next session. Companion state lives in the orchestrator
+memory files `~/.claude/projects/-Users-mohsin-Github-safemolt/memory/m11b-execution-state.md` (this
+milestone) and `m11-2-execution-state.md` (the M11a trail).
 
-Branch: `ops/code-improve`. **NOTHING IS PUSHED** — do not push unless the user asks. The
-orchestrator owns ALL git writes; implementation agents are forbidden from git.
+Branch: `ops/code-improve`. **NOTHING FROM THIS SESSION IS PUSHED** — the branch was 0 ahead of origin
+at session start; every commit below is local. Do not push unless the user asks. The orchestrator owns
+ALL git writes; implementation agents are forbidden from git.
 
-## Verified state at the stop
+## Verified state at the stop (commit `432ab1b`, working tree clean at that commit)
 
 - `npx tsc --noEmit` — clean.
-- `npm run lint` — 0 errors (pre-existing complexity warnings only).
-- `npm test -- --runInBand` — **189 suites / 1842 tests, all green.**
-- `npm run test:integration` — 53 suites / 698 tests; **one recorded flake** (see "Open items").
-  An immediate solo re-run of the failing suite was 19/19 green.
-- `npm run build` — green.
+- `npm run lint` — 0 errors; 112 pre-existing complexity warnings (none in files this milestone created).
+- `npm test -- --runInBand` — **213 suites / 2134 tests, all green.**
+- `npm run test:integration` — last FULL run at the b-1 boundary (`d5b0627`): 57 suites / 724 tests
+  green. Since then every lane's own integration file was re-run by the orchestrator after every fix
+  round (last: W 22, M 17, R 26, D 21 ×2, all green). A full run is due at the next boundary.
+- `npm run build` — green at the b-1 boundary; not re-run since (no route/page shape changed after).
 
-## Commit ladder this session (oldest first)
+Three agents were LIVE when this file was written (all background, all started after `432ab1b`):
+lane S gen-2 (seq + frame CTE splices), lane C gen-2 (P7.1 deletions), and codex round 5 for lane M.
+Their outputs land in `ai/m11-2-handoff/` as `b2-lane-s-report.md` (gen-2 section),
+`b2-lane-c-report.md` (gen-2 section) and `codex-findings-b1-m-round5-raw.log`. **If you resume
+cold, treat their files as possibly half-written: check `git status`, run tsc, and read the reports
+before touching anything.**
 
-| Commit | What it holds |
-|---|---|
-| `360b844` | u3f-core B3 REVERSED per user decision: TA class messages emit again (in-statement role derivation under FOR SHARE) |
-| `84bd3d9` | B3 codex round: "No findings. The change is correct." |
-| `8491367` | u5 wave-1 lane specs (A boundary / B senses / C wakeups) |
-| `41dfcfe` | u5 Lane A: P1.5/P1.6 boundary machinery (manifest 321 exports, generator, 4 tests, exemptions; 2 real pre-existing defects found by the boundary itself) |
-| `79e5a77` | u5 Lane C gen-1 manager handoff + prepared subagent prompts (freshness rotation) |
-| `18f808d` | u5 Lane C d1–3: wakeups migration (FK CASCADE both ways), `playground.round_opened` kind+manifests, wakeup store both modes |
-| `5d5e8b6` | u5 Lane B: P4 senses library + `GET /agents/me/context` + loop/home rewire; `agent-opportunities.ts` deleted |
-| `cf1db07` | u5 Lane C d4–6: wakeup-router consumer, round_opened producers (conditional round-1 write + advancement CAS + bridge + arming), race suites — **wave-1 boundary, all five gates green** |
-| `20dd055` | u5-C codex r1 fix: the playground-round arm gate lives IN the statement (`createOrReArmPlaygroundRoundWakeup`, FOR SHARE live gate, both stores, mutation-checked both sides) |
-| `e2ee255` | u5 A+B codex r1 fixes: comment-aware extractor; loop projects actionable admissions; home projects ONE `buildAgentContext` |
-| `78a3299` | u5 convergence record — codex r2 clean on all three lanes |
-| `7e69449` | u6 both lanes: P3.3 runner + P3.1 worker + P3.4 sweeps + idle scheduler (WIP checkpoint) |
-| `128879d` | u6 stitch (orchestrator half): route de-dup (idle sweep + claim ran TWICE per tick), cooldown env tiers |
-| `c58282f` | u6 stitch (agent half): playground execution guard, round-mismatch proof, `agent_loop.action` Tier-1 + shadow, wakeup retention, starvation suite |
-| `933be02` | u6 codex round-1 findings + fix specs archived |
-| `f5f622d` | u6-D codex r1 fix: the idle-path fence BLOCKER (PulseTickBundle into tickAgent) + fence-loss discipline |
-| `e61ce57` | u6-E codex r1 fix: ShouldStop to every claim, three scan-starvation fixes, boot-time hash |
-| `ca502ab` | u6-E codex r2 fix: two stale-signal windows, repair-path paging (deferral ADJUDICATED must-close), comment |
-| `afb5a48` | u6-E codex r3 fix (orchestrator): re-check the signal AFTER the GM call — the longest window in the sweep |
-| `acc9490` | **M11a CODE COMPLETE** — convergence record, final gates, the flake recorded honestly |
+## What M11b is, and what landed
 
-## Achieved (all codex-converged)
+M11b = P5 + P6 + P7 of the plan. Two waves were run:
 
-| Unit | Content | Review trail |
-|---|---|---|
-| P0–u4prep2, u3–u3f | events substrate, drain, consumers, all P1.1–P1.4 producers, drain-time soak | converged in prior sessions (see this file's git history for the earlier ladder) |
-| u3f B3 | TA messages emit (user's product decision, reversing the spec's operator branch) | 1 round, clean |
-| u5 Lane A | P1.5/P1.6: `export-manifest.ts`, `gen-eslint-boundary.js`, the generated `no-restricted-imports` block, AST/drift/completeness/mixed-actor tests, §10 exemptions | 1 MINOR (comment-token leak in the generator) → fixed → CONVERGED |
-| u5 Lane B | P4.1–P4.3: `agent-senses/` (11 gatherers + `buildAgentContext(agentId,{focus})`, per-section `{items,degraded}`), the context endpoint, loop + home as projections of ONE context | 2 MAJOR (admissions never projected; home's parallel assembly) → fixed, mutation-proven → CONVERGED |
-| u5 Lane C | P3.2: `agent_wakeups` + `pulse_budget_counters` migration, wakeup store both modes, wakeup-router consumer, notifications' `playground_round_open`, round_opened producers, a4 reconstruction bridge, sweep arming | 1 MAJOR (freshness pre-read TOCTOU → in-statement FOR SHARE gate) → fixed → r2 "CONVERGED, zero findings" |
-| u6 part D | P3.3: the plan-verbatim claim CTE (budget atomic, one-result-row contract), token-fenced writes, `beforeTerminalTool`, the execution guard (comment-reply + playground-turn), reason-scoped context, `runAgentLoopBatch` degraded wrapper, `agent_loop.action` (Tier-1 `logAction`: journal insert + event + spliced activity projection in ONE statement; activity `shadow`) | r1 1 BLOCKER (idle path unfenced/unguarded) + 1 MAJOR (fence-loss wrote loop state) → r2 CONVERGED |
-| u6 part E | P3.1/P3.4: `worker/index.ts` (ledger boot check, 4 duties, /healthz with boot-time hash, SIGTERM), `worker_locks` (verbatim upsert, fresh-UUID holder, no same-holder arm), `checkDeadlines` PRIVATE behind the locked entry (discipline test; 5 direct callers converted), due-ASC scans with in-query attempted-id exclusion, stop-signal at EVERY claim point in EVERY phase, retention incl. `pruneTerminalWakeups`, honesty meta, idle scheduler, `render.yaml`, env-tunability | r1 1B+4M+1m → r2 2B+1M+1NIT → r3 1B (re-check after the GM call) → r4 CONVERGED |
+| Wave | Lane | Content | State |
+|---|---|---|---|
+| b-1 | **W** webhooks (P5.1) | `agent_webhooks` + `webhook_deliveries` migration, store both modes, ledger CTE on every enqueue path, `webhook.disabled` kind + notification, SSRF-safe pinned https delivery (`src/lib/webhooks/deliver.ts`), `POST/GET/DELETE /agents/me/webhook` behind `WEBHOOKS_ENABLED`, worker duty + degraded cron pass | code complete; codex rounds 1–4 fixed (37 findings); round 5 pending |
+| b-1 | **M** mentions + presence + hot decay (P6.1/P6.4/P6.5) | `extractMentions`, registration grammar enforced, `agent.mentioned` derived events in the SAME statement as the content write (store-filled `source_id`), mention notifications + wakeups with comment-source suppression, presence buckets + `GET /agents?filter=active_now`, `hot-score.ts` at all four sort sites + feed cold-start fallback | code complete; rounds 1–4 fixed (18 findings); round 5 RUNNING |
+| b-1 | **R** reactions (P6.2) | `content_reactions` + rate-limit columns, three-statement transaction (subject lock → rate-row seed → decisive), add/remove actions, four routes, two tools, counts in every serializer incl. the context feed and news, `reaction_added` notification, deletePost cleanup | code complete; rounds 1–4 fixed (28 findings); round 5 pending |
+| b-1 | **D** direct messages (P6.3) | `dm_conversations`/`dm_messages`, send as a guarded multi-statement transaction (pair-row lock, block re-check both directions, comment-pool claim, gated seq bump, empty-pair cleanup on refusal), four actions, five routes, five tools in a `messages` loop domain, `dm` wakeup reason with read-then-reply, DM inbox section | code complete; rounds 1–4 fixed (27 findings); round 5 pending |
+| b-2 | **S** SSE stream + symmetry (P5.2/P5.3) | stream migration + two runbook scripts, `src/lib/stream/token.ts`, `POST /agents/me/stream-token` behind `STREAM_ENABLED`, `src/lib/store/stream/*`, `src/lib/worker/stream-server.ts` mounted in `worker/index.ts`, retention, `symmetry-contract.test.ts` | non-gated part landed in `432ab1b`; gen-2 agent splicing the per-recipient `stream_seq` CTE into the three enqueue paths and the frame CTE into every notification/activity writer + the school-events route; NO codex round yet |
+| b-2 | **C** P7 cleanup | P7.4 hygiene done (five planning docs archived with `ai/archive/README.md`, PLAN.md tooling refs + backlog, PLAN_M10 supersession); P7.2 and P7.3 found ALREADY satisfied by earlier waves (M11-1b D5 made playground memory durable; `sessions/active` already reads the shared store); boundary allowlist already at the §10 permanent set | P7.1 deletions running in the gen-2 agent; NO codex round yet |
+
+Docs for b-1 were applied at the b-1 boundary (reference/skill/heartbeat/messaging/planned/openapi,
+`agents.md` invariants + env table + file map, inventory §7 rows for the seven new kinds + §8 P5.1
+runbook). **Docs for everything after `d5b0627` are NOT applied** — every fix round and both b-2
+lanes recorded docs deltas in their reports; a docs pass is an open item below.
+
+## Commit ladder this session (oldest first; `git log --oneline acc9490..HEAD`)
+
+`7528702` b-1 specs → `ce78da9` b-2 draft specs → `d86788d` b-1 checkpoint (M+W) → `d5b0627` **b-1
+BOUNDARY** (R+D+stitch+docs, five gates green) → `b3f07f1` codex prompts → round 1: `33f352c`
+`e68b354` `941d7e6` `52c6fe8` findings, `65fc47e` fixes → round 2: `e47e0cc` prompts, `f84c255`
+`2b1b8a5` `7aa1784` `adda4bf` findings, `6aebbfa` fixes → round 3: `126e9f1`, `9ec19e5` `a4f22e0`
+`646a80b` `e778026`, `0b0e848` fixes → round 4: `536ea55`, `c018a93` `e615b50` `767e2db` `ef115d9`,
+`2d7eb1d` b-2 concurrency rule, `91bb744` convergence policy, `432ab1b` **round-4 fixes + b-2 lanes
+S/C (non-gated) + all round-4 markdown**.
+
+(The many markdown-only commits predate the user's rule of 2026-09-08 — see directive 10 — and are
+not to be repeated.)
+
+## The codex loop, by the numbers
+
+| Round | W | M | R | D | Notes |
+|---|---|---|---|---|---|
+| 1 | 7M+2m | 4M+3m+1N | 4M+4m+1N | 7M+1m+1N | M-F2 (mention wakeup pre-read) deferred; D-F1 (guard) deferred under ledger 9 |
+| 2 | 8M+2m | 1M+4m+1N | 2M+4m+1N | 2M+3m+1N | W test deferrals OVERTURNED; R serializer deferrals OVERTURNED; D guard deferral OVERTURNED and adopted; M-F2 upheld |
+| 3 | 5M+2m+1N | 1M+1m+1N | 3M+2m+1N | 2M+3m+1N | DM race flake adjudicated a TEST defect; M-F2 upheld |
+| 4 | 2M+3m+1N | 1M+2m+1N | 1M+4m+1N | 2M+3m+1N | all accepted; M-F2 upheld |
+| 5 | pending | running | pending | pending | first round under the convergence policy |
+
+Recurring finding classes (they came back one file over each round — hence directive 12's
+whole-fence audit): lock ORDER across statements (agent row FOR KEY SHARE first where an actor FK is
+taken; posts → comments → agents; registration → ledger → wakeup; enforced by STATEMENT order inside a
+`sql.transaction` — CTE order proves nothing); bare `EXISTS` where a `FOR SHARE` lock is required;
+memory-mode parity after every `await` (actor/subject re-check, preflight before the first write,
+same refusal class as the Postgres FK); tests that cannot fail (sequential calls where an overlap is
+claimed, response order confused with commit order, mutation "passed three times" = no evidence);
+comment essays (> 5 lines); JSON-boolean vs text comparison in the hidden-agent predicate.
 
 ## Open items, in order
 
-1. **Push** — the user's explicit call; 20 commits ahead of origin.
-2. **The u3c flake**: `m11-2-u3c-groups.test.ts:454` ("leaves the two membership halves agreeing
-   when subscribe races unsubscribe") failed ONCE in 698 (canonical row present, snapshot missing
-   — the torn state the FOR-NO-KEY-UPDATE arbiter exists to prevent), clean 19/19 on solo re-run;
-   first failure across every full run this milestone. A task chip is filed. Verdict needed:
-   Neon-reset flake class vs a real narrow hole. Do not silently ignore it.
-3. **Deploy-time (not code)** — the runbooks are inventory §8: shadow deploy → ≥3-day production
-   soak (`scripts/soak-shadow-report.sql`; flip-clean = matched-only stamps + zero anomalies) →
-   per-kind `shadow → on` → inline-writer deletion, each a fully-rolled-out deploy behind the
-   consumer-contract-hash barrier. Specifics added this session: the P3.2 TWO-DEPLOY runbook for
-   `playground.round_opened` (consumer coverage before producers — bundled, the fence classifies
-   producer events as pre-activation and turns are permanently lost); `agent_loop.action` is a new
-   `shadow` kind on the activity consumer; the P3.1 worker deploy order (Vercel migrations first,
-   then the worker build; Render per `render.yaml`).
-4. **M11b (P5/P6/P7)** — a separate plan, not started. Rough size: half to two-thirds of this
-   session's work. b1 = P5.1 webhooks (the largest single unit — u3e-class review depth: SSRF,
-   delivery ledger, terminal coupling, two-deploy rollout) + P5.2 SSE; b2 = P6.1 mentions + P6.2
-   reactions; b3 = P6.3 DMs + P7 cleanup (the boundary allowlist shrinks to the permanent set).
+1. **Finish codex round 5 for M (running), then R, D, W — strictly serial.** Apply
+   `ai/m11-2-handoff/b1-convergence-policy.md`: a lane CONVERGES at a round with no BLOCKER/MAJOR;
+   its leftover MINOR/NIT go to `b1-deferred-minors.md` (lane, round, finding, reason). Lanes M, R, D
+   are expected to converge in round 5 or 6; W may need more. Fix specs for round 5+ carry the
+   whole-fence audit item verbatim from the policy file.
+2. **Land lane S gen-2 and lane C gen-2** (running): re-verify with real runs (S: `m11-2-b2-stream`,
+   `m11-2-b1-webhooks`, `m11-2-u5-wakeups` integration files; C: the agent-loop/pulse/tools/senses
+   suites + boundary), then ONE code commit carrying every pending markdown.
+3. **Codex for wave b-2**: lane S needs full convergence (the seq counter is a commit-order argument;
+   the frames ledger rides eight notification writers; the SSE server is a security surface — token,
+   query-key rejection, CORS, connection cap). Lane C is low-risk: one round, stop unless
+   BLOCKER/MAJOR. Prompt template: `codex-b1-review-w.md` (structure) — write `codex-b2-review-s.md`
+   and `codex-b2-review-c.md` with files-in-scope lists from the lane reports.
+4. **Boundary gates + docs pass** once b-2 converges: the five gates (full integration ~30 min,
+   backgrounded, log to a file; build), then a docs agent applies the deltas recorded since
+   `d5b0627` (all `b1-*-fix-r*-report.md` §docs, `b2-lane-s-report.md`, `b2-lane-c-report.md`):
+   reference.md (SSE "listen, don't poll", the symmetry section, webhook headers/timeouts, DM
+   pagination bounds, guard semantics), heartbeat.md, openapi (stream-token route, `stream_url`
+   meta), `agents.md` (new invariants: statement-order lock rule, agent-row-first rule, JSON-boolean
+   predicate, no-empty-pair rule, the stream counter rule; File Map rows for `store/stream`,
+   `lib/stream`, `worker/stream-server.ts`; env vars `STREAM_ENABLED`, `STREAM_TOKEN_SECRET`,
+   `NEXT_PUBLIC_STREAM_URL`), inventory §7/§8 (the P5.2 three-deploy runbook; the P5.1 runbook is
+   there). Then the docs contract tests (`src/__tests__/docs`).
+5. **Deploy-time (not code)** — inventory §8 runbooks: P5.1 two-step (migrations + code with
+   `WEBHOOKS_ENABLED` unset → barrier → enable), P5.2 three-deploy (Vercel migrations + inert
+   producers → Render worker → enable token minting + advertise URL), the `stream_seq` post-barrier
+   reconciliation script then the NOT NULL contract script, the per-kind `shadow → on` flips for the
+   b-1 kinds after a ≥3-day soak (`scripts/soak-shadow-report.sql`), and the still-open M11a runbooks
+   (worker deploy order, `playground.round_opened` two-deploy, `agent_loop.action` shadow).
+6. **Recorded follow-ups** (not in this milestone): `deleteAgent` refuses any agent with an
+   `agent_rate_limits` row (pre-existing; consistent with the pristine-withdrawal policy; noted by
+   lane D); the profile route still publishes a raw `last_active` timestamp (pre-existing; lane M);
+   the `ux7` fixture pattern — memory `createPost` now refuses an unregistered author, so fixtures
+   must seed agents; the DM owner-dashboard reader and the report endpoint (plan backlog).
+7. **Final handoff rewrite** at the M11b code-complete stop, and the memory files.
 
 ## THE USER'S STANDING DIRECTIVES (verbatim intent — these govern how to work)
 
 1. **Reporting style**: ALWAYS report to the user in ASD-STE100 Simplified Technical English
    (global rule, `~/.claude/CLAUDE.md`). Code, comments, commits and repo documents are exempt.
-2. **Reviewer**: `codex` CLI (default gpt-5.6-sol),
-   `codex exec --sandbox read-only "$(cat <prompt>)" < /dev/null`, output captured to a file.
-3. **REVIEW EVERYTHING**: "dont forget to review work. use codex wherever appropriate. do not
-   push shit code." Every unit gets at least one codex round before it is considered done;
-   lock/atomicity/security-bearing units iterate to convergence.
-4. **KISS**: "remember KISS!" — the simplest implementation that satisfies the plan's gates. No
-   frameworks, no speculative abstraction, house patterns only. Encode it in every spec.
-5. **MAX PARALLELISM (2026-08-26)**: "parallelize as much implementation as possible. spawn
-   sonnet agents, that manage subagents. i want this entire milestone achieved fast." Sonnet
-   MANAGER agents run concurrent lanes on disjoint file fences and spawn their own implementation
-   subagents (opus for statement/store work, haiku for mechanical tasks).
-6. **Agent freshness / context kills**: "make sure to kill agents that eat up 60-70% of their
-   context and start new ones." Managers self-assess and STOP at ~60% with a complete handoff
-   file; the orchestrator spawns a fresh manager from it. Same rule for subagents (never resume
-   one past ~50–60%; fresh spawn with a self-contained handoff).
-7. **Checkpoint commits**: the orchestrator owns ALL commits — one per green round boundary plus
-   honest WIP checkpoints before/during parallel phases (scoped `git add` of one lane's files is
-   fine while other lanes run). Commit messages end with the Claude co-author line.
-8. **Risk-split review depth** (2026-08-05, still in force): full convergence for
-   karma/lock/atomicity/security-bearing units; low-risk chunks (docs, adapters over settled
-   actions, tooling) get ONE codex round and stop unless it finds a BLOCKER/MAJOR.
-9. **Stop instruction pattern**: at a natural stop, rewrite this handoff.
+2. **Reviewer**: `codex` CLI (gpt-5.6-sol), `codex exec --sandbox read-only "$(cat <prompt>)"
+   < /dev/null > <log> 2>&1`, one at a time.
+3. **REVIEW EVERYTHING**: every unit gets at least one codex round; lock/atomicity/security-bearing
+   units iterate to convergence. "Do not push shit code."
+4. **KISS + minimize bloat + CRAP scores** (2026-09-08): "just remember KISS and CRAP scores. we need
+   to minimize bloat." Complexity ≤ 12 per new function, comments ≤ 5 lines WHY-only, no new
+   abstractions/options/dependencies, compact tests. Encoded in `b1-common-rules.md`.
+5. **MAX PARALLELISM, sonnet + haiku** (2026-09-08): "Parallelize implementation. use sonnet and
+   haikus to implement as fast as possible." Sonnet MANAGERS per lane spawn sonnet (statements/
+   store/actions) and haiku (mechanical) subagents on DISJOINT file fences.
+6. **Agent freshness / context kills**: managers stop at ~60% context with a handoff file; a fresh
+   manager resumes from it. Subagents rotate at ~50%.
+7. **Checkpoint commits**: the orchestrator owns ALL commits and re-verifies every claim with real
+   runs before committing. Commit messages end with the Claude co-author line.
+8. **Risk-split review depth**: full convergence for karma/lock/atomicity/security units; low-risk
+   chunks (docs, adapters over settled actions, tooling, cleanup) get ONE round and stop unless
+   BLOCKER/MAJOR.
+9. **Stop instruction pattern**: at a natural stop, rewrite this handoff thoroughly — next steps,
+   the user's instructions, and the harness/agent instructions in use (this file).
+10. **COMMIT ONLY WITH CODE** (2026-09-08): ".md and docs update dont need their own commits." Specs,
+    findings, fix specs, reports, docs deltas and handoffs ride the NEXT code commit. Saved as memory
+    `commit-only-with-code.md`.
+11. **"Do all three" (2026-09-08)** — the acceleration decision: (a) run wave b-2 in parallel with
+    the b-1 review loop (b-2 touches the fix agents' files only behind the marker
+    `b1-fixes-landed.md`); (b) give fix agents the RULE, not just the findings — the whole-fence
+    audit; (c) cap the loop at no-MAJOR with a deferred-minors ledger. Recorded in
+    `b1-convergence-policy.md`.
+12. **Do not push** unless the user asks. Nothing from this session is pushed.
 
-## THE ORCHESTRATION LOOP (what converged two waves in one session)
+## THE ORCHESTRATION LOOP (what ran this session)
 
-1. Orchestrator scopes the wave: reads the plan lines, surveys the tree (never trust stale
-   inventory checkboxes — verify imports), splits into lanes with DISJOINT FILE FENCES, writes
-   one spec file per lane into `ai/m11-2-handoff/` (mission, deliverables, fences, gates,
-   working rules, report format), and checkpoint-commits the specs.
-2. Spawn sonnet MANAGERS concurrently (one per lane, `run_in_background: true` for the managers
-   themselves). Each manager prompt: read the spec first; spawn subagents for heavy items; hard
-   rules (no git, no codex, no full no-args integration, no build); context discipline; report
-   format.
-3. While lanes run: the orchestrator drafts the NEXT wave's specs and the codex prompts,
-   updates memory, and does nothing heavy in the repo.
-4. As each lane reports: the orchestrator RE-VERIFIES its claims (targeted gates), then makes a
-   SCOPED commit of that lane's files only (other lanes' WIP stays uncommitted).
-5. At the wave boundary (all lanes landed): full five gates — tsc, lint, full jest, FULL
-   `npm run test:integration` (~28 min, backgrounded), build — then the boundary commit.
-6. Codex rounds, STRICTLY SERIAL on a QUIET machine (no jest/build/agents running): scoped
-   prompts per unit (A/B batched when low-risk), findings adjudicated against the pinned
-   contracts BEFORE writing fix specs (reviewer proposals lose to pins — see the ledger), fixes
-   via opus fix agents (or orchestrator repairs for small prescribed defects), mutation-check
-   every behavioral fix, commit per round, re-review to a plain "CONVERGED".
-7. Archive everything: prompts as `codex-u*-review-*.md`, findings as `codex-findings-*.md`,
-   fix specs as `u*-fix-*-spec.md`, all committed.
+1. Orchestrator scopes the wave from the plan lines + a tree survey (never trust inventory
+   checkboxes — lane C found P7.2/P7.3 already done), splits into lanes with DISJOINT FILE FENCES,
+   writes `b1-common-rules.md` (shared rules, shared-file append protocol, report format) + one spec
+   per lane, commits them WITH the next code change.
+2. Spawn sonnet MANAGERS concurrently (`run_in_background: true` for the managers only). Each
+   manager prompt: read the rules then the spec; spawn subagents with `run_in_background: false`;
+   the hard rules; context discipline; report format; "final message ≤ 25 lines".
+3. While lanes run: draft the next wave's specs and the codex prompts; update memory; nothing heavy
+   in the repo.
+4. As each lane reports: RE-VERIFY with real targeted runs (tsc, its jest paths, its integration
+   file), then commit — scoped while other lanes run (an honest "lane X complete, lanes Y/Z WIP"
+   checkpoint is fine when tsc is clean), full at the boundary.
+5. Boundary: five gates (full integration backgrounded to a log file; build backgrounded), a STITCH
+   agent for cross-lane suite failures (mocks lacking new store reads, registry ceilings, forbidden
+   substrings, fixtures needing the new resolver), a DOCS agent applying every lane's recorded
+   delta, then the boundary commit.
+6. Codex rounds, STRICTLY SERIAL: one prompt per lane (`codex-b1-review-<lane>[-rN].md`: recap,
+   what changed, gate results, focus list, known decisions do-not-re-flag, "ADJUDICATE the recorded
+   deferrals explicitly", files-in-scope list, verdict line). Adjudicate findings against the pins
+   BEFORE writing the fix spec (`b1-<lane>-fix-rN-spec.md`: one numbered item per accepted finding
+   with the exact test; deferred items named with the pin). Fix agents (sonnet) run in PARALLEL, one
+   per lane, on the disjoint fences; each writes `b1-<lane>-fix-rN-report.md` with mutation-check
+   evidence verbatim. Orchestrator re-verifies, ONE commit per round carrying code + all markdown,
+   stamps the commit hash into the next round's prompts, repeats.
+7. Under directive 11 the b-2 lanes ran DURING codex rounds (the user accepted the crash risk; no
+   codex run died this session).
 
-## OPERATIONAL GUARDRAILS (each closed a real incident — follow them)
+## OPERATIONAL GUARDRAILS (each closed a real incident this session — follow them)
 
-### Codex
-- **Codex runs SOLO on a QUIET machine.** Parallel codex runs crash each other; codex died while
-  an agent ran gates in the same repo. Reviews only when no lane executes.
-- **Close stdin** (`< /dev/null`) on every codex launch; capture full output with `> file 2>&1`
-  (a `| tail` in a background task DESTROYS the log; piped commands report the tail's exit code).
-- Tell reviewers "do NOT run jest/tsc/build — the sandbox denies the temp writes and the attempt
-  can kill your session"; state the gate results in the prompt instead.
-- Rewrite each round's prompt: a "recap + what changed" section, the commit to `git show`, the
-  focus list, and a "known, recorded decisions — do NOT re-flag" list (adjudicated pins get a
-  do-not-re-litigate line). Ask codex to ADJUDICATE recorded deferrals explicitly — it overturned
-  one correctly this session (the round-1-repair paging).
-
-### Sonnet managers and subagents
-- **THE WAIT-TRAP (this session's biggest lesson)**: a manager that ends its turn to "wait" for a
-  background child is STRANDED — it receives nothing. MANDATE `run_in_background: false` in every
-  manager prompt so subagent waits are synchronous. If a manager still strands, wake it via
-  SendMessage with explicit disk-state instructions.
-- An "orphaned" subagent (one a rotated manager could not stop) may COMPLETE INDEPENDENTLY and
-  report later — when it does, immediately message the successor manager so it does not rebuild
-  finished work. Fresh managers must check FILE MTIME QUIESCENCE before touching files a possibly
-  live predecessor child might still edit.
-- Manager rotation: handoff file → fresh manager whose prompt names the handoff as its first
-  read. Commit gen-N handoffs (they are archive material).
-- A stalled subagent (600 s watchdog) dies with its partial work ON DISK — the manager inventories
-  disk state and spawns a fresh one for the remainder; never re-runs from scratch blindly.
-- Verify manager/agent claims yourself: every lane report is re-verified with real gate runs
-  before its commit (the luna precedent: gate claims were stale four separate times).
+### Agents
+- **THE WAIT-TRAP is the #1 incident class**: FOUR fix agents (W r3, M r4, W r4, and the first W r3)
+  stranded themselves by ending their turn to "wait for the monitor" on a background jest/integration
+  run — despite being told not to. **`SendMessage` is DISABLED in this session** (cannot wake them).
+  Remedy that worked every time: `TaskStop` the stranded agent (to stop it re-waking and editing
+  concurrently), spawn a gen-2 SUCCESSOR whose prompt says "your predecessor's work is ON DISK: run
+  `git diff` on the fence, map every spec item to done/partial/not started, continue; never
+  `run_in_background: true`, never the Monitor tool, never end a turn to wait — every test is a
+  FOREGROUND Bash call with a long timeout". Put that sentence in EVERY fix-agent prompt.
+- **Session rate limit** (hit once at 5:40 pm): all four running agents died mid-work with their
+  partial edits on disk and tsc still clean. Remedy: wait for the reset, spawn gen-2 agents with the
+  same "inventory the diff first" instruction. Every prompt now says "on a rate-limit error write
+  `<lane>-handoff.md` with the exact disk state and stop".
+- **Verify every claim with a real run.** Lane D's round-1 "F7 already satisfied" was rejected by
+  codex two rounds later; lane W's round-3 "FOR SHARE mutation passed three times" was called
+  "not evidence"; lane M's round-4 F1 had a documented `WHERE` gate that was never in the SQL until
+  the successor checked. The orchestrator re-ran every lane's suites before every commit.
+- Prompts to codex must say "do NOT run jest/tsc/build — the sandbox denies the temp writes"; state
+  the gate results instead. Close stdin, capture to a file, extract the findings from the LAST
+  `tokens used` line onward.
 
 ### Parallel-lane hygiene
-- Disjoint file fences per lane, spelled in the spec, with an explicit "do not touch" list naming
-  the OTHER lanes' fences. Out-of-fence needs are RECORDED in the report, not acted on (one
-  justified exception this session: auth.ts's one-line allowlist — demanded by the plan itself).
-- **Generated files are collision points**: two lanes regenerating `.eslintrc.json` silently
-  overwrote each other once — the drift test caught it. Rule: lanes may append manifest names at
-  their own anchor and regenerate at lane END; the orchestrator regenerates once at the boundary;
-  the drift test arbitrates.
-- `src/lib/store/export-manifest.ts` is the designed merge point: a new store export from any
-  lane trips `boundary-manifest-completeness` BY NAME at the boundary — classify it (mutating
-  list, or a read prefix) and `npm run gen:boundary`. Constants/pure builders go in the mutating
-  list per the documented default-deny (no third bucket).
-- Cross-lane dependencies: sequence the dependent duty LAST in its lane; the lane checks disk
-  when it arrives (this session: Lane E wired Lane D's runner live when it landed mid-lane) or
-  leaves ONE marked stub hook. Shared naming collides in real time — coordinate renames through
-  the orchestrator (`runPulseHousekeeping` tripped the houses-deleted scan on the `house`
-  substring; renamed `runPulseMaintenance`).
-- agents.md/CLAUDE.md and `ai/validation/m11-inventory.md` edits are ORCHESTRATOR-ONLY during
-  parallel waves; lanes record their deltas in reports.
+- Disjoint fences per lane, spelled in the spec with an explicit do-not-touch list. Shared files
+  (`kinds.ts`, `coverage.ts`, `store-types.ts`, the notifications consumer, the wakeup router,
+  `store.ts`, `export-manifest.ts`, `migrate.js`, `migration-ledger.ts`, `agent-tools/index.ts`,
+  `actions/types.ts`) are APPEND-ONLY at a lane's own anchor with re-read-before-edit; it held for
+  four concurrent lanes with zero lost work.
+- One function of one file can belong to another lane (R owned `deletePost` inside M's
+  `posts/db.ts`) — say so in both specs.
+- A store the whole wave depends on (the notifications inserts) is edited by ONE lane first, which
+  writes a MARKER file when done (`b1-lane-w-wakeups-done.md`); the others wait on the marker for
+  that file only. The same pattern gated b-2 behind `b1-fixes-landed.md`.
+- Generated `.eslintrc.json`: lanes run `gen:boundary` at lane END only; the drift test arbitrates.
+- Docs (`public/*.md`, `openapi.json`, `agents.md`, the inventory) are boundary-only: lanes record
+  the exact delta text in their reports; one docs agent applies all of them.
+- The tool registry ceiling (`registry.test.ts`) and the `houses-deleted` substring scan (no
+  "house" even in a comment) are the two shared tests new lanes trip.
 
 ### Testing discipline
-- **Mutation-check every behavioral fix**: suppress the fix → watch the specific test fail with
-  the forbidden behavior observed → restore → green. Record the evidence VERBATIM in the report
-  and the commit. Orchestrator repairs get the same treatment.
-- Integration data on the reserved DB: RUN-suffix every fixture value under UNIQUE columns;
-  neutralize one-per-scope index orphans in beforeAll (`idx_pg_sessions_one_live_per_school`,
-  `idx_wakeups_dedup_idle`, `idx_wakeups_one_inflight`, and now the DUE SET for ordered
-  global-limit scans — a foreign leftover lands inside the page under test); drain-heavy suites
-  pay the cross-run backlog once in beforeAll.
-- The advisory lock serializes integration runs across lanes — WAIT, never kill a holder. Full
-  integration (~28 min) is orchestrator-only, at boundaries, backgrounded with the log to a file.
-- Known flake protocol: re-run the failing suite SOLO before diagnosing (Neon resets
-  intermittently). A first-ever failure of a converged race test gets recorded + a filed
-  investigation, never silently ignored (the u3c item above).
-- Memory-mode test discovery this session: the in-process dispatcher fires consumers
-  synchronously on emit, so a test isolating a SWEEP's own writes must clear/step around what the
-  consumer already produced from the same event.
+- **Mutation-check every behavioral fix**, and the report must show the FAILING run. A test whose
+  mutation "passed three times" is restructured until it fails.
+- Integration data: RUN-suffix every unique value; neutralize one-per-scope index orphans in
+  `beforeAll`; clean up in `afterAll` (lane W swept 170 orphaned rows other runs had left).
+- Race tests: hold the row on one connection, identify each contender's backend by pid
+  (`pg_blocking_pids`, marker comments in the SQL, `pg_stat_activity`), release only after the
+  dependency is observed, assert COMMITTED state never response order. Counting blocked queries is
+  unsound (chained waiters, unrelated queries). `pg_advisory_xact_lock` barriers are unreliable
+  through the Neon POOLER endpoint.
+- Known-flake protocol: re-run the suite SOLO; twice-failing = real; record it in the next codex
+  prompt for adjudication (the DM forward-direction race was adjudicated a test defect and fixed).
+- Memory-mode tests must seed agents: `createPost`/`createComment`/`addReaction`/`sendDm` now refuse
+  an unregistered actor (parity with the FKs).
 
-### Design guardrails reinforced by this session's findings (the classes codex keeps catching)
-- **A freshness/eligibility check separated from its write by an await is a TOCTOU** — gate INSIDE
-  the statement, `FOR SHARE` on the row the racing writer updates (never a bare EXISTS). The u5-C
-  arm gate and the u6 execution guard are the templates.
-- **A "stop claiming" signal (lock loss, SIGTERM) must be re-checked immediately before EVERY
-  claim/write, in EVERY phase — and again after every long await** (the GM call was the longest
-  window in the sweep). A conditional write's predicate protects against a racing WRITER, not
-  against this worker acting under a lost lock.
-- **Fence-loss ends a tick with NOTHING further written under lost ownership**: one token-fenced
-  completion attempt, then return — no loop-state/bookkeeping writers.
-- **Any bounded scan whose failed items stay in the set is a starvation bug**: oldest-first,
-  due-eligible predicates, in-query attempted-id exclusion (`AND id <> ALL($ids)`) with page ×
-  max-pages budgets. Keyset cursors on ms-ISO strings re-read µs rows — exclusion beats cursor
-  here.
-- **Transitional projections ride the emitting statement as CTEs** (the u4prep2 rule held for
-  `agent_loop.action`); duplicated projection definitions read as soak mismatches — delete the
-  old writer in the same change.
+### Design rules reinforced this session (add to `agents.md` in the docs pass)
+- **Lock order is enforced by STATEMENT order inside a `sql.transaction`.** CTE declaration order
+  guarantees nothing; a registration lock in the same statement as the ledger lock proves nothing.
+- **The actor row comes first** (`SELECT … FROM agents WHERE id = $1 FOR KEY SHARE`) wherever a later
+  insert's actor FK would take that lock, or withdrawal (which cascade-deletes the agent's rows)
+  deadlocks with the write. Then posts → comments → agents; registration → ledger → wakeup.
+- **`FOR SHARE`, not `FOR KEY SHARE`, for a liveness gate**: `FOR KEY SHARE` is compatible with the
+  tombstone's `FOR NO KEY UPDATE` and never blocks it. And never `FOR SHARE` before an UPDATE of the
+  same row (shared → exclusive upgrade deadlocks); take `FOR NO KEY UPDATE` from the start.
+- **One row, one modification per statement**: two data-modifying CTEs on the same row silently lose
+  one write (Postgres documents it); split into statements.
+- **A refused write must leave NOTHING**: no empty pair row, no seeded rate row, no seq bump, no
+  quota roll. Gate every statement of the transaction, or delete what an earlier statement created.
+- **A statement's classification is projected, never re-read**; the hidden-agent predicate compares
+  JSON booleans (`metadata->'test' = 'true'::jsonb`) in SQL exactly as the JS twin does.
+- **Fence-loss discipline extends to non-terminal tools**: a refused `execution_guard_failed` from
+  ANY tool ends the tick with no bookkeeping writers.
+- **Payloads are id-only by construction** (an allowlist of id fields), never by filtering a copy.
 
 ## The adjudication ledger (pins that beat or bound reviewer proposals — do not re-litigate)
 
-1–5. The u3e/u4prep2 ledger from the prior stop (vetting ensure contract; merged refusal
-precedence; verbatim-only idempotency; superseded dissolution; torn-state reissue) — all stand.
-6. **TA-emit (B3)**: the user chose it over the spec's operator branch; codex-clean. Do not
-   propose re-silencing.
-7. **Actionable-only admissions projection**: the loop prompt renders admissions ONLY when
-   next_action exists or the agent is not fully admitted (prompt-cost narrowing, orchestrator
-   adjudication on codex's fix proposal).
-8. **`createOrReArmWakeup`'s false/false race outcome** is legitimate (exactly one row exists);
-   no arbiter — do not add FOR UPDATE for a reporting gap.
-9. **Recorded interim guard coverage**: the statement-level execution guard reaches the two wired
-   actions (create_comment, submit_playground_action); every other runner-reachable terminal tool
-   sits behind the lease fence alone — documented in the runner header; extend per-action when
-   those actions gain guard parameters, do not re-flag the interim.
-10. **The drain duty takes no shutdown signal** (receipt-bounded, budget-bounded) — codex
-    adjudicated acceptable.
-11. **Exclusion-over-cursor** for the sweep paging (ms-ISO vs µs precision) — codex confirmed
-    sound.
+1–11. The M11a ledger stands (vetting ensure contract; merged refusal precedence; verbatim-only
+idempotency; superseded dissolution; torn-state reissue; TA-emit; actionable-only admissions;
+`createOrReArmWakeup` false/false; interim guard coverage — NOW NARROWED, see 13; drain duty takes
+no shutdown signal — NOW NARROWED, see 14; exclusion-over-cursor).
+12. **The plan's `none` wakeup channel is not materialized**: `resolveWakeupDelivery` answers
+    `internal` | `webhook` | `null`; a row nobody consumes is bloat. Codex accepted it four rounds.
+13. **New actions adopt the execution guard** (reactions, DMs did); ledger 9's interim covers only
+    the older actions. Codex overturned the deferral with a concrete harm; the user's KISS rule did
+    not outweigh a stale write.
+14. **The drain pass forwards the worker's stop signal to its webhook pass** (round 2 MINOR); the
+    drain's own receipt work still takes none.
+15. **Mention wakeups may be enqueued from a pre-read** (M round-1 F2): the same shape as the
+    converged `comment.created` router; a stale wakeup for deleted content is harmless under the
+    runner contract. UPHELD by codex in rounds 2, 3 and 4 — do not propose an in-statement gate.
+16. **`already_reacted` wins over `rate_limited`** when both hold (lane R refinement).
+17. **The DM send is a multi-statement transaction** (ensure pair → lock+claim+insert → cleanup on
+    refusal), mirroring `createComment`; codex upheld the structure and only ever refined its
+    refusal effects.
+18. **The recipient-only withdrawal test** for DMs stands (pristine-withdrawal policy: `deleteAgent`
+    refuses any agent with an `agent_rate_limits` row, which is pre-existing and consistent).
+19. **The DM forward-direction race flake was a TEST defect** (response order vs commit order);
+    Postgres re-evaluates the locked row after the wait, there is no statement window.
+20. **Serializer completeness**: reaction counts appear on the context feed and on news discussions
+    too (codex overturned the "pure serializer / cached RSS" deferrals; both were cheap).
 
 ## Where everything lives
 
-- Specs, review prompts, findings, fix specs, manager handoffs: `ai/m11-2-handoff/` (the u5 trail
-  is `u5-lane-*`, `codex-u5-*`, `codex-findings-u5-round1.md`; the u6 trail is `u6-lane-*`,
-  `u6-stitch-spec.md`, `u6-*-fix-*`, `codex-u6-*`, `codex-findings-u6-round1.md`).
-- Invariants: `CLAUDE.md` (= agents.md) "Store and Migration Invariants" — read before touching
-  any producer, consumer, or statement. NOTE: agents.md has NOT yet absorbed this wave's new
-  facts (the wakeup queue module, the worker & pulse section P3.1's docs delta names, the P3.2
-  runbook pointer) — a documentation pass is a small open item for the next session.
-- Inventory: `ai/validation/m11-inventory.md` — §7 rows updated for `playground.round_opened` and
-  `agent_loop.action`; §8 gained the P3.2 two-deploy runbook; §10 exemptions current.
-- Gates: `npx tsc --noEmit && npm run lint && npm test -- --runInBand && npm run test:integration
-  && npm run build`. Targeted while iterating; all five at boundaries; the orchestrator runs them
-  itself before every commit and every review round.
+- Specs, rules, prompts, findings, fix specs, fix reports, lane reports, handoffs, policy:
+  `ai/m11-2-handoff/` — `b1-common-rules.md`, `b1-convergence-policy.md`, `b1-deferred-minors.md`,
+  `b1-lane-<w|m|r|d>-*-spec.md` + `-report.md`, `codex-b1-review-<lane>[-rN].md`,
+  `codex-findings-b1-<lane>-roundN{.md,-raw.log}`, `b1-<lane>-fix-rN-{spec,report}.md`,
+  `b2-lane-<s|c>-*-spec.md`, `-report.md`, `-handoff.md`, the two markers.
+- Memory: `m11b-execution-state.md` (this milestone), `commit-only-with-code.md` (directive 10),
+  `m11-2-execution-state.md` (M11a), `MEMORY.md` index.
+- Invariants: `agents.md` (= `CLAUDE.md`) "Store and Migration Invariants" — read before touching any
+  producer, consumer or statement; the "Design rules reinforced" section above is the pending delta.
+- Inventory: `ai/validation/m11-inventory.md` — §7 rows for the seven b-1 kinds, §8 P5.1 runbook;
+  the P5.2 runbook and the `stream_seq` reconciliation are the pending delta.
+- Gates: `npx tsc --noEmit && npm run lint && npm test -- --runInBand && npm run test:integration &&
+  npm run build`. Targeted while iterating; all five at boundaries; the orchestrator runs them itself
+  before every commit and every review round.

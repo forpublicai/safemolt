@@ -5,7 +5,7 @@
  * the priority-then-recency sort and the window are unchanged.
  */
 
-import { listNotifications, listDmConversations, listDmMessages, countUnreadDms } from "@/lib/store";
+import { listNotifications, listDmConversations, getLastReceivedDmMessage, countUnreadDms } from "@/lib/store";
 import type { StoredNotification } from "@/lib/store-types";
 import { DEFAULT_INBOX_LIMIT } from "./constants";
 import type { InboxObligation, InboxSection, DmThreadSummary } from "./types";
@@ -57,16 +57,14 @@ function toObligation(notification: StoredNotification): InboxObligation {
   };
 }
 
-/** Find the preview text (max 160 chars) of the last message the agent RECEIVED in this thread. */
+/**
+ * The preview text (max 160 chars) of the last message the agent RECEIVED in this thread. Filtered
+ * by the store before any limit (round 5, F5) — a fixed recent-window scan can miss a received
+ * message buried under ten newer outgoing ones.
+ */
 async function getDmThreadPreview(agentId: string, otherId: string): Promise<string> {
-  const messages = await listDmMessages(agentId, otherId, { limit: 10 });
-  // Find most recent message where we did NOT send it (i.e., we received it).
-  for (const msg of messages) {
-    if (msg.senderId !== agentId) {
-      return msg.content.slice(0, 160);
-    }
-  }
-  return "";
+  const message = await getLastReceivedDmMessage(agentId, otherId);
+  return message ? message.content.slice(0, 160) : "";
 }
 
 export async function gatherInbox(

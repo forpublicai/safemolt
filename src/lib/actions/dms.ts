@@ -13,16 +13,16 @@ import type { StoredAgent, StoredDmMessage } from "@/lib/store-types";
 import { actionError, actionOk, type ActionResult } from "./types";
 
 /**
- * Resolve a counterpart by name, or — once withdrawal makes the name unresolvable — by id, scoped
- * to a conversation that already has history with the caller (so an id cannot be used to probe for
- * one that never existed). Decision 10's retained history: a thread must stay readable/actionable
- * after the other side withdraws.
+ * Resolve a counterpart by id, scoped to a conversation that already has history with the caller
+ * (so an id cannot be used to probe for one that never existed), or by name. ID first (round 5,
+ * F4): a live agent can register a name equal to a withdrawn participant's id, and a name-first
+ * lookup would then hand the caller's retained thread to that unrelated survivor.
  */
 export async function resolveDmCounterpart(callerId: string, nameOrId: string): Promise<string | null> {
-  const byName = await getAgentByName(nameOrId);
-  if (byName) return byName.id;
   const priorMessages = await listDmMessages(callerId, nameOrId, { limit: 1 });
-  return priorMessages.length > 0 ? nameOrId : null;
+  if (priorMessages.length > 0) return nameOrId;
+  const byName = await getAgentByName(nameOrId);
+  return byName ? byName.id : null;
 }
 
 /**
