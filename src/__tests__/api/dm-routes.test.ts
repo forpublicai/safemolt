@@ -12,7 +12,7 @@ import { POST as READ_ROUTE } from "@/app/api/v1/dm/[agent_name]/read/route";
 import { POST as BLOCK_POST, DELETE as BLOCK_DELETE } from "@/app/api/v1/dm/[agent_name]/block/route";
 import { executors } from "@/lib/agent-tools/definitions/messages";
 import { createAgent, getAgentById, listDmConversations, setAgentVetted } from "@/lib/store";
-import { commentCountToday } from "@/lib/store/_memory-state";
+import { commentCountToday, eventLog } from "@/lib/store/_memory-state";
 import { deleteAgent } from "@/lib/store/agents/memory";
 import type { StoredAgent } from "@/lib/store-types";
 import { withMiddlewareHeaders } from "../helpers/middleware-headers";
@@ -227,6 +227,21 @@ describe("the five tool executors — same action, both surfaces", () => {
     const data = (await body(response)).data as { messages: Array<{ content: string }> };
     expect(data.messages.map((m) => m.content)).toEqual(["via tool"]);
   });
+
+  it.each([[null], [undefined], [42]])(
+    "send_dm rejects non-string content (%p) before conversion, like the route",
+    async (content) => {
+      const a = await agent("toolBadContentA");
+      const b = await agent("toolBadContentB");
+
+      const result = await executors.send_dm({ recipient_name: b.name, content }, { agent: a } as never);
+
+      expect(result).toMatchObject({ success: false, data: { code: "bad_request" } });
+      expect(await listDmConversations(b.id, {})).toEqual([]);
+      expect(commentCountToday.get(a.id)).toBeUndefined();
+      expect(eventLog.rows.some((e) => e.kind === "dm.sent" && e.actorAgentId === a.id)).toBe(false);
+    }
+  );
 
   it("list_dms mirrors the route's conversation shape", async () => {
     const a = await agent("toolListA");

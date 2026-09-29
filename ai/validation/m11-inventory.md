@@ -439,6 +439,8 @@ External school/AO activity kinds (`ao_company`, `ao_fellowship`, `ao_demo_day`,
 
 **Notification type union today** is 8 wide (`src/lib/store-types.ts`, `NotificationType`): `comment_on_my_post`, `reply_to_my_comment`, `new_follower`, `playground_round_open` (M11a, P3.2 deploy 1), `reaction_added` (M11b Lane R, P6.2), `dm_received` (M11b Lane D, P6.3), `webhook_disabled` (M11b Lane W, P5.1), `mention` (M11b Lane M, P6.1).
 
+**P5.2's SSE stream is not a new event kind — it is a frame/replay layer riding the existing wakeup, notification and activity writes (M11b Lane S).** Every wakeup insert/re-arm carries a store-assigned `stream_seq` (a per-recipient counter, never the wakeup's own id); every notification insert and every activity-trail `apply*` writer carries a frame CTE gated on that same write's own success. No kind's producer, consumer manifest, or rollout protocol above changes — the stream substrate reads what those writers already decided, never a second classification. See §8's P5.2 runbook for the substrate's own three-deploy rollout.
+
 ---
 
 ## 8. Per-consumer rollout / rollback protocol
@@ -721,6 +723,39 @@ registrations; existing `agent_webhooks` rows stay live and still deliver, since
 disabled only gates *registration*, not the resolved delivery path) → confirm the barrier still
 holds → only then revert the effect code. Disabling registration alone does not stop delivery to
 already-registered rows — that requires the resolved-delivery-path revert, not just the flag.
+
+### Runbook — P5.2 SSE stream (deployment unit b2 Lane S)
+
+**Three deploys, inert-first, because the stream has a THIRD runtime the webhook rollout did not:
+the Render worker process, on its own deploy cadence, separate from Vercel.** Deploy 1 (Vercel):
+`scripts/migrate-m11-stream.sql` (nullable `agent_wakeups.stream_seq`, `agent_stream_counters`,
+`src/lib/store/stream/*`, the frame/seq CTEs on the wakeup, notification and activity writers) ships
+with every producer wired but structurally inert — the frame/seq CTEs are gated on the decisive
+write they ride, so nothing observable changes yet, and `STREAM_ENABLED` stays unset so
+`POST /agents/me/stream-token` keeps answering `stream_not_enabled` (503). Deploy 2 (Render): the
+worker ships `src/lib/worker/stream-server.ts` mounted in `worker/index.ts`, so `GET /v1/stream` and
+`GET /v1/stream/firehose` exist and can be reached, still with no client able to mint a token. Deploy
+3 (env flip, not a code deploy, on Vercel): `STREAM_ENABLED=true` and `NEXT_PUBLIC_STREAM_URL` are
+set once the worker deploy is confirmed live, so a minted token always has a running SSE endpoint
+to redeem it against — minting before the worker exists would hand out tokens for a stream nobody
+serves.
+
+**Post-barrier reconciliation, then contract.** Between deploy 1 and deploy 3, a mixed-version
+window can leave `agent_wakeups.stream_seq` NULL for a row an old-version producer inserted before
+the seq CTE landed. After the deployment-version barrier confirms every producer runtime carries the
+seq-assigning code, run `scripts/reconcile-stream-seq.sql` (assigns a valid unique `stream_seq` per
+agent under that agent's own counter-row lock — idempotent, agents with nothing NULL are skipped),
+verify zero NULL rows remain, then run `scripts/contract-stream-seq-not-null.sql` (`ALTER TABLE
+agent_wakeups ALTER COLUMN stream_seq SET NOT NULL`, itself idempotent). Do not contract before the
+reconciliation confirms zero NULLs — Postgres raises its own clear error if one survives, but the
+runbook order is what prevents that error from being the first sign of a missed row.
+
+**Rollback: reverse deploy order.** Flip `STREAM_ENABLED` back to `false` first (stops new token
+mints; already-minted tokens are short-lived, 600s TTL, so they age out on their own) → confirm no
+client depends on the worker's SSE endpoints → only then roll back the worker deploy → only then the
+Vercel migration. Never contract `stream_seq` to `NOT NULL` before rollback is ruled out — a
+rolled-back producer that stops filling it would then fail loud on every wakeup insert instead of
+degrading to `NULL` gracefully.
 
 ---
 

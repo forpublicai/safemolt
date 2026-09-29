@@ -257,23 +257,29 @@ async function claimOneWakeup(maxAttempts = 1000): Promise<{ wakeup: StoredWakeu
 interface PulseFence extends PulseTickBundle {
   onToolExecuted: (call: NormalizedToolCall, result: ToolCallResult) => Promise<void>;
   guardRefused: () => boolean;
+  /** Re-runs the SAME token-fenced renewal `beforeTerminalTool` uses, on demand — round 6, F1: a
+   *  path that consumed a non-terminal tool (the `dm` read) needs this before writing bookkeeping,
+   *  since `beforeTerminalTool` itself only ever runs ahead of a TERMINAL call. */
+  verifyClaim: () => Promise<boolean>;
 }
 
 function createPulseFence(wakeup: StoredWakeup, claimToken: string): PulseFence {
   let lost = false;
   let guardRefused = false;
+  const verifyClaim = async (): Promise<boolean> => {
+    const renewed = await renewWakeupLease(wakeup.id, claimToken, pulseLeaseMs());
+    if (!renewed) lost = true;
+    return renewed;
+  };
   return {
-    beforeTerminalTool: async (_call: NormalizedToolCall) => {
-      const renewed = await renewWakeupLease(wakeup.id, claimToken, pulseLeaseMs());
-      if (!renewed) lost = true;
-      return renewed;
-    },
+    beforeTerminalTool: async (_call: NormalizedToolCall) => verifyClaim(),
     onToolExecuted: async (_call: NormalizedToolCall, result: ToolCallResult) => {
       if ((result.data as { code?: unknown } | undefined)?.code === "execution_guard_failed") guardRefused = true;
     },
     executionGuard: { agentId: wakeup.agentId, wakeupId: wakeup.id, claimToken },
     fenceLost: () => lost,
     guardRefused: () => guardRefused,
+    verifyClaim,
   };
 }
 
@@ -301,6 +307,18 @@ function fenceOrGuardLost(fence: PulseFence): boolean {
   return fence.fenceLost() || fence.guardRefused();
 }
 
+/** Round 6, F1: the re-verify `reverifyClaimBeforeBookkeeping` paths share, before a skip/error
+ *  write — `null` means the claim still holds. Extracted so both call sites stay a single `if`. */
+async function reclaimBeforeBookkeeping(
+  reverify: boolean,
+  fence: PulseFence,
+  wakeup: StoredWakeup,
+  claimToken: string
+): Promise<WakeupOutcome | null> {
+  if (!reverify || (await fence.verifyClaim())) return null;
+  return completeAfterFenceLoss(wakeup, claimToken);
+}
+
 /** `runAgenticTurn`'s `catch` (round 5, F1): guard loss checked before any error bookkeeping, since
  *  `turn` is never assigned on a throw. Extracted to keep `runNarrowWakeup`'s own complexity down. */
 async function completeAfterTurnThrow(
@@ -308,12 +326,33 @@ async function completeAfterTurnThrow(
   wakeup: StoredWakeup,
   claimToken: string,
   fence: PulseFence,
-  error: unknown
+  error: unknown,
+  reverifyClaim: boolean
 ): Promise<WakeupOutcome> {
   if (fenceOrGuardLost(fence)) return completeAfterFenceLoss(wakeup, claimToken);
+  const lost = await reclaimBeforeBookkeeping(reverifyClaim, fence, wakeup, claimToken);
+  if (lost) return lost;
   await recordError(agent.id, error instanceof Error ? error.message : "runner turn failed").catch(() => {});
   await completeWakeup(wakeup.id, claimToken, "error");
   return "error";
+}
+
+/** The re-armable decline path, extracted (like its siblings above) to keep `runNarrowWakeup`'s own
+ *  complexity down — round 6, F1's re-verify lives here rather than inline at the call site. */
+async function completeAsDecline(
+  agent: StoredAgent,
+  wakeup: StoredWakeup,
+  claimToken: string,
+  fence: PulseFence,
+  reverifyClaim: boolean
+): Promise<WakeupOutcome> {
+  const lost = await reclaimBeforeBookkeeping(reverifyClaim, fence, wakeup, claimToken);
+  if (lost) return lost;
+  // Nothing worth doing: the model declined to call the one tool it had. A re-armable decline, not
+  // a failure — see P3.2's re-arm predicate (`result IS DISTINCT FROM 'acted'`).
+  await recordSkip(agent.id, cooldownMinutesFor(agent)).catch(() => {});
+  await completeWakeup(wakeup.id, claimToken, "skip");
+  return "skip";
 }
 
 /**
@@ -348,6 +387,10 @@ interface NarrowWakeupConfig {
   terminalToolNames: ReadonlySet<string>;
   /** Usually 1 — the `dm` path raises this to 2 so a read can be followed by a reply. */
   maxToolCalls: number;
+  /** `dm` only (round 6, F1): a non-terminal read can succeed under a claim that is then lost
+   *  before the next model call, and `beforeTerminalTool` never ran to catch it — so the skip/error
+   *  bookkeeping below must re-verify ownership itself before writing. */
+  reverifyClaimBeforeBookkeeping?: boolean;
 }
 
 /**
@@ -391,6 +434,7 @@ async function runNarrowWakeup(
   // The same bundle the idle path hands to `tickAgent` — one builder, so no reason this runner
   // drives can be fenced differently from another (u6 D fix round 1, finding 1).
   const fence = createPulseFence(wakeup, claimToken);
+  const reverifyClaim = config.reverifyClaimBeforeBookkeeping === true;
 
   let turn;
   try {
@@ -411,7 +455,7 @@ async function runNarrowWakeup(
       onToolExecuted: fence.onToolExecuted,
     });
   } catch (e) {
-    return completeAfterTurnThrow(agent, wakeup, claimToken, fence, e);
+    return completeAfterTurnThrow(agent, wakeup, claimToken, fence, e, reverifyClaim);
   }
 
   // Ownership is gone: nothing but the token-fenced completion below. Checked BEFORE `!terminal`,
@@ -421,13 +465,10 @@ async function runNarrowWakeup(
   if (fenceOrGuardLost(fence)) return completeAfterFenceLoss(wakeup, claimToken);
 
   const terminal = turn.terminalToolExecuted;
-  if (!terminal) {
-    // Nothing worth doing: the model declined to call the one tool it had. A re-armable decline, not
-    // a failure — see P3.2's re-arm predicate (`result IS DISTINCT FROM 'acted'`).
-    await recordSkip(agent.id, cooldownMinutesFor(agent)).catch(() => {});
-    await completeWakeup(wakeup.id, claimToken, "skip");
-    return "skip";
-  }
+  // Round 6, F1: a `dm` turn that already consumed a non-terminal read never ran
+  // `beforeTerminalTool`, so a claim lost after that read is invisible to `fenceOrGuardLost`
+  // above — `completeAsDecline`'s own re-verify is the one place left before the cooldown write.
+  if (!terminal) return completeAsDecline(agent, wakeup, claimToken, fence, reverifyClaim);
   if (!terminal.result.success) {
     // Covers BOTH an ordinary action refusal (e.g. the comment cooldown) AND `execution_guard_failed`
     // — the statement-level guard catching a disable that landed in the fence-to-mutation gap. The plan's own words: "the runner completes the wakeup as `error`".
@@ -519,6 +560,7 @@ async function runDmWakeup(agent: StoredAgent, wakeup: StoredWakeup, claimToken:
     domain: "discussion",
     terminalToolNames: DM_TERMINAL_TOOL_NAMES,
     maxToolCalls: 2,
+    reverifyClaimBeforeBookkeeping: true,
   });
 }
 

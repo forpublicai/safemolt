@@ -561,9 +561,11 @@ describe("mark-read racing a held send — a real held-lock barrier", () => {
  * second send and a read are then proven to queue behind THAT backend's own pid, never the raw
  * holder directly, and only after release do they see the committed seqs and cursor.
  *
- * Mutation evidence (see `b1-d-fix-r5-report.md`): splitting the bump into its own earlier,
- * separately-committed statement (releasing the pair lock before the insert) makes the second send
- * and the read stop waiting on the paused send's pid at all — this test times out instead of passing.
+ * Mutation evidence (round 6, F2; see `b1-d-fix-r6-report.md`): the pair must already exist before
+ * the setup send below, or a mutated bump statement fails there instead — unrelated to this test's
+ * own barrier. With the pair pre-seeded, splitting the bump into its own earlier, separately-
+ * committed statement (releasing the pair lock before the insert) makes `waitForContenderBehind`
+ * fail to find the paused send's own pid at all, at the barrier itself.
  */
 describe("F2 (round 5) — a real send paused AFTER its own insert is what a second send and a read queue behind", () => {
   const PAUSE_MARKER = `b1dm_pause_marker_${RUN}`;
@@ -595,6 +597,10 @@ describe("F2 (round 5) — a real send paused AFTER its own insert is what a sec
   it("a second send and a read both wait on the paused send's own backend, and see its committed state", async () => {
     const a = await seedAgent();
     const b = await seedAgent();
+    // Round 6, F2: the pair must exist BEFORE the setup send, or a mutated (unfixed) bump statement
+    // no-ops on a fresh pair and the setup send itself fails — a false positive unrelated to the
+    // paused-send barrier this test exists to prove.
+    await seedConversation(a.id, b.id);
     expect((await sendDm({ senderId: a.id, recipientId: b.id, content: "seen" })).outcome).toBe("inserted");
     expect(await markDmRead(b.id, a.id)).toBe(true);
     await clearRateWindow(a.id);

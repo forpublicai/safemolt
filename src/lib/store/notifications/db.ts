@@ -515,17 +515,18 @@ const DM_RECEIVED_NOTIFICATION_SELECT = `
       LEFT JOIN agents sender ON sender.id = $4::text
     `;
 
-function dmReceivedNotificationParams(input: DmReceivedNotificationInput, id: string): unknown[] {
-  return [id, input.dedupKey, input.recipientAgentId, input.actorAgentId, input.conversationId, input.messageId, input.createdAt];
-}
-
 export async function createDmReceivedNotificationIdempotent(
   input: DmReceivedNotificationInput
 ): Promise<StoredNotification | null> {
-  return insertNotificationFromSelect(
-    DM_RECEIVED_NOTIFICATION_SELECT,
-    dmReceivedNotificationParams(input, generateNotificationId())
-  );
+  return insertNotificationFromSelect(DM_RECEIVED_NOTIFICATION_SELECT, [
+    generateNotificationId(),
+    input.dedupKey,
+    input.recipientAgentId,
+    input.actorAgentId,
+    input.conversationId,
+    input.messageId,
+    input.createdAt,
+  ]);
 }
 
 /**

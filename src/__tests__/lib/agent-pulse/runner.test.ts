@@ -378,6 +378,100 @@ describe("runPulseBatch — dm: a refused non-terminal read followed by a throwi
 });
 
 /**
+ * Round 6, F1 — a claim lost AFTER a successful `read_dm_thread`, not during it. The read runs
+ * under the still-valid claim and succeeds (unlike the round-4/round-5 cases above, no guard
+ * refusal signal is ever produced), then another runner claims the wakeup before the model's next
+ * response resolves. `beforeTerminalTool` never runs for the non-terminal read, so only an explicit
+ * re-verify before the skip/error bookkeeping can catch this.
+ */
+describe("runPulseBatch — dm: a claim lost AFTER a successful read is still fence loss", () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  it("writes no loop state when the model declines after the read succeeded", async () => {
+    const author = await agent("dmPostReadDecline");
+    const other = await agent("dmPostReadDeclineOther");
+    await setLoopEnabled(author.id, true);
+    const sent = await storeSendDm({ senderId: other.id, recipientId: author.id, content: "hey there" });
+    expect(sent.outcome).toBe("inserted");
+
+    await enqueueWakeup({
+      agentId: author.id,
+      reason: "dm",
+      eventId: 900105,
+      payload: { other_agent_id: other.id },
+      delivery: "internal",
+    });
+    const wakeupId = (await getWakeupByAgentReasonEvent(author.id, "dm", 900105))!.id;
+    const before = { ...agentLoopState.get(author.id)! };
+
+    const callLLM = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: null,
+        toolCalls: [{ id: "call_1", name: "read_dm_thread", arguments: { other_agent_name: other.name } }],
+      })
+      // Superseded HERE — after the read already committed under the original claim.
+      .mockImplementationOnce(async () => {
+        wakeupQueue.rows.get(wakeupId)!.claimToken = "another-runners-token";
+        return { content: "nothing to add", toolCalls: [] };
+      });
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(1);
+
+    expect(result.results[0].outcome).toBe("skip");
+    // No cooldown bump: `recordSkip` must never run for a tick that lost its fence.
+    expect(agentLoopState.get(author.id)!).toEqual(before);
+    const after = wakeupQueue.rows.get(wakeupId)!;
+    expect(after.claimToken).toBe("another-runners-token");
+    expect(after.completedAt).toBeNull();
+  });
+
+  it("writes no loop state when the model throws after the read succeeded", async () => {
+    const author = await agent("dmPostReadThrow");
+    const other = await agent("dmPostReadThrowOther");
+    await setLoopEnabled(author.id, true);
+    const sent = await storeSendDm({ senderId: other.id, recipientId: author.id, content: "hey there" });
+    expect(sent.outcome).toBe("inserted");
+
+    await enqueueWakeup({
+      agentId: author.id,
+      reason: "dm",
+      eventId: 900106,
+      payload: { other_agent_id: other.id },
+      delivery: "internal",
+    });
+    const wakeupId = (await getWakeupByAgentReasonEvent(author.id, "dm", 900106))!.id;
+    const before = { ...agentLoopState.get(author.id)! };
+
+    const callLLM = jest
+      .fn()
+      .mockResolvedValueOnce({
+        content: null,
+        toolCalls: [{ id: "call_1", name: "read_dm_thread", arguments: { other_agent_name: other.name } }],
+      })
+      .mockImplementationOnce(async () => {
+        wakeupQueue.rows.get(wakeupId)!.claimToken = "another-runners-token";
+        throw new Error("inference transport error");
+      });
+    mockInference(callLLM);
+
+    const { runPulseBatch } = await import("@/lib/agent-pulse/runner");
+    const result = await runPulseBatch(1);
+
+    expect(result.results[0].outcome).toBe("skip");
+    // No error bookkeeping: `recordError` must never run for a tick that lost its fence.
+    expect(agentLoopState.get(author.id)!).toEqual(before);
+    const after = wakeupQueue.rows.get(wakeupId)!;
+    expect(after.claimToken).toBe("another-runners-token");
+    expect(after.completedAt).toBeNull();
+  });
+});
+
+/**
  * u6 stitch item 2 (g) — P3.2's "terminal tool invoked" must never be read as "acted".
  *
  * The runtime ends a narrow turn on a terminal call REGARDLESS of that call's `success` flag, and it

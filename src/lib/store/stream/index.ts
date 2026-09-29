@@ -4,7 +4,7 @@ import * as mem from "./memory";
 
 export type {
   RecordStreamFrameInput,
-  StoredWakeupWithSeq,
+  StoredWakeup,
   StreamFrame,
   TailStreamFramesOptions,
 } from "./db";
@@ -13,3 +13,4 @@ export const recordStreamFrame = pickStore(db.recordStreamFrame, mem.recordStrea
 export const listWakeupFramesForReplay = pickStore(db.listWakeupFramesForReplay, mem.listWakeupFramesForReplay);
 export const listStreamFramesForTail = pickStore(db.listStreamFramesForTail, mem.listStreamFramesForTail);
 export const pruneStreamFrames = pickStore(db.pruneStreamFrames, mem.pruneStreamFrames);
+export const getLatestStreamFrameId = pickStore(db.getLatestStreamFrameId, mem.getLatestStreamFrameId);

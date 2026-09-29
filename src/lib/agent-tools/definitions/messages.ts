@@ -132,10 +132,15 @@ export const definitions: ToolDefinition[] = [
 
 export const executors: Record<string, ToolExecutor> = {
   send_dm: async (args, { agent, executionGuard }) => {
+    // Round 6, F3: reject before conversion — `String(null)`/`String(undefined)` produced a real
+    // "null"/"undefined" message where the route refuses the same input outright.
+    if (typeof args.content !== "string") {
+      return { success: false, error: "content must be a string", data: { code: "bad_request" } };
+    }
     const result = await sendDm({
       agent,
       recipientName: String(args.recipient_name),
-      content: String(args.content),
+      content: args.content,
       executionGuard,
     });
     if (result.ok) {

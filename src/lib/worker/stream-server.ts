@@ -3,25 +3,20 @@ import { hasDatabase, sql } from "@/lib/db";
 import { isPubliclyHiddenAgent } from "@/lib/agent-public";
 import { authenticateAndTouchByApiKey, getAgentById } from "@/lib/store";
 import { activityEvents } from "@/lib/store/_memory-state";
-import type { StreamFrame, StoredWakeupWithSeq } from "@/lib/store/stream";
-import { listStreamFramesForTail, listWakeupFramesForReplay } from "@/lib/store/stream";
+import type { StoredWakeup, StreamFrame } from "@/lib/store/stream";
+import { getLatestStreamFrameId, listStreamFramesForTail, listWakeupFramesForReplay } from "@/lib/store/stream";
 import { verifyStreamToken } from "@/lib/stream/token";
 import type { ShouldStop } from "@/lib/worker/stop-signal";
 
 /**
  * M11b Lane S (P5.2) — the worker's SSE endpoints. `handleStreamRequest` is mounted into
  * `worker/index.ts`'s existing `node:http` server; it returns `false` for any path it does not own
- * so the caller's own 404 fallback still applies.
- *
- * `stream_seq`/frame-CTE production (deliverables 2/3's splice) is fenced off from this lane until
- * `ai/m11-2-handoff/b1-fixes-landed.md` exists — see `store/stream/db.ts`'s header. Until then this
- * server is fully wired but has nothing real to replay or tail; it is exercised here with frames
- * written directly through `recordStreamFrame`/a test-only wakeup fixture.
+ * so the caller's own 404 fallback still applies. The seq-allocating CTE and the frame-CTE splices
+ * have landed (`store/stream/db.ts`, `store/activity/events.ts`), so replay and tail run on real data.
  */
 
 const STREAM_PATH = "/v1/stream";
 const FIREHOSE_PATH = "/v1/stream/firehose";
-const FIREHOSE_CAP_KEY = "__firehose__";
 
 const MAX_CONNECTIONS_PER_AGENT = 2;
 const KEEPALIVE_MS = 25_000;
@@ -42,20 +37,24 @@ export function setStreamShutdownSignal(fn: ShouldStop): void {
 }
 
 // --- connection cap ----------------------------------------------------------------------------
+//
+// Per-agent only. The public firehose has no agent identity to cap by, and capping it under one
+// shared key let two anonymous clients 503 every other one (codex b2-s round-1 finding 3) — see
+// `serveFirehose`, which never calls `tryAcquireConnection`.
 
 const connectionCounts = new Map<string, number>();
 
-function tryAcquireConnection(key: string): boolean {
-  const current = connectionCounts.get(key) ?? 0;
+function tryAcquireConnection(agentId: string): boolean {
+  const current = connectionCounts.get(agentId) ?? 0;
   if (current >= MAX_CONNECTIONS_PER_AGENT) return false;
-  connectionCounts.set(key, current + 1);
+  connectionCounts.set(agentId, current + 1);
   return true;
 }
 
-function releaseConnection(key: string): void {
-  const current = connectionCounts.get(key) ?? 0;
-  if (current <= 1) connectionCounts.delete(key);
-  else connectionCounts.set(key, current - 1);
+function releaseConnection(agentId: string): void {
+  const current = connectionCounts.get(agentId) ?? 0;
+  if (current <= 1) connectionCounts.delete(agentId);
+  else connectionCounts.set(agentId, current - 1);
 }
 
 // --- auth ----------------------------------------------------------------------------------------
@@ -122,18 +121,20 @@ function buildWakeupSubject(payload: Record<string, unknown>): Record<string, un
   return subject;
 }
 
-function buildWakeupStreamPayload(wakeup: StoredWakeupWithSeq): Record<string, unknown> {
+function buildWakeupStreamPayload(wakeup: StoredWakeup): Record<string, unknown> {
   return {
     reason: wakeup.reason,
     wakeup_id: wakeup.id,
     ...(wakeup.eventId !== null ? { event_id: wakeup.eventId } : {}),
     subject: buildWakeupSubject(wakeup.payload),
-    context_href: "/",
+    // Decision 8 / P5.3's context contract: the agent's own context endpoint, not the homepage
+    // (codex b2-s round-1 finding 8 — "/" sent an external agent to HTML instead of JSON).
+    context_href: "/api/v1/agents/me/context",
   };
 }
 
 /** Only a `wakeup` frame ever sets `id:` — an id-less frame leaves the client's cursor untouched. */
-function writeWakeupFrame(res: ServerResponse, wakeup: StoredWakeupWithSeq): void {
+function writeWakeupFrame(res: ServerResponse, wakeup: StoredWakeup): void {
   if (typeof wakeup.streamSeq !== "number") return;
   const payload = buildWakeupStreamPayload(wakeup);
   res.write(`id: ${wakeup.streamSeq}\nevent: wakeup\ndata: ${JSON.stringify(payload)}\n\n`);
@@ -173,12 +174,16 @@ function lookupActorIdFromMemory(refId: string): string | null {
   return null;
 }
 
+// --- ledger cursor at connect time ------------------------------------------------------------
+
 // --- per-connection tail state -------------------------------------------------------------------
 
 interface ConnectionState {
   lastWakeupSeq: number;
   lastFrameId: number;
   seenFrameIds: Set<number>;
+  /** Wall-clock connect time — bounds the tail query's overlap re-scan (see `sendLedgerFrames`). */
+  connectedAtMs: number;
 }
 
 function pruneSeenIds(state: ConnectionState): void {
@@ -197,6 +202,18 @@ async function sendNewWakeups(res: ServerResponse, agentId: string | null, state
   }
 }
 
+/**
+ * Every EXAMINED frame advances the cursor and the dedup set before the hidden-actor filter runs
+ * (codex b2-s round-1 finding 2). Filtering first left the cursor pinned behind an all-hidden batch
+ * forever — 200+ hidden frames meant the next query fetched the exact same 200 again, and a public
+ * frame sitting behind them was never reached.
+ *
+ * `frame.createdAt < state.connectedAtMs` is the OTHER half of finding 4 ("limit the overlap scan
+ * to that connection's live window"): the query's own overlap re-scan matches on recency alone, so
+ * without this a frame written moments before connect — still inside the `OVERLAP_SECONDS` window —
+ * would be fetched and delivered as if it were live. It still counts toward the cursor/dedup update
+ * above, so it is never re-examined either.
+ */
 async function sendLedgerFrames(res: ServerResponse, agentId: string | null, state: ConnectionState): Promise<void> {
   const frames = await listStreamFramesForTail({
     agentId,
@@ -206,10 +223,11 @@ async function sendLedgerFrames(res: ServerResponse, agentId: string | null, sta
   });
   for (const frame of frames) {
     if (state.seenFrameIds.has(frame.id)) continue;
-    if (agentId === null && frame.frame === "activity" && (await isFirehoseActorHidden(frame.refId))) continue;
-    writeLedgerFrame(res, frame);
     state.seenFrameIds.add(frame.id);
     if (frame.id > state.lastFrameId) state.lastFrameId = frame.id;
+    if (Date.parse(frame.createdAt) < state.connectedAtMs) continue;
+    if (agentId === null && frame.frame === "activity" && (await isFirehoseActorHidden(frame.refId))) continue;
+    writeLedgerFrame(res, frame);
   }
   pruneSeenIds(state);
 }
@@ -234,60 +252,88 @@ function writeSseHeaders(res: ServerResponse): void {
   res.flushHeaders();
 }
 
+/**
+ * `releaseKey` is the per-agent slot to free on close, or `null` for the uncapped firehose.
+ * `cleanup` is registered on `req`'s `close` event BEFORE any `await` in this function (codex b2-s
+ * round-1 finding 5): a client that disconnects while the initial replay is still in flight must
+ * still free its slot, even though no timers exist yet — `closed` and the `if (keepAlive)` /
+ * `if (tail)` guards make `cleanup` idempotent regardless of how many times or when it runs.
+ */
 async function replayThenTail(
   req: IncomingMessage,
   res: ServerResponse,
   agentId: string | null,
-  cursor: number
+  cursor: number,
+  releaseKey: string | null
 ): Promise<void> {
-  const state: ConnectionState = { lastWakeupSeq: cursor, lastFrameId: 0, seenFrameIds: new Set() };
-  writeSseHeaders(res);
-
-  try {
-    await sendNewWakeups(res, agentId, state);
-  } catch (error) {
-    console.error("[stream] replay failed", error);
-  }
-
-  const keepAlive = setInterval(() => {
-    try {
-      res.write(": keep-alive\n\n");
-    } catch {
-      // connection already gone; `req.on("close", ...)` below runs the real cleanup
-    }
-  }, KEEPALIVE_MS);
-
-  const tail = setInterval(() => {
-    void tick();
-  }, TAIL_INTERVAL_MS);
+  const state: ConnectionState = {
+    lastWakeupSeq: cursor,
+    lastFrameId: 0,
+    seenFrameIds: new Set(),
+    connectedAtMs: Date.now(),
+  };
 
   let closed = false;
+  let keepAlive: ReturnType<typeof setInterval> | undefined;
+  let tail: ReturnType<typeof setInterval> | undefined;
   const cleanup = (): void => {
     if (closed) return;
     closed = true;
-    clearInterval(keepAlive);
-    clearInterval(tail);
+    if (keepAlive) clearInterval(keepAlive);
+    if (tail) clearInterval(tail);
+    if (releaseKey) releaseConnection(releaseKey);
     try {
       res.end();
     } catch {
       // already ended
     }
   };
+  req.on("close", cleanup);
 
+  writeSseHeaders(res);
+
+  try {
+    // Live-only cursor (finding 4): fixed before the first tail tick can run.
+    state.lastFrameId = await getLatestStreamFrameId(agentId);
+    await sendNewWakeups(res, agentId, state);
+  } catch (error) {
+    console.error("[stream] replay failed", error);
+  }
+
+  if (closed) return; // the client left during replay; `cleanup` already ran above
+
+  keepAlive = setInterval(() => {
+    try {
+      res.write(": keep-alive\n\n");
+    } catch {
+      // connection already gone; the "close" listener above runs the real cleanup
+    }
+  }, KEEPALIVE_MS);
+
+  // One tick in flight at a time (codex b2-s round-1 finding 7): an overrunning query must not let
+  // a second timer start a second query for the same connection, which could deliver an earlier
+  // sequence after a later one and move the cursor backward.
+  let tickInFlight = false;
   async function tick(): Promise<void> {
     if (closed || shutdownSignal()) {
       cleanup();
       return;
     }
+    if (tickInFlight) return;
+    tickInFlight = true;
     try {
       await sendNewWakeups(res, agentId, state);
       await sendLedgerFrames(res, agentId, state);
     } catch (error) {
       console.error("[stream] tail tick failed", error);
+    } finally {
+      tickInFlight = false;
     }
   }
 
-  req.on("close", cleanup);
+  tail = setInterval(() => {
+    void tick();
+  }, TAIL_INTERVAL_MS);
 }
 
 // --- entry point -------------------------------------------------------------------------------
@@ -303,15 +349,8 @@ function writeJsonError(res: ServerResponse, status: number, error: string): voi
 }
 
 async function serveFirehose(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-  if (!tryAcquireConnection(FIREHOSE_CAP_KEY)) {
-    writeJsonError(res, 503, "too_many_connections");
-    return;
-  }
-  try {
-    await replayThenTail(req, res, null, parseCursor(req, url));
-  } finally {
-    req.on("close", () => releaseConnection(FIREHOSE_CAP_KEY));
-  }
+  // Public, anonymous, uncapped (finding 3) — there is no agent identity here to cap by.
+  await replayThenTail(req, res, null, parseCursor(req, url), null);
 }
 
 async function servePrivateStream(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -324,11 +363,7 @@ async function servePrivateStream(req: IncomingMessage, res: ServerResponse, url
     writeJsonError(res, 503, "too_many_connections");
     return;
   }
-  try {
-    await replayThenTail(req, res, auth.agentId, parseCursor(req, url));
-  } finally {
-    req.on("close", () => releaseConnection(auth.agentId));
-  }
+  await replayThenTail(req, res, auth.agentId, parseCursor(req, url), auth.agentId);
 }
 
 /**

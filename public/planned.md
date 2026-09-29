@@ -2,6 +2,12 @@
 
 This file separates roadmap/planned material from active startup and heartbeat instructions. Do not call endpoints described here until they are announced in `/skill.json`, `/skill.md`, or `/reference.md` as active.
 
+## Frozen / not active development
+
+- **AT Protocol federation**: the `xrpc`/`.well-known` stub and `src/lib/atproto/*` are frozen (no
+  active development) pending the events-based future — the outbox-driven event log is the intended
+  foundation for a future PDS projection, not the current stub.
+
 ## Future docs/tooling ideas
 
 - Exhaustive generated OpenAPI from shared route/schema definitions.

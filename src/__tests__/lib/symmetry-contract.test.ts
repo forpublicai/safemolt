@@ -15,11 +15,22 @@
  * @jest-environment node
  */
 jest.mock("@/lib/db", () => ({ hasDatabase: () => false, sql: null }));
+// The adapter-mapping test below drives the REAL route and tool executor (codex b2-s round-1
+// finding 6) through this one `jest.fn`, so it can hand both the SAME controlled `ActionResult`.
+// The wakeup-symmetry describe block never overrides it, so it runs the real action unchanged.
+jest.mock("@/lib/actions/comments", () => {
+  const actual = jest.requireActual("@/lib/actions/comments");
+  return { ...actual, createComment: jest.fn(actual.createComment) };
+});
 
+import { NextRequest } from "next/server";
 import { createPost } from "@/lib/actions/posts";
 import { createComment, type CreatedComment } from "@/lib/actions/comments";
 import type { ActionResult } from "@/lib/actions/types";
-import type { StoredAgent } from "@/lib/store-types";
+import type { StoredAgent, StoredComment, StoredPost } from "@/lib/store-types";
+import { POST as createCommentRoute } from "@/app/api/v1/posts/[id]/comments/route";
+import { executors as commentToolExecutors } from "@/lib/agent-tools/definitions/comments";
+import { withMiddlewareHeaders } from "../helpers/middleware-headers";
 
 let seq = 0;
 const nextId = (label: string) => `${label}${Date.now().toString(36)}${(seq += 1)}`;
@@ -184,64 +195,78 @@ describe("wakeup payload symmetry (P5.3)", () => {
 // Adapter-mapping projection (P5.3)
 // ---------------------------------------------------------------------------
 
-/** Mirrors `posts/[id]/comments/route.ts`'s POST success body, field for field. */
-function mapToRestBody(result: Extract<ActionResult<CreatedComment>, { ok: true }>) {
-  const { comment } = result.data;
-  return {
-    success: true,
-    data: {
-      id: comment.id,
-      content: comment.content,
-      parent_id: comment.parentId,
-      created_at: comment.createdAt,
-    },
-  };
-}
-
-/** Mirrors `agent-tools/definitions/comments.ts`'s `create_comment` executor success body. */
-function mapToToolBody(result: Extract<ActionResult<CreatedComment>, { ok: true }>) {
-  return {
-    success: true,
-    data: { comment_id: result.data.comment.id, post_id: result.data.comment.postId },
-  };
-}
-
+/**
+ * Exercises the REAL `POST /posts/{id}/comments` route and the REAL `create_comment` tool
+ * executor, both handed the SAME controlled `ActionResult` through the `createComment` mock above
+ * (codex b2-s round-1 finding 6 — the old version called local copies of both mappings, so a broken
+ * production adapter would have left this test green).
+ */
 describe("adapter-mapping projection (P5.3)", () => {
   it("REST and tool bodies are both projections of one ActionResult, and are not wire-identical", async () => {
     await freshStores();
-    const author = makeAgent("postauthor");
     const commenter = makeAgent("mapcommenter");
-    await seedLoopEnabledAgent(author);
     await seedLoopEnabledAgent(commenter);
-    const groupId = await seedGroup(author.id);
+    // The route authenticates by API key, which `seedLoopEnabledAgent` does not register (it only
+    // seeds the agent map) — register it directly rather than going through the full `createAgent`
+    // flow, which this test has no other use for.
+    const { apiKeyToAgentId } = await import("@/lib/store/_memory-state");
+    apiKeyToAgentId.set(commenter.apiKey, commenter.id);
 
-    const { post } = unwrap(
-      await createPost({ agent: author, groupName: groupId, title: "T", content: "body" })
+    const comment: StoredComment = {
+      id: nextId("comment"),
+      postId: nextId("post"),
+      authorId: commenter.id,
+      content: "hello",
+      upvotes: 0,
+      createdAt: new Date().toISOString(),
+    };
+    // ONE canonical ActionResult — both real adapters below are handed this exact value.
+    const controlled: Extract<ActionResult<CreatedComment>, { ok: true }> = {
+      ok: true,
+      data: { comment, post: {} as StoredPost },
+    };
+    // `createComment` is one persistent `jest.fn` for the whole file (the wakeup-symmetry describe
+    // block above calls it for real) — clear its call count before queuing this test's two.
+    const mockedCreateComment = createComment as jest.MockedFunction<typeof createComment>;
+    mockedCreateComment.mockClear();
+    mockedCreateComment.mockResolvedValueOnce(controlled).mockResolvedValueOnce(controlled);
+
+    const restResponse = await createCommentRoute(
+      new NextRequest(
+        `https://safemolt.com/api/v1/posts/${comment.postId}/comments`,
+        withMiddlewareHeaders({
+          method: "POST",
+          headers: { Authorization: `Bearer ${commenter.apiKey}`, "content-type": "application/json" },
+          body: JSON.stringify({ content: "hello" }),
+        }) as never
+      ),
+      { params: Promise.resolve({ id: comment.postId }) }
+    );
+    const restBody = await restResponse.json();
+
+    const toolBody = await commentToolExecutors.create_comment(
+      { post_id: comment.postId, content: "hello" },
+      { agent: commenter }
     );
 
-    // ONE canonical ActionResult — both adapters below project from this same value.
-    const result = await createComment({ agent: commenter, postId: post.id, content: "hello" });
-    if (!result.ok) throw new Error(`expected ok, got ${result.code}`);
-
-    const restBody = mapToRestBody(result);
-    const toolBody = mapToToolBody(result);
+    expect(mockedCreateComment).toHaveBeenCalledTimes(2);
 
     // Each surface's field is a projection of the SAME underlying comment.
-    expect(restBody.data.id).toBe(result.data.comment.id);
-    expect(restBody.data.content).toBe(result.data.comment.content);
-    expect(restBody.data.parent_id).toBe(result.data.comment.parentId);
-    expect(restBody.data.created_at).toBe(result.data.comment.createdAt);
-    expect(toolBody.data.comment_id).toBe(result.data.comment.id);
-    expect(toolBody.data.post_id).toBe(result.data.comment.postId);
+    expect(restBody.data.id).toBe(comment.id);
+    expect(restBody.data.content).toBe(comment.content);
+    expect(restBody.data.parent_id).toBe(comment.parentId);
+    expect(restBody.data.created_at).toBe(comment.createdAt);
+    expect((toolBody.data as { comment_id: string }).comment_id).toBe(comment.id);
+    expect((toolBody.data as { post_id: string }).post_id).toBe(comment.postId);
     // Same canonical id, reached through two differently-named fields.
-    expect(restBody.data.id).toBe(toolBody.data.comment_id);
+    expect(restBody.data.id).toBe((toolBody.data as { comment_id: string }).comment_id);
 
     // Deliberately NOT wire-identical (P1.1 characterization; Decision 11 compatibility) — asserted
     // explicitly so nobody "fixes" this into uniformity later.
     expect("id" in restBody.data).toBe(true);
     expect("comment_id" in restBody.data).toBe(false);
-    expect("comment_id" in toolBody.data).toBe(true);
-    expect("id" in toolBody.data).toBe(false);
+    expect("comment_id" in (toolBody.data as object)).toBe(true);
+    expect("id" in (toolBody.data as object)).toBe(false);
     expect(restBody.data).not.toEqual(toolBody.data);
   });
 });

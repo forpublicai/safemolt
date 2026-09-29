@@ -287,9 +287,9 @@ function projectionOf(built: CreateNotificationInput, dedupKey: string | null): 
  * `ON CONFLICT (dedup_key) DO NOTHING` gives in Postgres.
  */
 /**
- * `withFrame` is false only for the follow writer — see `db.ts`'s `insertNotificationFromSelect`
- * for why: the decisive statement's CTE splice already frames a real follow, so this path only
- * ever runs when that one already won (a no-op) or never ran at all (an eventless fixture write).
+ * `withFrame` defaults true for every caller. Unlike the db side, memory mode has no separate
+ * decisive-statement CTE splice for the follow kind — this function IS `followAgent`'s only
+ * writer — so a memory follow must frame here or never at all (M11b Lane S gap fix).
  */
 function insertNotificationIdempotentSync(
   built: CreateNotificationInput,
@@ -333,7 +333,7 @@ export async function createFollowNotificationIdempotent(
 ): Promise<StoredNotification | null> {
   const built = buildFollowNotification(input);
   if (!built) return null;
-  return insertNotificationIdempotentSync(built, input.dedupKey, false);
+  return insertNotificationIdempotentSync(built, input.dedupKey);
 }
 
 /**

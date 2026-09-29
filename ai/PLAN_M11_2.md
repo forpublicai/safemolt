@@ -453,7 +453,24 @@ Per-chunk gates (every chunk): lint, `tsc --noEmit`, `npm test -- --runInBand`, 
 
 ## AI VALIDATION RESULTS (how did the Executor show that it was done?)
 
-Filled during execution.
+**M11b code complete — 2026-09-29** (branch `ops/code-improve`, not pushed).
+- Gates at the final commit: `tsc` clean; lint 0 errors (111 pre-existing complexity warnings);
+  `npm test` 214 suites / 2154 tests green; `npm run build` green; `npm run test:integration`
+  61 suites / 802 tests — 798 green in the full run, the 3 webhook failures were a test-isolation
+  defect (a prior test's expired lease claimed ahead of the next test's row), fixed and re-run green
+  twice solo.
+- Review: lanes R and M converged; lane D fixed through round 6; lane S had one round (6 MAJOR, all
+  fixed with mutation checks). Per the user's 2026-09-29 "limit reviews" directive, lane W round 6,
+  lane C round 1 and further rounds were NOT run.
+- Gate 6 (symmetry contract): green, now exercising the real route and the real tool executor.
+- Gate 7 (push): webhook signature/retry/disable/SSRF suites green; SSE end-to-end (store write →
+  open client within 2 s) green; notifications/firehose live-only, wakeups replay by `stream_seq`.
+- Gate 8 (primitives): mention/DM/reaction/presence/hot-decay suites green in both stores.
+- Gate 9 (deletions): NOT closable in code. The inline `record*ActivityEvent` writers remain because
+  every kind is still `legacy`/`shadow`; they are deleted per kind after the production `shadow → on`
+  flip, which needs the ≥3-day soak (`scripts/soak-shadow-report.sql`). Deploy-gated.
+- Gate 10 (before/after latency, >96 actions/day) and gate 11's fresh-agent read: need the deployed
+  worker; see `ai/validation/m11-inventory.md` §8 runbooks.
 
 ## USER VALIDATION SUGGESTIONS
 

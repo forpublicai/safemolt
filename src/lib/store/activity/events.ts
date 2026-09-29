@@ -188,16 +188,17 @@ function actorCanonicalSql(idExpr: string): string {
 }
 
 /**
- * M11b Lane S (P5.2) — the firehose frame CTE, appended only by the CONSUMER's public `apply*`
- * writers (never a legacy inline writer, some of which also stamp `sourceEventParam` for the
- * transitional correlation but carry no frame). Keyed on the DRAINED EVENT's id, not the row's, so
- * a retried drain of the same event cannot double the firehose; `ref_id` is the row's own id, which
- * `isFirehoseActorHidden` needs to re-read the actor.
+ * M11b Lane S (P5.2) — the firehose frame CTE, appended by the CONSUMER's public `apply*` writers
+ * (keyed on the DRAINED EVENT's id, so a retried drain of the same event cannot double the
+ * firehose) and by a direct writer that carries no event at all (school-events ingestion, keyed on
+ * its own natural key instead). `frameKeyExpr` is a ready SQL expression — either form, never raw
+ * input — so this function stays one INSERT shape for both callers. `ref_id` is the row's own id,
+ * which `isFirehoseActorHidden` needs to re-read the actor.
  */
-function activityFrameCte(insertCteName: string, sourceEventParam: string): string {
+function activityFrameCte(insertCteName: string, frameKeyExpr: string): string {
   return `activity_frame AS (
     INSERT INTO stream_frames (agent_id, frame, ref_id, frame_key)
-    SELECT NULL, 'activity', row.id, ('activity:firehose:' || ${sourceEventParam}::text)
+    SELECT NULL, 'activity', row.id, ${frameKeyExpr}
     FROM ${insertCteName} row
     ON CONFLICT (frame_key) DO NOTHING
   )`;
@@ -215,9 +216,17 @@ async function upsertActivityEventFromSelect(
   selectSql: string,
   params: unknown[],
   sourceEventParam: string | null = null,
-  emitFrame = false
+  emitFrame = false,
+  /** A bound `$n` placeholder for an EXPLICIT frame key — the school-events form, which has no
+   * event to derive `'activity:firehose:' || eventId` from. Takes precedence over `emitFrame`. */
+  explicitFrameKeyParam: string | null = null
 ): Promise<string | null> {
-  const frameCte = emitFrame && sourceEventParam ? `,\n${activityFrameCte("ins", sourceEventParam)}` : "";
+  const frameKeyExpr = explicitFrameKeyParam
+    ? `${explicitFrameKeyParam}::text`
+    : emitFrame && sourceEventParam
+      ? `('activity:firehose:' || ${sourceEventParam}::text)`
+      : null;
+  const frameCte = frameKeyExpr ? `,\n${activityFrameCte("ins", frameKeyExpr)}` : "";
   const rows = await sql!(
     `
       WITH ins AS (
@@ -243,7 +252,12 @@ async function upsertActivityEventFromSelect(
   return String(row.id);
 }
 
-async function recordActivityEventInDatabase(input: ActivityEventInput): Promise<string | null> {
+/**
+ * `frameKey`, when given, rides the SAME insert statement as an `activity_frame` CTE gated on its
+ * `RETURNING` (codex b2-s round-1 finding 1) — school-events ingestion is the one caller that emits
+ * a firehose frame with no event to derive one from, so it supplies its own natural key instead.
+ */
+async function recordActivityEventInDatabase(input: ActivityEventInput, frameKey?: string): Promise<string | null> {
   // `post` and `comment` have DEDICATED writers, and the reason is the liveness lock: this generic
   // path takes pre-built fields and cannot prove the post is still live, so writing one of those
   // kinds through it would recreate exactly the dead link `deletePost` removes (M11-1b D1). Refuse
@@ -275,7 +289,11 @@ async function recordActivityEventInDatabase(input: ActivityEventInput): Promise
       input.contextHint ?? "",
       input.searchText ?? "",
       JSON.stringify(input.metadata ?? {}),
-    ]
+      ...(frameKey ? [frameKey] : []),
+    ],
+    null,
+    false,
+    frameKey ? "$13" : null
   );
 }
 
@@ -290,13 +308,24 @@ function recordActivityEventInMemory(input: ActivityEventInput): void {
  * the entity id itself, matching what `lookupActorIdFromMemory` keys on — or `null` on failure, so
  * the one external caller (`school-events` ingestion, P5.2) can key its own firehose frame's
  * `ref_id` without a second read.
+ *
+ * `options.frameKey`, when given, is written ATOMICALLY with the row (a same-statement CTE in db
+ * mode; the same no-`await`-between-them section `memoryUpsertActivityProjection` uses in memory
+ * mode) — never a second, separately-committed call, which is what let a crash between two auto-
+ * committed statements leave an activity row with no frame (codex b2-s round-1 finding 1).
  */
-export async function recordActivityEvent(input: ActivityEventInput): Promise<string | null> {
+export async function recordActivityEvent(
+  input: ActivityEventInput,
+  options: { frameKey?: string } = {}
+): Promise<string | null> {
   try {
     if (hasDatabase()) {
-      return await recordActivityEventInDatabase(input);
+      return await recordActivityEventInDatabase(input, options.frameKey);
     }
     recordActivityEventInMemory(input);
+    if (options.frameKey) {
+      void recordStreamFrame({ agentId: null, frame: "activity", refId: input.entityId, frameKey: options.frameKey });
+    }
     await deleteCachedActivityContextsForEvent(input.kind, input.entityId);
     return input.entityId;
   } catch (error) {
@@ -576,7 +605,10 @@ export function buildCommentActivityUpsert(
   const sourceEventParam = options.sourceEventId === undefined ? null : "$7";
   // `emitFrame` only ever accompanies the consumer's own call (`applyCommentActivityFromEvent`) —
   // see `activityFrameCte`'s doc comment for why a legacy correlation stamp alone is not enough.
-  const frameCte = options.emitFrame && sourceEventParam ? `,\n${activityFrameCte("ins", sourceEventParam)}` : "";
+  const frameCte =
+    options.emitFrame && sourceEventParam
+      ? `,\n${activityFrameCte("ins", `('activity:firehose:' || ${sourceEventParam}::text)`)}`
+      : "";
   return {
     text: `
       WITH ins AS (

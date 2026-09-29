@@ -182,6 +182,16 @@ afterAll(async () => {
   await closeIntegrationConnections();
 });
 
+// The claim scans the ledger globally, so a previous test's unfinished row (its 30 s lease expired
+// once the suite ran long enough) would be claimed ahead of the next test's own row. Park them.
+afterEach(async () => {
+  await pgPool().query(
+    `UPDATE webhook_deliveries SET next_attempt_at = NOW() + INTERVAL '1 day'
+     WHERE terminal_reason IS NULL AND agent_id LIKE $1`,
+    [`b1w_agent_${RUN}_%`]
+  );
+});
+
 describe("claimNextWebhookDelivery — exactly one claimant per row", () => {
   it("lets exactly one of N concurrent callers claim a reclaimable (expired-lease) row", async () => {
     const agent = await seedAgent();

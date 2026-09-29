@@ -540,8 +540,7 @@ export const wakeupRouterCoverage = {
   // Reactions never wake anyone (spec is explicit).
   "reaction.added": "none",
   "reaction.removed": "none",
-  // Wakes the recipient. The blocked-conversation re-check is router logic (a later round), not a
-  // coverage-state question — this only says the kind routes.
+  // Wakes the recipient (block re-check lives in the router's `routeDmSent`).
   "dm.sent": "on",
   "dm.blocked": "none",
   "dm.unblocked": "none",

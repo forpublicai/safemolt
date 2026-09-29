@@ -8,11 +8,14 @@
  * two idle wakeups land distinct seqs, a re-drained notification/school-ingest writes its frame
  * exactly once.
  */
+import http, { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   createWebhookDisabledNotificationIdempotent,
 } from "@/lib/store/notifications/db";
 import { enqueueWakeup } from "@/lib/store/wakeups/db";
 import { POST as postSchoolEvent } from "@/app/api/v1/internal/school-events/route";
+import { handleStreamRequest } from "@/lib/worker/stream-server";
 
 import { closeIntegrationConnections, pgPool } from "./helpers/db";
 import { raceAgainstHeldLock } from "./helpers/concurrency";
@@ -152,5 +155,67 @@ describe("school-events route — its own firehose frame (P5.2)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].agent_id).toBeNull();
     expect(rows[0].frame).toBe("activity");
+  });
+});
+
+describe("stream-server — end-to-end SSE delivery (P5.2, codex b2-s round-1 finding 9, reduced)", () => {
+  let server: Server;
+  let port: number;
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      void handleStreamRequest(req, res).then((handled) => {
+        if (!handled) {
+          res.writeHead(404);
+          res.end();
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    port = (server.address() as AddressInfo).port;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("a notification written through the real store reaches a live SSE connection within 2s", async () => {
+    const agent = await seedAgent();
+    const chunks: string[] = [];
+
+    const client = await new Promise<http.ClientRequest>((resolve, reject) => {
+      const req = http.request(
+        { host: "127.0.0.1", port, path: "/v1/stream", headers: { Authorization: `Bearer key_${agent.id}` } },
+        (res) => {
+          res.setEncoding("utf8");
+          res.on("data", (chunk: string) => chunks.push(chunk));
+          resolve(req);
+        }
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+    await new Promise((r) => setTimeout(r, 100)); // let the connect-time (live-only) cursor settle
+
+    const dedupKey = `webhook_disabled:${agent.id}:${nextId("evt")}`;
+    await createWebhookDisabledNotificationIdempotent({
+      dedupKey,
+      agentId: agent.id,
+      createdAt: new Date().toISOString(),
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const poll = (): void => {
+        if (chunks.join("").includes("event: notification")) return resolve();
+        if (Date.now() - start > 2_000) return reject(new Error("notification frame did not arrive within 2s"));
+        setTimeout(poll, 25);
+      };
+      poll();
+    });
+
+    client.destroy();
+    expect(chunks.join("")).toContain("event: notification");
   });
 });

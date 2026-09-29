@@ -2,7 +2,6 @@ import { streamFrames, wakeupQueue } from "../_memory-state";
 import type { StoredWakeup } from "../wakeups/db";
 import type {
   RecordStreamFrameInput,
-  StoredWakeupWithSeq,
   StreamFrame,
   TailStreamFramesOptions,
 } from "./db";
@@ -17,22 +16,23 @@ export async function recordStreamFrame(input: RecordStreamFrameInput): Promise<
   return { created: true };
 }
 
-/**
- * `wakeupQueue` rows carry no `streamSeq` field until the enqueue-side splice lands (fenced), so
- * this reads it defensively as an optional property — always absent today, which is why this always
- * returns `[]` for now (the documented gap; the query shape is correct for when the splice lands).
- */
 export async function listWakeupFramesForReplay(
   agentId: string,
   afterSeq: number,
   limit: number
-): Promise<StoredWakeupWithSeq[]> {
-  const rows = Array.from(wakeupQueue.rows.values()) as Array<StoredWakeup & { streamSeq?: number | null }>;
-  return rows
+): Promise<StoredWakeup[]> {
+  return Array.from(wakeupQueue.rows.values())
     .filter((w) => w.agentId === agentId && typeof w.streamSeq === "number" && w.streamSeq > afterSeq)
     .sort((a, b) => (a.streamSeq as number) - (b.streamSeq as number))
-    .slice(0, Math.max(1, Math.floor(limit)))
-    .map((w) => ({ ...w, streamSeq: w.streamSeq ?? null }));
+    .slice(0, Math.max(1, Math.floor(limit)));
+}
+
+export async function getLatestStreamFrameId(agentId: string | null): Promise<number> {
+  let max = 0;
+  for (const frame of streamFrames.rows.values()) {
+    if (frame.agentId === agentId && frame.id > max) max = frame.id;
+  }
+  return max;
 }
 
 /** Mirrors the db query's two conditions (`id >` OR within the overlap window). */
