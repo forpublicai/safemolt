@@ -476,7 +476,7 @@ describe("memory-ingest consumer", () => {
 
   it("resumes at the first unrecorded recipient after a mid-fan-out failure", async () => {
     const author = await seedAgent();
-    const others = [await seedAgent(), await seedAgent(), await seedAgent(), await seedAgent()];
+    const others = await Promise.all(Array.from({ length: 4 }, () => seedAgent()));
     const group = await seedGroup(author, [author, ...others]);
     const post = await seedPost(author, group);
     const eventId = baselineEventId + 4001;
@@ -1745,7 +1745,7 @@ describe("end to end through the real drain", () => {
    */
   it("receipts an ingest event only once EVERY recipient is recorded", async () => {
     const author = await seedAgent();
-    const others = [await seedAgent(), await seedAgent()];
+    const others = await Promise.all(Array.from({ length: 2 }, () => seedAgent()));
     const group = await seedGroup(author, [author, ...others]);
     const post = await seedPost(author, group);
     const name = consumerName("ingest-drain");

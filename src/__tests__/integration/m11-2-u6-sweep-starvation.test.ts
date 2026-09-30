@@ -169,15 +169,10 @@ function participants(count: number, prefix: string): SessionParticipant[] {
  * — one live session each, per `idx_pg_sessions_one_live_per_school`.
  */
 async function retireThisRunsLiveSessions(): Promise<void> {
+  // One statement: "not this run's" and "this run's" together are every live row.
   await pgPool().query(
     `UPDATE playground_sessions SET status = 'cancelled', completed_at = NOW()
-     WHERE status IN ('pending', 'active') AND id NOT LIKE $1`,
-    [`u6st_session_${RUN}%`]
-  );
-  await pgPool().query(
-    `UPDATE playground_sessions SET status = 'cancelled', completed_at = NOW()
-     WHERE status IN ('pending', 'active') AND id LIKE $1`,
-    [`u6st_session_${RUN}%`]
+     WHERE status IN ('pending', 'active')`
   );
 }
 
@@ -247,16 +242,15 @@ afterAll(async () => {
 describe("the lifetime-cap sweep across more due sessions than one page", () => {
   it("caps EVERY overdue session in one invocation, and leaves the not-yet-due ones alone", async () => {
     const lifetimeMs = PLAYGROUND_SESSION_MAX_LIFETIME_MS;
-    const overdue: string[] = [];
-    for (let i = 0; i < POPULATION; i += 1) {
-      // Staggered ages, all past the cap. The NEWEST overdue ones are seeded LAST, so a newest-first
-      // window would fill itself with them and never reach index 0 — the exact starvation shape.
-      overdue.push(await seedActiveSession(lifetimeMs * 2 - i * 1000, null));
-    }
+    // Staggered ages, all past the cap. The NEWEST overdue ones are seeded LAST, so a newest-first
+    // window would fill itself with them and never reach index 0 — the exact starvation shape.
+    // Seeded concurrently: ids are minted synchronously in call order, so the ordering is unchanged.
+    const overdue = await Promise.all(
+      Array.from({ length: POPULATION }, (_, i) => seedActiveSession(lifetimeMs * 2 - i * 1000, null))
+    );
     // Young enough that the cap must not touch them, and numerous enough to fill a newest-first
     // window on their own.
-    const young: string[] = [];
-    for (let i = 0; i < 5; i += 1) young.push(await seedActiveSession(60_000, null));
+    const young = await Promise.all(Array.from({ length: 5 }, () => seedActiveSession(60_000, null)));
 
     // Half 1: the page the sweep sees FIRST holds the sessions that have waited longest.
     const cutoff = new Date(Date.now() - lifetimeMs).toISOString();
@@ -285,14 +279,12 @@ describe("the lifetime-cap sweep across more due sessions than one page", () => 
 
 describe("the round-advance due scan across more overdue rounds than one page", () => {
   it("answers with the MOST-OVERDUE rounds first, never the newest active sessions", async () => {
-    const overdue: string[] = [];
-    for (let i = 0; i < POPULATION; i += 1) {
-      // Deadline in the past, staggered: index 0 is the most overdue, seeded FIRST.
-      overdue.push(await seedActiveSession(60_000, -(POPULATION - i) * 60_000));
-    }
+    // Deadline in the past, staggered: index 0 is the most overdue, seeded FIRST.
+    const overdue = await Promise.all(
+      Array.from({ length: POPULATION }, (_, i) => seedActiveSession(60_000, -(POPULATION - i) * 60_000))
+    );
     // Live sessions whose round is NOT due — the population that used to bury the overdue ones.
-    const notDue: string[] = [];
-    for (let i = 0; i < 5; i += 1) notDue.push(await seedActiveSession(1_000, 60 * 60_000));
+    const notDue = await Promise.all(Array.from({ length: 5 }, () => seedActiveSession(1_000, 60 * 60_000)));
 
     const page = await listActiveSessionsDueForRound(PAGE_SIZE);
     expect(page).toHaveLength(PAGE_SIZE);
@@ -331,17 +323,16 @@ describe("the round-advance sweep behind a full page of failures", () => {
     await retireThisRunsLiveSessions();
 
     // Fifty due sessions that will each throw. Seeded most-overdue-first, so they own page 1 whole.
-    const failing: string[] = [];
-    for (let i = 0; i < PAGE_SIZE; i += 1) {
-      failing.push(
-        await seedSession({
+    const failing = await Promise.all(
+      Array.from({ length: PAGE_SIZE }, (_, i) =>
+        seedSession({
           status: "active",
           ageMs: 60_000,
           roundDeadlineOffsetMs: -(PAGE_SIZE + 10 - i) * 60_000,
           gameId: "u6st-no-such-game",
         })
-      );
-    }
+      )
+    );
     // The fifty-first: a real game, one participant who never acted and a deadline that has passed,
     // so the advance resolves the round through the (mocked) GM and opens round 2. One missed round
     // is not a forfeit — that takes two — so the observable is `current_round`, not a completion. Its
@@ -383,12 +374,11 @@ describe("the pending-activation sweep behind a full page of ineligible lobbies"
     await retireThisRunsLiveSessions();
 
     // Fifty older, empty lobbies — permanently ineligible, and ordered ahead of the eligible one.
-    const ineligible: string[] = [];
-    for (let i = 0; i < PAGE_SIZE; i += 1) {
-      ineligible.push(
-        await seedSession({ status: "pending", ageMs: (PAGE_SIZE + 10 - i) * 60_000, participants: [] })
-      );
-    }
+    const ineligible = await Promise.all(
+      Array.from({ length: PAGE_SIZE }, (_, i) =>
+        seedSession({ status: "pending", ageMs: (PAGE_SIZE + 10 - i) * 60_000, participants: [] })
+      )
+    );
     // The eligible one, newest: an AO YAML game (minPlayers 2) with two participants.
     const eligible = await seedSession({
       status: "pending",
@@ -430,18 +420,17 @@ describe("the round-1 prompt repair sweep behind a full page of unrepairable ses
     const GRACE_MS = 2 * 60 * 1000;
     // Fifty promptless round-1 sessions the repair can never finish, seeded oldest-first so they own
     // page 1 whole. Young enough that the lifetime cap must not take them off the board instead.
-    const unrepairable: string[] = [];
-    for (let i = 0; i < PAGE_SIZE; i += 1) {
-      unrepairable.push(
-        await seedSession({
+    const unrepairable = await Promise.all(
+      Array.from({ length: PAGE_SIZE }, (_, i) =>
+        seedSession({
           status: "active",
           ageMs: GRACE_MS + (PAGE_SIZE + 10 - i) * 60_000,
           roundDeadlineOffsetMs: null,
           currentRoundPrompt: null,
           gameId: "u6st-no-such-game",
         })
-      );
-    }
+      )
+    );
     // The fifty-first: an ordinary session whose activation continuation crashed. Its game resolves,
     // so the (mocked) GM answers and `storeRound1PromptIfMissing` publishes. Newest of the set, which
     // puts it exactly one row past the end of page 1.
@@ -480,18 +469,17 @@ describe("the round_opened bridge / wakeup arm pass across more active sessions 
     await retireThisRunsLiveSessions();
 
     const POPULATION_ARM = PAGE_SIZE + 5;
-    const sessions: string[] = [];
-    for (let i = 0; i < POPULATION_ARM; i += 1) {
-      // Seeded oldest-first and young enough that the lifetime cap must not touch any of them.
-      sessions.push(
-        await seedSession({
+    // Seeded oldest-first and young enough that the lifetime cap must not touch any of them.
+    const sessions = await Promise.all(
+      Array.from({ length: POPULATION_ARM }, (_, i) =>
+        seedSession({
           status: "active",
           ageMs: (POPULATION_ARM - i) * 60_000,
           roundDeadlineOffsetMs: null,
           currentRoundPrompt: "go",
         })
-      );
-    }
+      )
+    );
 
     // Half 1, at the store: page 1 holds the OLDEST fifty, and the exclusion is what makes page 2
     // hold the remaining five rather than the same fifty again.

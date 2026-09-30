@@ -129,8 +129,10 @@ async function emitRoundOpened(sessionId: string, round: number): Promise<number
 async function drainAll(): Promise<void> {
   for (const consumer of eventConsumers) {
     for (let pass = 0; pass < 50; pass += 1) {
-      const counts = await drainEventConsumer(consumer, { batchSize: 500 });
-      if (counts.processed === 0) break;
+      const batchSize = 500;
+      const counts = await drainEventConsumer(consumer, { batchSize });
+      // A short batch means the scan ran dry; another call would only confirm it.
+      if (counts.processed < batchSize) break;
     }
   }
 }

@@ -286,8 +286,10 @@ async function drainAll(): Promise<void> {
     // Bounded passes rather than one: this database is shared, so a backlog from an earlier suite
     // could otherwise fill a single batch and leave THIS file's fixture unconsumed and unstamped.
     for (let pass = 0; pass < 10; pass += 1) {
-      const counts = await drainEventConsumer(consumer, { batchSize: 200 });
-      if (counts.processed === 0) break;
+      const batchSize = 200;
+      const counts = await drainEventConsumer(consumer, { batchSize });
+      // A short batch means the scan ran dry; another call would only confirm it.
+      if (counts.processed < batchSize) break;
     }
   }
 }

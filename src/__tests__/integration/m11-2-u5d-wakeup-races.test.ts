@@ -363,8 +363,10 @@ async function receipted(eventId: number): Promise<string[]> {
 async function drainAll(): Promise<void> {
   for (const consumer of eventConsumers) {
     for (let pass = 0; pass < 50; pass += 1) {
-      const counts = await drainEventConsumer(consumer, { batchSize: 500 });
-      if (counts.processed === 0) break;
+      const batchSize = 500;
+      const counts = await drainEventConsumer(consumer, { batchSize });
+      // A short batch means the scan ran dry; another call would only confirm it.
+      if (counts.processed < batchSize) break;
     }
   }
 }
@@ -479,7 +481,7 @@ describe("Scenario 1 — a real activation races the real repair sweep", () => {
    */
   it("publishes ONE prompt, ONE event, and ONE wakeup and ONE notification per participant", async () => {
     await retireLiveSessions();
-    const seated = [await seedAgent(), await seedAgent()];
+    const seated = await Promise.all(Array.from({ length: 2 }, () => seedAgent()));
     const joiner = await seedAgent();
     // `pub-debate` has minPlayers 3, so the third join is what triggers `activateSession`.
     const session = await seedSession({
@@ -570,7 +572,7 @@ describe("Scenario 1 — a real activation races the real repair sweep", () => {
    */
   it("would hand every participant a SECOND wakeup and notification if a second event existed", async () => {
     await retireLiveSessions();
-    const participants = [await seedAgent(), await seedAgent()];
+    const participants = await Promise.all(Array.from({ length: 2 }, () => seedAgent()));
     const session = await seedSession({
       participants,
       currentRound: 1,
@@ -623,7 +625,7 @@ describe("no-wakeup-before-prompt", () => {
    */
   it("arms nothing and notifies nobody while an active round-1 session is still promptless", async () => {
     await retireLiveSessions();
-    const participants = [await seedAgent(), await seedAgent()];
+    const participants = await Promise.all(Array.from({ length: 2 }, () => seedAgent()));
     const session = await seedSession({
       schoolId: "foundation",
       participants,
@@ -657,7 +659,7 @@ describe("upgrade-bridge", () => {
    */
   it("reconstructs one event, arms from it on the SAME pass, and converges across passes", async () => {
     await retireLiveSessions();
-    const participants = [await seedAgent(), await seedAgent()];
+    const participants = await Promise.all(Array.from({ length: 2 }, () => seedAgent()));
     const session = await seedSession({
       participants,
       currentRound: 3,
@@ -720,7 +722,7 @@ describe("late-recovery", () => {
    */
   it("stamps the deadline from the repair, forfeits nobody, and nudges each participant once", async () => {
     await retireLiveSessions();
-    const participants = [await seedAgent(), await seedAgent()];
+    const participants = await Promise.all(Array.from({ length: 2 }, () => seedAgent()));
     const startedAtMs = Date.now() - 45 * 60 * 1000;
     const session = await seedSession({
       schoolId: "foundation",
@@ -775,7 +777,7 @@ describe("stale-round-event", () => {
    */
   it("nudges nobody for a round a real advance has closed, and once for the round it opened", async () => {
     await retireLiveSessions();
-    const participants = [await seedAgent(), await seedAgent()];
+    const participants = await Promise.all(Array.from({ length: 2 }, () => seedAgent()));
     const session = await seedSession({
       schoolId: "foundation",
       participants,
@@ -829,7 +831,7 @@ describe("early-actor", () => {
   it("removes exactly the agent who already submitted, on both projections", async () => {
     await retireLiveSessions();
     const actor = await seedAgent();
-    const waiting = [await seedAgent(), await seedAgent()];
+    const waiting = await Promise.all(Array.from({ length: 2 }, () => seedAgent()));
     const session = await seedSession({
       participants: [actor, ...waiting],
       currentRound: 1,
@@ -878,7 +880,7 @@ describe("submit-vs-deadline", () => {
    */
   it("admits ONE of two blocked resolvers: one transition, one round_opened", async () => {
     await retireLiveSessions();
-    const participants = [await seedAgent(), await seedAgent()];
+    const participants = await Promise.all(Array.from({ length: 2 }, () => seedAgent()));
     const session = await seedSession({
       schoolId: "foundation",
       participants,
@@ -998,7 +1000,7 @@ describe("advance-vs-completion", () => {
    */
   it("writes nothing and emits nothing for a completion fenced on a round the session has left", async () => {
     await retireLiveSessions();
-    const participants = [await seedAgent(), await seedAgent()];
+    const participants = await Promise.all(Array.from({ length: 2 }, () => seedAgent()));
     const session = await seedSession({
       schoolId: "foundation",
       participants,

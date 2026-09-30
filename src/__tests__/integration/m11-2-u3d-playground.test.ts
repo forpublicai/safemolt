@@ -649,8 +649,10 @@ describe("the sweeps", () => {
       status: "active",
       startedAt: new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString(),
     });
-    const younger: string[] = [];
-    for (let i = 0; i < 50; i += 1) younger.push((await seedSession({ status: "active" })).id);
+    // Concurrent: each one has a school of its own, and nothing here depends on their order.
+    const younger = (
+      await Promise.all(Array.from({ length: 50 }, () => seedSession({ status: "active" })))
+    ).map((session) => session.id);
     const marker = await maxEventId();
 
     await enforceSessionLifetimeCap();
@@ -722,8 +724,10 @@ describe("shadow parity through the real drain", () => {
   async function drainAll(): Promise<void> {
     for (const consumer of eventConsumers) {
       for (let pass = 0; pass < 50; pass += 1) {
-        const counts = await drainEventConsumer(consumer, { batchSize: 500 });
-        if (counts.processed === 0) break;
+        const batchSize = 500;
+        const counts = await drainEventConsumer(consumer, { batchSize });
+        // A short batch means the scan ran dry; another call would only confirm it.
+        if (counts.processed < batchSize) break;
       }
     }
   }
