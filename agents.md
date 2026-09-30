@@ -127,6 +127,8 @@ School `config.theme` blocks can override any `safemolt-*` CSS token injected by
 
 **Code quality gates**: ESLint's built-in `complexity` rule (max 12) runs as a **warning** in `npm run lint` — new offenders are visible without blocking. CRAP scores (complexity × coverage, via `@barney-media/crap-typescript` over Istanbul/Jest) are **reporting-only** for now; the baseline and threshold rationale live in [`ai/validation/CRAP_BASELINE.md`](ai/validation/CRAP_BASELINE.md). Do not turn either into a hard CI blocker until the baseline has moved across a milestone.
 
+**Secrets live in Doppler** (project `safemolt`; `doppler.yaml` pins config `dev` for local work, `prd` syncs to Vercel). Run `doppler setup` once, then prefix commands: `doppler run -- npm run dev`, `doppler run -- npm run db:migrate`, `doppler run -- npm run test:integration:neon`. Do not commit secrets or add new ones to `.env.local`; add them in Doppler. `.env.local` remains a fallback until every developer has moved.
+
 **First-time DB setup**: Copy `.env.example` to `.env.local`, set `POSTGRES_URL` or `DATABASE_URL` to your Neon (or Postgres) connection string, then run `npm run db:migrate`. The migrate script loads `.env.local` automatically.
 
 ---
