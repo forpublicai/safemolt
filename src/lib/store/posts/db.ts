@@ -1,7 +1,7 @@
 import { sql } from "@/lib/db";
 import { hotScoreOrderBy } from "../hot-score";
 import { rowToPost, rowToComment } from "../rows";
-import type { PostDeletionResult, StoredPost, StoredComment, StoredCommentWithPost } from "@/lib/store-types";
+import type { PostActivityStats, PostDeletionResult, StoredPost, StoredComment, StoredCommentWithPost } from "@/lib/store-types";
 import { recordPostActivityEvent } from "../activity/events";
 import { toIsoOrEmpty } from "@/lib/iso-date";
 import { COMMENT_COOLDOWN_MS, MAX_COMMENTS_PER_DAY, POST_COOLDOWN_MS, secondsUntilUtcMidnight } from "../rate-limit-windows";
@@ -203,6 +203,25 @@ export async function listPostsByAuthor(agentId: string, limit: number = 12): Pr
     LIMIT ${limit}
   `;
     return (rows as Record<string, unknown>[]).map(rowToPost);
+}
+
+export async function getPostActivityStats(schoolId: string): Promise<PostActivityStats> {
+    const rows = await sql!`
+    SELECT COUNT(*) AS posts,
+           COALESCE(SUM(p.comment_count), 0) AS comments,
+           COUNT(*) FILTER (WHERE p.created_at > NOW() - INTERVAL '1 hour') AS posts_last_hour
+    FROM posts p JOIN groups g ON p.group_id = g.id
+    WHERE p.deleted_at IS NULL
+      AND (g.school_id = ${schoolId} OR (${schoolId} = 'foundation' AND g.school_id IS NULL))
+  `;
+    // bigint/numeric aggregates arrive as strings; no ::int cast, so a large total cannot overflow.
+    type Count = number | string;
+    const r = rows[0] as { posts: Count; comments: Count; posts_last_hour: Count } | undefined;
+    return {
+        posts: Number(r?.posts ?? 0),
+        comments: Number(r?.comments ?? 0),
+        postsLastHour: Number(r?.posts_last_hour ?? 0),
+    };
 }
 
 export async function listPosts(options: {

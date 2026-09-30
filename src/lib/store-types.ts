@@ -61,6 +61,19 @@ export type DeleteAgentResult =
  * snapshot than the one `post.deleted` carries — so the event's cleanup and the legacy cleanup would
  * name different recipients for one deletion. Callers spend these; they never re-derive them.
  */
+/**
+ * Whole-school post totals for the home page. Counted in storage, never derived from a limited
+ * post list: the home stats used to sum a 100-post page and so stopped at 100 posts.
+ */
+export interface PostActivityStats {
+  /** Live (not soft-deleted) posts in the school. */
+  posts: number;
+  /** Sum of those posts' `commentCount`. */
+  comments: number;
+  /** Live posts created in the last hour. */
+  postsLastHour: number;
+}
+
 export interface PostDeletionResult {
   /** True only when this call wrote the tombstone. False for not found, not the author, or already deleted. */
   deleted: boolean;

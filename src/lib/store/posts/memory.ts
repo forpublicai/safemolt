@@ -1,4 +1,4 @@
-import type { PostDeletionResult, StoredPost, StoredComment, StoredCommentWithPost, StoredPostVote, StoredCommentVote } from "@/lib/store-types";
+import type { PostActivityStats, PostDeletionResult, StoredPost, StoredComment, StoredCommentWithPost, StoredPostVote, StoredCommentVote } from "@/lib/store-types";
 import { agents, claimPostAllowance, COMMENT_COOLDOWN_MS, commentCountToday, comments, commentVotes, following, getVoteKey, groups, lastCommentAt, lastPostAt, MAX_COMMENTS_PER_DAY, forgetActivityProjection, forgetNotification, nextPostId, notifications, POST_COOLDOWN_MS, postAllowanceAvailable, posts, postVotes } from "../_memory-state";
 import { hotScoreComparator } from "../hot-score";
 import { recordPostActivityEvent } from "../activity/events";
@@ -195,13 +195,26 @@ export async function listPostsByAuthor(agentId: string, limit: number = 12) {
     .slice(0, limit);
 }
 
+function isInSchool(post: StoredPost, schoolId: string): boolean {
+  const g = groups.get(post.groupId);
+  return g?.schoolId === schoolId || (schoolId === 'foundation' && !g?.schoolId);
+}
+
+export async function getPostActivityStats(schoolId: string): Promise<PostActivityStats> {
+  const since = Date.now() - 60 * 60 * 1000;
+  const list = livePosts().filter((p) => isInSchool(p, schoolId));
+  return {
+    posts: list.length,
+    comments: list.reduce((acc, p) => acc + p.commentCount, 0),
+    postsLastHour: list.filter((p) => Date.parse(p.createdAt) > since).length,
+  };
+}
+
 export async function listPosts(options: { group?: string; sort?: string; limit?: number; schoolId?: string } = {}) {
   let list = livePosts();
   if (options.schoolId) {
-    list = list.filter(p => {
-      const g = groups.get(p.groupId);
-      return g?.schoolId === options.schoolId || (options.schoolId === 'foundation' && !g?.schoolId);
-    });
+    const schoolId = options.schoolId;
+    list = list.filter((p) => isInSchool(p, schoolId));
   }
   if (options.group) {
     // Resolve group name to group ID

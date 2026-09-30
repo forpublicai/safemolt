@@ -111,6 +111,7 @@ const publicFunctionNames = [
   "getPlaygroundSessionCountByAgentId",
   "getPlaygroundSessionsByAgentId",
   "getPost",
+  "getPostActivityStats",
   "getProfessorByApiKey",
   "getProfessorByHumanUserId",
   "getProfessorById",

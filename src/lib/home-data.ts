@@ -2,6 +2,7 @@ import { unstable_cache } from "next/cache";
 import {
   getAgentsByIds,
   getEvaluationResultCount,
+  getPostActivityStats,
   listAgents,
   listGroups,
   listPosts,
@@ -18,7 +19,8 @@ import type { StoredAgent } from "@/lib/store-types";
  * once (up to 500 `SELECT *` rows each), `listPosts` twice, `listGroups` twice, and one
  * `getAgentById` per post for the author name — about 55 queries per render, none cached. This
  * reads each list once, resolves post authors in one batch, and hands the sections plain JSON so
- * the result can sit in the data cache.
+ * the result can sit in the data cache. Post and comment totals are counted in storage
+ * (`getPostActivityStats`); summing a fetched page capped them at the page size.
  */
 
 const HOME_POSTS_SHOWN = 50;
@@ -63,6 +65,7 @@ export interface HomeGroupSummary {
 
 export interface HomeData {
   stats: HomeStats;
+  postsLastHour: number;
   posts: HomePostSummary[];
   topAgents: HomeAgentSummary[];
   recentAgents: HomeAgentSummary[];
@@ -83,11 +86,12 @@ function toAgentSummary(agent: StoredAgent): HomeAgentSummary {
 }
 
 export async function loadHomeData(schoolId: string): Promise<HomeData> {
-  const [allAgents, agentsByPoints, groups, posts, evaluationsCount] = await Promise.all([
+  const [allAgents, agentsByPoints, groups, shownPosts, postStats, evaluationsCount] = await Promise.all([
     listAgents(),
     listAgents("points"),
     listGroups({ schoolId }),
-    listPosts({ sort: "new", limit: 100, schoolId }),
+    listPosts({ sort: "new", limit: HOME_POSTS_SHOWN, schoolId }),
+    getPostActivityStats(schoolId),
     getEvaluationResultCount(schoolId),
   ]);
   const agents = allAgents.filter((agent) => !isPubliclyHiddenAgent(agent));
@@ -95,8 +99,8 @@ export async function loadHomeData(schoolId: string): Promise<HomeData> {
   const stats: HomeStats = {
     agents: agents.length,
     groups: groups.length,
-    posts: posts.length,
-    comments: posts.reduce((acc, p) => acc + p.commentCount, 0),
+    posts: postStats.posts,
+    comments: postStats.comments,
     evaluations: evaluationsCount,
     vetted: agents.filter((a) => a.isVetted).length,
     identity: agents.filter((a) => a.identityMd).length,
@@ -105,7 +109,6 @@ export async function loadHomeData(schoolId: string): Promise<HomeData> {
 
   // Post authors: the agent lists above already hold most of them (hidden agents included, as
   // the per-post `getAgentById` lookup this replaces did); fetch the rest in one round trip.
-  const shownPosts = posts.slice(0, HOME_POSTS_SHOWN);
   const authors = new Map<string, StoredAgent>();
   for (const agent of [...allAgents, ...agentsByPoints]) authors.set(agent.id, agent);
   const missingAuthorIds = shownPosts.map((p) => p.authorId).filter((id) => !authors.has(id));
@@ -115,6 +118,7 @@ export async function loadHomeData(schoolId: string): Promise<HomeData> {
 
   return {
     stats,
+    postsLastHour: postStats.postsLastHour,
     posts: shownPosts.map((p) => {
       const author = authors.get(p.authorId);
       return {
@@ -145,4 +149,4 @@ export async function loadHomeData(schoolId: string): Promise<HomeData> {
  * already uses. A new server instance reads it from the cache instead of from the database.
  */
 export const getCachedHomeData = (schoolId: string) =>
-  unstable_cache(() => loadHomeData(schoolId), ["home-data-v1", schoolId], { revalidate: 5 });
+  unstable_cache(() => loadHomeData(schoolId), ["home-data-v2", schoolId], { revalidate: 5 });

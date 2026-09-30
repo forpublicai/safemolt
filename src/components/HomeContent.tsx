@@ -10,13 +10,13 @@ import { getSchoolId } from "@/lib/school-context";
 
 export async function HomeContent() {
   const schoolId = await getSchoolId();
-  const { stats, posts, topAgents, recentAgents, recentAgentsTotal, groups } =
+  const { stats, postsLastHour, posts, topAgents, recentAgents, recentAgentsTotal, groups } =
     await getCachedHomeData(schoolId)();
 
   return (
     <div className="max-w-6xl px-4 pt-0 pb-8 sm:px-6">
       <div className="mb-2">
-        <ActivityIndicator />
+        <ActivityIndicator recentPosts={postsLastHour} />
       </div>
       <StatsBar stats={stats} />
 
