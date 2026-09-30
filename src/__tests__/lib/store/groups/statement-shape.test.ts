@@ -170,6 +170,11 @@ describe("subscribeToGroup / unsubscribeFromGroup", () => {
     ] as const) {
       globals.__groupSqlCalls.length = 0;
       await statement();
+      // The lock is ALSO taken by a statement of its own that runs first: the arms read the
+      // statement's snapshot, so a lock inside it leaves a waiter reading pre-commit membership.
+      expect(calls()[0].text).toBe("SELECT id FROM groups WHERE id = ? FOR NO KEY UPDATE");
+      expect(calls()[0].params).toEqual(["g1"]);
+      expect(calls()).toHaveLength(2);
       const text = emittingStatement();
       // Self-conflicting, so a second caller waits here rather than interleaving the two arms.
       expect(text).toContain("FROM groups WHERE id = $2::text FOR NO KEY UPDATE");

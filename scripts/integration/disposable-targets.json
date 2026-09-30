@@ -21,6 +21,10 @@
     {
       "endpoint": "ep-nameless-dream-abl0vr1c.eu-west-2.aws.neon.tech",
       "note": "Neon dev branch. Confirmed disposable by the repository owner on 2026-07-25; safemolt.com is served from a different endpoint."
+    },
+    {
+      "endpoint": "localhost",
+      "note": "Local Docker Postgres (docker-compose); added on the repository owner's request 2026-09-29."
     }
   ]
 }

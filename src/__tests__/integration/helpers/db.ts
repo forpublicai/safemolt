@@ -9,6 +9,8 @@
  */
 import { Client, Pool } from "pg";
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
+// Side effect: applies NEON_LOCAL_FETCH_ENDPOINT to the shared driver config for `neonSql()` below.
+import "@/lib/db";
 
 function connectionString(): string {
     const url = process.env.POSTGRES_URL;

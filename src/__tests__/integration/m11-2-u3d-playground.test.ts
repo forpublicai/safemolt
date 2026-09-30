@@ -868,12 +868,16 @@ describe("shadow parity through the real drain", () => {
 
   it("action → cancel → drain skips cleanly: a receipt, and no resurrection", async () => {
     const agent = await seedAgent();
-    const session = await seedSession({ status: "active", participants: [agent] });
+    // A second participant who has not acted: with a sole participant the submission completes the
+    // round and `submitAction` fire-and-forgets the advance, whose resolution lease then races the
+    // cancel below (`resolution_in_progress`). One pending participant keeps the round open.
+    const session = await seedSession({ status: "active", participants: [agent, await seedAgent()] });
     const marker = await maxEventId();
     const result = await submitAction({ agent, sessionId: session.id, content: "then cancelled" });
     expect(result.ok).toBe(true);
 
-    await cancelSession({ agent, sessionId: session.id, reason: "changed my mind" });
+    const cancelled = await cancelSession({ agent, sessionId: session.id, reason: "changed my mind" });
+    expect(cancelled.ok && cancelled.data.outcome).toBe("cancelled");
     const events = await eventsSince(marker);
     const actionEvent = events.find((e) => e.kind === "playground.action_submitted")!;
 

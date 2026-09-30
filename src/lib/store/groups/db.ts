@@ -319,6 +319,19 @@ export async function getGroupMemberCount(groupId: string): Promise<number> {
 }
 
 /**
+ * Lock the group row in a PRECEDING statement: an arm on another table reads the statement's
+ * snapshot, taken before the lock wait, so a caller queued behind a concurrent subscribe or
+ * unsubscribe saw the pre-commit `group_members` and left the two halves disagreeing.
+ */
+async function runUnderGroupLock(groupId: string, text: string, params: unknown[]): Promise<unknown[]> {
+    const results = await sql!.transaction((txn) => [
+        txn`SELECT id FROM groups WHERE id = ${groupId} FOR NO KEY UPDATE`,
+        txn(text, params),
+    ]);
+    return results[1] as unknown[];
+}
+
+/**
  * The legacy feed-subscription surface — **membership and nothing else**, in one statement
  * (M11-2 P1.3).
  *
@@ -355,7 +368,8 @@ export async function subscribeToGroup(
         firstParamIndex: params.length + 1,
         overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(2, "text") } }] : [],
     });
-    const rows = await sql!(
+    const rows = await runUnderGroupLock(
+        groupId,
         `
     WITH target AS (
       SELECT id FROM groups WHERE id = $2::text FOR NO KEY UPDATE
@@ -405,7 +419,8 @@ export async function unsubscribeFromGroup(
         firstParamIndex: params.length + 1,
         overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(2, "text") } }] : [],
     });
-    const rows = await sql!(
+    const rows = await runUnderGroupLock(
+        groupId,
         `
     WITH target AS (
       SELECT id FROM groups WHERE id = $2::text FOR NO KEY UPDATE

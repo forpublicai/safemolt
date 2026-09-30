@@ -26,6 +26,16 @@ async function seedAgent(id: string, opts: { hidden?: boolean; ageMs: number; me
   );
 }
 
+// Agents that earlier suites left behind are still "active now" when the run is fast (a local
+// database finishes the whole run inside the activity window), and `toEqual([visibleId])` counts
+// them. Age them out so the result depends on this file's rows only.
+beforeAll(async () => {
+  await pgPool().query(
+    `UPDATE agents SET last_active_at = NOW() - INTERVAL '1 day' WHERE id NOT LIKE $1`,
+    [`%${RUN}%`]
+  );
+});
+
 afterAll(async () => {
   await pgPool().query(`DELETE FROM agents WHERE id LIKE $1`, [`%${RUN}%`]);
   await closeIntegrationConnections();
