@@ -40,7 +40,9 @@ import { activityTrailEffects } from "@/lib/events/consumers/activity-trail";
 import { eventConsumers } from "@/lib/events/consumers/registry";
 import { getEventById } from "@/lib/store/events/db";
 import { activateEventConsumer, drainEventConsumer } from "@/lib/store/events/drain-db";
+import * as groupsDb from "@/lib/store/groups/db";
 import { joinGroupWithOutcome } from "@/lib/store/groups/db";
+import type { PreparedEvent } from "@/lib/events/kinds";
 import type { StoredAgent, StoredEvent } from "@/lib/store-types";
 
 import { withMiddlewareHeaders } from "../helpers/middleware-headers";
@@ -592,6 +594,71 @@ describe("every other group mutation: one event per real change, none otherwise"
         Number(row.legacy_unattributed_points),
       ]).toEqual([0, 0, 0, 0]);
     }
+  });
+});
+
+/**
+ * The owner predicate lives IN the store statement (`owner_id = <actor>`), so these call the store
+ * directly with a non-owner actor: no action, no pre-read, nothing between the caller and the SQL.
+ * Removing the predicate from either statement makes the intruder's write land.
+ */
+describe("ownership is decided by the statement", () => {
+  const event = (kind: PreparedEvent["kind"], actor: StoredAgent, groupId: string): PreparedEvent =>
+    ({ kind, actorAgentId: actor.id, subjectType: "group", subjectId: groupId, payload: { fields: ["description"] } }) as PreparedEvent;
+
+  it("refuses a non-owner's settings edit: no row change, no event, classified by the statement", async () => {
+    const owner = await seedAgent();
+    const intruder = await seedAgent();
+    const group = await seedGroup(owner);
+    const marker = await maxEventId();
+
+    const refused = await groupsDb.updateGroupSettings(group.id, intruder.id, { description: "taken" }, [
+      event("group.settings_updated", intruder, group.id),
+    ]);
+    // An empty edit is refused too: a non-owner is never told "ok" for a call that writes nothing.
+    const refusedEmpty = await groupsDb.updateGroupSettings(group.id, intruder.id, {});
+    const missing = await groupsDb.updateGroupSettings(nextId("nogroup"), owner.id, { description: "x" });
+
+    expect([refused, refusedEmpty, missing]).toEqual([
+      { outcome: "not_owner" },
+      { outcome: "not_owner" },
+      { outcome: "group_not_found" },
+    ]);
+    expect(await eventsSince(marker)).toEqual([]);
+    const { rows } = await pgPool().query<{ description: string }>(`SELECT description FROM groups WHERE id = $1`, [group.id]);
+    expect(rows[0].description).toBe("");
+
+    const accepted = await groupsDb.updateGroupSettings(group.id, owner.id, { description: "mine" }, [
+      event("group.settings_updated", owner, group.id),
+    ]);
+    expect(accepted).toMatchObject({ outcome: "ok", group: { id: group.id, description: "mine", ownerId: owner.id } });
+    expect((await eventsSince(marker)).map((e) => e.kind)).toEqual(["group.settings_updated"]);
+  });
+
+  it("refuses a non-owner's moderator write, and orders group, owner, target", async () => {
+    const owner = await seedAgent();
+    const intruder = await seedAgent();
+    const target = await seedAgent();
+    const group = await seedGroup(owner);
+    const marker = await maxEventId();
+    const moderatorEvent = (kind: "group.moderator_added" | "group.moderator_removed", actor: StoredAgent) =>
+      [{ ...event(kind, actor, group.id), payload: {} }] as PreparedEvent[];
+
+    expect(await groupsDb.addModerator(group.id, intruder.id, target.name, moderatorEvent("group.moderator_added", intruder))).toBe("not_owner");
+    // Owner check beats the target check, as the action's precedence always had it.
+    expect(await groupsDb.addModerator(group.id, intruder.id, "no_such_agent")).toBe("not_owner");
+    expect(await groupsDb.addModerator(nextId("nogroup"), owner.id, target.name)).toBe("group_not_found");
+    expect(await groupsDb.addModerator(group.id, owner.id, "no_such_agent")).toBe("target_not_found");
+    expect(await eventsSince(marker)).toEqual([]);
+    const read = () =>
+      pgPool().query<{ moderator_ids: string[] }>(`SELECT moderator_ids FROM groups WHERE id = $1`, [group.id]);
+    expect((await read()).rows[0].moderator_ids).toEqual([]);
+
+    // The intruder cannot remove one either.
+    await groupsDb.addModerator(group.id, owner.id, target.name);
+    expect(await groupsDb.removeModerator(group.id, intruder.id, target.name, moderatorEvent("group.moderator_removed", intruder))).toBe("not_owner");
+    expect((await read()).rows[0].moderator_ids).toEqual([target.id]);
+    expect((await eventsSince(marker)).map((e) => e.kind)).toEqual([]);
   });
 });
 

@@ -5,7 +5,6 @@ import {
   agents,
   following,
   groups,
-  effectiveGroupOwnerId,
   groupSubscriptionSnapshots,
   materializeGroupSubscriptionSnapshot,
   posts,
@@ -13,7 +12,12 @@ import {
 import { getAgentByName } from "../agents/memory";
 import { recordGroupJoinActivityEvent } from "../activity/events";
 import { appendPreparedBatch, prepareEventBatch, validatePreparedEvents } from "../events/memory";
-import { suppliedGroupSettingsFields, type GroupSettingsUpdates } from "./settings-fields";
+import {
+  suppliedGroupSettingsFields,
+  type GroupModeratorOutcome,
+  type GroupSettingsOutcome,
+  type GroupSettingsUpdates,
+} from "./settings-fields";
 import type { EnsureGeneralGroupEvents } from "./db";
 
 /**
@@ -111,9 +115,8 @@ export async function createGroup(
  *
  * The maps deliberately survive a hot reload, so a group object created by the code that still had
  * houses keeps `type: "house"` and its own `founderId` — and without this, memory mode would keep
- * exposing `"house"` and would authorize by `ownerId` while the promoted founder sits in a field
- * nothing reads. Same rule as the db boundary: every group is an ordinary group, and the founder
- * wins as owner.
+ * exposing `"house"`. Same rule as the db boundary: every group is an ordinary group, owned by
+ * `ownerId`.
  */
 function normalizeGroup(group: StoredGroup): StoredGroup {
   const legacy = group as StoredGroup & { founderId?: string; points?: number; requiredEvaluationIds?: string[] };
@@ -122,8 +125,7 @@ function normalizeGroup(group: StoredGroup): StoredGroup {
   void founderId;
   void points;
   void requiredEvaluationIds;
-  // Through the shared rule, so the read boundary and every authorization path cannot drift.
-  return { ...rest, type: "group", ownerId: effectiveGroupOwnerId(group) };
+  return { ...rest, type: "group" };
 }
 
 export async function getGroup(idOrName: string) {
@@ -369,41 +371,35 @@ export async function listFollowerIdsForFollowee(followeeId: string) {
 export async function getYourRole(groupId: string, agentId: string) {
   const g = groups.get(groupId);
   if (!g) return null;
-  // Founder-wins, like every other reader: a mixed-version row's promoted founder IS the owner
-  // (`effectiveGroupOwnerId`), and the raw column would show owner controls to a departed creator
-  // whose writes the mutation paths refuse.
-  if (effectiveGroupOwnerId(g) === agentId) return "owner";
+  if (g.ownerId === agentId) return "owner";
   if (g.moderatorIds?.includes(agentId)) return "moderator";
   return null;
 }
 
 /**
- * Update settings — the memory twin, with the same "no field, no write, no event" rule.
+ * Update settings — the memory twin: same order of checks, same answers as the db statement.
  *
- * `emoji: ""` clears, exactly as the db `CASE WHEN $6 THEN $7` does; every other field is applied
- * only when the caller supplied it, which is what `...updates` already gave (an absent key is not
- * spread) and what `COALESCE(param, column)` gives on the other side.
+ * Group, then owner, then the empty-edit exit ("no field, no write, no event"). `emoji: ""` clears,
+ * exactly as the db `CASE WHEN $6 THEN $7` does; every other field is applied only when supplied.
+ * **The empty-edit exit comes before event validation, because the db renders no event for one.**
+ * Key presence, not value — see `suppliedGroupSettingsFields`.
  */
 export async function updateGroupSettings(
   groupId: string,
+  actorId: string,
   updates: GroupSettingsUpdates,
-  events?: readonly PreparedEvent[]) {
-  const g = groups.get(groupId);
-  // **The empty-edit exit comes FIRST, because the db store returns before it renders.** Key
-  // presence, not value — see `suppliedGroupSettingsFields`: `{ emoji: undefined }` is a deliberate
-  // clear, and a value test reads it as "nothing supplied". A call with no field is a READ on both
-  // sides, so it must not be the place a malformed event surfaces.
+  events?: readonly PreparedEvent[]
+): Promise<GroupSettingsOutcome> {
   const supplied = suppliedGroupSettingsFields(updates);
-  if (supplied.length === 0) return g ?? null;
-  const prepared = withGroupSubject(events, groupId);
+  const prepared = withGroupSubject(supplied.length > 0 ? events : undefined, groupId);
   validatePreparedEvents(prepared);
-  if (!g) return null;
+  const g = groups.get(groupId);
+  if (!g) return { outcome: "group_not_found" };
+  if (g.ownerId !== actorId) return { outcome: "not_owner" };
+  if (supplied.length === 0) return { outcome: "ok", group: null };
   const batch = prepareEventBatch(prepared);
-  // **Only the SUPPLIED keys are applied**, never a bare `...updates` spread. A spread writes
-  // `displayName: undefined` for a key the caller left explicitly undefined, where the db's
-  // `COALESCE(NULL, display_name)` preserves it — the divergence `suppliedGroupSettingsFields` now
-  // rules out at the source, and this is the write side of the same rule. The emoji is normalized
-  // the way the db `CASE` normalizes it: supplied-but-empty clears, absent leaves alone.
+  // **Only the SUPPLIED keys are applied**, never a bare `...updates` spread: the db's
+  // `COALESCE(NULL, display_name)` preserves a column bound to an explicit `undefined`.
   const applied: GroupSettingsUpdates = {};
   for (const field of supplied) {
     if (field === "emoji") applied.emoji = updates.emoji || undefined;
@@ -411,7 +407,7 @@ export async function updateGroupSettings(
   }
   groups.set(groupId, { ...g, ...applied });
   await appendPreparedBatch(batch).dispatched;
-  return groups.get(groupId) ?? null;
+  return { outcome: "ok", group: groups.get(groupId) ?? null };
 }
 
 export async function addModerator(
@@ -433,17 +429,16 @@ export async function removeModerator(
 }
 
 /**
- * The shared body, mirroring the db twin's.
+ * The shared body, mirroring the db statement: group, then owner, then target, in that precedence.
  *
- * **The group is re-read by id after the `await`, and the actor deliberately is not.** Decision 4's
- * rule is parity with what Postgres refuses, and there the `UPDATE groups` names neither the owner
- * nor the target in a foreign key — an owner or a target that withdrew while the name resolved
- * still lands the write. The group is different: the update anchors on its id, so a group that
- * vanished in the window matches nothing.
+ * **Everything is re-read by id after the ONLY await, and the actor deliberately is not.** Decision
+ * 4's rule is parity with what Postgres refuses, and there the `UPDATE groups` names neither the
+ * owner nor the target in a foreign key — an owner or a target that withdrew while the name
+ * resolved still lands the write. The group is different: the update anchors on its id and on
+ * `owner_id`, so a group that vanished in the window matches nothing.
  *
- * `true` for a no-op — an already-moderator add, a removal of somebody who was not one — is the
- * answer both surfaces publish today. The event is gated on the array actually changing, so the two
- * facts stay separate.
+ * `"ok"` for a no-op — an already-moderator add, a removal of somebody who was not one — is the
+ * answer both surfaces publish today. The event is gated on the array actually changing.
  */
 async function writeModerator(
   operation: "add" | "remove",
@@ -451,29 +446,29 @@ async function writeModerator(
   ownerId: string,
   agentName: string,
   events?: readonly PreparedEvent[]
-): Promise<boolean> {
-  const g = groups.get(groupId);
-  // The EFFECTIVE owner, never the raw column: the action authorized the caller through `getGroup`,
-  // which applies founder-wins, so comparing `ownerId` here refused the promoted founder it had just
-  // admitted — and admitted the departed creator it had just refused (codex round 4, finding 2).
-  if (!g || effectiveGroupOwnerId(g) !== ownerId) return false;
+): Promise<GroupModeratorOutcome> {
+  // Before every refusal: the db renders (and so validates) its events before the statement runs.
+  validatePreparedEvents(events);
+  const before = groups.get(groupId);
+  if (!before) return "group_not_found";
+  if (before.ownerId !== ownerId) return "not_owner";
   const agent = await getAgentByName(agentName);
-  if (!agent) return false;
   // ---- Re-checked after the ONLY await, by id. ----
   const current = groups.get(groupId);
-  if (!current) return false;
+  if (!current) return "group_not_found";
+  if (current.ownerId !== ownerId) return "not_owner";
+  if (!agent) return "target_not_found";
   const prepared = withGroupSubject(events, groupId, agent.id);
-  validatePreparedEvents(prepared);
   const mods = current.moderatorIds ?? [];
   const isModerator = mods.includes(agent.id);
   // The no-op cases, matching the db predicates: an add of a current moderator, a removal of an
   // agent who is not one. Nothing written, nothing emitted, success reported.
-  if (operation === "add" ? isModerator : !isModerator) return true;
+  if (operation === "add" ? isModerator : !isModerator) return "ok";
   const next = operation === "add" ? [...mods, agent.id] : mods.filter((id) => id !== agent.id);
   const batch = prepareEventBatch(prepared);
   groups.set(groupId, { ...current, moderatorIds: next });
   await appendPreparedBatch(batch).dispatched;
-  return true;
+  return "ok";
 }
 
 export async function listModerators(groupId: string) {

@@ -3,11 +3,16 @@ import { hotScoreOrderBy } from "../hot-score";
 import { rowToGroup, rowToPost } from "../rows";
 import type { StoredAgent, StoredGroup, StoredPost } from "@/lib/store-types";
 import type { PreparedEvent } from "@/lib/events/kinds";
-import { getAgentById, getAgentByName } from "../agents/db";
+import { getAgentById } from "../agents/db";
 import { toIsoOrEmpty } from "@/lib/iso-date";
 import { buildGroupJoinActivityUpsertCtes, recordGroupJoinActivityEvent } from "../activity/events";
-import { emitEventCtes, sqlParam } from "../events/statement";
-import { suppliedGroupSettingsFields, type GroupSettingsUpdates } from "./settings-fields";
+import { emitEventCtes, sqlColumn, sqlParam } from "../events/statement";
+import {
+    suppliedGroupSettingsFields,
+    type GroupModeratorOutcome,
+    type GroupSettingsOutcome,
+    type GroupSettingsUpdates,
+} from "./settings-fields";
 
 /**
  * The primary event's two returned values, projected by a statement that emitted one.
@@ -506,15 +511,7 @@ export async function listFollowerIdsForFollowee(followeeId: string): Promise<st
     return (rows as { follower_id: string }[]).map((r) => r.follower_id);
 }
 
-/**
- * The caller's role, resolved through `rowToGroup` rather than by reading `owner_id` directly.
- *
- * That indirection is the point: `rowToGroup` applies the founder-wins rule for a house an
- * undrained instance created after the conversion (see there), so reading the column here made this
- * function disagree with every other authorization path — the promoted founder got `your_role:
- * null` on a group the settings route lets them edit, and the departed creator was reported owner.
- * It also survives `contract-drop-house-columns.sql`, because the mapper simply finds no founder.
- */
+/** The caller's role: the group's `owner_id`, else its moderator list. */
 export async function getYourRole(
     groupId: string,
     agentId: string
@@ -546,21 +543,22 @@ export async function getYourRole(
  * divergence**: the value test this replaced (`updates.emoji !== undefined`) made every emoji
  * removal a no-op here while the memory store's object spread performed it.
  *
- * **Authorization is the ACTION's, not this statement's**, and that is a deliberate exception to the
- * in-statement rule. The canonical owner of a group is `COALESCE(founder_id, owner_id)` — the
- * founder-wins rule `rowToGroup` applies at the read boundary for a house an undrained instance
- * created after the conversion — and neither half of it can go in a predicate here: `owner_id` alone
- * refuses a promoted founder, and naming `founder_id` breaks the moment
- * `contract-drop-house-columns.sql` runs. So the action decides through `rowToGroup`, and the
- * statement anchors on the group id, which is what keeps the event honest about the write.
+ * **Ownership is decided IN this statement** (`owner_id = $8` in the `UPDATE`'s predicate), and the
+ * classification is PROJECTED by the same statement — `group_exists` and `is_owner` are scalar
+ * subqueries of the main `SELECT`, which returns exactly one row on a refusal too. A pre-read that
+ * decided the outcome would be stale by the time the write ran. A refused or no-op call writes
+ * nothing and emits nothing, because the event is gated on the `UPDATE`'s `RETURNING`.
+ *
+ * A call that supplies no field still reaches the statement, because a non-owner must be refused
+ * rather than told "ok"; `$9` turns the `UPDATE` off, and no event is rendered for it.
  */
 export async function updateGroupSettings(
     groupId: string,
+    actorId: string,
     updates: GroupSettingsUpdates,
     events?: readonly PreparedEvent[]
-): Promise<StoredGroup | null> {
+): Promise<GroupSettingsOutcome> {
     const supplied = suppliedGroupSettingsFields(updates);
-    if (supplied.length === 0) return getGroup(groupId);
     const params: unknown[] = [
         groupId,
         updates.displayName ?? null,
@@ -569,10 +567,14 @@ export async function updateGroupSettings(
         updates.themeColor ?? null,
         supplied.includes("emoji"),
         updates.emoji || null,
+        actorId,
+        supplied.length > 0,
     ];
-    const emitted = emitEventCtes(events, "updated", {
+    // An empty edit renders no event: it is a read, and the db never validated events for one.
+    const rendered = supplied.length > 0 ? events : undefined;
+    const emitted = emitEventCtes(rendered, "updated", {
         firstParamIndex: params.length + 1,
-        overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [],
+        overrides: rendered?.length ? [{ columnSql: { subject_id: sqlParam(1, "text") } }] : [],
     });
     const rows = await sql!(
         `
@@ -583,15 +585,28 @@ export async function updateGroupSettings(
         banner_color = COALESCE($4::text, banner_color),
         theme_color = COALESCE($5::text, theme_color),
         emoji = CASE WHEN $6::boolean THEN $7::text ELSE emoji END
-      WHERE id = $1::text
+      WHERE id = $1::text AND owner_id = $8::text AND $9::boolean
       RETURNING *
     )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
-    SELECT * FROM updated
+    SELECT u.*,
+           EXISTS (SELECT 1 FROM groups WHERE id = $1::text) AS group_exists,
+           EXISTS (SELECT 1 FROM groups WHERE id = $1::text AND owner_id = $8::text) AS is_owner
+    FROM (SELECT 1) one LEFT JOIN updated u ON true
   `,
         [...params, ...emitted.params]
     );
-    const row = rows[0] as Record<string, unknown> | undefined;
-    return row ? rowToGroup(row) : null;
+    return settingsOutcome(rows[0] as SettingsRow | undefined, supplied.length > 0);
+}
+
+type SettingsRow = Record<string, unknown> & { group_exists?: boolean; is_owner?: boolean };
+
+/** Group, then owner, then whether the `UPDATE` returned a row — the precedence the action publishes. */
+function settingsOutcome(row: SettingsRow | undefined, hadFields: boolean): GroupSettingsOutcome {
+    if (!row?.group_exists) return { outcome: "group_not_found" };
+    if (!row.is_owner) return { outcome: "not_owner" };
+    if (row.id) return { outcome: "ok", group: rowToGroup(row) };
+    // Supplied fields but no row: the group vanished after the snapshot the flags came from.
+    return hadFields ? { outcome: "group_not_found" } : { outcome: "ok", group: null };
 }
 
 /**
@@ -607,14 +622,14 @@ export async function updateGroupSettings(
  * surfaces, and the event is keyed to the row changing rather than to the answer, so the two are
  * separate facts: nothing written, nothing emitted, success reported.
  *
- * Authorization stays a pre-read for the reason `updateGroupSettings` gives above.
+ * Ownership and the target name are decided in the statement, as `updateGroupSettings` does.
  */
 export async function addModerator(
     groupId: string,
     ownerId: string,
     agentName: string,
     events?: readonly PreparedEvent[]
-): Promise<boolean> {
+): Promise<GroupModeratorOutcome> {
     return writeModerator("add", groupId, ownerId, agentName, events);
 }
 
@@ -630,16 +645,19 @@ export async function removeModerator(
     ownerId: string,
     agentName: string,
     events?: readonly PreparedEvent[]
-): Promise<boolean> {
+): Promise<GroupModeratorOutcome> {
     return writeModerator("remove", groupId, ownerId, agentName, events);
 }
 
 /**
  * The two moderator writers differ by one SQL expression and one predicate, so they share a body.
  *
- * The alternative is two copies of the authorization pre-read, the name resolution, the event
- * rendering and the projection — four places for the pair to drift, which is the drift this
- * milestone exists to remove.
+ * **One statement decides everything.** The target agent is resolved by a CTE (`LOWER(name)`, the
+ * same match `getAgentByName` makes), ownership is the `UPDATE`'s `owner_id = $2` predicate, and the
+ * main `SELECT` projects `group_exists` / `is_owner` / `target_exists` from one snapshot, so the
+ * precedence is group, then owner, then target — never re-derived from a later read. `"ok"` for a
+ * no-op (already a moderator, never one) is deliberate: nothing written, nothing emitted. The
+ * event's `secondary_subject_id` is the target id the statement itself resolved.
  */
 async function writeModerator(
     operation: "add" | "remove",
@@ -647,36 +665,45 @@ async function writeModerator(
     ownerId: string,
     agentName: string,
     events?: readonly PreparedEvent[]
-): Promise<boolean> {
-    const group = await getGroup(groupId);
-    if (!group || group.ownerId !== ownerId) return false;
-    const agent = await getAgentByName(agentName);
-    if (!agent) return false;
-    const params: unknown[] = [groupId, agent.id];
+): Promise<GroupModeratorOutcome> {
+    const params: unknown[] = [groupId, ownerId, agentName];
     const emitted = emitEventCtes(events, "updated", {
         firstParamIndex: params.length + 1,
         overrides: events?.length
-            ? [{ columnSql: { subject_id: sqlParam(1, "text"), secondary_subject_id: sqlParam(2, "text") } }]
+            ? [{
+                rowSource: "updated",
+                columnSql: { subject_id: sqlParam(1, "text"), secondary_subject_id: sqlColumn("updated.target_id", "text") },
+            }]
             : [],
     });
     const mutation =
         operation === "add"
-            ? `SET moderator_ids = COALESCE(moderator_ids, '[]'::jsonb) || to_jsonb($2::text)
-      WHERE id = $1::text AND NOT (COALESCE(moderator_ids, '[]'::jsonb) @> to_jsonb($2::text))`
-            : `SET moderator_ids = COALESCE(moderator_ids, '[]'::jsonb) - $2::text
-      WHERE id = $1::text AND COALESCE(moderator_ids, '[]'::jsonb) @> to_jsonb($2::text)`;
-    await sql!(
+            ? `SET moderator_ids = COALESCE(moderator_ids, '[]'::jsonb) || to_jsonb((SELECT id FROM target))
+      WHERE id = $1::text AND owner_id = $2::text AND EXISTS (SELECT 1 FROM target)
+        AND NOT (COALESCE(moderator_ids, '[]'::jsonb) @> to_jsonb((SELECT id FROM target)))`
+            : `SET moderator_ids = COALESCE(moderator_ids, '[]'::jsonb) - (SELECT id FROM target)
+      WHERE id = $1::text AND owner_id = $2::text AND EXISTS (SELECT 1 FROM target)
+        AND COALESCE(moderator_ids, '[]'::jsonb) @> to_jsonb((SELECT id FROM target))`;
+    const rows = await sql!(
         `
-    WITH updated AS (
+    WITH target AS (
+      SELECT id FROM agents WHERE LOWER(name) = LOWER($3::text) LIMIT 1
+    ),
+    updated AS (
       UPDATE groups
       ${mutation}
-      RETURNING id
+      RETURNING id, (SELECT id FROM target) AS target_id
     )${emitted.ctes.length > 0 ? `, ${emitted.ctes.join(", ")}` : ""}
-    SELECT (SELECT count(*) FROM updated)::int AS changed
+    SELECT EXISTS (SELECT 1 FROM groups WHERE id = $1::text) AS group_exists,
+           EXISTS (SELECT 1 FROM groups WHERE id = $1::text AND owner_id = $2::text) AS is_owner,
+           EXISTS (SELECT 1 FROM target) AS target_exists
   `,
         [...params, ...emitted.params]
     );
-    return true;
+    const row = rows[0] as { group_exists?: boolean; is_owner?: boolean; target_exists?: boolean } | undefined;
+    if (!row?.group_exists) return "group_not_found";
+    if (!row.is_owner) return "not_owner";
+    return row.target_exists ? "ok" : "target_not_found";
 }
 
 export async function listModerators(groupId: string): Promise<StoredAgent[]> {

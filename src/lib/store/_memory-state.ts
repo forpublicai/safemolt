@@ -167,32 +167,12 @@ export function materializeGroupSubscriptionSnapshot(group: StoredGroup): string
   return seeded;
 }
 
-/** A stored group as the maps may actually hold it: an older build's row keeps `founder_id`. */
-type MixedVersionGroup = StoredGroup & { founderId?: string };
-
-/**
- * A group's EFFECTIVE owner — the founder-wins rule, in one place (M11-2 P1.3, codex round 4).
- *
- * `rowToGroup` applies `founder_id ?? owner_id` at the db read boundary and `normalizeGroup` applies
- * it here, because a house an undrained instance created after the conversion is administered by its
- * promoted founder while `owner_id` still names whoever created it. Any authorization path that
- * reads the raw field instead disagrees with the action that just authorized the caller — which is
- * exactly what the memory moderator writer did, refusing the promoted founder and accepting the
- * departed creator.
- */
-export function effectiveGroupOwnerId(group: StoredGroup): string {
-  return (group as MixedVersionGroup).founderId ?? group.ownerId;
-}
-
 /**
  * Refuse a withdrawal that would orphan a group — memory's twin of `groups.owner_id REFERENCES
- * agents(id)` **and of `groups.founder_id REFERENCES agents(id)`**.
+ * agents(id)`.
  *
- * Neither foreign key carries a cascade, so Postgres answers `DELETE FROM agents` with `23503`
- * rather than leaving a group whose owner does not exist. **Both columns count**, and checking only
- * the effective owner would be wrong in the other direction: until
- * `scripts/contract-drop-house-columns.sql` runs, `founder_id` is still a real reference, so the
- * departed creator named by `owner_id` cannot be deleted either.
+ * The foreign key carries no cascade, so Postgres answers `DELETE FROM agents` with `23503`
+ * rather than leaving a group whose owner does not exist.
  *
  * It **throws**, because `deleteAgent` already translates a raised constraint into
  * `{ ok: false, reason: "foreign_key" }` — the same refusal reaching the same handler, at no branch
@@ -200,7 +180,7 @@ export function effectiveGroupOwnerId(group: StoredGroup): string {
  */
 export function assertAgentOwnsNoGroups(agentId: string): void {
   for (const group of Array.from(groups.values())) {
-    if (group.ownerId !== agentId && (group as MixedVersionGroup).founderId !== agentId) continue;
+    if (group.ownerId !== agentId) continue;
     const error = new Error(
       `update or delete on table "agents" violates foreign key constraint on table "groups"`
     ) as Error & { code: string };

@@ -445,6 +445,39 @@ describe("addModerator / removeModerator", () => {
 });
 
 /**
+ * Store parity for the owner predicate: the memory store, driven directly with a non-owner actor,
+ * answers exactly what the db statement's projection answers (see the integration suite's
+ * "ownership is decided by the statement"), including the group / owner / target precedence.
+ */
+describe("the memory store decides ownership itself", () => {
+  it("refuses a non-owner's settings edit and moderator writes, in the db's precedence", async () => {
+    const owner = await agent("sowner");
+    const intruder = await agent("sintruder");
+    const target = await agent("starget");
+    const g = await group(owner);
+    const before = marker();
+
+    expect(await memoryStore.updateGroupSettings(g.id, intruder.id, { description: "taken" })).toEqual({
+      outcome: "not_owner",
+    });
+    expect(await memoryStore.updateGroupSettings(g.id, intruder.id, {})).toEqual({ outcome: "not_owner" });
+    expect(await memoryStore.updateGroupSettings("nogroup", owner.id, { description: "x" })).toEqual({
+      outcome: "group_not_found",
+    });
+    expect(await memoryStore.addModerator(g.id, intruder.id, target.name)).toBe("not_owner");
+    expect(await memoryStore.addModerator(g.id, intruder.id, "no_such_agent")).toBe("not_owner");
+    expect(await memoryStore.addModerator("nogroup", owner.id, target.name)).toBe("group_not_found");
+    expect(await memoryStore.addModerator(g.id, owner.id, "no_such_agent")).toBe("target_not_found");
+    await memoryStore.addModerator(g.id, owner.id, target.name);
+    expect(await memoryStore.removeModerator(g.id, intruder.id, target.name)).toBe("not_owner");
+
+    const stored = (await getGroup(g.id))!;
+    expect([stored.description, stored.moderatorIds]).toEqual(["", [target.id]]);
+    expect(eventsSince(before)).toEqual([]);
+  });
+});
+
+/**
  * **The acting agent withdraws while the action is suspended** (codex round 1, finding 3).
  *
  * Every group action awaits `resolveGroup()` before it calls the store, and the memory maps are
@@ -596,7 +629,10 @@ describe("preflight order at the early exits", () => {
     const owner = await agent("powner2");
     const g = await group(owner);
 
-    await expect(memoryStore.updateGroupSettings(g.id, {}, [UNKNOWN])).resolves.toMatchObject({ id: g.id });
+    await expect(memoryStore.updateGroupSettings(g.id, owner.id, {}, [UNKNOWN])).resolves.toEqual({
+      outcome: "ok",
+      group: null,
+    });
   });
 
   /** The other direction, so the reorder cannot become "validation was dropped". */
@@ -605,7 +641,7 @@ describe("preflight order at the early exits", () => {
     const g = await group(owner);
 
     await expect(
-      memoryStore.updateGroupSettings(g.id, { displayName: "Renamed" }, [UNKNOWN])
+      memoryStore.updateGroupSettings(g.id, owner.id, { displayName: "Renamed" }, [UNKNOWN])
     ).rejects.toThrow(/unknown kind/);
     await expect(
       memoryStore.createGroup(nextName("fresh"), "Fresh", "", owner.id, "foundation", [UNKNOWN])
@@ -752,94 +788,6 @@ describe("a group planted without a subscription snapshot", () => {
       { kind: "group.unsubscribed", actorAgentId: member.id, subjectType: "group", payload: {} },
     ])).resolves.toBe(true);
     expect(kindsSince(before)).toEqual(["group.unsubscribed"]);
-  });
-});
-
-/**
- * **A mixed-version group with a promoted founder** (codex round 4, finding 2).
- *
- * The houses removal left one compatibility rule alive: `rowToGroup` and `normalizeGroup` both read
- * a group's owner as `founder_id ?? owner_id`, because a house an undrained instance created after
- * the conversion is administered by its promoted founder while `owner_id` still names whoever
- * created it. Every authorization path has to use that effective owner, and every reference has to
- * count as a reference — the memory store did neither:
- *
- *  - `writeModerator` compared the RAW `ownerId`, so it refused the promoted founder the action had
- *    just authorized through `getGroup` — and accepted the departed creator it had just refused.
- *  - `assertAgentOwnsNoGroups` looked only at `ownerId`, so the promoted founder could withdraw
- *    while Postgres's `founder_id REFERENCES agents(id)` refuses that delete.
- */
-describe("a group whose founder was promoted (mixed-version row)", () => {
-  /** The shape an undrained instance leaves behind: a live `founderId` beside a stale `ownerId`. */
-  function plantPromotedGroup(creatorId: string, founderId: string): string {
-    const id = nextName("promoted");
-    groups.set(id, {
-      id,
-      name: id,
-      displayName: "Promoted",
-      description: "",
-      type: "group",
-      ownerId: creatorId,
-      memberIds: [founderId],
-      moderatorIds: [],
-      pinnedPostIds: [],
-      createdAt: new Date().toISOString(),
-      // Not on `StoredGroup`; the map holds objects an older build wrote, which is the whole case.
-      founderId,
-    } as never);
-    return id;
-  }
-
-  it("lets the promoted founder add and remove a moderator, and refuses the departed creator", async () => {
-    const creator = await agent("pcreator");
-    const founder = await agent("pfounder");
-    const target = await agent("ptarget");
-    const id = plantPromotedGroup(creator.id, founder.id);
-    // The read boundary already answers "the founder owns it" — this is the rule the writer broke.
-    expect((await getGroup(id))!.ownerId).toBe(founder.id);
-    const before = marker();
-
-    expect(await addModerator({ agent: founder, groupName: id, targetName: target.name })).toMatchObject({
-      ok: true,
-    });
-    expect(kindsSince(before)).toEqual(["group.moderator_added"]);
-    expect((await getGroup(id))!.moderatorIds).toEqual([target.id]);
-
-    expect(await addModerator({ agent: creator, groupName: id, targetName: target.name })).toMatchObject({
-      ok: false,
-      code: "forbidden",
-    });
-
-    const beforeRemove = marker();
-    expect(
-      await removeModerator({ agent: founder, groupName: id, targetName: target.name })
-    ).toMatchObject({ ok: true });
-    expect(kindsSince(beforeRemove)).toEqual(["group.moderator_removed"]);
-  });
-
-  it("refuses the withdrawal of the promoted founder AND of the creator the column still names", async () => {
-    const creator = await agent("pcreator2");
-    const founder = await agent("pfounder2");
-    const id = plantPromotedGroup(creator.id, founder.id);
-
-    // Both columns are foreign keys in Postgres until the contract script drops `founder_id`, so
-    // either reference refuses the delete there.
-    expect(await deleteAgent(founder.id)).toEqual({ ok: false, reason: "foreign_key" });
-    expect(await deleteAgent(creator.id)).toEqual({ ok: false, reason: "foreign_key" });
-    expect(agents.has(founder.id)).toBe(true);
-    expect(agents.has(creator.id)).toBe(true);
-    expect(await getGroup(id)).not.toBeNull();
-  });
-
-  it("reports the promoted founder as owner through getYourRole, never the departed creator", async () => {
-    const creator = await agent("pcreator3");
-    const founder = await agent("pfounder3");
-    const id = plantPromotedGroup(creator.id, founder.id);
-
-    // Founder-wins at the ROLE read too (codex round 5): the raw column would hand owner controls
-    // to the departed creator while every mutation path refuses their writes.
-    expect(await memoryStore.getYourRole(id, founder.id)).toBe("owner");
-    expect(await memoryStore.getYourRole(id, creator.id)).toBeNull();
   });
 });
 

@@ -165,35 +165,20 @@ describe("houses removal: no code branches on house-ness", () => {
     expect(group).not.toHaveProperty("points");
   });
 
-  it("reads a leftover house's PROMOTED FOUNDER as its owner", () => {
-    // The authorization half of the same window. An undrained instance can create a house after
-    // the conversion migration ran and then promote a new founder by writing `founder_id` alone —
-    // and the runner never re-runs a recorded migration. Reading `owner_id` for that row hands the
-    // group to whoever created it, who may have left, and locks out the agent running it.
-    const group = rowToGroup({
+  it("reads owner_id as the owner whether or not a founder_id column is present", () => {
+    // Ownership is `owner_id` alone (the founder-wins rule ended when the contract script ran), and
+    // `SELECT *` on a dev database that still has the column must keep working.
+    const row = {
       id: "late_house",
       name: "late_house",
       display_name: "Late house",
       description: "",
       type: "house",
-      owner_id: "creator_who_left",
-      founder_id: "promoted_member",
-      created_at: new Date().toISOString(),
-    });
-
-    expect(group.ownerId).toBe("promoted_member");
-
-    // And an ordinary group — no founder, before or after the column is dropped — is untouched.
-    const plain = rowToGroup({
-      id: "plain",
-      name: "plain",
-      display_name: "Plain",
-      description: "",
-      type: "group",
       owner_id: "the_owner",
       created_at: new Date().toISOString(),
-    });
-    expect(plain.ownerId).toBe("the_owner");
+    };
+    expect(rowToGroup(row).ownerId).toBe("the_owner");
+    expect(rowToGroup({ ...row, founder_id: "somebody_else" }).ownerId).toBe("the_owner");
   });
 });
 
@@ -236,7 +221,7 @@ describe("houses removal: the four rules are gone from the memory store", () => 
 
     // The read boundary normalizes the leftover row, exactly as `rowToGroup` does in db mode: a
     // group object that survived a hot reload from the code that still had houses must not keep
-    // exposing `"house"`, and its founder must win as owner.
+    // exposing `"house"`.
     expect(first.type).toBe("group");
     expect(await isGroupMember(founder.id, first.id)).toBe(true);
     expect(await getGroupMemberCount(first.id)).toBe(1);
@@ -258,11 +243,10 @@ describe("houses removal: the four rules are gone from the memory store", () => 
     expect(await getGroupMemberCount(first.id)).toBe(0);
   });
 
-  it("normalizes a legacy in-memory house on read, founder first", async () => {
+  it("normalizes a legacy in-memory house on read", async () => {
     // The maps deliberately survive HMR, so a house created before the reload is still in there
     // with `type: "house"` and its own `founderId`. Without normalization, memory mode keeps
-    // exposing "house" and authorizes by `ownerId` while the promoted founder sits in a field
-    // nothing reads.
+    // exposing "house" and the dead field.
     const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const creator = await createAgent(`Creator_${suffix}`, "created it and left");
     const promoted = await createAgent(`Promoted_${suffix}`, "runs it now");
@@ -285,10 +269,10 @@ describe("houses removal: the four rules are gone from the memory store", () => 
 
     const read = (await getGroup(id))!;
     expect(read.type).toBe("group");
-    expect(read.ownerId).toBe(promoted.id);
+    expect(read.ownerId).toBe(creator.id);
     expect(read).not.toHaveProperty("founderId");
     expect(read).not.toHaveProperty("points");
-    expect((await listGroups()).find((g) => g.id === id)!.ownerId).toBe(promoted.id);
+    expect((await listGroups()).find((g) => g.id === id)!.ownerId).toBe(creator.id);
   });
 
   it("reports the plain group error when a non-member leaves", async () => {

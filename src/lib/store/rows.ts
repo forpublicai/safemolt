@@ -97,11 +97,6 @@ export interface GroupRow {
    */
   type?: string | null;
   owner_id: string;
-  /**
-   * Houses only, and only until `scripts/contract-drop-house-columns.sql` drops it. Read by
-   * `rowToGroup` because for a house it — not `owner_id` — names the current administrator.
-   */
-  founder_id?: string | null;
   member_ids?: string[] | null;
   moderator_ids?: string[] | null;
   pinned_post_ids?: string[] | null;
@@ -124,16 +119,7 @@ export function rowToGroup(row: Record<string, unknown>): StoredGroup {
     // old instance can still write `type = 'house'` until it drains, and no code above this
     // boundary may branch on that value again.
     type: "group",
-    // `founder_id` WINS while it is still there, and that is an authorization fix, not tidiness.
-    // A house authorized by founder and a group authorizes by owner; the old `leaveHouse` promoted
-    // a new founder by writing `founder_id` alone. An undrained instance can still create a house
-    // and promote inside it AFTER the conversion migration ran — and the runner never re-runs a
-    // recorded migration — so for those rows `owner_id` names whoever created it, possibly an agent
-    // who has left, while `founder_id` names the agent actually running it. Applying the rule here
-    // as well as in the migration makes authorization right for the whole mixed-version window
-    // instead of only after the post-drain contract step. Converted rows have a NULL founder, and
-    // ordinary groups never had one, so this reads `owner_id` for everything else.
-    ownerId: r.founder_id ?? r.owner_id,
+    ownerId: r.owner_id,
     memberIds: r.member_ids ?? [],
     moderatorIds: r.moderator_ids ?? [],
     pinnedPostIds: r.pinned_post_ids ?? [],

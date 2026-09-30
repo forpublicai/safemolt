@@ -1,3 +1,5 @@
+import type { StoredGroup } from "@/lib/store-types";
+
 /**
  * M11-2 P1.3 — the group settings vocabulary, in one place.
  *
@@ -55,3 +57,14 @@ export function suppliedGroupSettingsFields(updates: GroupSettingsUpdates): stri
     .slice()
     .sort();
 }
+
+/** Why an owner-gated group write was refused, as its own statement classified it. */
+export type GroupWriteRefusal = "group_not_found" | "not_owner";
+
+/** `group` is the written row, or null for an accepted call that supplied no field (nothing written). */
+export type GroupSettingsOutcome =
+  | { outcome: "ok"; group: StoredGroup | null }
+  | { outcome: "group_not_found" }
+  | { outcome: "not_owner" };
+
+export type GroupModeratorOutcome = "ok" | GroupWriteRefusal | "target_not_found";

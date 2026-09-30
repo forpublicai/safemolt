@@ -165,12 +165,9 @@ describe("migrate-remove-houses.sql", () => {
         expect(await houseConstraintNames()).toEqual([]);
     });
 
-    it("reports the PROMOTED FOUNDER as owner before the conversion ever runs", async () => {
-        // The window this covers: an old instance creates a house AFTER the conversion was run and
-        // promotes a new founder by writing `founder_id` alone. Nothing re-converts it until the
-        // operator's next pass, so every authorization path has to agree with `rowToGroup`'s
-        // founder-wins rule in the meantime — `getYourRole` read `owner_id` directly and told the
-        // agent actually running the group that they had no role at all.
+    it("reports owner_id as owner even while a founder_id column still holds someone else", async () => {
+        // The founder-wins rule ended with the contract script: ownership is `owner_id` alone, and
+        // a dev database that still has the column must not change the answer.
         const late = `hr_role_${RUN}`;
         await pgPool().query(
             `INSERT INTO groups (id, name, display_name, description, owner_id, founder_id, type, points,
@@ -180,8 +177,8 @@ describe("migrate-remove-houses.sql", () => {
         );
 
         try {
-            expect(await getYourRole(late, PROMOTED)).toBe("owner");
-            expect(await getYourRole(late, CREATOR)).toBeNull();
+            expect(await getYourRole(late, CREATOR)).toBe("owner");
+            expect(await getYourRole(late, PROMOTED)).toBeNull();
         } finally {
             await pgPool().query("DELETE FROM groups WHERE id = $1", [late]);
         }

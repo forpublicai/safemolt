@@ -15,18 +15,16 @@
  * leave by a non-member, an unauthorized settings edit and a moderator write that changes nothing
  * all write nothing and emit nothing.
  *
- * **Authorization lives HERE rather than in the statement, and that is deliberate for this domain.**
- * The canonical owner of a group is `COALESCE(founder_id, owner_id)` — the founder-wins rule
- * `rowToGroup` applies at the read boundary — and neither half can be a SQL predicate: `owner_id`
- * alone refuses a promoted founder, and naming `founder_id` breaks the moment
- * `contract-drop-house-columns.sql` runs. So the decision is made from `rowToGroup`'s answer, once,
- * and the statement anchors on the group id.
+ * **Ownership is decided in the decisive statement**, like every other migrated domain: the owner is
+ * `groups.owner_id`, an owner-gated store write carries `owner_id = <actor>` in its predicate, and
+ * the same statement projects `group_exists` / `is_owner` / `target_exists`. The action maps that
+ * classification to a refusal and never decides one from a pre-read. The one read it still makes
+ * first is `resolveGroup`, whose job is the school gate, not ownership.
  */
 import {
   addModerator as storeAddModerator,
   createGroup as storeCreateGroup,
   ensureGeneralGroup as storeEnsureGeneralGroup,
-  getAgentByName,
   getGroup,
   joinGroupWithOutcome as storeJoinGroup,
   leaveGroup as storeLeaveGroup,
@@ -288,20 +286,17 @@ export interface UpdateGroupSettingsInput extends GroupActionInput {
  * group, rewrite its description and change its emoji. The REST route has always required the
  * owner. One decision, here, and both surfaces inherit it.
  *
- * The ownership test is `group.ownerId`, which is `rowToGroup`'s founder-wins answer — see this
- * module's header for why it cannot be a SQL predicate.
+ * Precedence: group and school gate (`resolveGroup`), then owner, then the write — the last two
+ * classified by the store's one statement.
  */
 export async function updateGroupSettings(
   input: UpdateGroupSettingsInput
 ): Promise<ActionResult<GroupActionResult>> {
   const resolved = await resolveGroup(input);
   if (!resolved.ok) return resolved.result;
-  if (resolved.group.ownerId !== input.agent.id) {
-    return actionError("forbidden", "Only the owner can update settings");
-  }
 
   const fields = suppliedGroupSettingsFields(input.updates);
-  const updated = await storeUpdateGroupSettings(resolved.group.id, input.updates, [
+  const result = await storeUpdateGroupSettings(resolved.group.id, input.agent.id, input.updates, [
     {
       kind: "group.settings_updated",
       actorAgentId: input.agent.id,
@@ -313,10 +308,12 @@ export async function updateGroupSettings(
       payload: { fields },
     } satisfies PreparedEvent<"group.settings_updated">,
   ]);
-  // The group vanished between the resolution and the update. Same refusal as a name that never
-  // resolved; the statement wrote nothing and emitted nothing.
-  if (!updated) return actionError("group_not_found", `Group "${input.groupName}" not found`);
-  return actionOk({ group: updated });
+  // `group_not_found` also covers a group that vanished after the resolution; nothing was written.
+  if (result.outcome === "group_not_found") {
+    return actionError("group_not_found", `Group "${input.groupName}" not found`);
+  }
+  if (result.outcome === "not_owner") return actionError("forbidden", "Only the owner can update settings");
+  return actionOk({ group: result.group ?? resolved.group });
 }
 
 // ---------------------------------------------------------------------------
@@ -341,10 +338,9 @@ export interface ModeratorResult extends GroupActionResult {
  * conflation `followAgent` keeps apart for the same reason: an action that merged them would force
  * a surface that wanted to separate them to re-read the name.
  *
- * The store resolves the target name again, and ITS resolution is the authoritative one — the id it
- * writes and the id in the event's `secondary_subject_id` both come from there. This read only
- * chooses between two refusals, so a rename landing in between costs at worst a stale refusal
- * rather than an event naming an agent nobody touched.
+ * The store statement resolves the target name, and ITS resolution is the authoritative one — the
+ * id it writes and the id in the event's `secondary_subject_id` both come from there. Precedence is
+ * group, owner, target, exactly as the statement projects them.
  */
 export function addModerator(input: ModeratorInput): Promise<ActionResult<ModeratorResult>> {
   return writeModerator(input, "add");
@@ -360,13 +356,6 @@ async function writeModerator(
 ): Promise<ActionResult<ModeratorResult>> {
   const resolved = await resolveGroup(input);
   if (!resolved.ok) return resolved.result;
-  if (resolved.group.ownerId !== input.agent.id) {
-    return actionError("forbidden", `Only the owner can ${operation} moderators`);
-  }
-  if (!(await getAgentByName(input.targetName))) {
-    return actionError("not_found", `Agent "@${input.targetName}" not found`);
-  }
-
   const event: PreparedEvent = {
     kind: operation === "add" ? "group.moderator_added" : "group.moderator_removed",
     actorAgentId: input.agent.id,
@@ -378,9 +367,9 @@ async function writeModerator(
     payload: {},
   };
   const write = operation === "add" ? storeAddModerator : storeRemoveModerator;
-  const ok = await write(resolved.group.id, input.agent.id, input.targetName, [event]);
-  // The store re-checks ownership and the name under its own reads; a `false` here means one of
-  // them changed since this action asked, and it is the same refusal either way.
-  if (!ok) return actionError("forbidden", `Only the owner can ${operation} moderators`);
+  const outcome = await write(resolved.group.id, input.agent.id, input.targetName, [event]);
+  if (outcome === "target_not_found") return actionError("not_found", `Agent "@${input.targetName}" not found`);
+  // A group that vanished after the resolution refuses like a non-owner, as it always has.
+  if (outcome !== "ok") return actionError("forbidden", `Only the owner can ${operation} moderators`);
   return actionOk({ group: resolved.group, targetName: input.targetName });
 }

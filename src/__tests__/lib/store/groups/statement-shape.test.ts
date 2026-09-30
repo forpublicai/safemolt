@@ -214,8 +214,8 @@ describe("subscribeToGroup / unsubscribeFromGroup", () => {
 
 describe("updateGroupSettings", () => {
   it("gates group.settings_updated on the UPDATE's returned row, in one tuple write", async () => {
-    answers([GROUP_ROW]);
-    await updateGroupSettings("g1", { displayName: "New" }, [event("group.settings_updated")]);
+    answers([{ ...GROUP_ROW, group_exists: true, is_owner: true }]);
+    await updateGroupSettings("g1", "owner", { displayName: "New" }, [event("group.settings_updated")]);
 
     const text = emittingStatement();
     expect(text).toContain("UPDATE groups SET");
@@ -225,11 +225,27 @@ describe("updateGroupSettings", () => {
     expect(gatedOn(text)).toBe("updated");
   });
 
-  it("issues no statement at all — and therefore no event — when no field is supplied", async () => {
-    answers([], []);
-    await updateGroupSettings("g1", {}, [event("group.settings_updated")]);
-    expect(calls().some((call) => call.text.includes("UPDATE groups"))).toBe(false);
+  /** The owner predicate is IN the statement, and the classification is projected by it. */
+  it("decides ownership in the UPDATE's predicate and projects the classification", async () => {
+    answers([{ group_exists: true, is_owner: false }]);
+    await expect(
+      updateGroupSettings("g1", "intruder", { displayName: "New" }, [event("group.settings_updated")])
+    ).resolves.toEqual({ outcome: "not_owner" });
+
+    const text = calls().find((call) => call.text.includes("UPDATE groups"))!.text;
+    expect(text).toMatch(/WHERE id = \$1::text AND owner_id = \$8::text/);
+    expect(text).toContain("AS is_owner");
+    expect(calls()).toHaveLength(1);
+  });
+
+  it("still reaches the statement — no event rendered — when no field is supplied", async () => {
+    answers([{ group_exists: true, is_owner: true }]);
+    await expect(updateGroupSettings("g1", "owner", {}, [event("group.settings_updated")])).resolves.toEqual({
+      outcome: "ok",
+      group: null,
+    });
     expect(calls().some((call) => call.text.includes("INSERT INTO events"))).toBe(false);
+    expect(calls()[0].params[8]).toBe(false);
   });
 
   /**
@@ -237,16 +253,16 @@ describe("updateGroupSettings", () => {
    * statement write `COALESCE(NULL, display_name)` — which preserves the column — while the event
    * claimed the field had been written.
    */
-  it("issues nothing for an update whose only field is explicitly undefined", async () => {
-    answers([], []);
-    await updateGroupSettings("g1", { displayName: undefined }, [event("group.settings_updated")]);
-    expect(calls().some((call) => call.text.includes("UPDATE groups"))).toBe(false);
+  it("switches the write off for an update whose only field is explicitly undefined", async () => {
+    answers([{ group_exists: true, is_owner: true }]);
+    await updateGroupSettings("g1", "owner", { displayName: undefined }, [event("group.settings_updated")]);
     expect(calls().some((call) => call.text.includes("INSERT INTO events"))).toBe(false);
+    expect(calls()[0].params[8]).toBe(false);
   });
 
   it("binds only the real edit when an undefined field rides along", async () => {
-    answers([GROUP_ROW]);
-    await updateGroupSettings("g1", { description: "written", displayName: undefined }, [
+    answers([{ ...GROUP_ROW, group_exists: true, is_owner: true }]);
+    await updateGroupSettings("g1", "owner", { description: "written", displayName: undefined }, [
       event("group.settings_updated"),
     ]);
 
@@ -258,31 +274,37 @@ describe("updateGroupSettings", () => {
 });
 
 describe("addModerator / removeModerator", () => {
-  it("gates each event on the array actually changing", async () => {
-    // getGroup (by id), then getAgentByName, then the write.
-    answers([GROUP_ROW], [{ id: "t1", name: "target" }], []);
-    await addModerator("g1", "owner", "target", [event("group.moderator_added")]);
+  it("gates each event on the array actually changing, with ownership and target in the statement", async () => {
+    answers([{ group_exists: true, is_owner: true, target_exists: true }]);
+    await expect(addModerator("g1", "owner", "target", [event("group.moderator_added")])).resolves.toBe("ok");
 
     const added = emittingStatement();
-    expect(added).toContain("moderator_ids = COALESCE(moderator_ids, '[]'::jsonb) || to_jsonb($2::text)");
+    expect(added).toContain("moderator_ids = COALESCE(moderator_ids, '[]'::jsonb) || to_jsonb((SELECT id FROM target))");
     // The guard is what makes a repeat add write no tuple, which is what the event is gated on.
-    expect(added).toContain("NOT (COALESCE(moderator_ids, '[]'::jsonb) @> to_jsonb($2::text))");
+    expect(added).toContain("NOT (COALESCE(moderator_ids, '[]'::jsonb) @> to_jsonb((SELECT id FROM target)))");
+    expect(added).toContain("owner_id = $2::text");
     expect(gatedOn(added)).toBe("updated");
+    // The target is resolved by the same statement, so no separate read decides anything.
+    expect(calls()).toHaveLength(1);
 
     globals.__groupSqlCalls.length = 0;
-    answers([GROUP_ROW], [{ id: "t1", name: "target" }], []);
+    answers([{ group_exists: true, is_owner: true, target_exists: true }]);
     await removeModerator("g1", "owner", "target", [event("group.moderator_removed")]);
 
     const removed = emittingStatement();
-    expect(removed).toContain("moderator_ids = COALESCE(moderator_ids, '[]'::jsonb) - $2::text");
-    expect(removed).toContain("COALESCE(moderator_ids, '[]'::jsonb) @> to_jsonb($2::text)");
+    expect(removed).toContain("moderator_ids = COALESCE(moderator_ids, '[]'::jsonb) - (SELECT id FROM target)");
+    expect(removed).toContain("COALESCE(moderator_ids, '[]'::jsonb) @> to_jsonb((SELECT id FROM target))");
+    expect(removed).toContain("owner_id = $2::text");
     expect(gatedOn(removed)).toBe("updated");
   });
 
-  it("writes nothing when the caller is not the owner", async () => {
-    answers([{ ...GROUP_ROW, owner_id: "somebody_else" }], []);
-    await expect(addModerator("g1", "owner", "target", [event("group.moderator_added")])).resolves.toBe(false);
-    expect(calls().some((call) => call.text.includes("UPDATE groups"))).toBe(false);
-    expect(calls().some((call) => call.text.includes("INSERT INTO events"))).toBe(false);
+  it("classifies group, then owner, then target, from the one projected row", async () => {
+    const write = () => addModerator("g1", "owner", "target", [event("group.moderator_added")]);
+    answers([{ group_exists: false, is_owner: false, target_exists: false }]);
+    await expect(write()).resolves.toBe("group_not_found");
+    answers([{ group_exists: true, is_owner: false, target_exists: false }]);
+    await expect(write()).resolves.toBe("not_owner");
+    answers([{ group_exists: true, is_owner: true, target_exists: false }]);
+    await expect(write()).resolves.toBe("target_not_found");
   });
 });
