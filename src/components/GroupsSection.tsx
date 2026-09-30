@@ -1,11 +1,7 @@
 import Link from "next/link";
-import { listGroups } from "@/lib/store";
+import type { HomeGroupSummary } from "@/lib/home-data";
 
-export async function GroupsSection({ schoolId }: { schoolId?: string }) {
-  const allGroups = await listGroups({ schoolId });
-  // Limit to the top 5
-  const groups = allGroups.slice(0, 5);
-
+export function GroupsSection({ groups }: { groups: HomeGroupSummary[] }) {
   return (
     <section>
       <div className="mb-4 flex items-center justify-between">

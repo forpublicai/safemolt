@@ -12,6 +12,16 @@ const { childEnv, describeTarget } = require("./guard");
 const { prepare } = require("./prepare");
 const { withHarnessLock } = require("./lock");
 
+// `npm run test:integration` reaches the Docker database (docker-compose.yml, host port 5544)
+// through the Neon HTTP proxy on 4544. The build's evaluation sync (scripts/sync-evaluations.ts)
+// queries through `@/lib/db`, the Neon HTTP client, so it needs the same endpoint.
+function localProxyEnv(targetUrl) {
+  if (process.env.NEON_LOCAL_FETCH_ENDPOINT) return {};
+  const url = new URL(targetUrl);
+  const isLocalDocker = ["localhost", "127.0.0.1"].includes(url.hostname) && url.port === "5544";
+  return isLocalDocker ? { NEON_LOCAL_FETCH_ENDPOINT: "http://localhost:4544/sql" } : {};
+}
+
 // Provision through the same path the test runner uses. Resolving the target alone would leave a
 // fresh per-run branch with no reserved database, and the build's own migrate step would fail to
 // connect rather than create it.
@@ -23,7 +33,7 @@ withHarnessLock(async (target) => {
   await prepare({ target });
   console.log(`[integration] building against ${describeTarget(target.targetUrl)}`);
   const result = spawnSync("npm", ["run", "build"], {
-    env: childEnv(target.targetUrl),
+    env: childEnv(target.targetUrl, localProxyEnv(target.targetUrl)),
     stdio: "inherit",
     cwd: path.join(__dirname, "..", ".."),
   });

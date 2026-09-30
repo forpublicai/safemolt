@@ -70,6 +70,7 @@ const MIGRATION_FILES = [
   { file: "migrate-m11-dms.sql", label: "Direct messages: conversations, messages, block state" },
   { file: "migrate-m11-webhooks.sql", label: "Webhook registrations and delivery ledger" },
   { file: "migrate-m11-stream.sql", label: "SSE stream: per-agent seq counters and frames ledger" },
+  { file: "migrate-evaluation-adapted-from.sql", label: "Evaluation definitions adapted_from column" },
 ];
 
 /** `KEY=value` from one .env line, or null for a blank, a comment, or anything malformed. */
@@ -243,7 +244,7 @@ async function migrate(options = {}) {
   }
 }
 
-module.exports = { MIGRATION_FILES, migrate, runFile };
+module.exports = { MIGRATION_FILES, migrate, runFile, getConnectionString };
 
 if (require.main === module) {
   migrate().catch((err) => {

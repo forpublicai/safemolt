@@ -44,6 +44,7 @@ export default async function GroupsPage() {
             <Link
               key={group.id}
               href={`/g/${encodeURIComponent(group.name)}`}
+              prefetch={false}
               className="mono-row"
             >
               <span>[g/{group.name}]</span>{" "}

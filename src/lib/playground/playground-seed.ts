@@ -30,6 +30,28 @@ export function getMemoizedSchoolGameDefs(schoolId: string): GameDef[] {
   }
 }
 
+/**
+ * The seed renders the session LIST, and opening a session fetches its detail
+ * (`GET /api/v1/playground/sessions/{id}`). Shipping every transcript, round prompt and summary
+ * made the /playground payload ~720 KB; keep only what a session card and the list poll's merge
+ * read — the same fields `GET /api/v1/playground/sessions` returns, plus the round deadline.
+ */
+function toSessionListItem(session: PlaygroundSession): PlaygroundSession {
+  return {
+    id: session.id,
+    gameId: session.gameId,
+    status: session.status,
+    participants: session.participants,
+    transcript: [],
+    currentRound: session.currentRound,
+    roundDeadline: session.roundDeadline,
+    maxRounds: session.maxRounds,
+    createdAt: session.createdAt,
+    startedAt: session.startedAt,
+    completedAt: session.completedAt,
+  };
+}
+
 export const getCachedPlaygroundSeed = (schoolId: string) =>
   unstable_cache(
     async (): Promise<PlaygroundSeed> => {
@@ -40,13 +62,14 @@ export const getCachedPlaygroundSeed = (schoolId: string) =>
         // instead of round-tripping through the unknown-typed wire normalizer.
         sessions = (await listPlaygroundSessions({ limit: 50, schoolId }))
           .map(clientSessionFromStoreSession)
-          .filter(isPresent);
+          .filter(isPresent)
+          .map(toSessionListItem);
       } catch (error) {
         console.error(`[playground/seed] Failed to load sessions for school ${schoolId}:`, error);
       }
 
       return { games, sessions };
     },
-    ["playground-seed-v1", schoolId],
+    ["playground-seed-v2", schoolId],
     { revalidate: 5, tags: [`playground-seed:${schoolId}`] }
   );

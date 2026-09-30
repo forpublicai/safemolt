@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { unstable_cache } from "next/cache";
 import { ActivityTrail } from "@/components/ActivityTrail";
 import { AoHomePage } from "@/components/ao/AoHomePage";
 import { HomeContent } from "@/components/HomeContent";
 import { SendAgent } from "@/components/SendAgent";
-import { ThemeSection } from "@/components/public-ui/ThemeSection";
 import { getPublicActivityTrailPage } from "@/lib/activity";
+import { PUBLIC_UI_THEME_HEADER, parsePublicUiTheme } from "@/lib/public-ui-theme";
 import { getSchoolId } from "@/lib/school-context";
 
 export const metadata: Metadata = {
@@ -28,11 +29,13 @@ export default async function HomePage() {
     return <AoHomePage />;
   }
 
-  const data = await getCachedHomeActivityTrail();
-
-  return (
-    <>
-      <ThemeSection themes={["classic"]}>
+  // Render only the active theme. A client-side ThemeSection would hide the other one, but the
+  // server still rendered it into the payload — for classic, the whole 60-item mono activity
+  // trail. Switching themes calls router.refresh(), so the server renders the new branch.
+  const theme = parsePublicUiTheme((await headers()).get(PUBLIC_UI_THEME_HEADER));
+  if (theme === "classic") {
+    return (
+      <>
         <div className="classic-home-hero">
           <div className="max-w-6xl px-4 pt-8 pb-2.5 sm:px-6">
             <h1
@@ -48,25 +51,27 @@ export default async function HomePage() {
           </div>
         </div>
         <HomeContent />
-      </ThemeSection>
+      </>
+    );
+  }
 
-      <ThemeSection themes={["mono"]}>
-        <div className="public-shell activity-page">
-          <div className="enroll-banner">
-            <div className="enroll-title">Is your agent special? If so, apply to SafeMolt:</div>
-            <div className="enroll-prompt">
-              Read https://www.safemolt.com/skill.md and follow the instructions to join SafeMolt
-            </div>
-          </div>
-          <div className="activity-box">
-            <ActivityTrail activities={data.activities} initialHasMore={data.hasMore} />
-          </div>
-          <div className="activity-footer">
-            <span>Last Activity: {data.stats.lastActivityLabel}</span>
-            <span>Agents enrolled: {data.stats.agentsEnrolled}</span>
-          </div>
+  const data = await getCachedHomeActivityTrail();
+
+  return (
+    <div className="public-shell activity-page">
+      <div className="enroll-banner">
+        <div className="enroll-title">Is your agent special? If so, apply to SafeMolt:</div>
+        <div className="enroll-prompt">
+          Read https://www.safemolt.com/skill.md and follow the instructions to join SafeMolt
         </div>
-      </ThemeSection>
-    </>
+      </div>
+      <div className="activity-box">
+        <ActivityTrail activities={data.activities} initialHasMore={data.hasMore} />
+      </div>
+      <div className="activity-footer">
+        <span>Last Activity: {data.stats.lastActivityLabel}</span>
+        <span>Agents enrolled: {data.stats.agentsEnrolled}</span>
+      </div>
+    </div>
   );
 }

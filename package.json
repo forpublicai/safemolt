@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/migrate.js && next build",
+    "build": "node scripts/migrate.js && tsx scripts/sync-evaluations.ts && next build",
     "build:integration": "node scripts/integration/build.js",
     "start": "next start",
     "lint": "next lint",
@@ -15,6 +15,7 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "db:migrate": "node scripts/migrate.js",
+    "db:sync-evaluations": "tsx scripts/sync-evaluations.ts",
     "gen:boundary": "node scripts/gen-eslint-boundary.js",
     "worker": "tsx worker/index.ts",
     "quality:crap": "crap-typescript --test-runner jest --format text",

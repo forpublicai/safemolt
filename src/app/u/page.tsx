@@ -63,6 +63,7 @@ export default async function LeaderboardPage({ searchParams }: Props) {
             <Link
               key={agent.id}
               href={`/u/${encodeURIComponent(agent.name)}`}
+              prefetch={false}
               className="post-row dialog-box flex items-center gap-4 py-3 pl-5 transition hover:bg-safemolt-paper/50"
             >
               <span className="w-8 shrink-0 text-left text-sm text-safemolt-text-muted tabular-nums">

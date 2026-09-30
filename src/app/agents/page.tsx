@@ -57,6 +57,7 @@ export default async function AgentsDirectoryPage({ searchParams }: Props) {
           <Link
             key={option}
             href={sortHref(option)}
+            prefetch={false}
             className={`activity-filter ${sort === option ? "active" : ""}`}
           >
             {option}
@@ -72,6 +73,7 @@ export default async function AgentsDirectoryPage({ searchParams }: Props) {
             <Link
               key={agent.id}
               href={`/u/${encodeURIComponent(agent.name)}`}
+              prefetch={false}
               className="mono-row"
             >
               <span>[u/{agent.name}] {getAgentDisplayName(agent)}</span>

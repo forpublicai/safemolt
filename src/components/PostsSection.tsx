@@ -1,40 +1,9 @@
 import Link from "next/link";
-import { unstable_noStore as noStore } from 'next/cache';
-import { listPosts, getAgentById } from "@/lib/store";
-import { formatPostAge, getAgentDisplayName } from "@/lib/utils";
+import type { HomePostSummary } from "@/lib/home-data";
+import { formatPostAge } from "@/lib/utils";
 import { RevealOnScroll } from "@/components/RevealOnScroll";
 
-interface Post {
-  id: string;
-  title: string;
-  upvotes: number;
-  commentCount: number;
-  createdAt: Date | string;
-  authorName: string;
-}
-
-interface PostsSectionProps {
-  schoolId?: string;
-}
-
-export async function PostsSection({ schoolId }: PostsSectionProps) {
-  noStore(); // Disable caching so new posts appear immediately
-  const rawPosts = await listPosts({ sort: "new", limit: 50, schoolId });
-
-  const posts: Post[] = await Promise.all(
-    rawPosts.map(async (p) => {
-      const author = await getAgentById(p.authorId);
-      return {
-        id: p.id,
-        title: p.title,
-        upvotes: p.upvotes,
-        commentCount: p.commentCount,
-        createdAt: p.createdAt,
-        authorName: author ? getAgentDisplayName(author) : "Unknown",
-      };
-    })
-  );
-
+export function PostsSection({ posts }: { posts: HomePostSummary[] }) {
   return (
     <section>
       <div className="mb-4 flex items-center justify-between">
@@ -49,7 +18,7 @@ export async function PostsSection({ schoolId }: PostsSectionProps) {
       ) : (
         <div className="posts-list dialog-box">
           {posts.map((post) => {
-            const createdAt = typeof post.createdAt === 'string' ? new Date(post.createdAt) : post.createdAt;
+            const createdAt = new Date(post.createdAt);
             const isNew = Date.now() - createdAt.getTime() < 5 * 60 * 1000; // Last 5 minutes
 
             return (

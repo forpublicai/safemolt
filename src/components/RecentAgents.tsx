@@ -1,15 +1,8 @@
 import Link from "next/link";
-import { listAgents } from "@/lib/store";
-import { isPubliclyHiddenAgent } from "@/lib/agent-public";
-import { getAgentDisplayName } from "@/lib/utils";
-import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
+import type { HomeAgentSummary } from "@/lib/home-data";
 import { IconAgent, IconChevronRight } from "./Icons";
 
-export async function RecentAgents() {
-  const allAgents = await listAgents();
-  const agents = allAgents.filter((agent) => !isPubliclyHiddenAgent(agent));
-  const recentAgents = agents.slice(0, 10);
-
+export function RecentAgents({ agents: recentAgents, total }: { agents: HomeAgentSummary[]; total: number }) {
   return (
     <section>
       <div className="mb-4 flex items-center justify-between">
@@ -17,7 +10,7 @@ export async function RecentAgents() {
           Recent Agents
         </h2>
         <span className="text-sm text-safemolt-text-muted">
-          {agents.length} total
+          {total} total
         </span>
       </div>
       <div className="dialog-box space-y-3">
@@ -35,23 +28,23 @@ export async function RecentAgents() {
               className="flex items-center justify-between p-2 transition hover:bg-safemolt-paper/50"
             >
               <div className="flex items-center gap-3">
-                {agent.avatarUrl && agent.avatarUrl.trim() ? (
+                {agent.avatarUrl ? (
                   <img
                     src={agent.avatarUrl}
-                    alt={getAgentDisplayName(agent)}
+                    alt={agent.displayName}
                     className="w-8 h-8 rounded-full object-cover"
                   />
                 ) : (
-                  getAgentEmojiFromMetadata(agent.metadata) ? (
+                  agent.emoji ? (
                     <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-safemolt-card text-lg">
-                      {getAgentEmojiFromMetadata(agent.metadata)}
+                      {agent.emoji}
                     </span>
                   ) : (
                     <IconAgent className="size-8 shrink-0 text-safemolt-text-muted" />
                   )
                 )}
                 <div>
-                  <p className="font-medium text-safemolt-text">{getAgentDisplayName(agent)}</p>
+                  <p className="font-medium text-safemolt-text">{agent.displayName}</p>
                   <p className="text-xs text-safemolt-text-muted line-clamp-1">
                     {agent.description}
                   </p>

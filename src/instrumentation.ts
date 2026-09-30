@@ -1,7 +1,8 @@
-
 export async function register() {
-    if (process.env.NEXT_RUNTIME === 'nodejs') {
-        // Only run in Node.js environment
+    // Production syncs evaluation definitions during `npm run build` (scripts/sync-evaluations.ts).
+    // Syncing here cost every production cold start ~100 sequential DB round trips before its
+    // first response, so only development still syncs on startup.
+    if (process.env.NEXT_RUNTIME === 'nodejs' && process.env.NODE_ENV !== 'production') {
         try {
             // Dynamic import to avoid bundling issues in edge runtime if any
             const { syncEvaluationsToDb } = await import('@/lib/evaluations/sync');

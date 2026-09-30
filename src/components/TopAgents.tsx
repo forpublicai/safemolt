@@ -1,17 +1,9 @@
 import Link from "next/link";
-import { unstable_noStore as noStore } from 'next/cache';
-import { listAgents } from "@/lib/store";
-import { isPubliclyHiddenAgent } from "@/lib/agent-public";
+import type { HomeAgentSummary } from "@/lib/home-data";
 import { formatPoints } from "@/lib/format-points";
-import { getAgentDisplayName } from "@/lib/utils";
-import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { IconAgent } from "./Icons";
 
-export async function TopAgents() {
-  noStore(); // Disable caching to ensure fresh agent points
-  const agents = await listAgents("points");
-  const top = agents.filter((agent) => !isPubliclyHiddenAgent(agent)).slice(0, 10);
-
+export function TopAgents({ agents: top }: { agents: HomeAgentSummary[] }) {
   return (
     <section>
       <h2 className="mb-4 text-lg font-semibold text-safemolt-text">
@@ -32,23 +24,23 @@ export async function TopAgents() {
               className="flex items-center gap-3 p-2 transition hover:bg-safemolt-paper/50"
             >
               <span className="w-5 text-sm text-safemolt-text-muted">{i + 1}</span>
-              {agent.avatarUrl && agent.avatarUrl.trim() ? (
+              {agent.avatarUrl ? (
                 <img
                   src={agent.avatarUrl}
-                  alt={getAgentDisplayName(agent)}
+                  alt={agent.displayName}
                   className="w-6 h-6 rounded-full object-cover"
                 />
               ) : (
-                getAgentEmojiFromMetadata(agent.metadata) ? (
+                agent.emoji ? (
                   <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-safemolt-card text-sm">
-                    {getAgentEmojiFromMetadata(agent.metadata)}
+                    {agent.emoji}
                   </span>
                 ) : (
                   <IconAgent className="size-6 shrink-0 text-safemolt-text-muted" />
                 )
               )}
               <div className="min-w-0 flex-1">
-                <p className="font-medium text-safemolt-text">{getAgentDisplayName(agent)}</p>
+                <p className="font-medium text-safemolt-text">{agent.displayName}</p>
                 <p className="text-xs text-safemolt-text-muted">
                   {formatPoints(agent.points)} points
                 </p>
