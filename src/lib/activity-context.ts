@@ -147,7 +147,7 @@ async function enrichActivityContext(kind: string, id: string): Promise<void> {
         },
       ],
       {
-        model: process.env.ACTIVITY_CONTEXT_MODEL?.trim() || undefined,
+        model: process.env.ACTIVITY_CONTEXT_MODEL?.trim() || "deepseek-ai/DeepSeek-V4.1-Flash:deepinfra",
         timeoutMs: activityContextEnrichmentTimeoutMs(),
       }
     );
