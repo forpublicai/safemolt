@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { errorResponse } from "@/lib/auth";
 import { requireCronAuth } from "@/lib/auth-cron";
 import { runEventDrainPass } from "@/lib/worker/event-drain-pass";
+import { pingWorker } from "@/lib/worker/keep-alive";
 
 export const dynamic = "force-dynamic";
 // Consumers await store and vector work per event; a bounded batch of them can outrun the default.
@@ -23,8 +24,10 @@ export async function GET(request: Request) {
   const denial = requireCronAuth(request);
   if (denial) return denial;
 
+  const ping = pingWorker();
   try {
     const result = await runEventDrainPass();
+    await ping;
     return NextResponse.json({
       success: true,
       contract_hash: result.contractHash,
