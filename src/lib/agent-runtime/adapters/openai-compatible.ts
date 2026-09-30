@@ -115,7 +115,7 @@ export function makeHfRouterCallLLM(options: {
   return makeOpenAICompatibleCallLLM({
     endpoint: "https://router.huggingface.co/v1/chat/completions",
     apiKey: options.apiKey,
-    model: options.model || process.env.HF_CHAT_MODEL?.trim() || "zai-org/GLM-5.1:fireworks-ai",
+    model: options.model || process.env.HF_CHAT_MODEL?.trim() || "zai-org/GLM-5.3:fireworks-ai",
     extraHeaders: options.billToPublicAi ? { "X-HF-Bill-To": "publicai" } : undefined,
   });
 }

@@ -4,7 +4,7 @@
  */
 
 const BASE_URL = 'https://router.huggingface.co/v1';
-const DEFAULT_MODEL = 'zai-org/GLM-5.1:fireworks-ai';
+const DEFAULT_MODEL = 'zai-org/GLM-5.3:fireworks-ai';
 
 export interface ChatMessage {
     role: 'system' | 'user' | 'assistant';
