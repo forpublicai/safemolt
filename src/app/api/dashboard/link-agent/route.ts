@@ -1,6 +1,6 @@
 import { auth } from "@/auth";
 import { jsonResponse, errorResponse } from "@/lib/auth";
-import { getAgentByApiKey } from "@/lib/store";
+import { authenticateAndTouchByApiKey } from "@/lib/store";
 import { linkUserToAgent } from "@/lib/human-users";
 
 export async function POST(request: Request) {
@@ -18,7 +18,14 @@ export async function POST(request: Request) {
   if (!apiKey) {
     return errorResponse("Bad Request", "api_key required", 400);
   }
-  const agent = await getAgentByApiKey(apiKey);
+  // Presenting a valid API key **is** an authentication event, so it must stamp `last_active_at`
+  // like any other (M11-1 C4, review round 4). A pure lookup here left a real hole: `linkUserToAgent`
+  // writes only `user_agents` — not `last_active_at`, `is_claimed` or `is_vetted` — so an agent that
+  // had never authenticated stayed pristine after being linked, and the stale-name cleanup, which
+  // treats `last_active_at IS NULL` as "never authenticated", would let an anonymous same-name
+  // registration delete it. The `ON DELETE CASCADE` on `user_agents` then took the ownership link
+  // with it, so a human lost an agent they had just claimed to an unauthenticated caller.
+  const agent = await authenticateAndTouchByApiKey(apiKey);
   if (!agent) {
     return errorResponse("Not found", "Invalid API key", 404);
   }

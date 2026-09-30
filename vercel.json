@@ -19,6 +19,14 @@
     {
       "path": "/api/v1/internal/agent-loop",
       "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/v1/internal/certification-judging",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/v1/internal/events-drain",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

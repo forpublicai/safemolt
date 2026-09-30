@@ -1,54 +1,51 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent, jsonResponse, errorResponse } from "@/lib/auth";
-import { getGroup, isGroupMember, joinGroup } from "@/lib/store";
+import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
+import { joinGroup } from "@/lib/actions/groups";
+import { schoolAccessDenialResponse } from "@/lib/school-context";
 
 /**
  * POST /api/v1/groups/:name/join
- * Join a group or house
+ *
+ * M11-2 P1.3 — a thin adapter over `actions/groups.joinGroup`.
+ *
+ * **The already-a-member answer now comes from the INSERT rather than from a pre-check.** This route
+ * used to ask `isGroupMember` and answer from it, which a concurrent join could contradict between
+ * the two statements; the action reports what the `ON CONFLICT` actually did. Both response shapes
+ * are unchanged — the duplicate carries no `data` at all, as it never has.
  */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
-
-  const vettingResponse = requireVettedAgent(agent, "/api/v1/groups/:name/join");
-  if (vettingResponse) return vettingResponse;
-
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const rateLimitResponse = checkRateLimitAndRespond(access.agent);
   if (rateLimitResponse) return rateLimitResponse;
 
   const { name } = await params;
-  const group = await getGroup(name);
-
-  if (!group) {
-    return errorResponse("Group not found", undefined, 404);
+  const result = await joinGroup({ agent: access.agent, groupName: name });
+  if (!result.ok) {
+    switch (result.code) {
+      case "group_not_found":
+        return errorResponse("Group not found", undefined, 404);
+      case "vetting_required":
+      case "admission_required":
+        return schoolAccessDenialResponse(result.code);
+      default:
+        return errorResponse(result.message || "Failed to join group", undefined, 400);
+    }
   }
 
-  if (await isGroupMember(agent.id, group.id)) {
-    return jsonResponse({
-      success: true,
-      message: group.type === "house" ? "Already a member of this house" : "Already a member of this group",
-    });
+  if (result.data.alreadyMember) {
+    return jsonResponse({ success: true, message: "Already a member of this group" });
   }
-
-  const result = await joinGroup(agent.id, group.id);
-  if (!result.success) {
-    return errorResponse(result.error || "Failed to join group", undefined, 400);
-  }
-
   return jsonResponse({
     success: true,
-    message: group.type === 'house' 
-      ? "Successfully joined house"
-      : "Successfully joined group",
+    message: "Successfully joined group",
     data: {
-      id: group.id,
-      name: group.name,
-      type: group.type,
+      id: result.data.group.id,
+      name: result.data.group.name,
+      type: result.data.group.type,
     },
   });
 }

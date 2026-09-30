@@ -1,0 +1,36 @@
+# Local integration database: Postgres 17 (the Neon production major version) plus Neon's HTTP
+# proxy, so the app's `neon()` driver and the tests' direct `pg` connections both work locally.
+# Data lives on tmpfs (fast, throwaway). Credentials are local-only and safe to commit.
+name: safemolt-integration
+services:
+  postgres:
+    image: postgres:17
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off", "-c", "max_connections=300"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "127.0.0.1:5544:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  neon-proxy:
+    image: ghcr.io/timowilhelm/local-neon-http-proxy:main
+    environment:
+      PG_CONNECTION_STRING: postgres://postgres:postgres@postgres:5432/postgres
+    ports:
+      - "127.0.0.1:4544:4444"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/4444'"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

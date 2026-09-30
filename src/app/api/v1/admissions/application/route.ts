@@ -1,49 +1,34 @@
-import { getAgentFromRequest, jsonResponse, errorResponse, requireVettedAgent, checkRateLimitAndRespond } from "@/lib/auth";
-import {
-  getDefaultOpenCycleId,
-  getApplicationByAgentCycle,
-  updateApplicationNiche,
-  getAdmissionsPoolEligibility,
-} from "@/lib/admissions";
+import { requireAgent, jsonResponse, errorResponse, checkRateLimitAndRespond } from "@/lib/auth";
+import { updateNiche } from "@/lib/actions/admissions";
 
 export const dynamic = "force-dynamic";
+
+/** Render each `updateNiche` refusal to its EXACT legacy title/hint/status (M11-2 M9). */
+function renderNicheRefusal(result: { code: string; reason?: string; message: string }): Response {
+  switch (result.reason) {
+    case "not_eligible":
+      return errorResponse("Not eligible", "Complete vetting and SIP-2/SIP-3 (recorded at vetting complete) to edit an admissions application.", 403);
+    case "no_open_cycle":
+      return errorResponse("No open intake", "No open admissions cycle is configured.", 503);
+    case "no_application":
+      return errorResponse("No application", "Call GET /api/v1/admissions/status first to create your pool application.", 404);
+    case "application_closed":
+      return errorResponse("Application closed", "This application is no longer editable.", 409);
+    default:
+      return errorResponse(result.message, undefined, result.code === "forbidden" ? 403 : result.code === "not_found" ? 404 : 409);
+  }
+}
 
 /**
  * PATCH /api/v1/admissions/application
  * Update structured niche fields on the current cycle application (pool-eligible agents only).
  */
 export async function PATCH(request: Request) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rate = checkRateLimitAndRespond(agent);
   if (rate) return rate;
-  const vet = requireVettedAgent(agent, new URL(request.url).pathname);
-  if (vet) return vet;
-
-  const pool = await getAdmissionsPoolEligibility(agent.id);
-  if (!pool.eligible) {
-    return errorResponse(
-      "Not eligible",
-      "Complete vetting and SIP-2/SIP-3 (recorded at vetting complete) to edit an admissions application.",
-      403
-    );
-  }
-
-  const cycleId = await getDefaultOpenCycleId();
-  if (!cycleId) {
-    return errorResponse("No open intake", "No open admissions cycle is configured.", 503);
-  }
-
-  const app = await getApplicationByAgentCycle(agent.id, cycleId);
-  if (!app) {
-    return errorResponse("No application", "Call GET /api/v1/admissions/status first to create your pool application.", 404);
-  }
-
-  if (["rejected", "admitted"].includes(app.state)) {
-    return errorResponse("Application closed", "This application is no longer editable.", 409);
-  }
 
   let body: Record<string, unknown>;
   try {
@@ -56,11 +41,13 @@ export async function PATCH(request: Request) {
   const non_goals = body.non_goals;
   const evaluation_plan = body.evaluation_plan;
 
-  const updated = await updateApplicationNiche(app.id, {
+  const result = await updateNiche({ agent, fields: {
     primaryDomain: typeof primary_domain === "string" ? primary_domain : undefined,
     nonGoals: typeof non_goals === "string" ? non_goals : undefined,
     evaluationPlan: typeof evaluation_plan === "string" ? evaluation_plan : undefined,
-  });
+  }});
+  if (!result.ok) return renderNicheRefusal(result);
+  const updated = result.data.application;
 
   return jsonResponse({
     success: true,

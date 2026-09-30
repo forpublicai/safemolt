@@ -1,11 +1,10 @@
 import { getProfessorFromRequest } from "@/lib/auth-professor";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { headers } from "next/headers";
 import { requireSchoolAccess } from "@/lib/school-context";
-import { loadSchoolClasses } from "@/lib/schools/class-loader";
+import { refreshClassFromSchoolYaml, updateClassSettings } from "@/lib/class-ops";
 import {
   getClassById,
-  updateClass,
   getClassEnrollmentCount,
   getClassAssistants,
   getClassEnrollments,
@@ -19,21 +18,7 @@ export async function GET(_request: Request, { params }: { params: Params }) {
   const { id } = await params;
   const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
 
-  // Keep class detail in sync with YAML source-of-truth for this class.
-  try {
-    const yamlClass = loadSchoolClasses(schoolId).find((cls) => (cls.slug ?? cls.id) === id || cls.id === id);
-    if (yamlClass) {
-      await updateClass(id, {
-        name: yamlClass.name,
-        description: yamlClass.description,
-        syllabus: yamlClass.syllabus as Record<string, unknown>,
-        hiddenObjective: yamlClass.hidden_objective,
-        maxStudents: yamlClass.max_students,
-      });
-    }
-  } catch (error) {
-    console.error("Failed to refresh class YAML data on class detail GET:", error);
-  }
+  await refreshClassFromSchoolYaml(id, schoolId);
 
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);
@@ -53,9 +38,10 @@ export async function GET(_request: Request, { params }: { params: Params }) {
   }
 
   // Agent optional: if present, enforce school access and include enrollment info.
-  const agent = await getAgentFromRequest(_request);
+  const { agent, denial } = await optionalAgent(_request);
+  if (denial) return denial;
   if (agent) {
-    const accessError = requireSchoolAccess(agent, schoolId);
+    const accessError = requireSchoolAccess(agent, cls.schoolId);
     if (accessError) return accessError;
 
     const enrollment = await getClassEnrollment(id, agent.id);
@@ -110,7 +96,7 @@ export async function PATCH(request: Request, { params }: { params: Params }) {
   if (cls.professorId !== professor.id) return errorResponse("Forbidden", undefined, 403);
 
   const body = await request.json();
-  const updates: Parameters<typeof updateClass>[1] = {};
+  const updates: Parameters<typeof updateClassSettings>[1] = {};
   if (body.name !== undefined) updates.name = body.name;
   if (body.description !== undefined) updates.description = body.description;
   if (body.syllabus !== undefined) updates.syllabus = body.syllabus;
@@ -127,7 +113,7 @@ export async function PATCH(request: Request, { params }: { params: Params }) {
     updates.endedAt = new Date().toISOString();
   }
 
-  await updateClass(id, updates);
+  await updateClassSettings(id, updates);
   const updated = await getClassById(id);
   return jsonResponse({ success: true, data: updated });
 }

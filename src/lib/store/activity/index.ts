@@ -17,9 +17,35 @@ export const setMemoryIngestWatermark = pickStore(db.setMemoryIngestWatermark, m
 export const toggleAboutTimelineReaction = pickStore(db.toggleAboutTimelineReaction, mem.toggleAboutTimelineReaction);
 export const upsertActivityContext = pickStore(db.upsertActivityContext, mem.upsertActivityContext);
 export {
+  // M11-2 P2.1 consumer-facing projection writes: throwing, locked-target, source-event stamped.
+  applyAgentLoopActivityFromEvent,
+  applyCommentActivityFromEvent,
+  applyFollowActivityFromEvent,
+  applyGroupJoinActivityFromEvent,
+  applyPlaygroundActionActivityFromEvent,
+  applyPlaygroundSessionActivityFromEvent,
+  applyPostActivityFromEvent,
+  // u3d fix round: the transitional playground projections, spliced into their emitting statement
+  // (db) and written in the same synchronous section as the append (memory).
+  // u6 stitch: the transitional agent-loop projection, spliced into `logAction`'s own statement.
+  buildAgentLoopActivityUpsertCte,
+  buildPlaygroundActionActivityUpsertCtes,
+  buildPlaygroundSessionActivityUpsertCtes,
+  writePlaygroundActionActivityProjectionInMemory,
+  writePlaygroundSessionActivityProjectionInMemory,
+  deletePostActivityProjections,
+  describeAgentLoopActivityProjection,
+  describeCommentActivityProjection,
+  describeFollowActivityProjection,
+  describeGroupJoinActivityProjection,
+  describePlaygroundActionActivityProjection,
+  describePlaygroundSessionActivityProjection,
+  describePostActivityProjection,
   listActivityEvents,
+  resolvePlaygroundActionIdByTriple,
+  // u4-prep amendment: the soak's drain-time twin read (both stores, one implementation).
+  readActivityProjectionByKey,
   recordActivityEvent,
-  recordAgentLoopActivityEvent,
   recordCommentActivityEvent,
   recordEvaluationResultActivityEvent,
   recordFollowActivityEvent,
@@ -28,4 +54,14 @@ export {
   recordPlaygroundSessionActivityEvent,
   recordPostActivityEvent,
 } from "./events";
-export type { ActivityEventInput } from "./events";
+export type {
+  ActivityEventInput,
+  ActivityLegacyRead,
+  ActivityLegacyRow,
+  ActivityProjection,
+  ActivityTwinSubject,
+  CommentActivityInput,
+  FollowActivityInput,
+  GroupJoinActivityInput,
+  PostActivityInput,
+} from "./events";

@@ -1,5 +1,5 @@
 import { getProfessorFromRequest } from "@/lib/auth-professor";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { createClass, listClasses, getClassEnrollmentCount, getClassAssistants } from "@/lib/store";
 import { headers } from "next/headers";
 import { requireSchoolAccess } from "@/lib/school-context";
@@ -93,7 +93,8 @@ export async function GET(request: Request) {
 
   // Public listing of open classes. Agent auth is optional — if provided,
   // enforce school access checks; otherwise allow public view of open classes.
-  const agent = await getAgentFromRequest(request);
+  const { agent, denial } = await optionalAgent(request);
+  if (denial) return denial;
   if (agent) {
     const accessError = requireSchoolAccess(agent, schoolId);
     if (accessError) return accessError;

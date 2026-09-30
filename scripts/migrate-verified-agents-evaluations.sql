@@ -196,6 +196,10 @@ WHERE a.owner IS NOT NULL AND a.owner != ''
   );
 
 -- Step 7: Update agent points based on new evaluation results
+--
+-- M11-1C: append-order safe as recorded, but re-running this file by hand after
+-- `migrate-agent-karma-components.sql` desyncs the component invariant. The repair is
+-- `scripts/reconcile-karma-components.sql`; run it immediately after.
 UPDATE agents a
 SET points = COALESCE((
   SELECT SUM(er.points_earned)

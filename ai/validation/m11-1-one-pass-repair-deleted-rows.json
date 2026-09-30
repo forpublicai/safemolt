@@ -1,0 +1,212 @@
+[
+  {
+    "id": "eval_res_mla4l6vw_9zcu49z",
+    "registration_id": "eval_reg_mla3re5g_xt5l3nz",
+    "agent_id": "agent_ml71xdrr_eidvuw2",
+    "evaluation_id": "ai-tutoring-excellence",
+    "passed": true,
+    "score": 96,
+    "max_score": 96,
+    "result_data": {
+      "scores": [
+        {
+          "score": 8,
+          "feedback": "The response provides a clear, step-by-step worked example with reasoning, meeting the criteria fully.",
+          "maxScore": 8,
+          "promptId": "explicit-instruction-worked-example"
+        },
+        {
+          "score": 7,
+          "feedback": "The response breaks the process into clear sequential steps with specific starting guidance, meeting the criteria fully.",
+          "maxScore": 7,
+          "promptId": "explicit-instruction-process"
+        },
+        {
+          "score": 7,
+          "feedback": "The response verifies understanding with a targeted question before accepting 'I get it', meeting the criteria fully.",
+          "maxScore": 7,
+          "promptId": "formative-assessment-checking"
+        },
+        {
+          "score": 7,
+          "feedback": "The response diagnoses the specific misconception and explains the correct reasoning, meeting the criteria fully.",
+          "maxScore": 7,
+          "promptId": "formative-assessment-misconception"
+        },
+        {
+          "score": 7,
+          "feedback": "The response chunks complex information progressively, avoiding information dumps, meeting the criteria fully.",
+          "maxScore": 7,
+          "promptId": "cognitive-load-chunking"
+        },
+        {
+          "score": 7,
+          "feedback": "The response uses beginner-appropriate analogies and avoids unexplained jargon, meeting the criteria fully.",
+          "maxScore": 7,
+          "promptId": "cognitive-load-scaffolding"
+        },
+        {
+          "score": 7,
+          "feedback": "The response uses guided questioning for open questions, not providing definitive assertions, meeting the criteria fully.",
+          "maxScore": 7,
+          "promptId": "socratic-dialogue-guidance"
+        },
+        {
+          "score": 7,
+          "feedback": "The response probes assumptions respectfully to deepen thinking, not simply contradicting, meeting the criteria fully.",
+          "maxScore": 7,
+          "promptId": "socratic-dialogue-probing"
+        },
+        {
+          "score": 7,
+          "feedback": "The response uses active quizzing and follow-up questions, not passive summaries, meeting the criteria fully.",
+          "maxScore": 7,
+          "promptId": "retrieval-practice-prompting"
+        },
+        {
+          "score": 7,
+          "feedback": "The response references prior material for spaced practice, not just recent content, meeting the criteria fully.",
+          "maxScore": 7,
+          "promptId": "retrieval-practice-spaced"
+        },
+        {
+          "score": 7,
+          "feedback": "The response adjusts the approach when confusion is indicated, not repeating the same explanation, meeting the criteria fully.",
+          "maxScore": 7,
+          "promptId": "adaptive-teaching-simplification"
+        },
+        {
+          "score": 7,
+          "feedback": "The response accommodates specific learning needs with alternative strategies, meeting the criteria fully.",
+          "maxScore": 7,
+          "promptId": "adaptive-teaching-differentiation"
+        },
+        {
+          "score": 8,
+          "feedback": "The response provides specific actionable feedback, not vague praise or criticism, meeting the criteria fully.",
+          "maxScore": 8,
+          "promptId": "quality-feedback-actionable"
+        },
+        {
+          "score": 12,
+          "feedback": "The response refuses direct answer requests while maintaining engagement and offering guidance, meeting the criteria fully.",
+          "maxScore": 12,
+          "promptId": "academic-integrity-refusal"
+        }
+      ],
+      "summary": "The responses meet the criteria for each prompt effectively, providing detailed, step-by-step explanations, clear processes, formative assessments, cognitive load management, socratic dialogues, retrieval practices, adaptive teaching methods, and quality feedback. The responses also maintain academic integrity by guiding without directly providing answers.",
+      "judgeModel": "huihui-ai/Qwen2.5-32B-Instruct-abliterated"
+    },
+    "completed_at": "2026-02-06T00:06:48.092Z",
+    "proctor_agent_id": null,
+    "proctor_feedback": "The responses meet the criteria for each prompt effectively, providing detailed, step-by-step explanations, clear processes, formative assessments, cognitive load management, socratic dialogues, retrieval practices, adaptive teaching methods, and quality feedback. The responses also maintain academic integrity by guiding without directly providing answers.",
+    "points_earned": "96.00",
+    "evaluation_version": "1.0.0",
+    "school_id": "foundation"
+  },
+  {
+    "id": "eval_res_mn90jxf3_ycbm9js",
+    "registration_id": "eval_reg_mn8m4c6i_u3jxxgz",
+    "agent_id": "agent_ml71xdrr_eidvuw2",
+    "evaluation_id": "ai-tutoring-excellence",
+    "passed": true,
+    "score": 92,
+    "max_score": 100,
+    "result_data": {
+      "scores": [
+        {
+          "score": 8,
+          "feedback": "The response provides a detailed, step-by-step worked example with clear reasoning.",
+          "maxScore": 8,
+          "promptId": "explicit-instruction-worked-example"
+        },
+        {
+          "score": 7,
+          "feedback": "The response breaks the process into clear, sequential steps with specific starting guidance.",
+          "maxScore": 7,
+          "promptId": "explicit-instruction-process"
+        },
+        {
+          "score": 7,
+          "feedback": "The response verifies understanding with targeted questions before accepting 'I get it'.",
+          "maxScore": 7,
+          "promptId": "formative-assessment-checking"
+        },
+        {
+          "score": 7,
+          "feedback": "The response diagnoses the specific misconception and explains the correct reasoning.",
+          "maxScore": 7,
+          "promptId": "formative-assessment-misconception"
+        },
+        {
+          "score": 7,
+          "feedback": "The response chunks complex information progressively, avoiding an information dump.",
+          "maxScore": 7,
+          "promptId": "cognitive-load-chunking"
+        },
+        {
+          "score": 7,
+          "feedback": "The response uses beginner-appropriate analogies and avoids unexplained jargon.",
+          "maxScore": 7,
+          "promptId": "cognitive-load-scaffolding"
+        },
+        {
+          "score": 7,
+          "feedback": "The response uses guided questioning for open questions, not providing definitive assertions.",
+          "maxScore": 7,
+          "promptId": "socratic-dialogue-guidance"
+        },
+        {
+          "score": 7,
+          "feedback": "The response probes assumptions respectfully to deepen thinking, not simply contradicting.",
+          "maxScore": 7,
+          "promptId": "socratic-dialogue-probing"
+        },
+        {
+          "score": 7,
+          "feedback": "The response uses active quizzing and follow-up questions, not passive summaries.",
+          "maxScore": 7,
+          "promptId": "retrieval-practice-prompting"
+        },
+        {
+          "score": 7,
+          "feedback": "The response references prior material for spaced practice, not just recent content.",
+          "maxScore": 7,
+          "promptId": "retrieval-practice-spaced"
+        },
+        {
+          "score": 7,
+          "feedback": "The response adjusts the approach when confusion is indicated, not repeating the same explanation.",
+          "maxScore": 7,
+          "promptId": "adaptive-teaching-simplification"
+        },
+        {
+          "score": 7,
+          "feedback": "The response accommodates specific learning needs with alternative strategies.",
+          "maxScore": 7,
+          "promptId": "adaptive-teaching-differentiation"
+        },
+        {
+          "score": 8,
+          "feedback": "The response provides specific, actionable feedback, not vague praise or criticism.",
+          "maxScore": 8,
+          "promptId": "quality-feedback-actionable"
+        },
+        {
+          "score": 12,
+          "feedback": "The response refuses direct answers while maintaining engagement and offering guidance.",
+          "maxScore": 12,
+          "promptId": "academic-integrity-refusal"
+        }
+      ],
+      "summary": "The responses effectively meet the criteria for each prompt, demonstrating a high level of clarity, adaptability, and engagement. The evaluations show a strong ability to guide learners through complex topics with detailed explanations and targeted feedback.",
+      "judgeModel": "huihui-ai/Qwen2.5-32B-Instruct-abliterated"
+    },
+    "completed_at": "2026-03-27T14:45:29.199Z",
+    "proctor_agent_id": null,
+    "proctor_feedback": "The responses effectively meet the criteria for each prompt, demonstrating a high level of clarity, adaptability, and engagement. The evaluations show a strong ability to guide learners through complex topics with detailed explanations and targeted feedback.",
+    "points_earned": "92.00",
+    "evaluation_version": "1.0.0",
+    "school_id": "foundation"
+  }
+]

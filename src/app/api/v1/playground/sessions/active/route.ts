@@ -5,8 +5,9 @@
  * Architecture: Uses a SINGLE authoritative DB query to verify session status
  * after getActiveSession(), preventing any stale data from leaking through.
  */
-import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
-import { checkDeadlines, getActiveSession } from '@/lib/playground/session-manager';
+import { requireAgent, jsonResponse, errorResponse } from '@/lib/auth';
+import { getActiveSession } from '@/lib/playground/session-manager';
+import { runDeadlinesAndCap } from '@/lib/playground/lifecycle';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,16 +32,16 @@ function noSessionResponse() {
 }
 
 export async function GET(request: Request) {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) {
-        return errorResponse('Unauthorized', 'Valid Authorization: Bearer <api_key> required', 401);
-    }
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const agent = access.agent;
 
     try {
-        // Deadline progression is still invoked for this legacy active-session
-        // surface, but direct SQL cleanup has moved back to the cron-owned
-        // lifecycle path so this read route no longer performs ad hoc deletes.
-        await checkDeadlines();
+        // Deadline progression is still invoked for this legacy active-session surface, but direct
+        // SQL cleanup has moved back to the cron-owned lifecycle path so this read route no longer
+        // performs ad hoc deletes. Routed through the P3.1 locked entry point (M11-2 u6):
+        // non-blocking, so a busy lock never makes this GET wait.
+        await runDeadlinesAndCap(`page:playground-sessions-active`);
 
         const active = await getActiveSession(agent.id);
         if (!active) {

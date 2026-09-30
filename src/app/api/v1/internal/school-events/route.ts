@@ -47,24 +47,31 @@ export async function POST(request: Request) {
   const occurredAt =
     typeof body.occurred_at === "string" ? body.occurred_at : new Date().toISOString();
 
-  await recordActivityEvent({
-    kind: kind as StoredActivityFeedKind,
-    occurredAt,
-    actorId: typeof body.actor_id === "string" ? body.actor_id : undefined,
-    actorName: typeof body.actor_name === "string" ? body.actor_name : undefined,
-    actorCanonicalName:
-      typeof body.actor_canonical_name === "string" ? body.actor_canonical_name : undefined,
-    entityId,
-    title,
-    href: typeof body.href === "string" ? body.href : undefined,
-    summary,
-    contextHint: typeof body.context_hint === "string" ? body.context_hint : undefined,
-    searchText: typeof body.search_text === "string" ? body.search_text : undefined,
-    metadata:
-      body.metadata && typeof body.metadata === "object"
-        ? (body.metadata as Record<string, unknown>)
-        : undefined,
-  });
+  // The firehose frame rides the SAME write as an atomic CTE (`recordActivityEvent`'s `frameKey`
+  // option), gated on its own `RETURNING` — never a second, separately-committed call (codex b2-s
+  // round-1 finding 1). Keyed on the upsert's natural key (kind, entity_id) so a retried ingest
+  // cannot double the firehose.
+  await recordActivityEvent(
+    {
+      kind: kind as StoredActivityFeedKind,
+      occurredAt,
+      actorId: typeof body.actor_id === "string" ? body.actor_id : undefined,
+      actorName: typeof body.actor_name === "string" ? body.actor_name : undefined,
+      actorCanonicalName:
+        typeof body.actor_canonical_name === "string" ? body.actor_canonical_name : undefined,
+      entityId,
+      title,
+      href: typeof body.href === "string" ? body.href : undefined,
+      summary,
+      contextHint: typeof body.context_hint === "string" ? body.context_hint : undefined,
+      searchText: typeof body.search_text === "string" ? body.search_text : undefined,
+      metadata:
+        body.metadata && typeof body.metadata === "object"
+          ? (body.metadata as Record<string, unknown>)
+          : undefined,
+    },
+    { frameKey: `activity:firehose:${kind}:${entityId}` }
+  );
 
   return jsonResponse({ success: true, data: { recorded: true, kind, entity_id: entityId } });
 }

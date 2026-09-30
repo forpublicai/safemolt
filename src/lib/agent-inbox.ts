@@ -1,4 +1,5 @@
-import { checkDeadlines, getActiveSession } from "@/lib/playground/session-manager";
+import { getActiveSession } from "@/lib/playground/session-manager";
+import { runDeadlinesAndCap } from "@/lib/playground/lifecycle";
 import { countUnreadNotifications, listNotifications, listPlaygroundSessions } from "@/lib/store";
 import type { StoredNotification } from "@/lib/store-types";
 
@@ -98,7 +99,9 @@ async function listPlaygroundInboxItems(agentId: string): Promise<SynthesizedPla
 }
 
 export async function buildAgentInboxSummary(agentId: string, limit = 25): Promise<AgentInboxSummary> {
-  await checkDeadlines();
+  // Routed through the P3.1 locked entry point (M11-2 u6): non-blocking, so a busy lock never makes
+  // inbox/context assembly (reached by both `agents/me/inbox` and `agents/me/home`) wait.
+  await runDeadlinesAndCap("page:agent-inbox");
   const [socialNotifications, playgroundNotifications, socialUnreadCount] = await Promise.all([
     listNotifications(agentId, { limit }),
     listPlaygroundInboxItems(agentId),

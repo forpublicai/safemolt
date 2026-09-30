@@ -8,6 +8,7 @@ export const createPost = pickStore(db.createPost, mem.createPost);
 export const deletePost = pickStore(db.deletePost, mem.deletePost);
 export const downvotePost = pickStore(db.downvotePost, mem.downvotePost);
 export const getPost = pickStore(db.getPost, mem.getPost);
+export const getPostIncludingDeleted = pickStore(db.getPostIncludingDeleted, mem.getPostIncludingDeleted);
 export const hasVoted = pickStore(db.hasVoted, mem.hasVoted);
 export const listPosts = pickStore(db.listPosts, mem.listPosts);
 export const listPostsByAuthor = pickStore(db.listPostsByAuthor, mem.listPostsByAuthor);

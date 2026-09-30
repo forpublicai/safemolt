@@ -6,22 +6,92 @@ jest.mock("next/cache", () => ({
   revalidateTag: jest.fn(),
 }));
 
-jest.mock("@/lib/store", () => ({
-  listPlaygroundSessions: jest.fn(),
-  updatePlaygroundSession: jest.fn(),
-}));
+// M11-2 P1.4: the cap no longer writes through the generic `updatePlaygroundSession`. It calls a
+// CONDITIONAL completion that carries `playground.session_completed` with `reason: 'lifetime_cap'`,
+// so the event can be gated on a transition that actually happened rather than on a setter that
+// always reports success.
+//
+// **u3d fix round, finding 4: the ELIGIBILITY question moved into the store.** The sweep used to
+// read the 50 newest active sessions and filter them by age here, which is exactly how an overdue
+// session could be stranded — with 51 live sessions the oldest is not in that window at all. It now
+// asks for the sessions that are DUE, oldest first, and pages. The age/`completed_at` predicate is
+// therefore asserted against the real store in `playground-cap-eligibility.test.ts`; what is left
+// here is the orchestration: the cutoff, the paging, and the revalidation.
+// M11-2 u6 P3.1: `runDeadlinesAndCap` now acquires a real singleton lock before running deadline
+// progression. The mock below is a faithful (if tiny) re-implementation of the memory-mode
+// semantics (`src/lib/store/worker-locks/memory.ts`) — a plain per-`name` map, so contention,
+// renewal and release behave exactly as they would with the real memory store, and these tests can
+// assert on lock BEHAVIOR rather than needing to import the real module (which would pull in
+// `hasDatabase()` / env-var branching this file has no reason to depend on).
+jest.mock("@/lib/store", () => {
+  const locks = new Map<string, { holder: string; expiresAt: number }>();
+  return {
+    listSessionsDueForLifetimeCap: jest.fn(),
+    completePlaygroundSessionAtLifetimeCap: jest.fn(),
+    acquireWorkerLock: jest.fn(async (name: string, holder: string, ttlMs: number) => {
+      const now = Date.now();
+      const existing = locks.get(name);
+      if (existing && existing.expiresAt > now) return false;
+      locks.set(name, { holder, expiresAt: now + ttlMs });
+      return true;
+    }),
+    renewWorkerLock: jest.fn(async (name: string, holder: string, ttlMs: number) => {
+      const existing = locks.get(name);
+      if (!existing || existing.holder !== holder) return false;
+      existing.expiresAt = Date.now() + ttlMs;
+      return true;
+    }),
+    releaseWorkerLock: jest.fn(async (name: string, holder: string) => {
+      const existing = locks.get(name);
+      if (existing && existing.holder === holder) locks.delete(name);
+    }),
+    __resetLocksForTests: () => locks.clear(),
+  };
+});
 
 import { revalidateTag } from "next/cache";
-import { listPlaygroundSessions, updatePlaygroundSession } from "@/lib/store";
+import {
+  completePlaygroundSessionAtLifetimeCap,
+  listSessionsDueForLifetimeCap,
+} from "@/lib/store";
 import { enforceSessionLifetimeCap, runDeadlinesAndCap } from "@/lib/playground/lifecycle";
+import type { PlaygroundSession } from "@/lib/playground/types";
 
-const mockedListPlaygroundSessions = jest.mocked(listPlaygroundSessions);
-const mockedUpdatePlaygroundSession = jest.mocked(updatePlaygroundSession);
+// Not a real store export — the mock factory above adds it as a test-only lock reset hook.
+// `require`d rather than statically imported so the real module's type declarations (which have no
+// such export) don't fail the build.
+const { __resetLocksForTests } = require("@/lib/store") as { __resetLocksForTests: () => void };
+
+const mockedListDueSessions = jest.mocked(listSessionsDueForLifetimeCap);
+const mockedUpdatePlaygroundSession = jest.mocked(completePlaygroundSessionAtLifetimeCap);
 const mockedRevalidateTag = jest.mocked(revalidateTag);
+
+/** One page of due candidates, then nothing — the shape the store answers with. */
+function duePages(...pages: PlaygroundSession[][]): void {
+  for (const page of pages) mockedListDueSessions.mockResolvedValueOnce(page);
+  mockedListDueSessions.mockResolvedValue([]);
+}
+
+/** A due candidate as the store would answer it — the sweep no longer re-checks its age. */
+function staleSession(id: string, now: number): PlaygroundSession {
+  return {
+    id,
+    gameId: "pub-debate",
+    schoolId: "foundation",
+    status: "active",
+    participants: [],
+    transcript: [],
+    currentRound: 1,
+    maxRounds: 6,
+    createdAt: new Date(now - 10 * 60 * 60 * 1000).toISOString(),
+    startedAt: new Date(now - 10 * 60 * 60 * 1000).toISOString(),
+  };
+}
 
 describe("playground lifecycle", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    __resetLocksForTests();
   });
 
   afterEach(() => {
@@ -31,7 +101,7 @@ describe("playground lifecycle", () => {
   it("completes active sessions older than the wall-clock cap", async () => {
     const now = Date.now();
     jest.spyOn(Date, "now").mockReturnValue(now);
-    mockedListPlaygroundSessions.mockResolvedValue([
+    duePages([
       {
         id: "pg-stale",
         gameId: "trade-bazaar",
@@ -51,13 +121,16 @@ describe("playground lifecycle", () => {
 
     await expect(enforceSessionLifetimeCap()).resolves.toEqual({ completed: 1 });
 
-    expect(mockedUpdatePlaygroundSession).toHaveBeenCalledWith("pg-stale", {
-      status: "completed",
-      summary: "Session ran past its time budget and was completed automatically.",
-      completedAt: new Date(now).toISOString(),
-      currentRoundPrompt: null,
-      roundDeadline: null,
-    });
+    expect(mockedUpdatePlaygroundSession).toHaveBeenCalledWith(
+      "pg-stale",
+      { summary: "Session ran past its time budget and was completed automatically.", completedAt: new Date(now).toISOString() },
+      [
+        expect.objectContaining({
+          kind: "playground.session_completed",
+          payload: { reason: "lifetime_cap" },
+        }),
+      ]
+    );
     expect(mockedUpdatePlaygroundSession).not.toHaveBeenCalledWith(
       "pg-stale",
       expect.objectContaining({ transcript: expect.anything() })
@@ -65,85 +138,124 @@ describe("playground lifecycle", () => {
     expect(mockedRevalidateTag).toHaveBeenCalledWith("playground-seed:ao");
   });
 
-  it("skips stale active sessions that already have completedAt set", async () => {
+  it("asks the store for the sessions due at the cap, and does nothing when there are none", async () => {
     const now = Date.now();
     jest.spyOn(Date, "now").mockReturnValue(now);
-    mockedListPlaygroundSessions.mockResolvedValue([
-      {
-        id: "pg-already-completed",
-        gameId: "pub-debate",
-        status: "active",
-        participants: [],
-        transcript: [],
-        currentRound: 4,
-        roundDeadline: new Date(now - 60_000).toISOString(),
-        maxRounds: 4,
-        createdAt: new Date(now - 10 * 60 * 60 * 1000).toISOString(),
-        startedAt: new Date(now - 10 * 60 * 60 * 1000).toISOString(),
-        completedAt: new Date(now - 30_000).toISOString(),
-      },
-    ]);
+    duePages([]);
 
     await expect(enforceSessionLifetimeCap()).resolves.toEqual({ completed: 0 });
 
+    // The cutoff IS the age rule, handed to the store instead of applied to a fixed window here.
+    expect(mockedListDueSessions).toHaveBeenCalledWith(
+      new Date(now - 6 * 60 * 60 * 1000).toISOString(),
+      50
+    );
+    expect(mockedListDueSessions).toHaveBeenCalledTimes(1);
     expect(mockedUpdatePlaygroundSession).not.toHaveBeenCalled();
     expect(mockedRevalidateTag).not.toHaveBeenCalled();
   });
 
-  it("leaves active sessions under the cap alone", async () => {
+  /**
+   * **The starvation fix, at the orchestration level** (u3d fix round, finding 4).
+   *
+   * A full page means there may be more due sessions behind it, so the sweep asks again; the
+   * candidates it just completed are no longer `active` with a NULL `completed_at`, so they cannot
+   * come back. The old shape read ONE fixed window of the 50 newest active sessions and stopped —
+   * which is how an overdue session sat behind 50 younger ones forever.
+   */
+  it("pages until a page comes back short", async () => {
     const now = Date.now();
     jest.spyOn(Date, "now").mockReturnValue(now);
-    mockedListPlaygroundSessions.mockResolvedValue([
-      {
-        id: "pg-fresh",
-        gameId: "tennis",
-        status: "active",
-        participants: [],
-        transcript: [],
-        currentRound: 1,
-        roundDeadline: new Date(now + 60_000).toISOString(),
-        maxRounds: 6,
-        createdAt: new Date(now - 30 * 60 * 1000).toISOString(),
-        startedAt: new Date(now - 30 * 60 * 1000).toISOString(),
-      },
-    ]);
-
-    await expect(enforceSessionLifetimeCap()).resolves.toEqual({ completed: 0 });
-
-    expect(mockedUpdatePlaygroundSession).not.toHaveBeenCalled();
-    expect(mockedRevalidateTag).not.toHaveBeenCalled();
-  });
-
-  it("falls back to createdAt when an active stale session has no startedAt", async () => {
-    const now = Date.now();
-    jest.spyOn(Date, "now").mockReturnValue(now);
-    mockedListPlaygroundSessions.mockResolvedValue([
-      {
-        id: "pg-missing-started-at",
-        gameId: "tennis",
-        status: "active",
-        participants: [],
-        transcript: [],
-        currentRound: 3,
-        roundDeadline: new Date(now + 60_000).toISOString(),
-        maxRounds: 6,
-        createdAt: new Date(now - 10 * 60 * 60 * 1000).toISOString(),
-      },
-    ]);
+    const page = (prefix: string) =>
+      Array.from({ length: 50 }, (_, i) => staleSession(`${prefix}-${i}`, now));
+    duePages(page("first"), page("second"), [staleSession("last", now)]);
     mockedUpdatePlaygroundSession.mockResolvedValue(true);
 
-    await expect(enforceSessionLifetimeCap()).resolves.toEqual({ completed: 1 });
+    await expect(enforceSessionLifetimeCap()).resolves.toEqual({ completed: 101 });
+    expect(mockedListDueSessions).toHaveBeenCalledTimes(3);
+  });
 
-    expect(mockedUpdatePlaygroundSession).toHaveBeenCalledWith(
-      "pg-missing-started-at",
-      expect.objectContaining({ status: "completed" })
+  it("bounds one invocation, leaving the rest for the next run", async () => {
+    const now = Date.now();
+    jest.spyOn(Date, "now").mockReturnValue(now);
+    // Always a full page: an unbounded loop would never return. The ordering is what makes the bound
+    // safe — the next run resumes at the sessions that have waited longest.
+    mockedListDueSessions.mockImplementation(async () =>
+      Array.from({ length: 50 }, (_, i) => staleSession(`endless-${i}`, now))
     );
+    mockedUpdatePlaygroundSession.mockResolvedValue(true);
+
+    await expect(enforceSessionLifetimeCap()).resolves.toEqual({ completed: 1000 });
+    expect(mockedListDueSessions).toHaveBeenCalledTimes(20);
+  });
+
+  /**
+   * u6 E fix round 1, finding 1 (BLOCKER) — **the cap sweep obeys the "stop claiming" signal, before
+   * every completion.**
+   *
+   * The signal did not reach this function at all: `checkDeadlines` called it with no arguments, so a
+   * sweep that had already lost its singleton lock during round advancement still ran a whole paged
+   * cap sweep afterwards, and a lock lost DURING the cap sweep was invisible to it for the rest of the
+   * pass. Every completion after the loss is a write made under a lock a contender already owns —
+   * exactly the duplicate work the lock exists to prevent.
+   *
+   * "After session A" is expressed as the signal flipping inside the FIRST completion, which is the
+   * moment the renewal timer's failure would land in production. Session B is the assertion: it is
+   * still due, and this pass must not touch it.
+   */
+  it("stops completing the moment the signal fires — every session behind it is untouched", async () => {
+    const now = Date.now();
+    jest.spyOn(Date, "now").mockReturnValue(now);
+    duePages([staleSession("A", now), staleSession("B", now), staleSession("C", now)]);
+    let lost = false;
+    mockedUpdatePlaygroundSession.mockImplementation(async () => {
+      lost = true; // the renewal failed while session A was being completed
+      return true;
+    });
+
+    await expect(enforceSessionLifetimeCap(() => lost)).resolves.toEqual({ completed: 1 });
+
+    // Not "fewer than three" — exactly one, and exactly the one that was already in flight.
+    expect(mockedUpdatePlaygroundSession).toHaveBeenCalledTimes(1);
+    expect(mockedUpdatePlaygroundSession.mock.calls[0][0]).toBe("A");
+  });
+
+  it("claims nothing at all — not even a page query — when the signal is already true on entry", async () => {
+    const now = Date.now();
+    jest.spyOn(Date, "now").mockReturnValue(now);
+    // Deliberately NOT `duePages`: that queues a one-shot page, and a page this test proves is never
+    // requested would stay queued and be answered to the NEXT test's first query.
+    mockedListDueSessions.mockResolvedValue([staleSession("never-touched", now)]);
+
+    await expect(enforceSessionLifetimeCap(() => true)).resolves.toEqual({ completed: 0 });
+
+    expect(mockedListDueSessions).not.toHaveBeenCalled();
+    expect(mockedUpdatePlaygroundSession).not.toHaveBeenCalled();
+  });
+
+  it("with no signal supplied, nothing changes — the check is a no-op for every legacy caller", async () => {
+    const now = Date.now();
+    jest.spyOn(Date, "now").mockReturnValue(now);
+    duePages([staleSession("A", now), staleSession("B", now)]);
+    mockedUpdatePlaygroundSession.mockResolvedValue(true);
+
+    await expect(enforceSessionLifetimeCap()).resolves.toEqual({ completed: 2 });
+  });
+
+  it("counts only the completions the conditional transition actually made", async () => {
+    const now = Date.now();
+    jest.spyOn(Date, "now").mockReturnValue(now);
+    duePages([staleSession("won", now), staleSession("lost", now)]);
+    // The second lost its CAS to a genuine GM completion that landed first.
+    mockedUpdatePlaygroundSession.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    await expect(enforceSessionLifetimeCap()).resolves.toEqual({ completed: 1 });
   });
 
   it("preserves an existing summary when capping a stale session", async () => {
     const now = Date.now();
     jest.spyOn(Date, "now").mockReturnValue(now);
-    mockedListPlaygroundSessions.mockResolvedValue([
+    duePages([
       {
         id: "pg-existing-summary",
         gameId: "trade-bazaar",
@@ -164,11 +276,18 @@ describe("playground lifecycle", () => {
 
     expect(mockedUpdatePlaygroundSession).toHaveBeenCalledWith(
       "pg-existing-summary",
-      expect.objectContaining({ summary: "Existing summary" })
+      expect.objectContaining({ summary: "Existing summary" }),
+      expect.any(Array)
     );
   });
 
-  it("dedupes concurrent deadline runs with the same label", async () => {
+  // M11-2 u6 P3.1: the process-local, label-keyed `inflightDeadlineRuns` Set this used to guard is
+  // gone. The guard is now the `worker_locks` singleton (memory-mode: a process-wide map keyed by
+  // lock NAME only — see the `@/lib/store` mock above), so two concurrent calls serialize whatever
+  // label either one passes — same label or different, worker or cron or page render, it makes no
+  // difference any more. That is the P0-inventory gap this closes: distinct labels used to let two
+  // different-label callers overlap even inside one process.
+  it("serializes two concurrent runs sharing a label — one runs, the other returns busy immediately", async () => {
     const runDeadlineCheck = jest.fn();
     let resolveRun: (value: { advanced: number; capped: number }) => void = () => {};
     runDeadlineCheck.mockImplementation(
@@ -185,5 +304,82 @@ describe("playground lifecycle", () => {
     await expect(first).resolves.toMatchObject({ advanced: 2, capped: 1 });
     expect(second).toEqual({ advanced: 0, capped: 0 });
     expect(runDeadlineCheck).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes two concurrent runs under DIFFERENT labels too — the lock is keyed by name, not by label", async () => {
+    const runDeadlineCheck = jest.fn();
+    let resolveRun: (value: { advanced: number; capped: number }) => void = () => {};
+    runDeadlineCheck.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRun = resolve;
+        })
+    );
+
+    const worker = runDeadlinesAndCap("worker", runDeadlineCheck);
+    const cron = await runDeadlinesAndCap("cron:playground-deadlines", runDeadlineCheck);
+    resolveRun({ advanced: 3, capped: 0 });
+
+    await expect(worker).resolves.toMatchObject({ advanced: 3, capped: 0 });
+    expect(cron).toEqual({ advanced: 0, capped: 0 });
+    expect(runDeadlineCheck).toHaveBeenCalledTimes(1);
+  });
+
+  it("a second run acquires once the first releases the lock on completion", async () => {
+    const runDeadlineCheck = jest.fn().mockResolvedValue({ advanced: 1, capped: 0 });
+    await runDeadlinesAndCap("first", runDeadlineCheck);
+    await expect(runDeadlinesAndCap("second", runDeadlineCheck)).resolves.toMatchObject({
+      advanced: 1,
+      capped: 0,
+    });
+    expect(runDeadlineCheck).toHaveBeenCalledTimes(2);
+  });
+
+  it("a second run acquires once the first releases the lock after throwing", async () => {
+    const runDeadlineCheck = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce({ advanced: 1, capped: 0 });
+    await expect(runDeadlinesAndCap("first", runDeadlineCheck)).rejects.toThrow("boom");
+    await expect(runDeadlinesAndCap("second", runDeadlineCheck)).resolves.toMatchObject({
+      advanced: 1,
+      capped: 0,
+    });
+  });
+
+  it("passes an isLockLost callback the injected runner can read", async () => {
+    let seenIsLockLost: (() => boolean) | undefined;
+    const runDeadlineCheck = jest.fn((isLockLost?: () => boolean) => {
+      seenIsLockLost = isLockLost;
+      return Promise.resolve({ advanced: 0, capped: 0 });
+    });
+    await runDeadlinesAndCap("label", runDeadlineCheck);
+    expect(typeof seenIsLockLost).toBe("function");
+    // Nothing has failed a renewal yet, so it must read false.
+    expect(seenIsLockLost!()).toBe(false);
+  });
+
+  /**
+   * u6 E fix round 1, finding 5 — the caller's shutdown flag and this entry point's own lock-loss
+   * flag are ONE predicate by the time the sweep sees them.
+   *
+   * The sweep cannot act on the difference (both mean "claim nothing further"), and giving it two
+   * questions to ask is how one of them ends up unasked at a claim point.
+   */
+  it("composes the CALLER's stop signal with its own lock-loss signal into one predicate", async () => {
+    let seenShouldStop: (() => boolean) | undefined;
+    const runDeadlineCheck = jest.fn((shouldStop?: () => boolean) => {
+      seenShouldStop = shouldStop;
+      return Promise.resolve({ advanced: 0, capped: 0 });
+    });
+    let shuttingDown = false;
+
+    await runDeadlinesAndCap("worker", runDeadlineCheck, () => shuttingDown);
+
+    // Neither cause has fired.
+    expect(seenShouldStop!()).toBe(false);
+    // The caller's cause alone is enough — the renewal here never failed.
+    shuttingDown = true;
+    expect(seenShouldStop!()).toBe(true);
   });
 });

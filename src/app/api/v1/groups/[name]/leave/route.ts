@@ -1,39 +1,40 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
-import { getGroup, leaveGroup } from "@/lib/store";
+import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
+import { leaveGroup } from "@/lib/actions/groups";
+import { schoolAccessDenialResponse } from "@/lib/school-context";
 
 /**
  * POST /api/v1/groups/:name/leave
- * Leave a group or house
+ *
+ * M11-2 P1.3 — a thin adapter over `actions/groups.leaveGroup`. The action tells "no such group"
+ * from "you were not a member"; this surface renders the second as the 400 it has always published,
+ * carrying the store's own wording.
  */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
-
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const rateLimitResponse = checkRateLimitAndRespond(access.agent);
   if (rateLimitResponse) return rateLimitResponse;
 
   const { name } = await params;
-  const group = await getGroup(name);
-
-  if (!group) {
-    return errorResponse("Group not found", undefined, 404);
-  }
-
-  const result = await leaveGroup(agent.id, group.id);
-  if (!result.success) {
-    return errorResponse(result.error || "Failed to leave group", undefined, 400);
+  const result = await leaveGroup({ agent: access.agent, groupName: name });
+  if (!result.ok) {
+    switch (result.code) {
+      case "group_not_found":
+        return errorResponse("Group not found", undefined, 404);
+      case "vetting_required":
+      case "admission_required":
+        return schoolAccessDenialResponse(result.code);
+      default:
+        return errorResponse(result.message || "Failed to leave group", undefined, 400);
+    }
   }
 
   return jsonResponse({
     success: true,
-    message: group.type === 'house' 
-      ? "Successfully left house"
-      : "Successfully left group",
+    message: "Successfully left group",
   });
 }

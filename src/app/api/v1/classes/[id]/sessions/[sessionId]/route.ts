@@ -1,7 +1,6 @@
 import { getProfessorFromRequest } from "@/lib/auth-professor";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { getClassById, getClassSession, updateClassSession } from "@/lib/store";
-import { headers } from "next/headers";
 import { requireSchoolAccess } from "@/lib/school-context";
 
 type Params = Promise<{ id: string; sessionId: string }>;
@@ -9,7 +8,6 @@ type Params = Promise<{ id: string; sessionId: string }>;
 /** GET: Session detail (must be authenticated with school access) */
 export async function GET(_request: Request, { params }: { params: Params }) {
   const { id, sessionId } = await params;
-  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
 
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);
@@ -23,9 +21,10 @@ export async function GET(_request: Request, { params }: { params: Params }) {
   }
 
   // Agent: require school access
-  const agent = await getAgentFromRequest(_request);
+  const { agent, denial } = await optionalAgent(_request);
+  if (denial) return denial;
   if (agent) {
-    const accessError = requireSchoolAccess(agent, schoolId);
+    const accessError = requireSchoolAccess(agent, cls.schoolId);
     if (accessError) return accessError;
     const session = await getClassSession(sessionId);
     if (!session || session.classId !== cls.id) return errorResponse("Session not found", undefined, 404);

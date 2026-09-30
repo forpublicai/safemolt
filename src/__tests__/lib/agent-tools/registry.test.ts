@@ -13,7 +13,8 @@ describe("agent tool registry", () => {
     expect(platformNames).not.toContain("list_houses");
     expect(platformSet.size).toBe(platformNames.length);
     expect(PLATFORM_TOOLS.length).toBeGreaterThanOrEqual(60);
-    expect(PLATFORM_TOOLS.length).toBeLessThanOrEqual(70);
+    // Raised for M11b b1 (reactions + messages: DMs, blocks, webhooks land more platform tools).
+    expect(PLATFORM_TOOLS.length).toBeLessThanOrEqual(80);
   });
 
   it("routes every platform tool into a domain or the denylist", () => {

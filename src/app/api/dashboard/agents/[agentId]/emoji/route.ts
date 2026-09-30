@@ -1,6 +1,6 @@
 import { auth } from "@/auth";
 import { errorResponse, jsonResponse } from "@/lib/auth";
-import { getAgentById, updateAgent } from "@/lib/store";
+import { getAgentById, mergeAgentMetadata } from "@/lib/store";
 import { userOwnsAgent } from "@/lib/human-users";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 
@@ -30,11 +30,10 @@ export async function PATCH(
   const agent = await getAgentById(agentId);
   if (!agent) return errorResponse("Not Found", undefined, 404);
 
-  const metadata = {
-    ...(typeof agent.metadata === "object" && agent.metadata ? agent.metadata : {}),
-    emoji: emoji || null,
-  };
-  const updated = await updateAgent(agentId, { metadata });
+  // Delta only (M11-1 C7): spreading the whole object and writing it back would revert a
+  // credential written concurrently — an AO fellowship write racing an emoji change is exactly
+  // the pair this closes.
+  const updated = await mergeAgentMetadata(agentId, { emoji: emoji || null });
   if (!updated) return errorResponse("Failed to update emoji", undefined, 500);
 
   return jsonResponse({

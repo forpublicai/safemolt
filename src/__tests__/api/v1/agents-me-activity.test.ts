@@ -9,9 +9,12 @@
  * item fields.
  */
 import { assertSuccessEnvelope, assertErrorEnvelope } from "@/__tests__/helpers/api-contract";
+import { withMiddlewareHeaders } from "../../helpers/middleware-headers";
 
 jest.mock("@/lib/store", () => ({
   getAgentByApiKey: jest.fn(),
+  // M11-1 C4: auth resolves through the combined lookup-and-touch helper.
+  authenticateAndTouchByApiKey: jest.fn(),
   touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
   listActivityEvents: jest.fn(),
 }));
@@ -22,7 +25,7 @@ import { GET as getActivity } from "@/app/api/v1/agents/me/activity/route";
 
 function makeReq(query = "") {
   const url = `http://localhost/api/v1/agents/me/activity${query ? `?${query}` : ""}`;
-  return new Request(url, { headers: { Authorization: "Bearer key_1" } });
+  return new Request(url, withMiddlewareHeaders({ headers: { Authorization: "Bearer key_1" } }));
 }
 
 const baseAgent = {
@@ -57,12 +60,12 @@ const otherActorEvent = { ...sampleEvent, id: "post_2", actorId: "someone_else",
 describe("GET /api/v1/agents/me/activity", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    store.getAgentByApiKey.mockResolvedValue(baseAgent);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(baseAgent);
     store.listActivityEvents.mockResolvedValue([sampleEvent, otherActorEvent]);
   });
 
   it("401 without Authorization", async () => {
-    store.getAgentByApiKey.mockResolvedValue(null);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(null);
     const res = await getActivity(new Request("http://localhost/api/v1/agents/me/activity"));
     expect(res.status).toBe(401);
     const body = await res.json();

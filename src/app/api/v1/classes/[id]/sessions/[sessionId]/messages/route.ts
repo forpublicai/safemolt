@@ -1,23 +1,19 @@
 import { getProfessorFromRequest } from "@/lib/auth-professor";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { requireAgent, optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import {
   getClassById,
   getClassSession,
-  getClassEnrollment,
-  isClassAssistant,
-  addClassSessionMessage,
   getClassSessionMessages,
 } from "@/lib/store";
-import { headers } from "next/headers";
-import { requireSchoolAccess } from "@/lib/school-context";
-import type { StoredClassSessionMessage } from "@/lib/store-types";
+import { addOperatorClassSessionMessage } from "@/lib/class-ops";
+import { sendSessionMessage } from "@/lib/actions/classes";
+import { requireSchoolAccess, schoolAccessDenialResponse } from "@/lib/school-context";
 
 type Params = Promise<{ id: string; sessionId: string }>;
 
 /** GET: Get session messages (professor, agent, or public for active classes) */
 export async function GET(request: Request, { params }: { params: Params }) {
   const { id, sessionId } = await params;
-  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
 
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);
@@ -32,9 +28,10 @@ export async function GET(request: Request, { params }: { params: Params }) {
   }
 
   // Agent: require school access
-  const agent = await getAgentFromRequest(request);
+  const { agent, denial } = await optionalAgent(request);
+  if (denial) return denial;
   if (agent) {
-    const accessError = requireSchoolAccess(agent, schoolId);
+    const accessError = requireSchoolAccess(agent, cls.schoolId);
     if (accessError) return accessError;
     const session = await getClassSession(sessionId);
     if (!session || session.classId !== cls.id) return errorResponse("Session not found", undefined, 404);
@@ -66,32 +63,26 @@ export async function POST(request: Request, { params }: { params: Params }) {
   const { content } = body;
   if (!content || typeof content !== "string") return errorResponse("content is required");
 
-  // Determine sender role
-  let senderId: string;
-  let senderRole: StoredClassSessionMessage["senderRole"];
-
   const professor = await getProfessorFromRequest(request);
   if (professor && professor.id === cls.professorId) {
-    senderId = professor.id;
-    senderRole = "professor";
-  } else {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) return errorResponse("Unauthorized", undefined, 401);
-
-    const isTa = await isClassAssistant(id, agent.id);
-    if (isTa) {
-      senderId = agent.id;
-      senderRole = "ta";
-    } else {
-      const enrollment = await getClassEnrollment(id, agent.id);
-      if (!enrollment || enrollment.status === "dropped") {
-        return errorResponse("Not enrolled in this class", undefined, 403);
-      }
-      senderId = agent.id;
-      senderRole = "student";
-    }
+    const message = await addOperatorClassSessionMessage(sessionId, professor.id, "professor", content);
+    return jsonResponse({ success: true, data: message }, 201);
   }
 
-  const message = await addClassSessionMessage(sessionId, senderId, senderRole, content);
-  return jsonResponse({ success: true, data: message }, 201);
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
+
+  // Every agent — an enrolled student OR a class assistant (TA) — goes through the action, which
+  // gates on session-active + participation INSIDE its statement, checks the class's OWN school
+  // (`resolveClass` → `requireClassSchoolAccess`, so a vetted-but-unadmitted agent reaching a
+  // non-Foundation class through the Foundation host is refused), and emits `class.session_message`
+  // (M11-2 u3f-core B3; TA-emit restored per the user's decision 2026-08-18). Only the human
+  // professor stays on the history-silent operator path above.
+  const result = await sendSessionMessage({ agent, classId: id, sessionId, content });
+  if (!result.ok) {
+    if (result.code === "vetting_required" || result.code === "admission_required") return schoolAccessDenialResponse(result.code);
+    return errorResponse(result.message, undefined, result.code === "not_found" ? 404 : result.code === "forbidden" ? 403 : 400);
+  }
+  return jsonResponse({ success: true, data: result.data.message }, 201);
 }

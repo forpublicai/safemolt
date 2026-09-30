@@ -8,10 +8,20 @@ import type { AdmissionsApplicationState, AdmissionsStatusPayload } from "./type
 import { getAdmissionsPoolEligibility } from "./pool-policy";
 import * as db from "./store-db";
 import * as mem from "./store-memory";
+import type { PreparedEvent } from "@/lib/events/kinds";
+// The status read's lazy pool-ensure is an agent-visible MUTATION; it goes through the action, which
+// owns the `admissions.application_submitted` event (M11-2 M8). The action calls back into this
+// facade's `ensureApplicationInPool` — a function-level cycle, resolved lazily at call time.
+import { ensurePoolApplication } from "@/lib/actions/admissions";
 
 async function refreshExpired(): Promise<void> {
-  if (hasDatabase()) return db.refreshExpiredOffersDb();
+  if (hasDatabase()) return;
   return mem.refreshExpiredOffersMem();
+}
+
+/** Drain-route expiry entry point. Database mode never expires offers on reads. */
+export async function runAdmissionsExpiryDuty(): Promise<void> {
+  if (hasDatabase()) await db.refreshExpiredOffersDb();
 }
 
 export async function getDefaultOpenCycleId(): Promise<string | null> {
@@ -34,9 +44,9 @@ export async function getCycle(id: string) {
   return mem.getCycleMem(id);
 }
 
-export async function ensureApplicationInPool(agentId: string, cycleId: string) {
-  if (hasDatabase()) return db.ensureApplicationInPoolDb(agentId, cycleId);
-  return mem.ensureApplicationInPoolMem(agentId, cycleId);
+export async function ensureApplicationInPool(agentId: string, cycleId: string, events?: readonly PreparedEvent[]) {
+  if (hasDatabase()) return db.ensureApplicationInPoolDb(agentId, cycleId, events);
+  return mem.ensureApplicationInPoolMem(agentId, cycleId, events);
 }
 
 export async function getApplicationByAgentCycle(agentId: string, cycleId: string) {
@@ -102,10 +112,10 @@ export async function getPendingOfferForAgent(agentId: string) {
   return mem.getPendingOfferForAgentMem(agentId);
 }
 
-export async function acceptOfferAsAgent(offerId: string, agentId: string) {
+export async function acceptOfferAsAgent(offerId: string, agentId: string, events?: readonly PreparedEvent[]) {
   await refreshExpired();
-  if (hasDatabase()) return db.acceptOfferAsAgentDb(offerId, agentId);
-  return mem.acceptOfferAsAgentMem(offerId, agentId);
+  if (hasDatabase()) return db.acceptOfferAsAgentDb(offerId, agentId, events);
+  return mem.acceptOfferAsAgentMem(offerId, agentId, events);
 }
 
 export async function acceptOfferAsHuman(offerId: string, humanUserId: string) {
@@ -114,9 +124,9 @@ export async function acceptOfferAsHuman(offerId: string, humanUserId: string) {
   return mem.acceptOfferAsHumanMem(offerId, humanUserId);
 }
 
-export async function declineOfferAsAgent(offerId: string, agentId: string) {
-  if (hasDatabase()) return db.declineOfferAsAgentDb(offerId, agentId);
-  return mem.declineOfferAsAgentMem(offerId, agentId);
+export async function declineOfferAsAgent(offerId: string, agentId: string, events?: readonly PreparedEvent[]) {
+  if (hasDatabase()) return db.declineOfferAsAgentDb(offerId, agentId, events);
+  return mem.declineOfferAsAgentMem(offerId, agentId, events);
 }
 
 export async function declineOfferAsHuman(offerId: string, humanUserId: string) {
@@ -175,9 +185,9 @@ export async function getAdmissionsStatusForAgent(agentId: string): Promise<Admi
   const cycleId = await getDefaultOpenCycleId();
   let application = cycleId ? await getApplicationByAgentCycle(agentId, cycleId) : null;
 
-  if (pool.eligible && !isAdmitted && cycleId) {
+  if (pool.eligible && !isAdmitted && cycleId && agent) {
     try {
-      application = await ensureApplicationInPool(agentId, cycleId);
+      application = await ensurePoolApplication({ agent, cycleId, lazy: true });
     } catch {
       application = await getApplicationByAgentCycle(agentId, cycleId);
     }

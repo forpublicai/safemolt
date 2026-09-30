@@ -8,8 +8,19 @@ jest.mock('next/headers', () => ({
   }),
 }));
 
-jest.mock('@/lib/auth', () => ({
-  getAgentFromRequest: jest.fn(),
+jest.mock('@/lib/auth', () => {
+  // The suite drives getAgentFromRequest; requireAgent is derived from it so a test states its
+  // principal once (M11-1 C20 moved routes onto requireAgent).
+  const getAgentFromRequest = jest.fn();
+  return {
+  getAgentFromRequest,
+  optionalAgent: async (req: Request) => ({ agent: await getAgentFromRequest(req), denial: null }),
+  requireAgent: jest.fn(async (request: Request) => {
+    const agent = await getAgentFromRequest(request);
+    return agent
+      ? { ok: true, agent }
+      : { ok: false, response: Response.json({ success: false, error: 'Unauthorized' }, { status: 401 }) };
+  }),
   jsonResponse: (data: unknown, status = 200, headers: Record<string, string> = {}) =>
     Response.json(data, { status, headers }),
   errorResponse: (error: string, hint?: string, status = 400, options: { code?: string } = {}) =>
@@ -19,11 +30,24 @@ jest.mock('@/lib/auth', () => ({
       hint,
       ...(options.code ? { error_detail: { code: options.code, message: error, hint } } : {}),
     }, { status }),
-}));
+  };
+});
 
 jest.mock('@/lib/playground/session-manager', () => ({
-  checkDeadlines: jest.fn(),
   getActiveSession: jest.fn(),
+  joinSession: jest.fn(),
+}));
+
+// The GET routes now run deadline progression through the P3.1 locked entry point
+// (`runDeadlinesAndCap`) instead of calling `checkDeadlines` on the session manager directly.
+jest.mock('@/lib/playground/lifecycle', () => ({
+  runDeadlinesAndCap: jest.fn(),
+}));
+
+// M11-2 P1.4: the join route is an adapter over the ACTION, which owns the school gate and the
+// events and then delegates to the session manager. The suite drives the action directly — the
+// delegation itself is covered by `m11-2-u3d-playground.test.ts`.
+jest.mock('@/lib/actions/playground', () => ({
   joinSession: jest.fn(),
 }));
 
@@ -31,6 +55,10 @@ jest.mock('@/lib/store', () => ({
   listPlaygroundSessions: jest.fn(),
   getPlaygroundSession: jest.fn(),
   getPlaygroundActions: jest.fn(),
+  // M11-1b D5: episodic memories are store rows now, not a process-local map, so the session
+  // detail route reads them through the store.
+  listPlaygroundMemoriesForSession: jest.fn(async () => []),
+  getPlaygroundMemoryForAgent: jest.fn(async () => null),
 }));
 
 import { GET as getActiveRoute } from '@/app/api/v1/playground/sessions/active/route';
@@ -39,13 +67,15 @@ import { GET as getSessionByIdRoute } from '@/app/api/v1/playground/sessions/[id
 import { POST as joinSessionRoute } from '@/app/api/v1/playground/sessions/[id]/join/route';
 
 const { getAgentFromRequest } = require('@/lib/auth');
-const { checkDeadlines, getActiveSession, joinSession } = require('@/lib/playground/session-manager');
+const { getActiveSession } = require('@/lib/playground/session-manager');
+const { runDeadlinesAndCap } = require('@/lib/playground/lifecycle');
+const { joinSession } = require('@/lib/actions/playground');
 const { listPlaygroundSessions, getPlaygroundSession, getPlaygroundActions } = require('@/lib/store');
 
 describe('Playground session GET routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    checkDeadlines.mockResolvedValue(undefined);
+    runDeadlinesAndCap.mockResolvedValue({ advanced: 0, capped: 0 });
   });
 
   describe('GET /api/v1/playground/sessions/active', () => {
@@ -72,7 +102,8 @@ describe('Playground session GET routes', () => {
       expect(body.success).toBe(true);
       expect(body.data).toBeNull();
       expect(body.poll_interval_ms).toBe(60000);
-      expect(checkDeadlines).toHaveBeenCalledTimes(1);
+      expect(runDeadlinesAndCap).toHaveBeenCalledTimes(1);
+      expect(runDeadlinesAndCap).toHaveBeenCalledWith('page:playground-sessions-active');
       expect(getActiveSession).toHaveBeenCalledWith('agent_1');
     });
 
@@ -173,7 +204,10 @@ describe('Playground session GET routes', () => {
   describe('POST /api/v1/playground/sessions/[id]/join', () => {
     it('passes prefab_id through to the session manager', async () => {
       getAgentFromRequest.mockResolvedValue({ id: 'agent_1' });
-      joinSession.mockResolvedValue({ id: 'pg_1', participants: [{ agentId: 'agent_1', prefabId: 'the_diplomat' }] });
+      joinSession.mockResolvedValue({
+        ok: true,
+        data: { session: { id: 'pg_1', participants: [{ agentId: 'agent_1', prefabId: 'the_diplomat' }] } },
+      });
 
       const response = await joinSessionRoute(
         new Request('http://localhost/api/v1/playground/sessions/pg_1/join', {
@@ -186,12 +220,14 @@ describe('Playground session GET routes', () => {
 
       expect(response.status).toBe(200);
       expect(body.success).toBe(true);
-      expect(joinSession).toHaveBeenCalledWith('pg_1', 'agent_1', { prefabId: 'the_diplomat' });
+      expect(joinSession).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 'pg_1', prefabId: 'the_diplomat' })
+      );
     });
 
     it('returns a stable 400 code for invalid prefab_id', async () => {
       getAgentFromRequest.mockResolvedValue({ id: 'agent_1' });
-      joinSession.mockRejectedValue(new Error('invalid_prefab_id'));
+      joinSession.mockResolvedValue({ ok: false, code: 'bad_request', message: 'invalid_prefab_id' });
 
       const response = await joinSessionRoute(
         new Request('http://localhost/api/v1/playground/sessions/pg_1/join', {
@@ -244,7 +280,8 @@ describe('Playground session GET routes', () => {
       const body = await response.json();
 
       expect(response.status).toBe(200);
-      expect(checkDeadlines).toHaveBeenCalledTimes(1);
+      expect(runDeadlinesAndCap).toHaveBeenCalledTimes(1);
+      expect(runDeadlinesAndCap).toHaveBeenCalledWith('page:playground-sessions-list');
       expect(listPlaygroundSessions).toHaveBeenCalledWith({
         status: 'active',
         limit: 50,
@@ -325,7 +362,8 @@ describe('Playground session GET routes', () => {
       const body = await response.json();
 
       expect(response.status).toBe(200);
-      expect(checkDeadlines).toHaveBeenCalledTimes(1);
+      expect(runDeadlinesAndCap).toHaveBeenCalledTimes(1);
+      expect(runDeadlinesAndCap).toHaveBeenCalledWith('page:playground-session-detail');
       expect(getPlaygroundActions).toHaveBeenCalledWith('pg_2', 3);
       expect(body.success).toBe(true);
       expect(body.data.id).toBe('pg_2');

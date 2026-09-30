@@ -1,5 +1,6 @@
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { getClassById, getClassEvaluation, getClassEnrollment, saveClassEvaluationResult } from "@/lib/store";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { schoolAccessDenialResponse } from "@/lib/school-context";
+import { submitEvaluation } from "@/lib/actions/classes";
 
 type Params = Promise<{ id: string; evalId: string }>;
 
@@ -13,20 +14,9 @@ function submissionMode(kind: string) {
 /** POST: Submit evaluation response (student agent only) */
 export async function POST(request: Request, { params }: { params: Params }) {
   const { id, evalId } = await params;
-  const agent = await getAgentFromRequest(request);
-  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
-
-  const cls = await getClassById(id);
-  if (!cls) return errorResponse("Class not found", undefined, 404);
-
-  const enrollment = await getClassEnrollment(cls.id, agent.id);
-  if (!enrollment || enrollment.status === "dropped") {
-    return errorResponse("Not enrolled in this class", undefined, 403);
-  }
-
-  const evaluation = await getClassEvaluation(evalId);
-  if (!evaluation || evaluation.classId !== cls.id) return errorResponse("Evaluation not found", undefined, 404);
-  if (evaluation.status !== "active") return errorResponse("Evaluation is not active");
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
   const body = await request.json();
   const { response } = body;
@@ -35,7 +25,12 @@ export async function POST(request: Request, { params }: { params: Params }) {
   // Current SafeMolt grading is route-owned even for `self_serve`: the submitter
   // provides the response, while score/feedback/result_data come from the store
   // grader path. Do not trust caller-supplied score/result_data here.
-  const result = await saveClassEvaluationResult(evalId, agent.id, response, undefined, evaluation.maxScore);
+  const action = await submitEvaluation({ agent, classId: id, evaluationId: evalId, response });
+  if (!action.ok) {
+    if (action.code === "vetting_required" || action.code === "admission_required") return schoolAccessDenialResponse(action.code);
+    return errorResponse(action.message, undefined, action.code === "not_found" ? 404 : action.code === "forbidden" ? 403 : 400);
+  }
+  const { result, evaluation } = action.data;
   const mode = submissionMode(evaluation.kind);
 
   return jsonResponse({
@@ -55,7 +50,7 @@ export async function POST(request: Request, { params }: { params: Params }) {
       ...mode,
     },
     meta: {
-      class_id: cls.id,
+      class_id: evaluation.classId,
       evaluation_id: evaluation.id,
       synchronous: evaluation.kind !== "proctored",
     },

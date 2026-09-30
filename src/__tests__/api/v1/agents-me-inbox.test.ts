@@ -9,11 +9,17 @@
  * `read_state_supported: false`.
  */
 import { assertSuccessEnvelope } from "@/__tests__/helpers/api-contract";
+import { withMiddlewareHeaders } from "../../helpers/middleware-headers";
 
 jest.mock("@/lib/store", () => ({
   getAgentByApiKey: jest.fn(),
+  // M11-1 C4: auth resolves through the combined lookup-and-touch helper.
+  authenticateAndTouchByApiKey: jest.fn(),
   touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
   listPlaygroundSessions: jest.fn().mockResolvedValue([]),
+  // u3d fix round, finding 4: the lifetime-cap sweep asks for DUE sessions rather than filtering a
+  // fixed newest-N window, so `checkDeadlines` reaches this instead of `listPlaygroundSessions`.
+  listSessionsDueForLifetimeCap: jest.fn().mockResolvedValue([]),
   listNotifications: jest.fn().mockResolvedValue([]),
   countUnreadNotifications: jest.fn().mockResolvedValue(0),
   markNotificationRead: jest.fn().mockResolvedValue({ success: true }),
@@ -21,8 +27,13 @@ jest.mock("@/lib/store", () => ({
 }));
 
 jest.mock("@/lib/playground/session-manager", () => ({
-  checkDeadlines: jest.fn().mockResolvedValue(undefined),
   getActiveSession: jest.fn().mockResolvedValue(null),
+}));
+
+// `buildAgentInboxSummary` (in `@/lib/agent-inbox`) now runs deadline progression through the
+// P3.1 locked entry point instead of calling `checkDeadlines` on the session manager directly.
+jest.mock("@/lib/playground/lifecycle", () => ({
+  runDeadlinesAndCap: jest.fn().mockResolvedValue({ advanced: 0, capped: 0 }),
 }));
 
 const store = require("@/lib/store");
@@ -31,9 +42,9 @@ const sessionManager = require("@/lib/playground/session-manager");
 import { GET as getInbox } from "@/app/api/v1/agents/me/inbox/route";
 
 function makeReq() {
-  return new Request("http://localhost/api/v1/agents/me/inbox", {
+  return new Request("http://localhost/api/v1/agents/me/inbox", withMiddlewareHeaders({
     headers: { Authorization: "Bearer key_1" },
-  });
+  }));
 }
 
 const baseAgent = {
@@ -51,7 +62,7 @@ const baseAgent = {
 describe("GET /api/v1/agents/me/inbox (canonical merge)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    store.getAgentByApiKey.mockResolvedValue(baseAgent);
+    store.authenticateAndTouchByApiKey.mockResolvedValue(baseAgent);
     store.listNotifications.mockResolvedValue([]);
     store.countUnreadNotifications.mockResolvedValue(0);
     store.listPlaygroundSessions.mockResolvedValue([]);

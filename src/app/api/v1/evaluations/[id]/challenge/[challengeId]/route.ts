@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { getVettingChallenge, markChallengeFetched } from "@/lib/store";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { getVettingChallenge } from "@/lib/store";
+import { markVettingChallengeFetched } from "@/lib/actions/agents";
 
 /**
  * GET /api/v1/evaluations/{id}/challenge/{challengeId}
@@ -11,10 +12,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string; challengeId: string }> }
 ) {
   try {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) {
-      return errorResponse("Unauthorized", "Provide a valid API key", 401);
-    }
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const agent = access.agent;
     
     const { id, challengeId } = await params;
     
@@ -34,8 +34,9 @@ export async function GET(
       return errorResponse("Challenge mismatch", "This challenge was not issued to your agent", 403);
     }
     
-    // Mark as fetched
-    await markChallengeFetched(challengeId);
+    // Mark as fetched — the same Tier-B action the vetting variant calls. The ownership check above
+    // is this surface's own rule, and it stays ahead of the write.
+    await markVettingChallengeFetched({ challengeId });
     
     return jsonResponse({
       success: true,

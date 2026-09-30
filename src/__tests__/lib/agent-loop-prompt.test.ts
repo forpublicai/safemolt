@@ -1,4 +1,5 @@
 import type { StoredAgent } from "@/lib/store-types";
+import type { AgentContext } from "@/lib/agent-senses";
 
 jest.mock("@/lib/db", () => ({ sql: jest.fn() }));
 jest.mock("@/lib/agent-tools", () => ({
@@ -14,14 +15,20 @@ jest.mock("@/lib/store", () => ({
   getFollowingCount: jest.fn(async () => 0),
   getAgentById: jest.fn(),
   listPosts: jest.fn(),
+  listFeed: jest.fn(),
+  getPost: jest.fn(),
   listComments: jest.fn(),
   getAgentClasses: jest.fn(),
   getClassById: jest.fn(),
   listClassSessions: jest.fn(),
   listClassEvaluations: jest.fn(),
+  getStudentClassResults: jest.fn(),
+  getGroupMemberCount: jest.fn(),
+  isGroupMember: jest.fn(),
   setAgentVetted: jest.fn(),
   setAgentIdentityMd: jest.fn(),
   listPlaygroundSessions: jest.fn(),
+  getPlaygroundSession: jest.fn(),
   getPlaygroundActions: jest.fn(),
   getPassedEvaluations: jest.fn(),
   ensureGeneralGroup: jest.fn(),
@@ -41,6 +48,7 @@ jest.mock("@/lib/human-users", () => ({
 }));
 jest.mock("@/lib/memory/sponsored-public-ai", () => ({ isSponsoredPublicAiAgent: jest.fn() }));
 jest.mock("@/lib/memory/memory-service", () => ({ recallMemoryForAgent: jest.fn(), upsertVectorForAgent: jest.fn() }));
+jest.mock("@/lib/admissions", () => ({ getAdmissionsStatusForAgent: jest.fn() }));
 jest.mock("@/lib/agent-identity-generator", () => ({ isPlaceholderIdentity: jest.fn(), generateRandomIdentity: jest.fn() }));
 jest.mock("@/lib/evaluations/loader", () => ({ listEvaluations: jest.fn(() => []) }));
 jest.mock("@/lib/playground/games", () => ({ listGames: jest.fn(() => []) }));
@@ -59,28 +67,58 @@ const agent = {
 const userText = (messages: { role: string; content: string }[]): string =>
   messages.find((message) => message.role === "user")?.content ?? "";
 
+/**
+ * M11-2 P4.3: `buildDecisionPrompt` renders one `AgentContext` instead of thirteen positional
+ * parameters. The sections below are the empty context; each case overrides only what it asserts
+ * on, and every assertion in this file is unchanged from the pre-P4.3 version.
+ */
+function makeContext(overrides: Partial<AgentContext> = {}): AgentContext {
+  return {
+    feed: { items: [], degraded: false, mode: "personalized" },
+    inbox: { items: [], degraded: false },
+    classes: { items: [], degraded: false, openForEnrollment: [] },
+    evaluations: { items: [], degraded: false },
+    playground: { items: [], degraded: false },
+    groups: { items: [], degraded: false },
+    network: { data: { followerCount: 0, followingCount: 0, activeNowCount: 0 }, degraded: false },
+    news: { items: [], degraded: false },
+    memories: { items: [], degraded: false },
+    admissions: { data: null, degraded: false },
+    limits: {
+      data: {
+        postCooldownMs: 30000,
+        commentCooldownMs: 20000,
+        maxCommentsPerDay: 50,
+        loopNextEligibleAt: null,
+      },
+      degraded: false,
+    },
+    ...overrides,
+  };
+}
+
 describe("agent-loop prompt builder", () => {
   it("discovery prompt prioritizes inbox obligations and asks for a DOMAIN choice", async () => {
     const { buildDecisionPrompt } = await import("@/lib/agent-loop");
     const messages = await buildDecisionPrompt(
       agent,
-      [
-        {
-          id: "notif_1",
-          type: "reply_to_my_comment",
-          priority: "high",
-          href: "/post/post_1#comment_2",
-          actorName: "critic",
-          targetLabel: "A real discussion",
-          createdAt: new Date().toISOString(),
-          hint: "Can you clarify this claim?",
+      makeContext({
+        inbox: {
+          items: [
+            {
+              id: "notif_1",
+              type: "reply_to_my_comment",
+              priority: "high",
+              href: "/post/post_1#comment_2",
+              actorName: "critic",
+              targetLabel: "A real discussion",
+              createdAt: new Date().toISOString(),
+              hint: "Can you clarify this claim?",
+            },
+          ],
+          degraded: false,
         },
-      ],
-      [],
-      [],
-      { pendingLobbies: [], activeSession: null },
-      { available: [] },
-      [],
+      }),
       [
         {
           action: "create_comment",
@@ -89,8 +127,7 @@ describe("agent-loop prompt builder", () => {
           contentSnippet: "Honestly, the key issue is incentives",
           createdAt: new Date().toISOString(),
         },
-      ],
-      []
+      ]
     );
 
     const user = userText(messages);
@@ -111,17 +148,23 @@ describe("agent-loop prompt builder", () => {
     const { buildDecisionPrompt } = await import("@/lib/agent-loop");
     const messages = await buildDecisionPrompt(
       agent,
+      makeContext({
+        groups: {
+          items: [
+            {
+              kind: "suggested",
+              id: "group_1",
+              name: "builders",
+              displayName: "Builders",
+              memberCount: 3,
+            },
+          ],
+          degraded: false,
+        },
+        network: { data: { followerCount: 2, followingCount: 1, activeNowCount: 0 }, degraded: false },
+      }),
       [],
-      [],
-      [],
-      { pendingLobbies: [], activeSession: null },
-      { available: [] },
-      [],
-      [],
-      [],
-      { kind: "discovery" },
-      [{ id: "group_1", name: "builders", displayName: "Builders", memberCount: 3 }],
-      { followerCount: 2, followingCount: 1 }
+      { kind: "discovery" }
     );
 
     const user = userText(messages);
@@ -143,17 +186,7 @@ describe("agent-loop prompt builder", () => {
       createdAt: new Date(now - i * 60_000).toISOString(),
     }));
 
-    const messages = await buildDecisionPrompt(
-      agent,
-      [],
-      [],
-      [],
-      { pendingLobbies: [], activeSession: null },
-      { available: [] },
-      [],
-      recentActions,
-      []
-    );
+    const messages = await buildDecisionPrompt(agent, makeContext(), recentActions);
 
     const user = userText(messages);
     expect(user).toContain("target_id=post_1");
@@ -163,18 +196,10 @@ describe("agent-loop prompt builder", () => {
 
   it("domain-stage prompt scopes guidance to one terminal action in the chosen domain", async () => {
     const { buildDecisionPrompt } = await import("@/lib/agent-loop");
-    const messages = await buildDecisionPrompt(
-      agent,
-      [],
-      [],
-      [],
-      { pendingLobbies: [], activeSession: null },
-      { available: [] },
-      [],
-      [],
-      [],
-      { kind: "domain", domain: "playground" }
-    );
+    const messages = await buildDecisionPrompt(agent, makeContext(), [], {
+      kind: "domain",
+      domain: "playground",
+    });
 
     const user = userText(messages);
     expect(user).toContain("Domain action stage: playground");
@@ -187,48 +212,53 @@ describe("agent-loop prompt builder", () => {
     const { buildDecisionPrompt } = await import("@/lib/agent-loop");
     const messages = await buildDecisionPrompt(
       agent,
-      [],
-      [
-        {
-          post: {
-            id: "post_best",
-            title: "Agents discuss regulation",
-            content: "Thread context",
-            authorId: "agent_2",
-            groupId: "group_1",
-            upvotes: 7,
-            downvotes: 0,
-            commentCount: 4,
-            createdAt: "2026-05-13T10:00:00.000Z",
-          },
-          authorName: "poster",
-          comments: [{ authorName: "loopster", content: "Earlier take", isOwnComment: true }],
-        },
-      ],
-      [],
-      { pendingLobbies: [], activeSession: null },
-      { available: [] },
-      [
-        {
-          title: "Agents discuss regulation",
-          url: "https://example.com/raw",
-          canonicalUrl: "https://example.com/story",
-          storyId: "news_abc",
-          canonicalizationConfidence: "normalized",
-          source: "example.com",
-          existingDiscussions: [
+      makeContext({
+        feed: {
+          items: [
             {
-              postId: "post_best",
-              title: "Agents discuss regulation",
-              groupId: "group_1",
-              commentCount: 4,
-              upvotes: 7,
-              createdAt: "2026-05-13T10:00:00.000Z",
+              post: {
+                id: "post_best",
+                title: "Agents discuss regulation",
+                content: "Thread context",
+                authorId: "agent_2",
+                groupId: "group_1",
+                upvotes: 7,
+                downvotes: 0,
+                commentCount: 4,
+                createdAt: "2026-05-13T10:00:00.000Z",
+              },
+              authorName: "poster",
+              comments: [{ authorName: "loopster", content: "Earlier take", isOwnComment: true }],
+              reactions: {},
             },
           ],
+          degraded: false,
+          mode: "personalized",
         },
-      ],
-      [],
+        news: {
+          items: [
+            {
+              title: "Agents discuss regulation",
+              url: "https://example.com/raw",
+              canonicalUrl: "https://example.com/story",
+              storyId: "news_abc",
+              canonicalizationConfidence: "normalized",
+              source: "example.com",
+              existingDiscussions: [
+                {
+                  postId: "post_best",
+                  title: "Agents discuss regulation",
+                  groupId: "group_1",
+                  commentCount: 4,
+                  upvotes: 7,
+                  createdAt: "2026-05-13T10:00:00.000Z",
+                },
+              ],
+            },
+          ],
+          degraded: false,
+        },
+      }),
       []
     );
 
@@ -238,27 +268,116 @@ describe("agent-loop prompt builder", () => {
     expect(user).toContain("News headlines are low-priority");
   });
 
+  /**
+   * M11-2 u5 fix round 1, finding B-1. The prompt projected ten of the context's eleven sections
+   * and dropped `admissions`, so an agent with a pending admissions step could not see it. The
+   * three cases below pin the whole rule: the five pinned fields render verbatim when the surface
+   * is actionable, and nothing renders at all when it is not — an admitted agent with only the
+   * static `admitted` line, and a degraded read, both cost zero prompt tokens.
+   */
+  const actionableAdmissions = {
+    pool_eligible: false,
+    public_ai_eligibility: { status: "ineligible" as const, reason: "Missing: sip_2_poaw." },
+    next_action: {
+      code: "complete_criteria",
+      message: "Complete admissions criteria: sip_2_poaw.",
+      href: "/evaluations",
+    },
+    criteria_progress: [
+      { code: "vetting", label: "PoAW vetting complete", complete: true },
+      { code: "sip_2_poaw", label: "SIP-2 PoAW passed", complete: false },
+    ],
+    admission_source: "not_admitted" as const,
+    state_source: "eligibility" as const,
+    is_admitted: false,
+    cycle_id: null,
+    application: null,
+    offer: null,
+  };
+
+  it("renders the five pinned admissions fields when the surface is actionable", async () => {
+    const { buildDecisionPrompt } = await import("@/lib/agent-loop");
+    const messages = await buildDecisionPrompt(
+      agent,
+      makeContext({ admissions: { data: actionableAdmissions, degraded: false } }),
+      []
+    );
+
+    const user = userText(messages);
+    expect(user).toContain("## Admissions");
+    // 1. next_action, with its href.
+    expect(user).toContain("next_action: complete_criteria — Complete admissions criteria: sip_2_poaw.");
+    expect(user).toContain("href: /evaluations");
+    // 2. criteria_progress, every criterion with its completion state.
+    expect(user).toContain("[x] vetting: PoAW vetting complete");
+    expect(user).toContain("[ ] sip_2_poaw: SIP-2 PoAW passed");
+    // 3. public_ai_eligibility, status and reason.
+    expect(user).toContain("public_ai_eligibility: ineligible — Missing: sip_2_poaw.");
+    // 4 and 5. admission_source and state_source.
+    expect(user).toContain("admission_source: not_admitted");
+    expect(user).toContain("state_source: eligibility");
+  });
+
+  it("renders no admissions section for an admitted agent with nothing to do", async () => {
+    const { buildDecisionPrompt } = await import("@/lib/agent-loop");
+    const messages = await buildDecisionPrompt(
+      agent,
+      makeContext({
+        admissions: {
+          data: {
+            ...actionableAdmissions,
+            is_admitted: true,
+            admission_source: "application",
+            state_source: "application",
+            next_action: {
+              code: "admitted",
+              message: "You are admitted and can join admitted-school workflows.",
+              href: "/schools",
+            },
+          },
+          degraded: false,
+        },
+      }),
+      []
+    );
+
+    const user = userText(messages);
+    expect(user).not.toContain("## Admissions");
+    expect(user).not.toContain("admission_source");
+    expect(user).not.toContain("state_source");
+  });
+
+  it("renders no admissions section when the admissions read failed", async () => {
+    const { buildDecisionPrompt } = await import("@/lib/agent-loop");
+    const messages = await buildDecisionPrompt(
+      agent,
+      makeContext({ admissions: { data: null, degraded: true } }),
+      []
+    );
+
+    expect(userText(messages)).not.toContain("## Admissions");
+  });
+
   it("renders fresh news without existing-discussion lines", async () => {
     const { buildDecisionPrompt } = await import("@/lib/agent-loop");
     const messages = await buildDecisionPrompt(
       agent,
-      [],
-      [],
-      [],
-      { pendingLobbies: [], activeSession: null },
-      { available: [] },
-      [
-        {
-          title: "Fresh agent infrastructure story",
-          url: "https://example.com/fresh",
-          canonicalUrl: "https://example.com/fresh",
-          storyId: "news_fresh",
-          canonicalizationConfidence: "normalized",
-          source: "example.com",
-          existingDiscussions: [],
+      makeContext({
+        news: {
+          items: [
+            {
+              title: "Fresh agent infrastructure story",
+              url: "https://example.com/fresh",
+              canonicalUrl: "https://example.com/fresh",
+              storyId: "news_fresh",
+              canonicalizationConfidence: "normalized",
+              source: "example.com",
+              existingDiscussions: [],
+            },
+          ],
+          degraded: false,
         },
-      ],
-      [],
+      }),
       []
     );
 

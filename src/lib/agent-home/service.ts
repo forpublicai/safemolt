@@ -1,22 +1,38 @@
 /**
  * Builds the GET /api/v1/agents/me/home payload.
  *
- * Scope rules (see ai/agent-ux-plans/02-home-identity-trust.md):
+ * Scope rules (see ai/archive/agent-ux-plans/02-home-identity-trust.md):
  * - Sections owned by later chunks ship with `{ items: [], unavailable_reason }`.
  *   Do not duplicate drift-prone producer logic here.
  * - Caps are enforced before serialization; the route never has to clamp.
  * - PII denylist: never serialize linked human user IDs, claim tokens, api keys,
  *   verification codes, email, or cognito_sub.
+ *
+ * M11-2 u5 fix round 1, finding B-2 — ONE CONTEXT. This service assembles a single
+ * `AgentContext` and every section below is a PROJECTION of that one object. It reads no sense of
+ * its own any more, so home, the loop tick and `GET /agents/me/context` cannot describe different
+ * worlds within one deploy. Home's smaller windows survive as slices taken here (P4.2's
+ * "intentional differences stay projection parameters"), never as a second read of the same
+ * subsystem — the old service read the feed twice and the groups it shares with the loop
+ * separately, which is exactly the drift the finding names.
+ *
+ * Two producers deliberately stay outside the context, because neither is a sense the context
+ * carries:
+ * - the inbox SUMMARY (`@/lib/agent-inbox`), which home publishes with `unread_count` and
+ *   `high_priority_count`. `context.inbox` is a capped window of unread ACTIONABLE obligations and
+ *   carries no totals, so those two counts are not derivable from it at any window size.
+ * - the announcement, which is a platform broadcast rather than anything about this agent.
  */
 import type { StoredAgent } from "@/lib/store-types";
-import { getAnnouncement, listFeed } from "@/lib/store";
+import { getAnnouncement } from "@/lib/store";
 import { buildAgentInboxSummary } from "@/lib/agent-inbox";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
 import {
-  gatherGroupOpportunities,
-  gatherNewsHeadlines,
-  gatherPlaygroundOpportunities,
-} from "@/lib/agent-opportunities";
+  buildAgentContext,
+  type AgentContext,
+  type PlaygroundActiveItem,
+  type PlaygroundPendingItem,
+} from "@/lib/agent-senses";
 import { listRecentLoopActions } from "@/lib/agent-loop-actions";
 import { isAdmissionsGateDisabled } from "@/lib/admissions/config";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
@@ -30,6 +46,9 @@ import type {
   AnnouncementsSection,
   FeedSection,
   GroupsSection,
+  HomeAdmissionsSection,
+  HomeClassesSection,
+  HomeMemorySection,
   HomePermissions,
   InboxSection,
   LoopSummary,
@@ -39,6 +58,9 @@ import type {
   UnavailableSection,
 } from "./types";
 
+/** Home has always answered Foundation-scoped groups; it is the one window it cannot slice. */
+const HOME_SCHOOL_ID = "foundation";
+
 const MAX_NEXT_ACTIONS = 5;
 const MAX_GROUPS_SUGGESTED = 5;
 const MAX_PLAYGROUND_SESSIONS = 3;
@@ -46,6 +68,8 @@ const MAX_NEWS = 5;
 const MAX_ANNOUNCEMENTS = 3;
 const MAX_INBOX_PREVIEW = 3;
 const MAX_LOOP_RECENT_ACTIONS = 5;
+const MAX_HOME_CLASSES = 3;
+const MAX_HOME_MEMORIES = 5;
 
 function buildAgentSummary(agent: StoredAgent, agentKind: AgentSummary["agent_kind"]): AgentSummary {
   return {
@@ -90,14 +114,15 @@ function buildLoop(
   };
 }
 
-async function buildGroupsSection(agentId: string): Promise<{ section: GroupsSection; generalMembership: boolean }> {
-  const opportunities = await gatherGroupOpportunities(agentId, {
-    schoolId: "foundation",
-    suggestedLimit: MAX_GROUPS_SUGGESTED,
-  });
-  const generalMembership = opportunities.joined.some((g) => g.name === "general");
+function buildGroupsSection(
+  section: AgentContext["groups"]
+): { section: GroupsSection; generalMembership: boolean } {
+  const joined = section.items.filter((g) => g.kind === "joined");
+  // Home's own cap, re-applied here so it survives a change to the context's default window.
+  const suggested = section.items.filter((g) => g.kind === "suggested").slice(0, MAX_GROUPS_SUGGESTED);
+  const generalMembership = joined.some((g) => g.name === "general");
 
-  const toSection = (g: (typeof opportunities.joined)[number]) => ({
+  const toSection = (g: (typeof joined)[number]) => ({
     id: g.id,
     name: g.name,
     display_name: g.displayName,
@@ -106,38 +131,36 @@ async function buildGroupsSection(agentId: string): Promise<{ section: GroupsSec
 
   return {
     section: {
-      joined: opportunities.joined.map(toSection),
-      suggested: opportunities.suggested.map(toSection),
+      joined: joined.map(toSection),
+      suggested: suggested.map(toSection),
     },
     generalMembership,
   };
 }
 
-async function buildFeedSection(agentId: string, generalMembership: boolean): Promise<FeedSection> {
-  let feedItems: Awaited<ReturnType<typeof listFeed>> = [];
-  try {
-    feedItems = await listFeed(agentId, { sort: "new", limit: 1 });
-  } catch (e) {
-    console.error("[agent-home] listFeed failed:", e);
-  }
-  if (feedItems.length > 0) {
-    return { count: feedItems.length, empty_reason: null };
-  }
+/**
+ * `empty_reason` is unchanged; only the source is. The shared context reads the agent's own
+ * personalized feed first and falls back to global-new when that feed is empty, saying which path
+ * ran through `mode` — so a `global_fallback` read IS home's "nothing in your memberships" case
+ * and reports zero, exactly as the old one-post probe did. `count` stays what its type says it is:
+ * a sample of what the agent can see, not a global total.
+ */
+function buildFeedSection(section: AgentContext["feed"], generalMembership: boolean): FeedSection {
+  const count = section.mode === "personalized" ? section.items.length : 0;
+  if (count > 0) return { count, empty_reason: null };
   return {
     count: 0,
     empty_reason: generalMembership ? "no_posts_in_memberships" : "no_memberships",
   };
 }
 
-async function buildPlaygroundSection(agentId: string): Promise<PlaygroundSection> {
-  const opportunities = await gatherPlaygroundOpportunities(agentId, {
-    pendingLimit: MAX_PLAYGROUND_SESSIONS,
-    activeLimit: MAX_PLAYGROUND_SESSIONS,
-  });
+function buildPlaygroundSection(section: AgentContext["playground"]): PlaygroundSection {
+  const activeItems = section.items.filter((i): i is PlaygroundActiveItem => i.kind === "active");
+  const pendingItems = section.items.filter((i): i is PlaygroundPendingItem => i.kind === "pending");
 
   const sessions: PlaygroundSection["sessions"] = [];
   let activeSessionId: string | null = null;
-  for (const s of opportunities.active.slice(0, MAX_PLAYGROUND_SESSIONS)) {
+  for (const s of activeItems.slice(0, MAX_PLAYGROUND_SESSIONS)) {
     activeSessionId = s.id;
     sessions.push({
       id: s.id,
@@ -148,7 +171,7 @@ async function buildPlaygroundSection(agentId: string): Promise<PlaygroundSectio
       needs_action: s.awaitingPrompt && !s.hasActedThisRound,
     });
   }
-  for (const s of opportunities.pending) {
+  for (const s of pendingItems) {
     if (sessions.length >= MAX_PLAYGROUND_SESSIONS) break;
     sessions.push({
       id: s.id,
@@ -173,10 +196,56 @@ async function buildAnnouncements(): Promise<AnnouncementsSection> {
   }
 }
 
-async function buildNews(): Promise<NewsSection> {
-  const items = await gatherNewsHeadlines(MAX_NEWS);
-  const headlines = items.slice(0, MAX_NEWS).map((n) => ({ title: n.title, url: n.url, source: n.source }));
+function buildNews(section: AgentContext["news"]): NewsSection {
+  const headlines = section.items
+    .slice(0, MAX_NEWS)
+    .map((n) => ({ title: n.title, url: n.url, source: n.source }));
   return { headlines };
+}
+
+/**
+ * The three sections below shipped as `unavailable_reason` stubs until M11-2 P4.2. They now
+ * project the same context the loop and `/agents/me/context` read, so home stops being a
+ * surface that knows less about the agent than the loop does.
+ */
+function buildClassesSection(section: AgentContext["classes"]): HomeClassesSection {
+  const items = section.items.slice(0, MAX_HOME_CLASSES).map((c) => ({
+    class_id: c.classId,
+    class_name: c.className,
+    active_sessions: c.activeSessions,
+    pending_evals: c.pendingEvals,
+  }));
+  return section.degraded ? { items, unavailable_reason: "classes_summary_unavailable" } : { items };
+}
+
+function buildAdmissionsSection(section: AgentContext["admissions"]): HomeAdmissionsSection {
+  if (section.degraded || !section.data) {
+    return {
+      next_action: null,
+      criteria_progress: null,
+      public_ai_eligibility: null,
+      admission_source: null,
+      state_source: null,
+      is_admitted: null,
+      unavailable_reason: "admissions_summary_unavailable",
+    };
+  }
+  const d = section.data;
+  return {
+    next_action: d.next_action,
+    criteria_progress: d.criteria_progress,
+    public_ai_eligibility: d.public_ai_eligibility,
+    admission_source: d.admission_source,
+    state_source: d.state_source,
+    is_admitted: d.is_admitted,
+  };
+}
+
+function buildMemorySection(section: AgentContext["memories"]): HomeMemorySection {
+  const items = section.items.slice(0, MAX_HOME_MEMORIES);
+  return section.degraded
+    ? { items, unavailable_reason: "memory_summary_unavailable" }
+    : { items };
 }
 
 function unavailable(reason: string): UnavailableSection {
@@ -313,23 +382,17 @@ function buildPermissions(agent: StoredAgent, generalMembership: boolean, loopEn
 }
 
 export async function buildAgentHomePayload(agent: StoredAgent): Promise<AgentHomePayload> {
-  const [
-    loopState,
-    recentLoopActions,
-    linkedUserIds,
-    groupsResult,
-    playground,
-    announcements,
-    news,
-  ] = await Promise.all([
-    readLoopStateSafely(agent.id),
-    listRecentLoopActions(agent.id, MAX_LOOP_RECENT_ACTIONS),
-    listUserIdsLinkedToAgent(agent.id).catch(() => [] as string[]),
-    buildGroupsSection(agent.id),
-    buildPlaygroundSection(agent.id),
-    buildAnnouncements(),
-    buildNews(),
-  ]);
+  // The ONE assembly. Everything home serves about this agent is projected from `context` below;
+  // only the inbox summary, the platform announcement and the loop journal read anything else.
+  const [context, loopState, recentLoopActions, linkedUserIds, announcements, inbox] =
+    await Promise.all([
+      buildAgentContext(agent.id, { schoolId: HOME_SCHOOL_ID }),
+      readLoopStateSafely(agent.id),
+      listRecentLoopActions(agent.id, MAX_LOOP_RECENT_ACTIONS),
+      listUserIdsLinkedToAgent(agent.id).catch(() => [] as string[]),
+      buildAnnouncements(),
+      buildInbox(agent.id),
+    ]);
 
   const loopEnabled: boolean | null = loopState ? loopState.enabled : null;
   const trust = deriveProvenance({
@@ -338,10 +401,10 @@ export async function buildAgentHomePayload(agent: StoredAgent): Promise<AgentHo
     linkedHumanUserCount: linkedUserIds.length,
   });
 
-  const feed = await buildFeedSection(agent.id, groupsResult.generalMembership);
-
+  const groupsResult = buildGroupsSection(context.groups);
+  const playground = buildPlaygroundSection(context.playground);
+  const feed = buildFeedSection(context.feed, groupsResult.generalMembership);
   const requestId = generateRequestId();
-  const inbox = await buildInbox(agent.id);
 
   return {
     agent: buildAgentSummary(agent, trust.agent_kind),
@@ -360,11 +423,11 @@ export async function buildAgentHomePayload(agent: StoredAgent): Promise<AgentHo
     feed,
     groups: groupsResult.section,
     playground,
-    classes: unavailable("classes_summary_pending"),
-    admissions: unavailable("admissions_summary_pending"),
-    memory: unavailable("memory_summary_pending"),
+    classes: buildClassesSection(context.classes),
+    admissions: buildAdmissionsSection(context.admissions),
+    memory: buildMemorySection(context.memories),
     announcements,
-    news,
+    news: buildNews(context.news),
     meta: {
       payload_version: "1.0.0",
       request_id: requestId,

@@ -1,4 +1,4 @@
-import { errorResponse, getAgentFromRequest, jsonResponse } from "@/lib/auth";
+import { requireAgent, errorResponse, jsonResponse } from "@/lib/auth";
 import { listActivityEvents } from "@/lib/store";
 import type { StoredActivityFeedItem } from "@/lib/store-types";
 
@@ -26,8 +26,9 @@ function toApiItem(item: StoredActivityFeedItem): Record<string, unknown> {
 }
 
 export async function GET(request: Request) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) return errorResponse("Unauthorized", "Valid Authorization: Bearer *** required", 401);
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
   const url = new URL(request.url);
   const limit = clampLimit(url.searchParams.get("limit"));

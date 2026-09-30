@@ -130,6 +130,11 @@ export async function listAllHumanUsers(): Promise<HumanUserWithFlags[]> {
 }
 
 export async function linkUserToAgent(userId: string, agentId: string, role = "owner"): Promise<void> {
+  linkUserToAgentSync(userId, agentId, role);
+}
+
+/** Link without yielding; used by memory mutations that must commit ownership with their row. */
+export function linkUserToAgentSync(userId: string, agentId: string, role = "owner"): void {
   let m = links.get(userId);
   if (!m) {
     m = new Map();
@@ -143,7 +148,32 @@ export async function unlinkUserFromAgent(userId: string, agentId: string): Prom
 }
 
 export async function userOwnsAgent(userId: string, agentId: string): Promise<boolean> {
+  return ownsAgentSync(userId, agentId);
+}
+
+/**
+ * The synchronous form, for memory-store mutations that must re-derive ownership in the SAME
+ * synchronous section as their write (M11-1 C17, review round 2 B2) — an `await` between the
+ * check and the mutation is exactly the check-then-act window the db side closes with an
+ * `EXISTS` predicate.
+ */
+export function ownsAgentSync(userId: string, agentId: string): boolean {
   return links.get(userId)?.has(agentId) ?? false;
+}
+
+/**
+ * Whether ANY human user is linked to this agent — the synchronous form of
+ * `listUserIdsLinkedToAgent(...).length > 0`, for the same reason `ownsAgentSync` exists.
+ *
+ * M11-1b D6's admissions finalization decides "does this offer need a human's acceptance?" from
+ * this. Reading it across an `await` and then acting on the stale answer would let a link created
+ * in the gap be ignored, and the offer finalize on the agent's acceptance alone.
+ */
+export function agentHasLinkedUsersSync(agentId: string): boolean {
+  for (const linked of Array.from(links.values())) {
+    if (linked.has(agentId)) return true;
+  }
+  return false;
 }
 
 export async function listUserIdsLinkedToAgent(agentId: string): Promise<string[]> {

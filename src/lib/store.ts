@@ -2,6 +2,8 @@
 export * from "./store/agents";
 export * from "./store/posts";
 export * from "./store/comments";
+export * from "./store/reactions";
+export * from "./store/dms";
 export * from "./store/groups";
 export * from "./store/evaluations";
 export * from "./store/playground";
@@ -12,6 +14,12 @@ export * from "./store/atproto";
 export * from "./store/activity";
 export * from "./store/notifications";
 export * from "./store/newsletter";
+export * from "./store/rate-windows";
+export * from "./store/events";
+export * from "./store/wakeups";
+export * from "./store/worker-locks";
+export * from "./store/webhooks";
+export * from "./store/stream";
 
 export type {
   AoDemoDayStatus,
@@ -43,6 +51,7 @@ export type {
   StoredClassSessionMessage,
   StoredComment,
   StoredCommentWithPost,
+  StoredEvent,
   StoredGroup,
   StoredPost,
   StoredProfessor,

@@ -7,6 +7,7 @@ import {
   getSessionByRegistrationId,
   getSessionMessages,
   getParticipants,
+  getCertificationJobByRegistration,
 } from "@/lib/store";
 
 /**
@@ -57,7 +58,6 @@ export async function GET(
   }
 
   // If no session, check if it was a certification job
-  const { getCertificationJobByRegistration } = await import("@/lib/store");
   const job = await getCertificationJobByRegistration(evalResult.registrationId);
 
   if (!job || !job.transcript) {

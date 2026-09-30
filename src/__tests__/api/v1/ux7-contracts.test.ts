@@ -2,13 +2,18 @@
  * @jest-environment node
  */
 import { buildKarmaBreakdown, isPubliclyHiddenAgent, publicAgentProvenance, publicTrustBadges } from "@/lib/agent-public";
-import { createPost, listPostsByAuthor } from "@/lib/store/posts/memory";
+import { listPostsByAuthor } from "@/lib/store/posts/memory";
+// Two posts by one author is the fixture this contract needs; C16's cooldown refuses the second.
+import { seedPost as createPost } from "@/__tests__/helpers/store-fixtures";
 import type { StoredAgent } from "@/lib/store-types";
+import { agents } from "@/lib/store/_memory-state";
 
 describe("UX7 public profile parity primitives", () => {
   it("queries author posts directly instead of filtering a limited global page", async () => {
     const a1 = "ux7-author-a";
     const a2 = "ux7-author-b";
+    // The memory createPost refuses an unregistered author (parity with the posts.author_id FK).
+    for (const id of [a1, a2]) agents.set(id, { id, name: id } as never);
     await createPost(a1, "group_general", "old author post", "body");
     await createPost(a2, "group_general", "other author post", "body");
     await createPost(a1, "group_general", "new author post", "body");
@@ -39,6 +44,14 @@ describe("UX7 public profile parity primitives", () => {
     jest.resetModules();
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent({ name: "viewer", isVetted: true })),
+      optionalAgent: jest.fn(async () => ({ agent: agent({ name: "viewer", isVetted: true }), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent({ name: "viewer", isVetted: true }))();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       jsonResponse: (body: unknown, status = 200, headers: Record<string, string> = {}) => Response.json(body, { status, headers }),
       errorResponse: (error: string, hint?: string, status = 400) => Response.json({ success: false, error, hint }, { status }),
     }));
@@ -47,6 +60,8 @@ describe("UX7 public profile parity primitives", () => {
       listPostsByAuthor: jest.fn(async () => []),
       getCommentsByAgentId: jest.fn(async () => []),
       getAllEvaluationResultsForAgent: jest.fn(async () => []),
+      // M11b lane R (P6.2): the profile route's batched reaction-count read.
+      getReactionCounts: jest.fn(async () => ({})),
     }));
     jest.doMock("@/lib/agent-loop/state", () => ({
       readLoopStateSafely: jest.fn(async () => ({ enabled: true, lastActionAt: null, nextEligibleAt: null, lastError: null, actionsTaken: 1 })),
@@ -69,8 +84,15 @@ describe("UX7 public profile parity primitives", () => {
     jest.doMock("next/headers", () => ({ headers: jest.fn(async () => new Headers({ "x-school-id": "foundation" })) }));
     jest.doMock("@/lib/auth", () => ({
       getAgentFromRequest: jest.fn(async () => agent({ id: "viewer", isVetted: true })),
+      optionalAgent: jest.fn(async () => ({ agent: agent({ id: "viewer", isVetted: true }), denial: null })),
+      platformAccessDenial: jest.fn(() => null),
+      requireAgent: jest.fn(async () => {
+        const resolved = await (async () => agent({ id: "viewer", isVetted: true }))();
+        return resolved
+          ? { ok: true, agent: resolved }
+          : { ok: false, response: Response.json({ success: false, error: "Unauthorized" }, { status: 401 }) };
+      }),
       checkRateLimitAndRespond: jest.fn(() => null),
-      requireVettedAgent: jest.fn(() => null),
       jsonResponse: (body: unknown, status = 200, headers: Record<string, string> = {}) => Response.json(body, { status, headers }),
       errorResponse: (error: string, hint?: string, status = 400) => Response.json({ success: false, error, hint }, { status }),
     }));
@@ -90,15 +112,26 @@ describe("UX7 public profile parity primitives", () => {
   });
 
   it("marks unattributed historical karma explicitly", () => {
+    // M11-1C: `evaluation_points` now comes from storage, and the remainder of the stored vote
+    // total that visible content does not account for joins `legacy_unattributed`. Here stored
+    // vote credit is 6 while visible content accounts for 4, so 2 of it is votes on deleted
+    // content — plus 1 genuinely legacy point.
     const breakdown = buildKarmaBreakdown({
-      total: 10,
+      agent: agent({ points: 11, votePoints: 6, evaluationPoints: 4, legacyUnattributedPoints: 1 }),
       posts: [{ id: "p", title: "t", authorId: "a", groupId: "g", upvotes: 3, downvotes: 1, commentCount: 0, createdAt: "2026-01-01T00:00:00.000Z" }],
       comments: [{ id: "c", postId: "p", authorId: "a", content: "c", upvotes: 2, createdAt: "2026-01-01T00:00:00.000Z" }],
-      evaluationResults: [{ pointsEarned: 4 }],
     });
 
     expect(breakdown.known_components).toEqual({ post_votes: 2, comment_votes: 2, evaluation_points: 4 });
-    expect(breakdown.legacy_unattributed).toBe(2);
+    expect(breakdown.legacy_unattributed).toBe(3);
+    // The published numbers sum to the published total — the property the old inferred breakdown,
+    // with its `Math.max(0, …)` clamp, could not offer.
+    expect(
+      breakdown.known_components.post_votes +
+        breakdown.known_components.comment_votes +
+        breakdown.known_components.evaluation_points +
+        breakdown.legacy_unattributed
+    ).toBe(breakdown.total);
   });
 });
 
@@ -109,6 +142,9 @@ function agent(patch: Partial<StoredAgent>): StoredAgent {
     description: patch.description ?? "",
     apiKey: patch.apiKey ?? "key",
     points: patch.points ?? 0,
+    votePoints: 0,
+    evaluationPoints: 0,
+    legacyUnattributedPoints: 0,
     followerCount: patch.followerCount ?? 0,
     isClaimed: patch.isClaimed ?? false,
     createdAt: patch.createdAt ?? "2026-01-01T00:00:00.000Z",

@@ -10,19 +10,16 @@
 import {
   getAgentById,
   listClasses,
-  enrollInClass,
-  dropClass,
   getClassById,
   getClassEnrollments,
   listClassSessions,
   listClassEvaluations,
   getAgentClasses,
   getClassAssistants,
-  addClassSessionMessage,
   getClassSessionMessages,
-  saveClassEvaluationResult,
   getStudentClassResults
 } from "@/lib/store";
+import { enroll, drop, sendSessionMessage, submitEvaluation } from "@/lib/actions/classes";
 import type { ToolDefinition, ToolExecutor } from "../types";
 
 export const definitions: ToolDefinition[] = [
@@ -195,18 +192,17 @@ export const executors: Record<string, ToolExecutor> = {
 
   enroll_in_class: async (args, { agent }) => {
     const classId = String(args.class_id);
+    const result = await enroll({ agent, classId });
+    if (!result.ok) return { success: false, error: result.message, data: { code: result.code } };
     const cls = await getClassById(classId);
-    if (!cls) return { success: false, error: "Class not found" };
-    if (!cls.enrollmentOpen) return { success: false, error: "Enrollment is closed for this class" };
-    const enrollment = await enrollInClass(classId, agent.id);
-    return { success: true, data: { class_id: classId, class_name: cls.name, enrollment_id: enrollment.id } };
+    return { success: true, data: { class_id: classId, class_name: cls?.name ?? classId, enrollment_id: result.data.enrollment.id } };
   },
 
   drop_class: async (args, { agent }) => {
-    const ok = await dropClass(String(args.class_id), agent.id);
-    return ok
+    const result = await drop({ classId: String(args.class_id), agent });
+    return result.ok
       ? { success: true, data: { dropped: true } }
-      : { success: false, error: "Not enrolled or already dropped" };
+      : { success: false, error: result.message, data: { code: result.code } };
   },
 
   list_my_classes: async (args, { agent }) => {
@@ -263,14 +259,11 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   send_class_session_message: async (args, { agent }) => {
-    const role = (args.role as "student" | "ta") || "student";
-    const msg = await addClassSessionMessage(
-      String(args.session_id),
-      agent.id,
-      role,
-      String(args.content)
-    );
-    return { success: true, data: { message_id: msg.id, sequence: msg.sequence } };
+    // Pure adapter: the action resolves the session (and its class) and decides every refusal.
+    const result = await sendSessionMessage({ agent, sessionId: String(args.session_id), content: String(args.content) });
+    return result.ok
+      ? { success: true, data: { message_id: result.data.message.id, sequence: result.data.message.sequence } }
+      : { success: false, error: result.message, data: { code: result.code } };
   },
 
   get_class_session_messages: async (args, { agent }) => {
@@ -301,12 +294,11 @@ export const executors: Record<string, ToolExecutor> = {
   },
 
   submit_class_evaluation: async (args, { agent }) => {
-    const result = await saveClassEvaluationResult(
-      String(args.evaluation_id),
-      agent.id,
-      String(args.response)
-    );
-    return { success: true, data: { result_id: result.id, completed_at: result.completedAt } };
+    // Pure adapter: the action resolves the evaluation (and its class) and decides every refusal.
+    const result = await submitEvaluation({ agent, evaluationId: String(args.evaluation_id), response: String(args.response) });
+    return result.ok
+      ? { success: true, data: { result_id: result.data.result.id, completed_at: result.data.result.completedAt } }
+      : { success: false, error: result.message, data: { code: result.code } };
   },
 
   get_my_class_results: async (args, { agent }) => {

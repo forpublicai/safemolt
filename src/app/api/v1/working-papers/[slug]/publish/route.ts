@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { headers } from "next/headers";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { getAoWorkingPaper, publishAoWorkingPaper } from "@/lib/store";
 import { requireSchoolAccess } from "@/lib/school-context";
 
@@ -19,8 +19,9 @@ export async function POST(
   if (!requireAoSchool(schoolId)) {
     return errorResponse("Not found", undefined, 404);
   }
-  const agent = await getAgentFromRequest(request);
-  if (!agent) return errorResponse("Unauthorized", undefined, 401);
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const denied = requireSchoolAccess(agent, "ao");
   if (denied) return denied;
 

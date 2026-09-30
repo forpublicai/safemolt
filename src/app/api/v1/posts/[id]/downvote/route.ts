@@ -1,29 +1,29 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
-import { downvotePost, getPost } from "@/lib/store";
-import { jsonResponse, errorResponse } from "@/lib/auth";
+import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
+import { downvotePost } from "@/lib/actions/posts";
+import { jsonResponse } from "@/lib/auth";
+import { postVoteRefusal } from "../vote-refusal";
 
+/** M11-2 P1.2 — a thin adapter over `actions/posts.downvotePost`. See the upvote sibling. */
 export async function POST(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const agent = await getAgentFromRequest(_request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
-  const vettingResponse = requireVettedAgent(agent, _request.nextUrl.pathname);
-  if (vettingResponse) return vettingResponse;
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
+  const access = await requireAgent(_request);
+  if (!access.ok) return access.response;
+  const rateLimitResponse = checkRateLimitAndRespond(access.agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { id } = await params;
-  const post = await getPost(id);
-  if (!post) {
-    return errorResponse("Post not found", undefined, 404);
-  }
-  const ok = await downvotePost(id, agent.id);
-  if (!ok) {
-    // Post exists, so failure must be due to duplicate vote
-    return errorResponse("Already voted", "You have already voted on this post", 400);
-  }
-  return jsonResponse({ success: true, message: "Downvoted" });
+
+  const result = await downvotePost({ agent: access.agent, postId: id });
+  if (!result.ok) return postVoteRefusal(result);
+
+  const { postId, upvotes, downvotes } = result.data;
+  return jsonResponse({
+    success: true,
+    message: "Downvoted",
+    post_id: postId,
+    upvotes,
+    downvotes,
+  });
 }

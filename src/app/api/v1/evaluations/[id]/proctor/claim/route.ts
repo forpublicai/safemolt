@@ -1,14 +1,8 @@
 import { NextRequest } from "next/server";
-import { headers } from "next/headers";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { getEvaluation } from "@/lib/evaluations/loader";
-import {
-  getEvaluationRegistrationById,
-  getSessionByRegistrationId,
-  hasEvaluationResultForRegistration,
-  claimProctorSession,
-  getAgentById,
-} from "@/lib/store";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { claimProctorSession } from "@/lib/actions/evaluations";
+import { evaluationAuthzResponse } from "@/lib/evaluation-authz";
+import { getAgentById } from "@/lib/store";
 
 /**
  * POST /api/v1/evaluations/{id}/proctor/claim
@@ -19,25 +13,11 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const proctor = await getAgentFromRequest(request);
-    if (!proctor) {
-      return errorResponse("Unauthorized", "Provide a valid API key", 401);
-    }
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const proctor = access.agent;
 
     const { id: evaluationId } = await params;
-    const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
-    const evaluation = getEvaluation(evaluationId, schoolId);
-    if (!evaluation) {
-      return errorResponse("Evaluation not found", undefined, 404);
-    }
-
-    if (evaluation.type !== "proctored") {
-      return errorResponse(
-        "Not proctored",
-        "This evaluation does not use proctoring",
-        400
-      );
-    }
 
     let body: { registration_id?: string };
     try {
@@ -55,54 +35,14 @@ export async function POST(
       );
     }
 
-    const registration = await getEvaluationRegistrationById(registrationId);
-    if (!registration) {
-      return errorResponse("Registration not found", undefined, 404);
-    }
-
-    if (registration.evaluationId !== evaluationId) {
-      return errorResponse(
-        "Wrong evaluation",
-        "Registration does not belong to this evaluation",
-        400
-      );
-    }
-
-    if (registration.status !== "in_progress" && registration.status !== "registered") {
-      return errorResponse(
-        "Invalid status",
-        `Registration status is ${registration.status}; must be in_progress or registered`,
-        400
-      );
-    }
-
-    if (proctor.id === registration.agentId) {
-      return errorResponse(
-        "Forbidden",
-        "Proctor cannot claim their own registration",
-        403
-      );
-    }
-
-    const alreadyHasResult = await hasEvaluationResultForRegistration(registrationId);
-    if (alreadyHasResult) {
-      return errorResponse(
-        "Already completed",
-        "A result has already been submitted for this registration",
-        400
-      );
-    }
-
-    const existingSession = await getSessionByRegistrationId(registrationId);
-    if (existingSession) {
-      return errorResponse(
-        "Already claimed",
-        "A session already exists for this registration",
-        400
-      );
-    }
-
-    const sessionId = await claimProctorSession(registrationId, proctor.id);
+    // **The action owns the claim** (M11-2 P1.4): the path's `{id}` is coherence-checked against the
+    // registration rather than trusted as the source of the evaluation, the school comes from the
+    // registration row (M11-1 C2), `evaluation.proctor_claimed` rides the gated insert, and a claim
+    // that matched nothing is re-classified by re-running authorization rather than reported as the
+    // most likely guess.
+    const claimed = await claimProctorSession({ agent: proctor, registrationId, evaluationId });
+    if (!claimed.ok) return evaluationAuthzResponse(claimed.denial);
+    const { sessionId, registration } = claimed.value;
     const candidate = await getAgentById(registration.agentId);
 
     return jsonResponse({

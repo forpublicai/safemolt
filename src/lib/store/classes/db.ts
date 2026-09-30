@@ -1,6 +1,9 @@
 import { sql } from "@/lib/db";
 import { randomUUID } from "crypto";
+import { generateProfessorApiKey } from "@/lib/credentials";
 import type { StoredProfessor, StoredClass, StoredClassAssistant, StoredClassEnrollment, StoredClassSession, StoredClassSessionMessage, StoredClassEvaluation, StoredClassEvaluationResult } from "@/lib/store-types";
+import type { PreparedEvent } from "@/lib/events/kinds";
+import { emitEventCtes, sqlColumn, sqlParam, sqlPayloadObject } from "../events/statement";
 
 // ==================== Classes System ====================
 
@@ -83,10 +86,9 @@ export async function createProfessorForHumanUser(
     email?: string,
 ): Promise<StoredProfessor> {
     const profId = generateClassId('prof');
-    const apiKey = `prof_${Array.from(
-        { length: 24 },
-        () => Math.random().toString(36)[2] ?? '0'
-    ).join('')}`;
+    // M11-1 C24: professor keys are a bearer class of their own — eleven class routes authenticate
+    // on them, including grade writes. C17 swept agent credentials and missed this one entirely.
+    const apiKey = generateProfessorApiKey();
     const createdAt = new Date().toISOString();
     await sql!`
         INSERT INTO professors (id, name, email, api_key, created_at, human_user_id)
@@ -106,6 +108,7 @@ function mapClassRow(r: Record<string, unknown>): StoredClass {
     return {
         id: r.id as string,
         slug: (r.slug as string | undefined) ?? String(r.id),
+        schoolId: (r.school_id as string | undefined) ?? 'foundation',
         professorId: r.professor_id as string,
         name: r.name as string,
         description: r.description as string | undefined,
@@ -215,7 +218,7 @@ export async function createClass(
             max_students = EXCLUDED.max_students
     `;
     return {
-        id: classId, slug: classSlug, professorId, name, description, syllabus, hiddenObjective, maxStudents,
+        id: classId, slug: classSlug, schoolId, professorId, name, description, syllabus, hiddenObjective, maxStudents,
         status: 'draft', enrollmentOpen: false, createdAt,
     };
 }
@@ -331,26 +334,104 @@ export async function isClassAssistant(classId: string, agentId: string): Promis
 
 // --- Class Enrollments ---
 
-export async function enrollInClass(classId: string, agentId: string): Promise<StoredClassEnrollment> {
-    const resolvedClassId = await resolveClassId(classId);
-    if (!resolvedClassId) throw new Error("Class not found");
-    const id = generateClassId('enrl');
-    const enrolledAt = new Date().toISOString();
-    await sql!`
-        INSERT INTO class_enrollments (id, class_id, agent_id, status, enrolled_at)
-        VALUES (${id}, ${resolvedClassId}, ${agentId}, 'enrolled', ${enrolledAt})
-    `;
-    return { id, classId: resolvedClassId, agentId, status: 'enrolled', enrolledAt };
+/**
+ * The result of an enrollment attempt, projected by the decisive statement (M11-2 u3f-core M4).
+ *
+ * Capacity, `enrollment_open`, `status` and "already enrolled" were checked by the action against
+ * UNLOCKED pre-reads, then the insert ran with no such predicate — a race breached the seat cap and
+ * still emitted `class.enrolled` on the over-cap write. The gate now lives inside the statement,
+ * under a `classes` row lock that serialises concurrent enrollments for one class, so the flags the
+ * action classifies from are the ones the write itself was decided by. `enrollment` is the row when
+ * it passed every rule (and only then does the event fire); the flags say why it did not otherwise.
+ */
+export interface EnrollOutcome {
+    enrollment: StoredClassEnrollment | null;
+    classPresent: boolean;
+    isOpen: boolean;
+    isActive: boolean;
+    already: boolean;
+    atCapacity: boolean;
 }
 
-export async function dropClass(classId: string, agentId: string): Promise<boolean> {
+export async function enrollInClass(classId: string, agentId: string, events?: readonly PreparedEvent[]): Promise<EnrollOutcome> {
+    const resolvedClassId = await resolveClassId(classId);
+    if (!resolvedClassId) {
+        return { enrollment: null, classPresent: false, isOpen: false, isActive: false, already: false, atCapacity: false };
+    }
+    const id = generateClassId('enrl');
+    const enrolledAt = new Date().toISOString();
+    // $1 id, $2 class, $3 agent, $4 enrolledAt.
+    const params = [id, resolvedClassId, agentId, enrolledAt];
+    const emitted = emitEventCtes(events, "inserted", {
+        firstParamIndex: params.length + 1,
+        // One event per row of `inserted` (0 or 1), each carrying the row's own id — correct for the
+        // ON CONFLICT re-enroll branch too, where the surviving row is the previously-dropped one and
+        // its id is not the freshly-minted $1.
+        overrides: events?.length ? [{ rowSource: "inserted", columnSql: { subject_id: sqlColumn("inserted.id", "text") } }] : [],
+    });
+    // **The seat cap is a TWO-ELEMENT transaction, not one statement** (M11-2 u3f-core R2-1, the
+    // same shape admissions D6 documents). The cap is class-wide, so it can only be serialised on the
+    // class row — but a `FOR UPDATE` inside a single statement does not make the count correct under
+    // READ COMMITTED: that statement's snapshot is taken when it BEGINS, so a contender that waits on
+    // the class lock still counts seats as they stood before the winner committed, and the cap is
+    // breached anyway (both enrol, both emit `class.enrolled`). Element 1 takes the class row
+    // `FOR UPDATE`; element 2 is a LATER statement whose FRESH snapshot is taken after the wait ended,
+    // so its count sees the winner's committed seat. Element 2 reads the class row plain — the lock
+    // from element 1 is held for the whole transaction, so no writer can change it in between.
+    const results = await sql!.transaction((txn) => [
+        txn`SELECT id FROM classes WHERE id = ${resolvedClassId} FOR UPDATE /* class:enroll-lock */`,
+        txn(`WITH
+        cls AS (SELECT status, enrollment_open, max_students FROM classes WHERE id = $2),
+        cnt AS (SELECT COUNT(*)::int AS n FROM class_enrollments WHERE class_id = $2 AND status IN ('enrolled', 'active')),
+        existing AS (SELECT status AS st FROM class_enrollments WHERE class_id = $2 AND agent_id = $3),
+        gate AS (
+            SELECT
+                EXISTS (SELECT 1 FROM cls) AS present,
+                COALESCE((SELECT enrollment_open FROM cls), false) AS is_open,
+                COALESCE((SELECT status = 'active' FROM cls), false) AS is_active,
+                EXISTS (SELECT 1 FROM existing WHERE st <> 'dropped') AS already,
+                COALESCE(((SELECT max_students FROM cls) IS NOT NULL AND (SELECT n FROM cnt) >= (SELECT max_students FROM cls)), false) AS at_capacity
+        ),
+        inserted AS (
+            INSERT INTO class_enrollments (id, class_id, agent_id, status, enrolled_at)
+            SELECT $1, $2, $3, 'enrolled', $4 FROM gate
+            WHERE present AND is_open AND is_active AND NOT already AND NOT at_capacity
+            ON CONFLICT (class_id, agent_id) DO UPDATE SET status = 'enrolled', enrolled_at = EXCLUDED.enrolled_at
+                WHERE class_enrollments.status = 'dropped'
+            RETURNING id, status, enrolled_at
+        )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""}
+        SELECT g.present, g.is_open, g.is_active, g.already, g.at_capacity,
+               i.id AS enrollment_id, i.status AS enrollment_status, i.enrolled_at AS enrollment_enrolled_at
+        FROM gate g LEFT JOIN inserted i ON true`, [...params, ...emitted.params]),
+    ]);
+    const rows = results[1] as Array<Record<string, unknown>>;
+    const row = rows[0] ?? {};
+    const enrollment: StoredClassEnrollment | null = row.enrollment_id
+        ? {
+            id: String(row.enrollment_id),
+            classId: resolvedClassId,
+            agentId,
+            status: row.enrollment_status as StoredClassEnrollment['status'],
+            enrolledAt: row.enrollment_enrolled_at instanceof Date ? row.enrollment_enrolled_at.toISOString() : String(row.enrollment_enrolled_at),
+        }
+        : null;
+    return {
+        enrollment,
+        classPresent: Boolean(row.present),
+        isOpen: Boolean(row.is_open),
+        isActive: Boolean(row.is_active),
+        already: Boolean(row.already),
+        atCapacity: Boolean(row.at_capacity),
+    };
+}
+
+export async function dropClass(classId: string, agentId: string, events?: readonly PreparedEvent[]): Promise<boolean> {
     const resolvedClassId = await resolveClassId(classId);
     if (!resolvedClassId) return false;
-    const result = await sql!`
-        UPDATE class_enrollments SET status = 'dropped'
-        WHERE class_id = ${resolvedClassId} AND agent_id = ${agentId} AND status IN ('enrolled', 'active')
-    `;
-    return (result as unknown as { count: number }).count > 0;
+    const emitted = emitEventCtes(events, "dropped", { firstParamIndex: 3, overrides: events?.length ? [{ rowSource: "dropped", columnSql: { subject_id: sqlColumn("dropped.id", "text") } }] : [] });
+    const rows = await sql!(`WITH dropped AS (UPDATE class_enrollments SET status = 'dropped'
+        WHERE class_id = $1 AND agent_id = $2 AND status IN ('enrolled', 'active') RETURNING id)${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""} SELECT id FROM dropped`, [resolvedClassId, agentId, ...emitted.params]);
+    return rows.length > 0;
 }
 
 export async function getClassEnrollment(classId: string, agentId: string): Promise<StoredClassEnrollment | null> {
@@ -486,6 +567,12 @@ export async function updateClassSession(
 
 // --- Class Session Messages ---
 
+/**
+ * Operator-owned message writer (professor / agent teaching-assistant). Deliberately UNGATED and
+ * history-silent: the class-session route pre-checks the session is active before it reaches here,
+ * and an operator message carries no event (M11-2 u3f-core B3). The enrolled-student path — the one
+ * agent-visible producer — is `addSessionMessageAsStudent`, which gates in its statement and emits.
+ */
 export async function addClassSessionMessage(
     sessionId: string,
     senderId: string,
@@ -494,21 +581,100 @@ export async function addClassSessionMessage(
 ): Promise<StoredClassSessionMessage> {
     const id = generateClassId('cmsg');
     const createdAt = new Date().toISOString();
-    const seqResult = await sql!`
+    const seqResult = await sql!(`
         INSERT INTO class_session_messages (id, session_id, sender_id, sender_role, content, created_at, sequence)
-        SELECT ${id}, ${sessionId}, ${senderId}, ${senderRole}, ${content}, ${createdAt},
-            COALESCE((SELECT MAX(sequence) + 1 FROM class_session_messages WHERE session_id = ${sessionId}), 1)
-        RETURNING sequence, created_at
-    `;
+        SELECT $1, $2, $3, $4, $5, $6,
+            COALESCE((SELECT MAX(sequence) + 1 FROM class_session_messages WHERE session_id = $2), 1)
+        RETURNING id, sequence, created_at`, [id, sessionId, senderId, senderRole, content, createdAt]);
     const row = (seqResult as Array<Record<string, unknown>>)[0];
     return {
-        id,
+        id: row?.id as string ?? id,
         sessionId,
         senderId,
         senderRole,
         content,
         sequence: Number(row?.sequence ?? 1),
         createdAt: row?.created_at ? String(row.created_at) : createdAt,
+    };
+}
+
+/**
+ * The result of an agent session message — an enrolled STUDENT or a class ASSISTANT (TA)
+ * (M11-2 u3f-core M4; TA-emit restored per the user's B3 decision 2026-08-18). Session-active and
+ * participation were pre-read by the action, then the insert ran unconditionally and emitted
+ * `class.session_message` even for a session that completed mid-flight. Both gates now live in the
+ * statement; `message` is the row when it passed, and the flags say why it did not. `isAssistant`
+ * decides the stored role (`ta` vs `student`) from the SAME locked read that authorized the write,
+ * so a concurrently-revoked assistant cannot be mislabeled.
+ */
+export interface StudentMessageOutcome {
+    message: StoredClassSessionMessage | null;
+    sessionActive: boolean;
+    enrolled: boolean;
+    isAssistant: boolean;
+}
+
+export async function addSessionMessageAsStudent(
+    classId: string,
+    sessionId: string,
+    agentId: string,
+    content: string,
+    events?: readonly PreparedEvent[]
+): Promise<StudentMessageOutcome> {
+    const resolvedClassId = (await resolveClassId(classId)) ?? classId;
+    const id = generateClassId('cmsg');
+    const createdAt = new Date().toISOString();
+    // $1 id, $2 session, $3 agent, $4 content, $5 createdAt, $6 class. The role is decided IN the
+    // statement from the locked assistant read, so it is not a parameter.
+    const params = [id, sessionId, agentId, content, createdAt, resolvedClassId];
+    const emitted = emitEventCtes(events, "inserted", {
+        firstParamIndex: params.length + 1,
+        overrides: events?.length ? [{ columnSql: { subject_id: sqlParam(2, "text") }, payloadMergeSql: sqlPayloadObject({ message_id: sqlParam(1, "text") }) }] : [],
+    });
+    // The session, the sender's enrollment AND the sender's assistant row are re-checked under a
+    // `FOR SHARE` LOCK, never a bare snapshot read (M11-2 u3f-core R2-1; agents.md "a parent-liveness
+    // check inside a write is a FOR SHARE LOCK, never a bare EXISTS"). A bare read is snapshot-
+    // evaluated and never re-checked, so a session completing (or the agent dropping) concurrently
+    // could commit after this statement's snapshot and still let the message land. `FOR SHARE`
+    // follows the update chain to the latest committed row and conflicts with the completer's /
+    // dropper's `FOR UPDATE`. An assistant OR an enrolled (non-dropped) student may post; the role
+    // is `ta` for an assistant and `student` otherwise, from the same locked read.
+    const rows = await sql!(`WITH
+        sess AS (SELECT status FROM class_sessions WHERE id = $2 FOR SHARE /* class:msg-session-lock */),
+        enr AS (SELECT 1 AS ok FROM class_enrollments WHERE class_id = $6 AND agent_id = $3 AND status <> 'dropped' FOR SHARE),
+        asst AS (SELECT 1 AS ok FROM class_assistants WHERE class_id = $6 AND agent_id = $3 FOR SHARE),
+        gate AS (
+            SELECT
+                COALESCE((SELECT status = 'active' FROM sess), false) AS session_active,
+                EXISTS (SELECT 1 FROM enr) AS enrolled,
+                EXISTS (SELECT 1 FROM asst) AS is_assistant
+        ),
+        inserted AS (
+            INSERT INTO class_session_messages (id, session_id, sender_id, sender_role, content, created_at, sequence)
+            SELECT $1, $2, $3, CASE WHEN g.is_assistant THEN 'ta' ELSE 'student' END, $4, $5,
+                COALESCE((SELECT MAX(sequence) + 1 FROM class_session_messages WHERE session_id = $2), 1)
+            FROM gate g WHERE g.session_active AND (g.enrolled OR g.is_assistant)
+            RETURNING id, sequence, created_at
+        )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""}
+        SELECT g.session_active, g.enrolled, g.is_assistant, i.id, i.sequence, i.created_at
+        FROM gate g LEFT JOIN inserted i ON true`, [...params, ...emitted.params]);
+    const row = (rows as Array<Record<string, unknown>>)[0] ?? {};
+    const message: StoredClassSessionMessage | null = row.id
+        ? {
+            id: String(row.id),
+            sessionId,
+            senderId: agentId,
+            senderRole: row.is_assistant ? 'ta' : 'student',
+            content,
+            sequence: Number(row.sequence ?? 1),
+            createdAt: row.created_at ? String(row.created_at) : createdAt,
+        }
+        : null;
+    return {
+        message,
+        sessionActive: Boolean(row.session_active),
+        enrolled: Boolean(row.enrolled),
+        isAssistant: Boolean(row.is_assistant),
     };
 }
 
@@ -620,6 +786,17 @@ export async function updateClassEvaluation(
 
 // --- Class Evaluation Results ---
 
+/**
+ * Save a class-evaluation result.
+ *
+ * **The agent submission is gated in-statement, the professor grade is not** (M11-2 u3f-core M4).
+ * When the caller passes events — only the enrolled-student submit action does — the upsert fires
+ * only where the evaluation is `active` and the agent is still enrolled, so a race that closed the
+ * evaluation or dropped the agent cannot land a result nor emit `class.evaluation_submitted` on it.
+ * The professor grade route passes no events and reaches an ungated upsert: a professor is never
+ * "enrolled" and may grade a closed evaluation, so gating that path would break grading. `null` is
+ * returned when the gate refused (an agent race); the ungated path always returns a row.
+ */
 export async function saveClassEvaluationResult(
     evaluationId: string,
     agentId: string,
@@ -627,16 +804,36 @@ export async function saveClassEvaluationResult(
     score?: number,
     maxScore?: number,
     resultData?: Record<string, unknown>,
-    feedback?: string
-): Promise<StoredClassEvaluationResult> {
+    feedback?: string,
+    events?: readonly PreparedEvent[]
+): Promise<StoredClassEvaluationResult | null> {
     const id = generateClassId('cres');
     const completedAt = new Date().toISOString();
-    await sql!`
+    const params = [id, evaluationId, agentId, response ?? null, score ?? null, maxScore ?? null, resultData ? JSON.stringify(resultData) : null, feedback ?? null, completedAt];
+    const emitted = emitEventCtes(events, "result", { firstParamIndex: params.length + 1, overrides: events?.length ? [{ rowSource: "result", columnSql: { subject_id: sqlColumn("result.id", "text") }, payloadMergeSql: sqlPayloadObject({ result_id: sqlColumn("result.id", "text") }) }] : [] });
+    const gated = !!(events && events.length);
+    // The evaluation and the submitter's enrollment are re-checked under a `FOR SHARE` LOCK, never a
+    // bare snapshot read (M11-2 u3f-core R2-1; agents.md "a parent-liveness check inside a write is a
+    // FOR SHARE LOCK, never a bare EXISTS"). `FOR SHARE` follows the update chain to the latest
+    // committed row and conflicts with a `FOR UPDATE`, so an evaluation closed (or the agent dropped)
+    // concurrently is either seen by this read or loses to it — a bare `EXISTS` is snapshot-evaluated
+    // and would let the result land on a closed evaluation.
+    const gatePreamble = gated
+        ? `ev AS (SELECT status, class_id FROM class_evaluations WHERE id = $2 FOR SHARE),
+        enr AS (SELECT 1 AS ok FROM class_enrollments WHERE class_id = (SELECT class_id FROM ev) AND agent_id = $3 AND status <> 'dropped' FOR SHARE),
+        gate AS (
+            SELECT
+                COALESCE((SELECT status = 'active' FROM ev), false) AS eval_active,
+                EXISTS (SELECT 1 FROM enr) AS enrolled
+        ),
+        `
+        : "";
+    const insertSource = gated
+        ? `SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9 FROM gate WHERE eval_active AND enrolled`
+        : `VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`;
+    const resultRows = await sql!(`WITH ${gatePreamble}result AS (
         INSERT INTO class_evaluation_results (id, evaluation_id, agent_id, response, score, max_score, result_data, feedback, completed_at)
-        VALUES (${id}, ${evaluationId}, ${agentId}, ${response ?? null},
-                ${score ?? null}, ${maxScore ?? null},
-                ${resultData ? JSON.stringify(resultData) : null},
-                ${feedback ?? null}, ${completedAt})
+        ${insertSource}
         ON CONFLICT (evaluation_id, agent_id) DO UPDATE SET
             response = EXCLUDED.response,
             score = EXCLUDED.score,
@@ -644,8 +841,11 @@ export async function saveClassEvaluationResult(
             result_data = EXCLUDED.result_data,
             feedback = EXCLUDED.feedback,
             completed_at = EXCLUDED.completed_at
-    `;
-    return { id, evaluationId, agentId, response, score, maxScore, resultData, feedback, completedAt };
+        RETURNING id, evaluation_id, agent_id, response, score, max_score, result_data, feedback, completed_at
+    )${emitted.ctes.length ? `, ${emitted.ctes.join(", ")}` : ""} SELECT id, evaluation_id, agent_id, response, score, max_score, result_data, feedback, completed_at FROM result`, [...params, ...emitted.params]);
+    const actual = resultRows[0] as Record<string, unknown> | undefined;
+    if (!actual) return null;
+    return { id: actual.id as string, evaluationId, agentId, response, score, maxScore, resultData, feedback, completedAt };
 }
 
 export async function getClassEvaluationResults(evaluationId: string): Promise<StoredClassEvaluationResult[]> {

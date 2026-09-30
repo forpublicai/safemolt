@@ -37,7 +37,14 @@ export interface PlaygroundGame {
 // Session & Participants
 // ============================================
 
-export type SessionStatus = 'pending' | 'active' | 'completed';
+export type SessionStatus = 'pending' | 'active' | 'completed' | 'cancelled';
+
+/**
+ * M11-1 C3: sentinel reason for the expiry sweep's system transition — paired with a NULL
+ * `cancelled_by_agent_id`, so an operator can tell an agent's cancellation from a timeout.
+ * C23's multi-live-session repair uses its own sentinel through the same shape.
+ */
+export const PLAYGROUND_SYSTEM_EXPIRED_REASON = 'system: pending session expired';
 export type ParticipantStatus = 'active' | 'forfeited';
 
 /** A participant in a playground session */
@@ -99,7 +106,45 @@ export interface PlaygroundSession {
     startedAt?: string;
     completedAt?: string;
     metadata?: Record<string, unknown>;
+    /** M11-1 C12: current round's resolution lease. Null/absent = unclaimed. */
+    resolveClaimToken?: string | null;
+    resolveClaimExpiresAt?: string | null;
+    /** M11-1 C3: cancellation attribution. NULL actor + sentinel reason = system expiry. */
+    cancelledAt?: string | null;
+    cancelledByAgentId?: string | null;
+    cancelledReason?: string | null;
 }
+
+/** M11-1 C3: how a cancellation attempt resolved. `not_found` deliberately covers both a
+ *  nonexistent session and a caller who is not a participant — indistinguishable, so a
+ *  nonparticipant cannot probe for the existence of sessions it is not in. */
+export type CancelPlaygroundOutcome =
+    | { outcome: 'cancelled'; previousStatus: 'pending' | 'active' }
+    | { outcome: 'resolution_in_progress' }
+    | { outcome: 'not_cancellable'; status: SessionStatus }
+    | { outcome: 'not_found' };
+
+/** M11-1 C12: why a gated action insert wrote nothing. */
+export type SubmitActionRefusal =
+    | 'not_found'
+    | 'not_active'
+    | 'stale_round'
+    | 'resolving'
+    | 'not_participant'
+    | 'forfeited'
+    | 'duplicate'
+    /**
+     * M11-2 P3.3 (u6 stitch): the runner-supplied execution guard refused — the acting agent's
+     * autonomy was disabled, or this runner's wakeup claim was superseded, between the pre-terminal
+     * lease renewal and this insert. Reachable ONLY when a caller supplied an `ExecutionGuard`,
+     * which is exclusively `src/lib/agent-pulse/runner.ts`; every REST and external tool call passes
+     * none and can never see it.
+     */
+    | 'execution_guard_failed';
+
+export type SubmitActionOutcome =
+    | { ok: true; action: SessionAction }
+    | { ok: false; reason: SubmitActionRefusal };
 
 // ============================================
 // Store types for DB operations
@@ -191,6 +236,15 @@ export interface CreateMemoryInput {
     importance: MemoryImportance;
     roundCreated: number;
 }
+
+/**
+ * A memory row carried INTO the terminal resolution CAS (M11-1b D5 atomic follow-up).
+ *
+ * The id and the timestamp are settled by the caller rather than by the store, because the store
+ * writes the whole set as one `INSERT … SELECT` gated on the CAS: there is no per-row call left in
+ * which to mint them. A losing CAS therefore writes zero of these, not "some".
+ */
+export type ResolutionMemory = CreateMemoryInput & { id: string; createdAt: string };
 
 // ============================================
 // Agent Prefabs (Concordia)

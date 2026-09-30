@@ -90,19 +90,22 @@ export const executors: Record<string, ToolExecutor> = {
     return { success: true, data: { path: args.path, content } };
   },
 
+  // Adapters over `actions/memory` (M11-2 P1.4). The write and its event are one statement there;
+  // this surface keeps publishing the raw domain string for an invalid path, which is what it has
+  // always answered.
   put_context_file: async (args, { agent }) => {
-    const { putContextAndMaybeIndex } = await import("@/lib/memory/memory-service");
-    const result = await putContextAndMaybeIndex(agent.id, String(args.path), String(args.content));
-    if ("error" in result) return { success: false, error: String(result.error) };
-    return { success: true, data: { path: result.path, saved: true } };
+    const { writeContextFile } = await import("@/lib/actions/memory");
+    const result = await writeContextFile({ agentId: agent.id, path: String(args.path), content: String(args.content) });
+    if (!result.ok) return { success: false, error: result.message };
+    return { success: true, data: { path: result.data.path, saved: true } };
   },
 
   delete_context_file: async (args, { agent }) => {
-    const { deleteContextAndIndex } = await import("@/lib/memory/memory-service");
-    const result = await deleteContextAndIndex(agent.id, String(args.path));
+    const { removeContextFile } = await import("@/lib/actions/memory");
+    const result = await removeContextFile({ agentId: agent.id, path: String(args.path) });
     return result.ok
       ? { success: true, data: { deleted: true } }
-      : { success: false, error: result.error ?? "Could not delete" };
+      : { success: false, error: result.message };
   },
 
   recall_memory: async (args, { agent }) => {

@@ -1,13 +1,33 @@
+import { randomUUID } from "crypto";
+
 import { waitUntil } from "@vercel/functions";
 import { revalidateTag } from "next/cache";
 
-import { listPlaygroundSessions, updatePlaygroundSession } from "@/lib/store";
+import {
+  acquireWorkerLock,
+  completePlaygroundSessionAtLifetimeCap,
+  listSessionsDueForLifetimeCap,
+  releaseWorkerLock,
+  renewWorkerLock,
+} from "@/lib/store";
+import { playgroundSessionCompletedEvent } from "@/lib/actions/playground-events";
+import { anyStopSignal, type ShouldStop } from "@/lib/worker/stop-signal";
 
 const DEFAULT_SESSION_MAX_LIFETIME_MS = 6 * 60 * 60 * 1000;
 const SESSION_CAP_SUMMARY =
   "Session ran past its time budget and was completed automatically.";
 
-type DeadlineRunner = () => Promise<Partial<PlaygroundDeadlineRunResult> | void>;
+/** How many due sessions one query returns, and how many such queries one sweep makes. */
+const LIFETIME_CAP_PAGE_SIZE = 50;
+const LIFETIME_CAP_MAX_PAGES = 20;
+
+/**
+ * `shouldStop`, when supplied, lets a long-running implementation check — cheaply, synchronously —
+ * whether it should still be claiming work: the lock's background renewal has failed, or the process
+ * is shutting down. Either way it stops claiming rather than running to completion unguarded. See
+ * `runDeadlinesAndCap`, which composes both causes into the one predicate it passes down.
+ */
+type DeadlineRunner = (shouldStop?: ShouldStop) => Promise<Partial<PlaygroundDeadlineRunResult> | void>;
 
 export interface PlaygroundDeadlineRunResult {
   advanced: number;
@@ -21,7 +41,35 @@ export const PLAYGROUND_SESSION_MAX_LIFETIME_MS = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SESSION_MAX_LIFETIME_MS;
 })();
 
-const inflightDeadlineRuns = new Set<string>();
+/**
+ * u6 P3.1 — the one shared lock name every deadline-progression caller contends for.
+ *
+ * Replaces `inflightDeadlineRuns`, the process-local, caller-label-keyed `Set` this used to be:
+ * distinct labels (`page:{schoolId}` from render-time catch-up, `cron:playground-deadlines` from the
+ * scheduled route) meant two different-label callers overlapped even inside one process, and nothing
+ * here ever protected the four opportunistic request-path callers that invoked `checkDeadlines`
+ * directly, bypassing this file altogether. One shared name — held via `worker_locks` in db mode,
+ * via a process-wide `Map` in memory mode (`store/worker-locks/memory.ts`) — closes both gaps: every
+ * caller, whatever label it passes, now contends for the same lock, and the lock lives inside the
+ * one progression entry point below rather than around a caller-chosen name.
+ */
+const DEADLINE_LOCK_NAME = "playground-deadlines";
+
+const DEFAULT_LOCK_TTL_MS = 10 * 60 * 1000;
+
+/** `WORKER_LOCK_TTL_MS` — shared with any other duty that later claims a `worker_locks` row. */
+const WORKER_LOCK_TTL_MS = (() => {
+  const raw = Number(process.env.WORKER_LOCK_TTL_MS ?? DEFAULT_LOCK_TTL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_LOCK_TTL_MS;
+})();
+
+/**
+ * How often the holder renews while a sweep is in flight — comfortably inside the TTL, so an
+ * ordinary sweep never loses its own lock to the clock. Deadline work makes GM inference calls, so a
+ * large backlog can run past a single TTL window; renewal is what lets it keep going instead of
+ * losing the lock mid-sweep to nothing (no contender is waiting, the row would just sit expired).
+ */
+const LOCK_RENEW_INTERVAL_MS = Math.floor(WORKER_LOCK_TTL_MS / 3);
 
 export function safeWaitUntil(promise: Promise<unknown>, label: string): void {
   const tagged = promise.catch((error) => {
@@ -43,35 +91,75 @@ export function revalidatePlaygroundSeed(schoolId?: string): void {
   }
 }
 
-export async function enforceSessionLifetimeCap(): Promise<{ completed: number }> {
+/**
+ * Complete every session that has outlived its budget — **oldest first, and paged**
+ * (u3d fix round, finding 4).
+ *
+ * This used to read the 50 NEWEST active sessions and filter them by age here. That window is the
+ * defect: with 51 live sessions the oldest is not in it at all, so a session that had already blown
+ * its budget was skipped by every sweep while the newest 50 were still young, and continuous
+ * creation stranded it indefinitely. The store now answers with the sessions that are DUE, ordered by
+ * `COALESCE(started_at, created_at)` ascending — so the sweep always sees the ones that have waited
+ * longest — and this pages until a page comes back short.
+ *
+ * **The page cursor is the predicate, not an offset.** Every returned row is `status = 'active'` with
+ * `completed_at IS NULL`, and the conditional completion either changes one of those columns or loses
+ * to a writer that already did, so a processed row cannot come back on the next page. An offset would
+ * instead skip rows whenever a concurrent completion shifted the window.
+ *
+ * `LIFETIME_CAP_MAX_PAGES` bounds one invocation rather than the backlog: the ordering means the next
+ * run resumes at the oldest sessions still due, so a backlog drains across runs instead of starving.
+ *
+ * **`shouldStop` reaches EVERY completion, not just the page boundary** (E fix round 1, finding 1).
+ * This sweep used to take no stop signal at all: a deadline sweep that lost its singleton lock during
+ * round advancement still ran a whole paged cap sweep afterwards, and one that lost it mid-cap never
+ * found out — every completion after the loss being a write made under a lock a contender already
+ * owned. The predicate is synchronous and cheap, so it is read before each page AND before each
+ * conditional completion; a session already being completed finishes, nothing after it starts, and
+ * the ordering means the next run resumes exactly where this one stopped.
+ */
+export async function enforceSessionLifetimeCap(shouldStop?: ShouldStop): Promise<{ completed: number }> {
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
-  const activeSessions = await listPlaygroundSessions({ status: "active", limit: 50 });
+  const cutoff = new Date(nowMs - PLAYGROUND_SESSION_MAX_LIFETIME_MS).toISOString();
+  const stop = () => shouldStop?.() ?? false;
   let completed = 0;
   const touchedSchools = new Set<string>();
 
-  for (const session of activeSessions) {
-    if (session.completedAt) continue;
+  capPages: for (let page = 0; page < LIFETIME_CAP_MAX_PAGES; page += 1) {
+    if (stop()) break;
+    const due = await listSessionsDueForLifetimeCap(cutoff, LIFETIME_CAP_PAGE_SIZE);
+    if (due.length === 0) break;
 
-    const startedAt = session.startedAt ?? session.createdAt;
-    const startedAtMs = Date.parse(startedAt);
-    if (!Number.isFinite(startedAtMs)) continue;
-    if (nowMs - startedAtMs < PLAYGROUND_SESSION_MAX_LIFETIME_MS) continue;
+    for (const session of due) {
+      if (stop()) break capPages;
+      // The cap is a lifecycle safety stop, not a GM resolution. Preserve the
+      // transcript exactly as-written and surface the stop reason in summary.
+      //
+      // **Conditional since u3d, and that is what lets it carry an event.** It used to run through
+      // the generic `updatePlaygroundSession`, whose `WHERE id = $1` matches whatever it finds and
+      // whose boolean is an unconditional `true` — so two overlapping sweeps, or a sweep racing a
+      // genuine GM completion, would each have "succeeded" and each emitted. The predicate below is
+      // what the caller actually means, so exactly one writes and exactly one event exists.
+      const updated = await completePlaygroundSessionAtLifetimeCap(
+        session.id,
+        { summary: session.summary ?? SESSION_CAP_SUMMARY, completedAt: nowIso },
+        [
+          playgroundSessionCompletedEvent({
+            sessionId: session.id,
+            schoolId: session.schoolId ?? null,
+            reason: "lifetime_cap",
+          }),
+        ]
+      );
 
-    // The cap is a lifecycle safety stop, not a GM resolution. Preserve the
-    // transcript exactly as-written and surface the stop reason in summary.
-    const updated = await updatePlaygroundSession(session.id, {
-      status: "completed",
-      summary: session.summary ?? SESSION_CAP_SUMMARY,
-      completedAt: nowIso,
-      currentRoundPrompt: null,
-      roundDeadline: null,
-    });
-
-    if (updated) {
-      completed += 1;
-      touchedSchools.add(session.schoolId ?? "foundation");
+      if (updated) {
+        completed += 1;
+        touchedSchools.add(session.schoolId ?? "foundation");
+      }
     }
+
+    if (due.length < LIFETIME_CAP_PAGE_SIZE) break;
   }
 
   for (const schoolId of touchedSchools) {
@@ -81,19 +169,54 @@ export async function enforceSessionLifetimeCap(): Promise<{ completed: number }
   return { completed };
 }
 
+/**
+ * The one locked deadline-progression entry point (M11-2 u6 P3.1).
+ *
+ * `label` is kept for logging only — it no longer scopes anything; every caller (worker timer, the
+ * every-5-minutes cron, the playground page's render-time catch-up, and every opportunistic request-path site
+ * `session-manager.ts` used to call `checkDeadlines()` from directly) now contends for the SAME
+ * `worker_locks` row. **Non-blocking**: a busy lock makes this call return immediately with a
+ * zero result rather than wait, so a request path calling this never blocks on someone else's sweep.
+ *
+ * `checkDeadlines` itself has no exported name any more — see
+ * `session-manager.ts`'s `runDeadlineProgressionUnlocked`, importable only from here.
+ */
 export async function runDeadlinesAndCap(
   label: string,
-  runDeadlineCheck?: DeadlineRunner
+  runDeadlineCheck?: DeadlineRunner,
+  shouldStop?: ShouldStop
 ): Promise<PlaygroundDeadlineRunResult> {
-  if (inflightDeadlineRuns.has(label)) {
+  const holder = randomUUID();
+  const acquired = await acquireWorkerLock(DEADLINE_LOCK_NAME, holder, WORKER_LOCK_TTL_MS);
+  if (!acquired) {
     return { advanced: 0, capped: 0 };
   }
 
-  inflightDeadlineRuns.add(label);
+  // Renewed on a timer rather than at fixed points inside the runner, so the runner's own logic
+  // never has to await a network round trip just to check whether it still holds the lock — it only
+  // reads a plain boolean, cheaply, wherever it chooses to check.
+  let lockLost = false;
+  const renewTimer = setInterval(() => {
+    renewWorkerLock(DEADLINE_LOCK_NAME, holder, WORKER_LOCK_TTL_MS)
+      .then((renewed) => {
+        if (!renewed) lockLost = true;
+      })
+      .catch(() => {
+        lockLost = true;
+      });
+  }, LOCK_RENEW_INTERVAL_MS);
+
+  // ONE predicate for the runner, whichever cause fires (E fix round 1, finding 5). The caller's
+  // signal is the worker's `SIGTERM` flag; ours is the renewal loss above. The sweep cannot act on
+  // the difference — both mean "claim nothing further" — so it is handed a single question to ask.
+  const stopClaiming = anyStopSignal(() => lockLost, shouldStop);
+
   try {
     const result = runDeadlineCheck
-      ? await runDeadlineCheck()
-      : await import("@/lib/playground/session-manager").then(({ checkDeadlines }) => checkDeadlines());
+      ? await runDeadlineCheck(stopClaiming)
+      : await import("@/lib/playground/session-manager").then(({ runDeadlineProgressionUnlocked }) =>
+          runDeadlineProgressionUnlocked(stopClaiming)
+        );
     return {
       advanced: result?.advanced ?? 0,
       capped: result?.capped ?? 0,
@@ -101,6 +224,11 @@ export async function runDeadlinesAndCap(
       capDurationMs: result?.capDurationMs,
     };
   } finally {
-    inflightDeadlineRuns.delete(label);
+    clearInterval(renewTimer);
+    try {
+      await releaseWorkerLock(DEADLINE_LOCK_NAME, holder);
+    } catch (error) {
+      console.error(`[playground/lifecycle] Failed to release the deadline lock (label=${label})`, error);
+    }
   }
 }

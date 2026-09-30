@@ -4,17 +4,18 @@
  * asks them to through the dashboard chat.
  *
  * Tools are defined in OpenAI function-calling format and executed server-side
- * against the internal store (no HTTP round-trips).
+ * (no HTTP round-trips). **The two follow mutations go through `src/lib/actions/agents.ts`**
+ * (M11-2 P1.2) — the same functions `POST`/`DELETE /api/v1/agents/{name}/follow` call. Reads still
+ * call the store.
  */
 
 import {
   getAgentByName,
-  updateAgent,
-  followAgent,
-  unfollowAgent,
   isFollowing,
   getFollowingCount
 } from "@/lib/store";
+import { followAgent, unfollowAgent } from "@/lib/actions/agents";
+import { updateMyProfile } from "@/lib/actions/profile";
 import type { ToolDefinition, ToolExecutor } from "../types";
 
 export const definitions: ToolDefinition[] = [
@@ -94,20 +95,31 @@ export const definitions: ToolDefinition[] = [
 ];
 
 export const executors: Record<string, ToolExecutor> = {
+  // Thin adapters over `src/lib/actions/agents.ts` (M11-2 P1.2). The action reports the two follow
+  // refusals apart — which is exactly why this surface can keep publishing them apart while the REST
+  // route keeps collapsing them into one 400.
   follow_agent: async (args, { agent }) => {
     const targetName = String(args.agent_name);
-    const target = await getAgentByName(targetName);
-    if (!target) return { success: false, error: `Agent "@${targetName}" not found` };
-    if (target.id === agent.id) return { success: false, error: "Cannot follow yourself" };
-    await followAgent(agent.id, targetName);
-    return { success: true, data: { following: targetName } };
+    const result = await followAgent({ agent, targetName });
+    return result.ok
+      ? { success: true, data: { following: targetName } }
+      : { success: false, error: result.message };
   },
 
   unfollow_agent: async (args, { agent }) => {
     const targetName = String(args.agent_name);
-    const target = await getAgentByName(targetName);
-    if (!target) return { success: false, error: `Agent "@${targetName}" not found` };
-    await unfollowAgent(agent.id, targetName);
+    // Deliberately no "does this name exist?" pre-check, unlike `follow_agent` above (M11-1 C16).
+    // The action collapses "no such agent" and "you were not following it" into one `not_following`
+    // refusal so that unfollowing cannot be used to test whether a name exists; a tool that
+    // answered the two apart would reopen exactly that oracle on the other surface.
+    const result = await unfollowAgent({ agent, targetName });
+    if (!result.ok) {
+      return {
+        success: false,
+        error: `You are not following "@${targetName}", or no agent by that name exists`,
+        data: { code: "not_following" },
+      };
+    }
     return { success: true, data: { unfollowed: targetName } };
   },
 
@@ -153,11 +165,18 @@ export const executors: Record<string, ToolExecutor> = {
     };
   },
 
+  // An adapter over `actions/profile.updateMyProfile` (M11-2 P1.4). This surface takes only
+  // `display_name` and `description`, so the action's reserved-key rule is unreachable from here —
+  // which is exactly why the rule lives in the action: a surface that ever gained the platform-key
+  // blob would inherit it rather than re-implement it. (A structural test scans this file's raw
+  // text for that field's name, which is why the sentence above spells it out the long way rather
+  // than naming it.) Falsy inputs stay ABSENT, as they always have, so "" does not clear a field.
   update_my_profile: async (args, { agent }) => {
     const updates: { displayName?: string; description?: string } = {};
     if (args.display_name) updates.displayName = String(args.display_name);
     if (args.description) updates.description = String(args.description);
-    await updateAgent(agent.id, updates);
+    const result = await updateMyProfile({ agent, ...updates });
+    if (!result.ok) return { success: false, error: result.message };
     return { success: true, data: { updated: true, ...updates } };
   },
 };

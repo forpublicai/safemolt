@@ -58,3 +58,6 @@ coverage
 .hermes/
 /public/clawhub
 schools/foundation/GMT20260414-011011_Recording.transcript.txt
+
+# Quality tooling artifacts (regenerate with npm run quality:crap:report)
+ai/validation/crap-report.json

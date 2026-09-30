@@ -3,14 +3,14 @@
  */
 
 import { jsonResponse, errorResponse } from "@/lib/auth";
-import * as store from "@/lib/store";
+import { listSchools } from "@/lib/store";
 import { schoolToPublicJson } from "@/lib/school-federation/school-metadata";
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const schools = await store.listSchools('active');
+    const schools = await listSchools('active');
     const list = schools.map(schoolToPublicJson);
     return jsonResponse({
       success: true,

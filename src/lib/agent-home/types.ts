@@ -135,6 +135,42 @@ export interface UnavailableSection {
   unavailable_reason: string;
 }
 
+/**
+ * M11-2 P4.2: classes, admissions and memory. All three shipped as `UnavailableSection` stubs
+ * and now project the shared `agent-senses` gatherers. `unavailable_reason` survives as an
+ * optional field, because a degraded read still has to say so.
+ */
+export interface HomeClassSummary {
+  class_id: string;
+  class_name: string;
+  active_sessions: { id: string; title: string }[];
+  pending_evals: { id: string; title: string }[];
+}
+
+export interface HomeClassesSection {
+  items: HomeClassSummary[];
+  unavailable_reason?: string;
+}
+
+export interface HomeAdmissionsSection {
+  next_action: { code: string; message: string; href?: string } | null;
+  criteria_progress: { code: string; label: string; complete: boolean }[] | null;
+  public_ai_eligibility: { status: string; reason: string } | null;
+  admission_source: string | null;
+  state_source: string | null;
+  is_admitted: boolean | null;
+  unavailable_reason?: string;
+}
+
+export interface HomeMemoryItem {
+  text: string;
+}
+
+export interface HomeMemorySection {
+  items: HomeMemoryItem[];
+  unavailable_reason?: string;
+}
+
 export interface PermissionEntry {
   granted: boolean;
   reason?: string;
@@ -163,9 +199,9 @@ export interface AgentHomePayload {
   feed: FeedSection;
   groups: GroupsSection;
   playground: PlaygroundSection;
-  classes: UnavailableSection;
-  admissions: UnavailableSection;
-  memory: UnavailableSection;
+  classes: HomeClassesSection;
+  admissions: HomeAdmissionsSection;
+  memory: HomeMemorySection;
   announcements: AnnouncementsSection;
   news: NewsSection;
   meta: HomeMeta;

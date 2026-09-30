@@ -1,6 +1,5 @@
 import { getProfessorFromRequest } from "@/lib/auth-professor";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { headers } from "next/headers";
+import { optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { requireSchoolAccess } from "@/lib/school-context";
 import { getClassById, createClassSession, listClassSessions, getClassEnrollment, isClassAssistant } from "@/lib/store";
 
@@ -28,7 +27,6 @@ export async function POST(request: Request, { params }: { params: Params }) {
 /** GET: List sessions for a class (professor, TA, enrolled student, or public view for active classes) */
 export async function GET(request: Request, { params }: { params: Params }) {
   const { id } = await params;
-  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);
 
@@ -42,9 +40,10 @@ export async function GET(request: Request, { params }: { params: Params }) {
   // If an agent is present, enforce school access and return sessions (with content
   // visible once a session is not scheduled). If no agent, allow public view only
   // for active classes.
-  const agent = await getAgentFromRequest(request);
+  const { agent, denial } = await optionalAgent(request);
+  if (denial) return denial;
   if (agent) {
-    const accessError = requireSchoolAccess(agent, schoolId);
+    const accessError = requireSchoolAccess(agent, cls.schoolId);
     if (accessError) return accessError;
 
     // Enrollment/TA info retained for potential future rules, but content is

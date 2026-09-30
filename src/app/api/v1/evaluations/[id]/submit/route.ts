@@ -1,13 +1,17 @@
 import { waitUntil } from '@vercel/functions';
 import { NextRequest } from "next/server";
 import { headers } from "next/headers";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { submitEvaluation, submitCertificationTranscriptAction } from "@/lib/actions/evaluations";
 import { getEvaluation } from "@/lib/evaluations/loader";
-import { getEvaluationRegistration, saveEvaluationResult, getCertificationJobByNonce, updateCertificationJob } from "@/lib/store";
-import { getExecutor } from "@/lib/evaluations/executor-registry";
-import { validateNonce, isNonceExpired } from "@/lib/evaluations/nonce";
+import { evaluationAuthzResponse } from "@/lib/evaluation-authz";
+import {
+  getEvaluationRegistration,
+  getEvaluationResultForRegistration,
+} from "@/lib/store";
+import { isReplayableDenial, existingResultBody, registrationNotActionableResponse } from "@/lib/evaluations/result-replay";
 import { triggerAsyncJudging } from "@/lib/evaluations/judge";
-import type { TranscriptEntry } from "@/lib/evaluations/types";
+import type { CertificationRefusalReason } from "@/lib/store-types";
 
 /**
  * POST /api/v1/evaluations/{id}/submit
@@ -15,159 +19,116 @@ import type { TranscriptEntry } from "@/lib/evaluations/types";
  */
 export const maxDuration = 180; // Allow 180 seconds for async judging hook
 
+/**
+ * The agent_certification flow: nonce- and job-owned rather than registration-derived. Transcript
+ * intake transitions the job and schedules async judging; the verdict arrives later through the
+ * judge, never from this request.
+ */
+async function handleCertificationSubmission(
+  agentId: string,
+  evaluationId: string,
+  body: { nonce?: string; transcript?: unknown }
+): Promise<Response> {
+  const submitted = await submitCertificationTranscriptAction({ agent: { id: agentId }, evaluationId, nonce: body.nonce, transcript: body.transcript });
+  if (!submitted.ok) {
+    const status = submitted.code === "not_found" ? 404 : submitted.code === "forbidden" ? 403 : 400;
+    const title = titleForCertificationRefusal(submitted.reason);
+    return errorResponse(title, submitted.message, status);
+  }
+
+  // Trigger async judging - fire and forget
+  waitUntil(triggerAsyncJudging(submitted.data.jobId));
+
+  return jsonResponse({
+    success: true,
+    evaluation_id: evaluationId,
+    job_id: submitted.data.jobId,
+    status: 'submitted',
+    message: "Transcript received. Judging will be performed asynchronously. Poll the job status endpoint to check results.",
+    poll_url: `/api/v1/evaluations/${evaluationId}/job/${submitted.data.jobId}`,
+  });
+}
+
+function titleForCertificationRefusal(reason: CertificationRefusalReason): string {
+  switch (reason) {
+    case "missing_transcript": return "Missing transcript";
+    case "invalid_transcript": return "Submission rejected";
+    case "expired_nonce": return "Nonce expired";
+    case "missing_nonce": return "Missing nonce";
+    case "invalid_nonce": return "Invalid nonce";
+    case "job_not_found": return "Job not found";
+    case "unauthorized_job": return "Unauthorized";
+    case "already_submitted": return "Already submitted";
+    default: {
+      const exhaustive: never = reason;
+      return exhaustive;
+    }
+  }
+}
+
+/**
+ * C21 idempotency: re-submitting a registration that already completed is not an error the agent
+ * caused, so it returns the standing result rather than a rejection. Only the caller's own
+ * registration is consulted, so nothing is disclosed that authorization would refuse.
+ */
+async function idempotentReplay(agentId: string, evaluationId: string, denialCode: string): Promise<Response | null> {
+  if (!isReplayableDenial(denialCode)) return null;
+  const reg = await getEvaluationRegistration(agentId, evaluationId);
+  const existing = reg ? await getEvaluationResultForRegistration(reg.id) : null;
+  return existing ? jsonResponse({ success: true, result: existingResultBody(existing) }) : null;
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) {
-      return errorResponse("Unauthorized", "Provide a valid API key", 401);
-    }
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const agent = access.agent;
 
     const { id } = await params;
     const body = await request.json();
 
-    // Load evaluation definition (school-scoped)
+    // The host's definition decides only *which flow* this is, and only for the certification
+    // branch, whose authorization is nonce- and job-owned rather than registration-derived. Every
+    // other branch re-derives its definition from the registration below, so a caller cannot pick a
+    // host whose same-id definition happens to be non-proctored (M11-1 C2).
     const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
-    const evaluation = getEvaluation(id, schoolId);
-    if (!evaluation) {
+    const hostEvaluation = getEvaluation(id, schoolId);
+    if (!hostEvaluation) {
       return errorResponse("Evaluation not found", undefined, 404);
     }
 
-    // Proctored evaluations: candidate does not submit; proctor submits via proctor/submit
-    if (evaluation.type === 'proctored') {
-      return errorResponse(
-        "Proctored evaluation",
-        "This evaluation is proctored; a proctor must submit your result.",
-        400
-      );
-    }
-
     // Handle agent_certification type - async judging flow
-    if (evaluation.type === 'agent_certification') {
-      const { nonce, transcript } = body as { nonce?: string; transcript?: TranscriptEntry[] };
-
-      if (!nonce) {
-        return errorResponse("Missing nonce", "The 'nonce' field is required", 400);
-      }
-      if (!transcript || !Array.isArray(transcript) || transcript.length === 0) {
-        return errorResponse("Missing transcript", "The 'transcript' field must be a non-empty array", 400);
-      }
-
-      // Validate nonce signature and agent match
-      const nonceValidation = validateNonce(nonce, id, agent.id);
-      if (!nonceValidation.valid) {
-        return errorResponse("Invalid nonce", nonceValidation.error ?? "Nonce validation failed", 400);
-      }
-
-      // Find certification job by nonce
-      const job = await getCertificationJobByNonce(nonce);
-      if (!job) {
-        return errorResponse("Job not found", "No certification job found for this nonce", 404);
-      }
-
-      // Check job ownership and status
-      if (job.agentId !== agent.id) {
-        return errorResponse("Unauthorized", "This job belongs to another agent", 403);
-      }
-
-      if (job.status !== 'pending') {
-        return errorResponse("Already submitted", `Job status is already '${job.status}'`, 400);
-      }
-
-      // Check nonce expiration
-      if (isNonceExpired(job.nonceExpiresAt)) {
-        await updateCertificationJob(job.id, { status: 'expired' });
-        return errorResponse("Nonce expired", "The nonce has expired. Start a new certification attempt.", 400);
-      }
-
-      // Normalize transcript before processing
-      const normalizedTranscript: TranscriptEntry[] = transcript.map(entry => {
-        const anyEntry = entry as any;
-        if (anyEntry.messages && Array.isArray(anyEntry.messages)) {
-          // OpenAI style: extract content from messages
-          const assistantMsg = anyEntry.messages.filter((m: any) => m.role === 'assistant').pop();
-          const userMsg = anyEntry.messages.filter((m: any) => m.role === 'user').pop();
-
-          return {
-            promptId: entry.promptId,
-            prompt: anyEntry.prompt || userMsg?.content || '',
-            response: anyEntry.response || assistantMsg?.content || '',
-            toolCalls: anyEntry.toolCalls || assistantMsg?.tool_calls
-          };
-        }
-        return entry;
-      });
-
-      // Store transcript and mark as submitted
-      const submittedAt = new Date().toISOString();
-      await updateCertificationJob(job.id, {
-        transcript: normalizedTranscript,
-        status: 'submitted',
-        submittedAt,
-      });
-
-      // Trigger async judging - fire and forget
-      waitUntil(triggerAsyncJudging(job.id));
-
-      return jsonResponse({
-        success: true,
-        evaluation_id: id,
-        job_id: job.id,
-        status: 'submitted',
-        message: "Transcript received. Judging will be performed asynchronously. Poll the job status endpoint to check results.",
-        poll_url: `/api/v1/evaluations/${id}/job/${job.id}`,
-      });
+    if (hostEvaluation.type === 'agent_certification') {
+      return await handleCertificationSubmission(agent.id, id, body);
     }
 
-    // Check registration for non-certification evaluations
-    const registration = await getEvaluationRegistration(agent.id, id);
-    if (!registration) {
-      return errorResponse(
-        "Not registered",
-        "You must register for this evaluation first",
-        400
-      );
+    // **Authorization, the executor call and the completion are the ACTION's** (M11-2 P1.4), in that
+    // order — the pre-C2 order reached the handler for a caller it was about to reject (Locked
+    // decision 3). The action also carries the PoAW fold-in: the executor names the challenge it
+    // validated and the completion consumes it inside the same transaction, so a failure here leaves
+    // the challenge spendable instead of burning it.
+    const submitted = await submitEvaluation({ agent, evaluationId: id, input: body });
+    if (!submitted.ok) {
+      const replay = await idempotentReplay(agent.id, id, submitted.denial.code);
+      if (replay) return replay;
+      return evaluationAuthzResponse(submitted.denial);
     }
+    const { saved, result } = submitted.value;
 
-    if (registration.status !== 'in_progress' && registration.status !== 'registered') {
-      return errorResponse(
-        "Invalid status",
-        `Evaluation status is ${registration.status}`,
-        400
-      );
+    if (saved.outcome === "already_complete") {
+      return jsonResponse({ success: true, result: existingResultBody(saved.existing) });
     }
-
-    // Get executor handler
-    const handler = getExecutor(evaluation.executable.handler);
-
-    // Execute evaluation
-    const result = await handler({
-      agentId: agent.id,
-      evaluationId: id,
-      registrationId: registration.id,
-      input: body,
-      config: evaluation.config,
-    });
-
-    // Save result
-    const resultId = await saveEvaluationResult(
-      registration.id,
-      agent.id,
-      id,
-      result.passed,
-      result.score,
-      result.maxScore,
-      result.resultData,
-      undefined, // proctorAgentId
-      undefined  // proctorFeedback
-    );
+    if (saved.outcome === "not_actionable") {
+      return registrationNotActionableResponse();
+    }
 
     return jsonResponse({
       success: true,
       result: {
-        id: resultId,
+        id: saved.resultId,
         passed: result.passed,
         score: result.score,
         max_score: result.maxScore,

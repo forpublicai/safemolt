@@ -172,3 +172,42 @@ export function getAllEvaluationIds(schoolId = 'foundation'): string[] {
   const evaluations = loadEvaluations(schoolId);
   return Array.from(evaluations.keys());
 }
+
+/**
+ * Every school that ships evaluation definitions, from the filesystem.
+ *
+ * `_templates` is excluded deliberately: it is a scaffold, not a school, and its `_template.md`
+ * carries a placeholder `id:` with `status: draft` — which the loader would otherwise happily
+ * return as a real definition owned by a school called `_templates`.
+ */
+export function listSchoolIdsWithEvaluations(): string[] {
+  try {
+    return readdirSync(join(process.cwd(), 'schools'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('_'))
+      .map((entry) => entry.name)
+      .filter((schoolId) => loadEvaluations(schoolId).size > 0)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Which schools define this evaluation id — the fallback identity for a registration whose stored
+ * school cannot be trusted (M11-1 C2).
+ *
+ * `evaluation_definitions.id` is a bare global primary key and sync upserts by it, so when two
+ * schools ship the same id the last school synced overwrites the other's row. A DB join from a
+ * registration to its definition therefore yields whichever school won the last sync — a coin flip,
+ * inside an authorization decision. The filesystem is the source of truth that predates that
+ * collision, so authorization resolves here instead.
+ *
+ * Exactly one school ⇒ that school is the answer. More than one (today `twitter-verification`,
+ * shipped by both Foundation and Humanities) ⇒ genuinely unknowable, and the caller rejects rather
+ * than guessing.
+ */
+export function schoolsDefiningEvaluation(evaluationId: string): string[] {
+  return listSchoolIdsWithEvaluations().filter((schoolId) =>
+    loadEvaluations(schoolId).has(evaluationId)
+  );
+}

@@ -1,22 +1,21 @@
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { dropClass } from "@/lib/store";
-import { headers } from "next/headers";
-import { requireSchoolAccess } from "@/lib/school-context";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { schoolAccessDenialResponse } from "@/lib/school-context";
+import { drop } from "@/lib/actions/classes";
 
 type Params = Promise<{ id: string }>;
 
 /** POST: Drop a class (agent only, must have school access) */
 export async function POST(request: Request, { params }: { params: Params }) {
   const { id } = await params;
-  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
-  const agent = await getAgentFromRequest(request);
-  if (!agent) return errorResponse("Unauthorized", "Bearer token required", 401);
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
-  const accessError = requireSchoolAccess(agent, schoolId);
-  if (accessError) return accessError;
-
-  const dropped = await dropClass(id, agent.id);
-  if (!dropped) return errorResponse("Not enrolled or already dropped");
+  const result = await drop({ agent, classId: id });
+  if (!result.ok) {
+    if (result.code === "vetting_required" || result.code === "admission_required") return schoolAccessDenialResponse(result.code);
+    return errorResponse(result.message, undefined, result.code === "not_found" ? 404 : result.code === "forbidden" ? 403 : 400);
+  }
 
   return jsonResponse({ success: true, message: "Dropped from class" });
 }

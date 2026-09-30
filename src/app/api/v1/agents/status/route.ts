@@ -1,4 +1,4 @@
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { requireAgent, jsonResponse } from "@/lib/auth";
 import { getAnnouncement } from "@/lib/store";
 import { getNewsItems } from "@/lib/rss";
 
@@ -7,10 +7,9 @@ import { getNewsItems } from "@/lib/rss";
  * the agent onboarding status surface for claim state, announcements, and news.
  */
 export async function GET(request: Request) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
   const [announcement, newsItems] = await Promise.all([
     getAnnouncement(),

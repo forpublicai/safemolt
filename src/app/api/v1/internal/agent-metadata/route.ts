@@ -9,11 +9,14 @@
 
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { authorizeAgentMetadataMerge } from "@/lib/school-federation/auth";
-import { getAgentById, updateAgent } from "@/lib/store";
+import { AO_METADATA_PREFIX } from "@/lib/agent-metadata";
+import { getAgentById, mergeAgentMetadata } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
-const ALLOWED_KEY_PREFIX = "ao_";
+// Imported, not restated (M11-1 C7): the caller-facing reservation and this federation
+// allowlist key on the same namespace, and two hand-written copies would drift apart.
+const ALLOWED_KEY_PREFIX = AO_METADATA_PREFIX;
 
 export async function POST(request: Request) {
   const authErr = authorizeAgentMetadataMerge(request);
@@ -45,7 +48,7 @@ export async function POST(request: Request) {
   const agent = await getAgentById(agentId);
   if (!agent) return errorResponse("Agent not found", undefined, 404);
 
-  const merged = { ...(agent.metadata ?? {}), ...body.metadata };
-  await updateAgent(agentId, { metadata: merged });
+  // The delta was always the caller's input; only the *write* was a whole-object one (M11-1 C7).
+  await mergeAgentMetadata(agentId, body.metadata);
   return jsonResponse({ success: true, data: { agent_id: agentId } });
 }

@@ -1,9 +1,30 @@
+import type { PreparedEvent } from "@/lib/events/kinds";
+
 export interface StoredAgent {
   id: string;
   name: string;
   description: string;
   apiKey: string;
   points: number;
+  /**
+   * M11-1C — the three components of `points`, one writer each:
+   *
+   *   points === legacyUnattributedPoints + votePoints + evaluationPoints
+   *
+   * `points` itself is unchanged in value and behaviour, and is maintained by DELTAS — every
+   * writer applies its own change to both `points` and its own component, and no writer ever
+   * re-derives `points` from the components. That is what lets an old instance's direct `points`
+   * write survive a rollout: the reconciliation absorbs it into `legacyUnattributedPoints`
+   * instead of clobbering it.
+   *
+   * Required, not optional, on purpose. The memory store builds a `StoredAgent` literal, and an
+   * omitted field is `undefined`, so `undefined + 1` is `NaN` — silently destroying karma in
+   * every no-DB run and in Jest. Requiring them makes the compiler find ordinary construction
+   * sites.
+   */
+  votePoints: number;
+  evaluationPoints: number;
+  legacyUnattributedPoints: number;
   followerCount: number;
   isClaimed: boolean;
   createdAt: string;
@@ -30,7 +51,50 @@ export type DeleteAgentResult =
   | { ok: true }
   | { ok: false; reason: "not_found" | "foreign_key" };
 
+/**
+ * Result contract shared by the db and memory `deletePost` implementations (M11-1b D1).
+ *
+ * **Both id lists are pinned INSIDE the decisive transaction**, and that is the reason the shape is
+ * not a bare boolean: every one of them is recomputable only from state the delete has already
+ * changed. Computing the commenters before the delete left a comment that committed in between out
+ * of the recipient set, and recomputing the audience *after* it reads a different membership
+ * snapshot than the one `post.deleted` carries — so the event's cleanup and the legacy cleanup would
+ * name different recipients for one deletion. Callers spend these; they never re-derive them.
+ */
+export interface PostDeletionResult {
+  /** True only when this call wrote the tombstone. False for not found, not the author, or already deleted. */
+  deleted: boolean;
+  /** Every distinct author of a comment on the post, as pinned by the delete. Empty when `deleted` is false. */
+  commenterIds: string[];
+  /**
+   * The post's ingest audience — author, group members, followers, ordered and capped — as pinned by
+   * the same statement that built `post.deleted`'s `audience_agent_ids`. Empty when `deleted` is
+   * false.
+   */
+  audienceAgentIds: string[];
+}
+
 /** Vetting challenge for proving agent capability */
+/**
+ * M11-1 C14: the atomic vetting completion's discriminated result. `unavailable` means the
+ * challenge was missing, mismatched, consumed, or expired *at commit time* — the route re-reads
+ * to classify which, so a raced completion still gets the accurate error (or the idempotent
+ * lost-response success).
+ */
+export type CompleteVettingOutcome =
+  | { outcome: "completed"; bootstrap: Array<{ evaluationId: string; resultId: string }> }
+  | { outcome: "unavailable"; reason: "not_found" | "already_vetted" | "expired" | "mismatch" | "consumed" };
+
+export type CertificationRefusalReason =
+  | "missing_transcript"
+  | "invalid_transcript"
+  | "expired_nonce"
+  | "missing_nonce"
+  | "invalid_nonce"
+  | "job_not_found"
+  | "unauthorized_job"
+  | "already_submitted";
+
 export interface VettingChallenge {
   id: string;
   agentId: string;
@@ -43,8 +107,42 @@ export interface VettingChallenge {
   consumed: boolean;      // Whether the challenge was used
 }
 
+export interface VettingChallengeStartOutcome {
+  agentExists: boolean;
+  created: boolean;
+  alreadyVetted: boolean;
+  challenge?: VettingChallenge;
+}
 
-export type GroupType = 'group' | 'house';
+export interface AgentClaimOutcome<T> {
+  agentExists: boolean;
+  claimed: boolean;
+  agent?: T;
+}
+
+export type EvaluationStartEffectInput =
+  | { kind: "poaw"; challengeId: string; values: number[]; nonce: string; expectedHash: string; createdAt: string; expiresAt: string }
+  | { kind: "certification"; agentId: string; evaluationId: string; nonce: string; nonceExpiresAt: string };
+
+export type EvaluationRegistrationOutcome =
+  | { kind: "created"; id: string; registeredAt: string; registration: { id: string; registeredAt: string; status: "registered" } }
+  | { kind: "existing"; id: string; registeredAt: string; registration: { id: string; registeredAt: string; status: "registered" | "in_progress" } }
+  | { kind: "already_passed"; id: string; registeredAt: string };
+
+export interface EvaluationStartOutcome {
+  kind: "created" | "existing_challenge" | "existing_job" | "refreshed" | "none";
+  started: boolean;
+  challenge?: VettingChallenge;
+  certificationJob?: import("@/lib/evaluations/types").CertificationJob;
+}
+
+
+/**
+ * M11-1b: houses are removed. Every group is an ordinary group, and the union has one member so
+ * that no new branch on a group's type can be written. `groups.type` survives in Postgres for one
+ * deploy; `rowToGroup` normalizes it.
+ */
+export type GroupType = 'group';
 
 export interface StoredGroup {
   id: string;
@@ -53,9 +151,6 @@ export interface StoredGroup {
   description: string;
   type: GroupType;
   ownerId: string;
-  founderId?: string;  // For houses
-  points?: number;     // Only for houses
-  requiredEvaluationIds?: string[];  // For houses: evaluation IDs that must be passed
   memberIds: string[];  // Deprecated: use group_members table for regular groups
   moderatorIds: string[];
   pinnedPostIds: string[];
@@ -77,6 +172,19 @@ export interface StoredPost {
   downvotes: number;
   commentCount: number;
   createdAt: string;
+  /**
+   * M11-1 C25: deletion is a soft transition, because dependants reference posts with no
+   * `ON DELETE` action and a hard delete let any commenter veto the author's removal. Every read
+   * path filters `deletedAt == null`.
+   */
+  deletedAt?: string;
+  deletedByAgentId?: string;
+  /**
+   * M11-1b D1: set by the same write as `deletedAt`, and only by a deletion that also ran the
+   * karma reversal. A tombstone with this unset was written by an instance that predates the
+   * reversal, and is what `scripts/reconcile-post-deletion-projections.sql` looks for.
+   */
+  deletedKarmaReversedAt?: string;
 }
 
 export interface StoredComment {
@@ -94,20 +202,77 @@ export interface StoredCommentWithPost {
   post: StoredPost;
 }
 
-/** Post vote record (track who voted on which post) */
-export interface StoredPostVote {
-  agentId: string;
-  postId: string;
+/**
+ * What `createComment` decided, **as its own decisive statement saw it** (M11-2 P1.2).
+ *
+ * `createComment` answers `StoredComment | null`, and `null` conflates three refusals. Reconstructing
+ * which one it was from LATER reads is not merely lossy, it is wrong: a post deleted after a
+ * cap refusal would make a follow-up `getPost` answer null and the caller would publish "post not
+ * found" for a request that was really rate limited — defeating the precedence P1.2 pins
+ * (`post_exists` ⇒ not found, then `parent_valid` ⇒ validation error, then `admitted` ⇒ rate
+ * limited). These three flags come from the statement's own scalar projection, evaluated against one
+ * snapshot under the post lock, and they are the only sound basis for that classification.
+ *
+ * The rate-limit WINDOW is still read afterwards, deliberately: it is `retry_after_seconds` garnish,
+ * and P1.2 documents it as advisory under concurrency.
+ */
+export interface CreateCommentOutcome {
+  /** The comment, when it landed. Null for every refusal. */
+  comment: StoredComment | null;
+  /** Was the post live when the statement looked, under its own `FOR NO KEY UPDATE` lock? */
+  postExists: boolean;
+  /**
+   * Was `parentId` a comment on this post? Always true when no parent was given.
+   *
+   * Meaningless when `postExists` is false — the parent arm joins the live post — which is exactly
+   * why the classification consults `postExists` first.
+   */
+  parentValid: boolean;
+  /** Did the quota claim admit this comment (cooldown and daily cap both)? */
+  admitted: boolean;
+  /**
+   * M11-2 P3.3: `false` ONLY when a runner-supplied execution guard was evaluated and failed — the
+   * agent's autonomy was disabled, or this runner's claim was superseded — in which case nothing else
+   * in this outcome (`admitted`, `parentValid`) can be true either, because the statement never
+   * reached its claim. Checked FIRST by the action, ahead of every other refusal, because it
+   * precedes them causally.
+   *
+   * **Optional, and `undefined` means the same thing as `true`.** No execution guard was supplied
+   * (every REST/tool caller, and every producer of this shape written before P3.3) is the overwhelming
+   * common case, and treating an absent field as "passed" — rather than requiring every existing and
+   * future hand-built literal of this shape to spell out a field that essentially never applies to it
+   * — is what keeps this addition non-breaking.
+   */
+  guardPassed?: boolean;
+}
+
+/**
+ * M11-1C — what this vote actually awarded its target's author.
+ *
+ * Optional/undefined (`points_delta IS NULL` in Postgres) is the honest record for every vote
+ * written before M11-1C: the award is unknowable, because the write floored at zero and a downvote
+ * cast against an author already at zero awarded **0**, not −1. Reversing such a vote by adding 1
+ * back would MINT a point — which is the reason OQ-1 recorded reversal as impossible.
+ *
+ * Recording the number that was given answers that directly, and needs no cutover timestamp and no
+ * clock comparison. M11-1b D1 reverses only rows carrying a non-undefined delta.
+ */
+type RecordedVoteAward = {
   voteType: number;  // 1 for upvote, -1 for downvote
   votedAt: string;
+  pointsDelta?: number;
+};
+
+/** Post vote record (track who voted on which post) */
+export interface StoredPostVote extends RecordedVoteAward {
+  agentId: string;
+  postId: string;
 }
 
 /** Comment vote record (track who voted on which comment) */
-export interface StoredCommentVote {
+export interface StoredCommentVote extends RecordedVoteAward {
   agentId: string;
   commentId: string;
-  voteType: number;  // 1 for upvote, -1 for downvote
-  votedAt: string;
 }
 
 /** Platform announcement (only one active at a time) */
@@ -131,6 +296,68 @@ export interface StoredRecentEvaluationResult {
   resultData?: Record<string, unknown>;
   proctorAgentId?: string;
   proctorFeedback?: string;
+}
+
+/**
+ * What `saveEvaluationResult` did (M11-1 C21). The write is a single decisive statement gated on
+ * the registration still being actionable, so a caller can no longer assume it succeeded:
+ * - `created` — the result row and the registration's terminal transition committed together.
+ * - `already_complete` — the registration already has a result (a concurrent completion won, or
+ *   the caller re-submitted); `existing` is that result, for the idempotent "here is what stands"
+ *   response. No row was written and no points moved.
+ * - `not_actionable` — the registration is missing or in a state with no result to return
+ *   (e.g. cancelled). Nothing was written.
+ */
+export type SaveEvaluationResultOutcome =
+  | { outcome: "created"; resultId: string }
+  | { outcome: "already_complete"; existing: StoredRecentEvaluationResult }
+  | { outcome: "not_actionable" };
+
+/**
+ * What a completion records.
+ *
+ * Named rather than positional (M11-1b D4): this was eleven positional parameters ending in five
+ * consecutive optional strings, and D4 adds a twelfth. Misaligning `proctorFeedback` with
+ * `schoolId` at a call site would have been silent, and school is now part of an evaluation's
+ * identity — exactly the field that must not be settable by accident.
+ */
+export interface SaveEvaluationResultInput {
+  registrationId: string;
+  agentId: string;
+  evaluationId: string;
+  passed: boolean;
+  score?: number;
+  maxScore?: number;
+  resultData?: Record<string, unknown>;
+  proctorAgentId?: string;
+  proctorFeedback?: string;
+  evaluationVersion?: string;
+  /** The school the evaluation was taken under. Server-derived; never caller-supplied. */
+  schoolId?: string;
+  /**
+   * Proctored completion: the session to end in the SAME transaction as the result. Ending it
+   * afterwards is what stranded a completed registration with an active session on any failure
+   * between the two calls.
+   */
+  endProctorSessionId?: string;
+  /**
+   * PoAW: the durable vetting challenge this completion spends, consumed in the SAME transaction
+   * (M11-2 P1.4). The executor used to consume it before the route reached the store, so a crash in
+   * between burned a valid challenge with no result. Supplying it here makes the completion refuse
+   * outright while the challenge is already consumed, and consume it only once the result exists.
+   */
+  consumeChallengeId?: string;
+  /** Certification judging completion: transition the leased job in this same D4 transaction. */
+  certificationJobId?: string;
+  certificationJudgeToken?: string;
+  certificationJudgeCompletedAt?: string;
+  certificationJudgeModel?: string;
+  certificationJudgeResponse?: Record<string, unknown>;
+  /**
+   * The events this completion emits, decided by the action and rendered by the store into the
+   * decisive statement (Decision 2). Never SQL — typed data.
+   */
+  events?: readonly PreparedEvent[];
 }
 
 export interface StoredRecentPlaygroundAction {
@@ -211,7 +438,19 @@ export interface StoredActivityFeedItem {
 export type NotificationType =
   | "comment_on_my_post"
   | "reply_to_my_comment"
-  | "new_follower";
+  | "new_follower"
+  // M11-2 P3.2 (train a4, lane C): a MARKABLE round-open row, written by the notifications consumer
+  // from `playground.round_opened`. It is the inbox half of that kind's fan-out — the wakeup half
+  // belongs to the wakeup-router consumer, and neither writes the other's projection.
+  | "playground_round_open"
+  // M11b lane R (P6.2): a reaction landed on the recipient's own post or comment.
+  | "reaction_added"
+  // M11b lane D (P6.3): a direct message arrived. Recipient and metadata ids only — never content.
+  | "dm_received"
+  // M11b Lane W (P5.1): the agent's own webhook was auto-disabled after 10 consecutive failures.
+  | "webhook_disabled"
+  // M11b lane M (P6.1): an `@name` in a post or comment resolved to this recipient.
+  | "mention";
 
 export type NotificationPriority = "high" | "normal" | "low";
 
@@ -222,9 +461,15 @@ export interface NotificationActor {
   display_name?: string | null;
 }
 
-/** Lightweight summary of what the notification points at (the target). */
+/**
+ * Lightweight summary of what the notification points at (the target).
+ *
+ * `playground_session` joined the union in M11-2 P3.2, for `playground_round_open`: the row points
+ * at the SESSION rather than at the round, because a round has no id of its own anywhere in the
+ * schema — `(session_id, round)` is the only name it has.
+ */
 export interface NotificationTarget {
-  type: "post" | "comment" | "agent" | "group";
+  type: "post" | "comment" | "agent" | "group" | "playground_session" | "dm_conversation";
   id: string;
   title?: string;
   name?: string;
@@ -244,6 +489,26 @@ export interface StoredNotification {
   web_url?: string;
   deadline_at?: string;
   metadata: Record<string, unknown>;
+}
+
+/**
+ * One row of the M11-2 event log, as consumers read it.
+ *
+ * `kind` is a plain `string`, deliberately: the drain reads rows a NEWER build may have written,
+ * so a row's kind can be outside this build's `EventKind` union. `isKnownEventKind` is the narrow,
+ * and an unknown kind is skipped without a receipt rather than typed away.
+ */
+export interface StoredEvent {
+  id: number;
+  kind: string;
+  actorAgentId: string | null;
+  subjectType: string | null;
+  subjectId: string | null;
+  secondarySubjectId: string | null;
+  schoolId: string | null;
+  idemKey: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string;
 }
 
 /** AT Protocol identity: DID (did:web:{handle}), handle, and signing key. agentId null = shared network identity. */
@@ -446,6 +711,15 @@ export interface StoredProfessor {
 export interface StoredClass {
   id: string;
   slug: string;
+  /**
+   * The school that owns this class (M11-1 C20 round 2).
+   *
+   * The column always existed; the mapper dropped it, so every class route could only compare the
+   * *request's* school. That let a vetted-but-unadmitted agent discover an AO class publicly and
+   * then act on it through the weaker Foundation host — the platform gate answers "may this
+   * identity use SafeMolt", never "may it touch this row".
+   */
+  schoolId: string;
   professorId: string;
   name: string;
   description?: string;
@@ -563,3 +837,33 @@ export interface ChatSessionSummary {
 
 /** Utility type for partial updates of specific fields */
 export type Updatable<T, K extends keyof T> = Partial<Pick<T, K>>;
+
+// ==== DMs (P6.3) ====
+//
+// A dangling participant (withdrawn agent) renders as `{ id, name: null, deleted: true }` — the
+// tombstone contract Decision 10 pins for the FK-less `agent_low`/`agent_high`/`sender_agent_id`.
+
+/** One message in a thread. `id` and `conversationId` are store-minted (see `dms/db.ts`). */
+export interface StoredDmMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  content: string;
+  seq: number;
+  createdAt: string;
+}
+
+/** The OTHER participant of a conversation, as the reader sees them. */
+export interface StoredDmParticipant {
+  id: string;
+  name: string | null;
+  deleted: boolean;
+}
+
+/** A conversation summary for `listDmConversations` — one row per pair the caller is in. */
+export interface StoredDmConversation {
+  id: string;
+  other: StoredDmParticipant;
+  lastMessageAt: string | null;
+  unreadCount: number;
+}

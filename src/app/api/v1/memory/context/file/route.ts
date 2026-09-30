@@ -1,8 +1,8 @@
 import { jsonResponse, errorResponse } from "@/lib/auth";
+import { removeContextFile, writeContextFile } from "@/lib/actions/memory";
 import { resolveAgentMemoryAuth } from "@/lib/memory/authorize";
 import * as contextStore from "@/lib/memory/context-store";
 import { normalizeContextPath } from "@/lib/memory/context-path";
-import { deleteContextAndIndex, putContextAndMaybeIndex } from "@/lib/memory/memory-service";
 import type { MemoryRequestContext } from "@/lib/memory/memory-service";
 import { getAgentById } from "@/lib/store";
 import { memoryAuthError } from "@/lib/memory/route-helpers";
@@ -66,7 +66,12 @@ export async function GET(request: Request) {
       // agents.identity_md. Backfill exactly this authenticated agent/path so the
       // next read has the context store as source of truth; do not use this
       // pattern for general read-side projections.
-      await contextStore.putContextFile(auth.agentId, path, identityMd);
+      //
+      // **It invokes the SAME write action, with `lazy: true`** (M11-2 P1.4). A state-changing GET
+      // that wrote through its own path would be a second writer of `agent_context_files` with its
+      // own rules and no event; instead it is the one writer, and the payload says the agent did
+      // not ask for this write.
+      await writeContextFile({ agentId: auth.agentId, path, content: identityMd, ctx: ctxFromAuth(auth), lazy: true });
       const backfilled = await contextStore.getContextFile(auth.agentId, path);
       return jsonResponse(fileEnvelope({
         agentId: auth.agentId,
@@ -96,12 +101,19 @@ export async function PUT(request: Request) {
   const auth = await resolveAgentMemoryAuth(request, body.agent_id);
   if (!auth.ok) return memoryAuthError(auth.reason);
 
-  const res = await putContextAndMaybeIndex(auth.agentId, pathRaw, content, ctxFromAuth(auth));
-  if ("error" in res) {
-    return errorResponse("Bad Request", res.error, 400);
+  // Parse → action → render (M11-2 P1.4). The path normalization, the write and its event are the
+  // action's; the legacy-aliased envelope below stays this surface's own.
+  const result = await writeContextFile({
+    agentId: auth.agentId,
+    path: pathRaw,
+    content,
+    ctx: ctxFromAuth(auth),
+  });
+  if (!result.ok) {
+    return errorResponse("Bad Request", result.message, 400);
   }
-  const file = await contextStore.getContextFile(auth.agentId, res.path);
-  return jsonResponse(fileEnvelope({ agentId: auth.agentId, path: res.path, updatedAt: file?.updatedAt }));
+  const file = await contextStore.getContextFile(auth.agentId, result.data.path);
+  return jsonResponse(fileEnvelope({ agentId: auth.agentId, path: result.data.path, updatedAt: file?.updatedAt }));
 }
 
 export async function DELETE(request: Request) {
@@ -113,9 +125,9 @@ export async function DELETE(request: Request) {
   const auth = await resolveAgentMemoryAuth(request, searchParams.get("agent_id"));
   if (!auth.ok) return memoryAuthError(auth.reason);
 
-  const res = await deleteContextAndIndex(auth.agentId, pathRaw, ctxFromAuth(auth));
-  if (!res.ok) {
-    return errorResponse("Bad Request", res.error ?? "invalid path", 400);
+  const result = await removeContextFile({ agentId: auth.agentId, path: pathRaw, ctx: ctxFromAuth(auth) });
+  if (!result.ok) {
+    return errorResponse("Bad Request", result.message, 400);
   }
   return jsonResponse({ success: true, data: { deleted: true }, meta: { agent_id: auth.agentId } });
 }

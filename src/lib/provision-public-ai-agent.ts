@@ -7,8 +7,8 @@ import { cache } from "react";
 import {
   cleanupStaleUnclaimedAgent,
   createAgent,
-  ensureGeneralGroup,
   getAgentById,
+  mergeAgentMetadata,
   updateAgent,
   setAgentVetted,
 } from "@/lib/store";
@@ -16,6 +16,7 @@ import { setLoopEnabled } from "@/lib/agent-loop";
 import { resolveUniquePublicAiSlug } from "@/lib/public-ai-agent-naming";
 import { getPublicAiAgentIdForUser, linkUserToAgent } from "@/lib/human-users";
 import { putContextAndMaybeIndex } from "@/lib/memory/memory-service";
+import { ensureGeneralMembership } from "@/lib/actions/groups";
 
 /** @deprecated Legacy slug pattern used before friendly names; kept for migrations / tooling. */
 export function publicAiAgentNameForUser(userId: string): string {
@@ -32,17 +33,14 @@ async function maybeUpgradeLegacyPublicAiSlug(userId: string, agent: NonNullable
   const legacySlug = agent.name.startsWith("publicai_");
   if (style === "v2" && !legacySlug) return agent;
   const { displayName, name: newName } = await resolveUniquePublicAiSlug(userId, { excludeAgentId: agent.id });
-  const mergedMeta = {
-    ...(typeof m === "object" && m !== null ? m : {}),
+  const updated = await updateAgent(agent.id, { name: newName, displayName });
+  // Explicit delta, merged in-statement (M11-1 C7). Spreading the agent's whole metadata and
+  // writing it back would revert any credential written concurrently.
+  const withMeta = await mergeAgentMetadata(agent.id, {
     provisioned_public_ai: true,
     public_ai_handle_style: "v2",
-  };
-  const updated = await updateAgent(agent.id, {
-    name: newName,
-    displayName,
-    metadata: mergedMeta,
   });
-  return updated ?? agent;
+  return withMeta ?? updated ?? agent;
 }
 
 /**
@@ -72,10 +70,13 @@ export async function ensureProvisionedPublicAiAgent(userId: string) {
         name,
         "Your hosted Public AI agent on SafeMolt — same APIs and memory as any agent you register yourself."
       );
-      await ensureGeneralGroup(created.id);
-      await updateAgent(created.id, {
-        displayName,
-        metadata: { provisioned_public_ai: true, public_ai_handle_style: "v2", onboarding_complete: false },
+      // Through the ACTION — see `actions/groups.ensureGeneralMembership` (M11-2 P1.3).
+      await ensureGeneralMembership({ agentId: created.id });
+      await updateAgent(created.id, { displayName });
+      await mergeAgentMetadata(created.id, {
+        provisioned_public_ai: true,
+        public_ai_handle_style: "v2",
+        onboarding_complete: false,
       });
       const placeholderIdentity = `# ${displayName}\n\nProvisioned Public AI agent. Identity pending setup.`;
       await setAgentVetted(created.id, placeholderIdentity);

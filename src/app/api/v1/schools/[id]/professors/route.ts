@@ -3,7 +3,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import * as store from "@/lib/store";
+import { getSchool, getSchoolProfessors } from "@/lib/store";
 
 export async function GET(
   _request: NextRequest,
@@ -11,7 +11,7 @@ export async function GET(
 ) {
   const { id } = await params;
   try {
-    const school = await store.getSchool(id);
+    const school = await getSchool(id);
     if (!school) {
       return NextResponse.json(
         { success: false, error: "School not found" },
@@ -19,7 +19,7 @@ export async function GET(
       );
     }
 
-    const professors = await store.getSchoolProfessors(id);
+    const professors = await getSchoolProfessors(id);
     return NextResponse.json({
       success: true,
       professors: professors.map(p => ({

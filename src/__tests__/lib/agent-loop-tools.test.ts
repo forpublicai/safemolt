@@ -40,7 +40,18 @@ function baseStore(overrides: Record<string, unknown> = {}) {
     getAgentById: jest.fn(async (id: string) =>
       id === agent.id ? agent : ({ id, name: `agent_${id}` } as StoredAgent)
     ),
+    // M11-2 P4.3: the tick gathers through `buildAgentContext`, so every store function the
+    // senses gatherers reach must exist here. An absent one throws inside its gatherer, which
+    // degrades that section to empty — and an all-empty context is indistinguishable from
+    // "nothing to do", so the whole suite would silently become skip assertions.
+    // `listFeed` empty + `listPosts` seeded is the global-fallback path, which is the feed these
+    // cases have always described.
+    listFeed: jest.fn(async () => []),
     listPosts: jest.fn(async () => []),
+    getPost: jest.fn(async () => null),
+    isGroupMember: jest.fn(async () => false),
+    getGroupMemberCount: jest.fn(async () => 0),
+    getPlaygroundSession: jest.fn(async () => null),
     listComments: jest.fn(async () => []),
     getAgentClasses: jest.fn(async () => []),
     getClassById: jest.fn(),
@@ -55,6 +66,11 @@ function baseStore(overrides: Record<string, unknown> = {}) {
     getPassedEvaluations: jest.fn(async () => []),
     ensureGeneralGroup: jest.fn(async () => undefined),
     listNotifications: jest.fn(async () => []),
+    // b1: the senses gatherers read reactions, DM unread counts and active followees.
+    getReactionCounts: jest.fn(async () => ({})),
+    countUnreadDms: jest.fn(async () => 0),
+    listDmConversations: jest.fn(async () => []),
+    countActiveNowFollowees: jest.fn(async () => 0),
     listGroups: jest.fn(async () => []),
     getFollowingCount: jest.fn(async () => 0),
     ...overrides,
@@ -72,6 +88,13 @@ async function setup(opts: {
   sponsored?: boolean;
   hfToken?: string | null;
   sponsoredUsage?: { count: number; limit: number };
+  /**
+   * u6 stitch: reject any statement whose text matches — the seam that used to be
+   * `recordAgentLoopActivityEvent`'s mock. `logAction` no longer calls a second writer at all (it is
+   * Tier 1 now, and swallows its own statement's failure), so "a bookkeeping step threw after the
+   * terminal action landed" has to be produced at a step that still propagates: `recordAction`.
+   */
+  rejectSqlMatching?: RegExp;
 }) {
   jest.resetModules();
 
@@ -79,9 +102,13 @@ async function setup(opts: {
   for (const r of opts.llmResponses) {
     callLLM.mockResolvedValueOnce({ content: r.content ?? null, toolCalls: r.toolCalls ?? [] });
   }
-  const sql = jest.fn(async (_strings: TemplateStringsArray, ...values: unknown[]) =>
-    typeof values[1] === "string" ? [{ id: "log_1" }] : []
-  );
+  const sql = jest.fn(async (first: TemplateStringsArray | string, ...values: unknown[]) => {
+    // Both call shapes: a tagged template (every legacy statement) and text-plus-params (which
+    // `logAction` has taken since u6 stitch made it one rendered statement).
+    const text = typeof first === "string" ? first : first.join(" ");
+    if (opts.rejectSqlMatching?.test(text)) throw new Error("sql down");
+    return typeof values[1] === "string" ? [{ id: "log_1" }] : [];
+  });
   const executeTool =
     opts.executeTool ?? jest.fn(async (name: string) => ({ success: true, data: { tool: name } }));
   if (Object.prototype.hasOwnProperty.call(opts, "hfToken")) {
@@ -95,7 +122,7 @@ async function setup(opts: {
   const recallMemoryForAgent = jest.fn(async () => opts.recalledMemories ?? []);
   const upsertVectorForAgent = jest.fn(async () => undefined);
 
-  jest.doMock("@/lib/db", () => ({ sql }));
+  jest.doMock("@/lib/db", () => ({ hasDatabase: () => true, sql }));
   jest.doMock("@/lib/agent-tools", () => ({ PLATFORM_TOOLS, executeTool }));
   jest.doMock("@/lib/agent-runtime/adapters/openai-compatible", () => ({
     makeHfRouterCallLLM,
@@ -124,7 +151,14 @@ async function setup(opts: {
   jest.doMock("@/lib/evaluations/loader", () => ({ listEvaluations: jest.fn(() => opts.evaluations ?? []) }));
   jest.doMock("@/lib/playground/games", () => ({ listGames: jest.fn(() => []) }));
   jest.doMock("@/lib/rss", () => ({ getNewsItems: jest.fn(async () => []) }));
-  jest.doMock("@/lib/store/activity/events", () => ({ recordAgentLoopActivityEvent: jest.fn() }));
+  // Reached through `gatherAdmissions`; unmocked it loads the real module, which asks the store
+  // for functions this fixture does not carry.
+  jest.doMock("@/lib/admissions", () => ({ getAdmissionsStatusForAgent: jest.fn(async () => null) }));
+  // `logAction` splices this projection into its own statement; the CTE BODY is asserted for real
+  // in `src/__tests__/lib/agent-loop-log-action.test.ts`, so here it only has to be a valid string.
+  jest.doMock("@/lib/store/activity/events", () => ({
+    buildAgentLoopActivityUpsertCte: jest.fn(() => "SELECT 1"),
+  }));
   jest.doMock("@/lib/agent-loop-actions", () => ({ listRecentLoopActions: jest.fn(async () => []) }));
 
   const { tickAgent } = await import("@/lib/agent-loop");
@@ -143,10 +177,35 @@ async function setup(opts: {
 const toolNames = (defs: unknown): string[] =>
   (defs as { function: { name: string } }[]).map((d) => d.function.name);
 
+/**
+ * The actions `logAction` journaled, decoded from the raw `sql` calls.
+ *
+ * u6 stitch: `logAction` is ONE rendered statement now (insert + event + trail projection), called in
+ * `sql(text, params)` form, so the action is `params[1]` of the call whose text names the journal
+ * table — not the third argument of a tagged template.
+ */
 const loggedActions = (sql: jest.Mock): string[] =>
   sql.mock.calls
-    .map((call) => call[2])
+    .filter((call) => typeof call[0] === "string" && call[0].includes("agent_loop_action_log"))
+    .map((call) => (call[1] as unknown[])?.[1])
     .filter((value): value is string => typeof value === "string" && PLATFORM_TOOLS.some((t) => t.function.name === value));
+
+/** M11-2 P0.4: the agent_loop_tick_log insert calls, decoded from the raw sql tag calls. */
+type TickJournalCall = { agentId: string; outcome: string; inferenceConsumed: boolean; terminalAction: boolean };
+const tickJournalCalls = (sql: jest.Mock): TickJournalCall[] =>
+  sql.mock.calls
+    // u6 stitch: `logAction` now calls `sql` in its TEXT-plus-params form, so this filter has to
+    // tolerate a plain string in slot 0 as well as a tagged template's strings array.
+    .filter((call) => {
+      const first = call[0] as TemplateStringsArray | string;
+      return (typeof first === "string" ? first : first.join("?")).includes("agent_loop_tick_log");
+    })
+    .map((call) => ({
+      agentId: call[1] as string,
+      outcome: call[2] as string,
+      inferenceConsumed: call[3] as boolean,
+      terminalAction: call[4] as boolean,
+    }));
 
 const feedPost = {
   id: "post_1",
@@ -198,10 +257,14 @@ describe("agent loop two-tier router (ADR-0001)", () => {
 
     expect(result.action).toBe("submit_playground_action");
     expect(callLLM).toHaveBeenCalledTimes(1);
+    // M11-2 P3.3: `runAgenticTurn` now forwards a fourth `executionGuard` argument to every
+    // `executeTool` call — `undefined` here, since `tickAgent` never sets one (only
+    // `agent-pulse/runner.ts` does).
     expect(executeTool).toHaveBeenCalledWith(
       "submit_playground_action",
       { session_id: "sess_1", content: "explore the ridge" },
-      agent
+      agent,
+      undefined
     );
     // The single round is scoped to the playground domain slice — never the full surface.
     const offered = toolNames(callLLM.mock.calls[0][1]);
@@ -467,5 +530,258 @@ describe("agent loop two-tier router (ADR-0001)", () => {
     expect(result.action).toBe("skip");
     expect(executeTool.mock.calls.map((c) => c[0])).toEqual(["list_feed"]);
     expect(loggedActions(sql)).toEqual([]);
+  });
+});
+
+describe("agent loop tick journal (M11-2 P0.4)", () => {
+  it("journals acted with inference_consumed and terminal_action both true", async () => {
+    const { tickAgent, sql } = await setup({
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        {
+          content: null,
+          toolCalls: [{ id: "t1", name: "create_comment", arguments: { post_id: "post_1", content: "good point" } }],
+        },
+      ],
+    });
+
+    const result = await tickAgent(agent.id);
+
+    expect(result.action).toBe("create_comment");
+    expect(tickJournalCalls(sql)).toEqual([
+      { agentId: agent.id, outcome: "acted", inferenceConsumed: true, terminalAction: true },
+    ]);
+  });
+
+  it("journals skipped with inference_consumed false when there is nothing to engage with at all", async () => {
+    // Default baseStore() resolves every gather to empty, so the tick returns before ever calling the model.
+    const { tickAgent, callLLM, sql } = await setup({ llmResponses: [] });
+
+    const result = await tickAgent(agent.id);
+
+    expect(result.action).toBe("skip");
+    expect(callLLM).not.toHaveBeenCalled();
+    expect(tickJournalCalls(sql)).toEqual([
+      { agentId: agent.id, outcome: "skipped", inferenceConsumed: false, terminalAction: false },
+    ]);
+  });
+
+  it("journals skipped with inference_consumed true when discovery chooses no domain", async () => {
+    const { tickAgent, sql } = await setup({
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [
+        { content: null, toolCalls: [{ id: "d1", name: "list_feed", arguments: {} }] },
+        { content: "Nothing here is worth a response right now.", toolCalls: [] },
+      ],
+    });
+
+    const result = await tickAgent(agent.id);
+
+    expect(result.action).toBe("skip");
+    expect(tickJournalCalls(sql)).toEqual([
+      { agentId: agent.id, outcome: "skipped", inferenceConsumed: true, terminalAction: false },
+    ]);
+  });
+
+  it("journals error with inference_consumed false when the tick fails before any model call", async () => {
+    const { tickAgent, sql } = await setup({
+      linkedUserIds: ["limited_user"],
+      inferenceSecrets: null,
+      hfToken: "platform-token",
+      sponsoredUsage: { count: 101, limit: 100 },
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [],
+    });
+
+    await expect(tickAgent(agent.id)).rejects.toThrow("Sponsored daily limit reached");
+    expect(tickJournalCalls(sql)).toEqual([
+      { agentId: agent.id, outcome: "error", inferenceConsumed: false, terminalAction: false },
+    ]);
+  });
+
+  it("journals error with inference_consumed true when a terminal tool call fails", async () => {
+    const { tickAgent, sql } = await setup({
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      executeTool: jest.fn(async () => ({ success: false, error: "boom" })),
+      llmResponses: [
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        {
+          content: null,
+          toolCalls: [{ id: "t1", name: "create_comment", arguments: { post_id: "post_1", content: "good point" } }],
+        },
+      ],
+    });
+
+    await expect(tickAgent(agent.id)).rejects.toThrow("boom");
+    expect(tickJournalCalls(sql)).toEqual([
+      { agentId: agent.id, outcome: "error", inferenceConsumed: true, terminalAction: false },
+    ]);
+  });
+
+  it("journals error with terminal_action true when the terminal tool succeeded but post-action bookkeeping throws", async () => {
+    // "Terminal action landed, then bookkeeping threw" must not make the journal understate what
+    // actually happened. Since u6 stitch, `logAction` is Tier 1 and swallows its own statement's
+    // failure (nothing partial can survive it), so the step that still propagates is `recordAction`'s
+    // `agent_loop_state` update — which runs after the terminal mutation, exactly as the activity
+    // write used to.
+    const { tickAgent, sql } = await setup({
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      rejectSqlMatching: /UPDATE agent_loop_state\s+SET actions_taken/,
+      llmResponses: [
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        {
+          content: null,
+          toolCalls: [{ id: "t1", name: "create_comment", arguments: { post_id: "post_1", content: "good point" } }],
+        },
+      ],
+    });
+
+    await expect(tickAgent(agent.id)).rejects.toThrow("sql down");
+    expect(tickJournalCalls(sql)).toEqual([
+      { agentId: agent.id, outcome: "error", inferenceConsumed: true, terminalAction: true },
+    ]);
+  });
+
+  it("does not delay the tick's return on a never-settling journal write (fire-and-forget)", async () => {
+    // recordAgentLoopTick is called with `void`, never `await`ed, precisely so a wedged DB call
+    // cannot block the tick. Simulate "never settles" with a sql mock whose tick-log insert call
+    // returns a promise that never resolves; every OTHER statement (recordAction's UPDATE, etc.)
+    // still resolves normally, so if tickAgent's return were gated on the journal write this test
+    // would time out instead of completing.
+    const { tickAgent, sql } = await setup({
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        {
+          content: null,
+          toolCalls: [{ id: "t1", name: "create_comment", arguments: { post_id: "post_1", content: "good point" } }],
+        },
+      ],
+    });
+    sql.mockImplementation(async (first: TemplateStringsArray | string, ...values: unknown[]) => {
+      const strings = typeof first === "string" ? [first] : first;
+      if (strings.join("?").includes("agent_loop_tick_log")) {
+        return new Promise(() => {}); // never settles
+      }
+      return typeof values[1] === "string" ? [{ id: "log_1" }] : [];
+    });
+
+    const result = await tickAgent(agent.id);
+
+    expect(result.action).toBe("create_comment");
+    expect(tickJournalCalls(sql)).toHaveLength(1); // the call was made — just never awaited
+  });
+});
+
+/**
+ * M11-2 u6 D fix round 1 — the optional pulse bundle (`PulseTickBundle`).
+ *
+ * `agent-pulse/runner.ts` dispatches the `idle` reason through this function, and until the bundle
+ * existed that made `idle` the one claimed wakeup whose terminal tool ran with neither the
+ * lease-renewal fence nor the execution guard (finding 1). These cases pin the threading itself: the
+ * guard reaches `executeTool`, a refusing fence stops the tool outright, and a refused tick writes no
+ * `agent_loop_state` row (finding 2). The no-bundle callers stay covered by every other case in this
+ * file — several of them assert `executeTool`'s fourth argument is `undefined`.
+ */
+describe("tickAgent — the runner's pulse bundle", () => {
+  const guard = { agentId: agent.id, wakeupId: 7, claimToken: "tok_7" };
+
+  /** Every `agent_loop_state` statement this tick issued — `recordSkip`/`recordAction`/`recordError`. */
+  const loopStateWrites = (sql: jest.Mock): string[] =>
+    sql.mock.calls
+      .map((call) => {
+        const first = call[0] as TemplateStringsArray | string;
+        return typeof first === "string" ? first : first.join("?");
+      })
+      // WRITES only: the tick also READS this row through the senses, which is not a mutation.
+      .filter((text) => /(UPDATE|INSERT INTO)\s+agent_loop_state/.test(text));
+
+  const replyTurn = [
+    { content: "DOMAIN: discussion", toolCalls: [] },
+    {
+      content: null,
+      toolCalls: [{ id: "t1", name: "create_comment", arguments: { post_id: "post_1", content: "good point" } }],
+    },
+  ];
+
+  it("forwards the execution guard to every executeTool call the tick makes", async () => {
+    const { tickAgent, executeTool } = await setup({
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [
+        { content: null, toolCalls: [{ id: "d1", name: "list_feed", arguments: {} }] },
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        ...replyTurn.slice(1),
+      ],
+    });
+
+    // The parameter is typed (wider than the runtime's `NormalizedToolCall`, which is all
+    // contravariance needs) so the call assertion below can read the pending call it received.
+    const beforeTerminalTool = jest.fn(async (_call: { name: string }) => true);
+    const result = await tickAgent(agent.id, { beforeTerminalTool, executionGuard: guard, fenceLost: () => false });
+
+    expect(result.action).toBe("create_comment");
+    // The discovery stage's read tool AND the domain stage's terminal tool both carry it.
+    expect(executeTool).toHaveBeenCalledWith("list_feed", {}, agent, guard);
+    expect(executeTool).toHaveBeenCalledWith(
+      "create_comment",
+      { post_id: "post_1", content: "good point" },
+      agent,
+      guard
+    );
+    // The hook is called for the TERMINAL call only — a read tool is not something to fence.
+    expect(beforeTerminalTool).toHaveBeenCalledTimes(1);
+    expect(beforeTerminalTool.mock.calls[0][0]).toMatchObject({ name: "create_comment" });
+  });
+
+  it("a refusing fence stops the terminal tool and writes no agent_loop_state row", async () => {
+    const { tickAgent, executeTool, sql } = await setup({
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: replyTurn,
+    });
+
+    let refused = false;
+    const result = await tickAgent(agent.id, {
+      beforeTerminalTool: async () => {
+        refused = true;
+        return false;
+      },
+      executionGuard: guard,
+      fenceLost: () => refused,
+    });
+
+    // No terminal mutation: the tool was never invoked at all.
+    expect(executeTool).not.toHaveBeenCalled();
+    // A distinct outcome — not the ordinary "the model declined" skip.
+    expect(result.action).toBe("fence_lost");
+    // Finding 2: nothing was written about an agent this tick no longer owns. `recordSkip` would
+    // have stamped a `next_eligible_at` cooldown here, inherited on the next re-enable.
+    expect(loopStateWrites(sql)).toEqual([]);
+    // The P0.4 journal still records the tick — it is instrumentation keyed to the tick, and the
+    // inference this tick really did consume has to stay in the skip-share denominator.
+    expect(tickJournalCalls(sql)).toEqual([
+      { agentId: agent.id, outcome: "skipped", inferenceConsumed: true, terminalAction: false },
+    ]);
+  });
+
+  it("an ordinary decline with a bundle present is still an ordinary skip", async () => {
+    // The fence held; the model simply called no tool. That path must keep its cooldown bookkeeping —
+    // the finding-2 early return applies to LOST OWNERSHIP, never to "nothing worth doing".
+    const { tickAgent, sql } = await setup({
+      store: { listPosts: jest.fn(async () => [feedPost]) },
+      llmResponses: [
+        { content: "DOMAIN: discussion", toolCalls: [] },
+        { content: "nothing worth saying", toolCalls: [] },
+      ],
+    });
+
+    const result = await tickAgent(agent.id, {
+      beforeTerminalTool: async () => true,
+      executionGuard: guard,
+      fenceLost: () => false,
+    });
+
+    expect(result.action).toBe("skip");
+    expect(loopStateWrites(sql)).toHaveLength(1);
   });
 });

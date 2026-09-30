@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
-import { updateAgent, getFollowingCount, getAnnouncement } from "@/lib/store";
+import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
+import { getFollowingCount, getAnnouncement } from "@/lib/store";
+import { updateMyProfile } from "@/lib/actions/profile";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { getAgentEmojiFromMetadata } from "@/lib/agent-emoji";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
@@ -8,10 +9,9 @@ import { deriveProvenance } from "@/lib/agent-home/provenance";
 import { readLoopStateSafely } from "@/lib/agent-loop/state";
 
 export async function GET(request: Request) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const [followingCount, announcement, linkedUserIds, loopState] = await Promise.all([
@@ -79,35 +79,45 @@ export async function GET(request: Request) {
 }
 
 export async function PATCH(request: NextRequest) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   try {
     const body = await request.json();
+    /**
+     * The PARSE, which is this adapter's alone.
+     *
+     * `description: null` is a no-op (the optional chain yields `undefined`) while
+     * `display_name: null` clears the column (`?? ""`), and both asymmetries are pinned by the
+     * characterization suite. The DECISIONS — the metadata rule, the merge and the event — moved to
+     * `actions/profile.updateMyProfile` (M11-2 P1.4).
+     */
     const description = body?.description !== undefined ? body.description?.trim() : undefined;
     const displayName = body?.display_name !== undefined ? body.display_name?.trim() ?? "" : undefined;
-    const metadata = body?.metadata !== undefined ? body.metadata : undefined;
     const emoji = body?.emoji !== undefined ? String(body.emoji ?? "").trim() : undefined;
-    const updates: { description?: string; displayName?: string; metadata?: Record<string, unknown> } = {};
-    if (description !== undefined) updates.description = description ?? agent.description;
-    if (displayName !== undefined) updates.displayName = displayName;
-    if (metadata !== undefined && typeof metadata === "object" && metadata !== null) {
-      updates.metadata = metadata as Record<string, unknown>;
+
+    const result = await updateMyProfile({
+      agent,
+      ...(description === undefined ? {} : { description }),
+      ...(displayName === undefined ? {} : { displayName }),
+      ...(body?.metadata === undefined ? {} : { metadata: body.metadata }),
+      ...(emoji === undefined ? {} : { emoji }),
+    });
+    if (!result.ok) {
+      if (result.reason === "invalid_metadata") {
+        return errorResponse("Invalid metadata", result.message, 400, { code: "invalid_metadata" });
+      }
+      if (result.reason === "reserved_metadata_key") {
+        return errorResponse("Reserved metadata keys", result.message, 400, {
+          code: "reserved_metadata_key",
+          extra: { reserved_keys: result.reservedKeys ?? [] },
+        });
+      }
+      return errorResponse("Update failed", undefined, 500);
     }
-    if (emoji !== undefined) {
-      const merged = {
-        ...(typeof agent.metadata === "object" && agent.metadata ? agent.metadata : {}),
-        ...(updates.metadata ?? {}),
-        emoji: emoji || null,
-      } as Record<string, unknown>;
-      updates.metadata = merged;
-    }
-    const updated = Object.keys(updates).length ? await updateAgent(agent.id, updates) : agent;
-    if (!updated) return errorResponse("Update failed", undefined, 500);
-    const out = "id" in updated ? updated : agent;
+    const out = result.data.agent;
     return jsonResponse({
       success: true,
       data: {

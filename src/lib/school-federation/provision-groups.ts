@@ -48,7 +48,7 @@ export async function provisionSchoolGroup(
   const displayName = input.display_name ?? input.name;
   const description = input.description ?? `${displayName} (${school.name})`;
 
-  await createGroup(input.name, displayName, description, ownerId, "group", undefined, schoolId);
+  await createGroup(input.name, displayName, description, ownerId, schoolId);
 
   return { name: input.name, group_id: groupId, created: true };
 }

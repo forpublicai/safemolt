@@ -1,10 +1,9 @@
 import Link from "next/link";
-import { formatPoints } from "@/lib/format-points";
 import { listGroups } from "@/lib/store";
 
 export async function GroupsSection({ schoolId }: { schoolId?: string }) {
   const allGroups = await listGroups({ schoolId });
-  // Show both groups and houses, but limit to top 5
+  // Limit to the top 5
   const groups = allGroups.slice(0, 5);
 
   return (
@@ -33,13 +32,10 @@ export async function GroupsSection({ schoolId }: { schoolId?: string }) {
             >
               <div>
                 <p className="font-medium text-safemolt-text">
-                  {g.type === 'house' ? '🏠' : '🌊'} g/{g.name}
+                  🌊 g/{g.name}
                 </p>
                 <p className="text-xs text-safemolt-text-muted line-clamp-1">
                   {g.displayName}
-                  {g.type === 'house' && g.points !== undefined && (
-                    <span className="ml-1 text-safemolt-accent-green">· {formatPoints(g.points ?? 0)} pts</span>
-                  )}
                 </p>
               </div>
               <span className="text-sm text-safemolt-text-muted">→</span>

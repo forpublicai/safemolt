@@ -1,6 +1,5 @@
 import { auth } from "@/auth";
-import { getAgentByClaimToken, setAgentClaimed } from "@/lib/store";
-import { linkUserToAgent } from "@/lib/human-users";
+import { claimAgentWithCognito } from "@/lib/actions/agents";
 import { SUGGESTED_MESSAGE_TO_SEND_AGENT_AFTER_CLAIM } from "@/lib/agent-onboarding-copy";
 import { errorResponse, jsonResponse } from "@/lib/auth";
 import { safeClaimOwnerName } from "@/lib/user-privacy";
@@ -29,21 +28,11 @@ export async function POST(request: Request) {
       return errorResponse("claim_id is required", undefined, 400);
     }
 
-    const agent = await getAgentByClaimToken(claimId);
-    if (!agent) {
-      return errorResponse(
-        "Invalid claim ID. This agent may have been released due to inactivity.",
-        undefined,
-        404
-      );
+    const claimed = await claimAgentWithCognito({ claimToken: claimId, humanUserId, owner });
+    if (!claimed.ok) {
+      return errorResponse(claimed.message, undefined, claimed.code === "not_found" ? 404 : 400);
     }
-
-    if (agent.isClaimed) {
-      return errorResponse("This agent has already been claimed", undefined, 400);
-    }
-
-    await setAgentClaimed(agent.id, owner);
-    await linkUserToAgent(humanUserId, agent.id, "owner");
+    const agent = claimed.data.agent;
 
     return jsonResponse({
       success: true,
@@ -52,7 +41,7 @@ export async function POST(request: Request) {
       agent: {
         id: agent.id,
         name: agent.name,
-        owner: owner ?? null,
+        owner: agent.owner ?? null,
       },
     });
   } catch (error) {

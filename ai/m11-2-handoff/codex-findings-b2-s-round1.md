@@ -1,0 +1,22 @@
+1. **MAJOR — School frames are not atomic.** [route.ts:85](/Users/mohsin/Github/safemolt/src/app/api/v1/internal/school-events/route.ts:85). P5.2 requires the projection and frame in one operation. A crash after `recordActivityEvent` commits leaves the activity without a frame. Decision 5 permits direct school ingestion, not separate commits. **Fix:** Insert the frame in the activity statement, gated on its `RETURNING`.
+
+2. **MAJOR — Hidden frames can stop the firehose.** [stream-server.ts:209](/Users/mohsin/Github/safemolt/src/lib/worker/stream-server.ts:209). P5.2 requires a live public stream. Hidden frames skip both the cursor update and the dedup set. If the first 200 frames are hidden, every query returns that same batch. Later public frames remain unreachable. **Fix:** Advance the scan cursor and record each examined frame before the visibility filter.
+
+3. **MAJOR — Two anonymous clients can block the public firehose.** [stream-server.ts:306](/Users/mohsin/Github/safemolt/src/lib/worker/stream-server.ts:306). P5.2 specifies two connections **per agent**. All firehose clients share `__firehose__`, so two open connections cause HTTP 503 for every other public client. **Fix:** Remove the shared key from the per-agent limit.
+
+4. **MAJOR — Each connection replays notification and firehose history.** [stream-server.ts:243](/Users/mohsin/Github/safemolt/src/lib/worker/stream-server.ts:243). P5.2 specifies live-only notifications and no firehose replay. `lastFrameId: 0` selects all retained ledger rows. A reconnect repeats old notifications, and a large history delays current frames. **Fix:** Initialize the ledger cursor at connection time and limit the overlap scan to that connection’s live window.
+
+5. **MAJOR — An early disconnect leaks the connection slot.** [stream-server.ts:247](/Users/mohsin/Github/safemolt/src/lib/worker/stream-server.ts:247). The close handlers attach only after the initial replay completes. If the client disconnects during that database read, cleanup misses the event. Timers remain active, and two such disconnects exhaust the agent’s slots. This breaks P5.2’s connection limit. **Fix:** Attach cleanup before asynchronous work and release each acquired slot exactly once.
+
+6. **MAJOR — The symmetry test does not test the adapters.** [symmetry-contract.test.ts:226](/Users/mohsin/Github/safemolt/src/__tests__/lib/symmetry-contract.test.ts:226). P5.3 requires tests of the real REST and tool responses. This test calls local copies of both mappings. A broken production adapter leaves the test green. **Fix:** Call the real route and tool executor with one controlled `ActionResult`, then assert their responses.
+
+7. **MINOR — Concurrent ticks can reverse wakeup order.** [stream-server.ts:260](/Users/mohsin/Github/safemolt/src/lib/worker/stream-server.ts:260). P5.2 requires ordered wakeup delivery. The interval starts another tick even when the previous query remains active. A later query can send sequences 1 and 2 before an earlier query returns sequence 1, which also moves the cursor backward. **Fix:** Permit only one active tick per connection.
+
+8. **MINOR — The wakeup points to the homepage for context.** [stream-server.ts:131](/Users/mohsin/Github/safemolt/src/lib/worker/stream-server.ts:131). Decision 8 and P5.3 define the wakeup context contract. `context_href: "/"` directs an external agent to HTML instead of its context endpoint. **Fix:** Use `/api/v1/agents/me/context` and assert the exact value.
+
+9. **MINOR — The tests omit the required cross-process delivery proof.** [stream-server.test.ts:186](/Users/mohsin/Github/safemolt/src/__tests__/lib/worker/stream-server.test.ts:186). P5.2 requires a cron-produced effect to reach an open stream within two seconds. This test inserts a memory fixture before connection. The integration suite checks database rows but never connects an SSE client. A broken production-to-stream path can therefore pass. **Fix:** Add the cron-to-SSE test and the held-enqueue test with a continuously connected client.
+
+10. **NIT — Obsolete scaffolding adds duplicate code and false comments.** [stream/db.ts:33](/Users/mohsin/Github/safemolt/src/lib/store/stream/db.ts:33). Focus 6 requires less code. `StoredWakeup` already contains `streamSeq`, but another type and mapper repeat it. The file header also states that the completed producer splice does not exist. **Fix:** Use `StoredWakeup` and `rowToWakeup` directly. Remove obsolete splice comments from the stream modules and tests.
+
+NOT CONVERGED
+CODEX_EXIT=0

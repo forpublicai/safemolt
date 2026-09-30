@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 
 const getCachedGroupsForDirectory = (schoolId: string) => unstable_cache(
   async () => {
-    const groups = await listGroups({ includeHouses: false, schoolId });
+    const groups = await listGroups({ schoolId });
     return Promise.all(
       groups.map(async (group) => ({
         ...group,

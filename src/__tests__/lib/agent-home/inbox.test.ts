@@ -6,6 +6,8 @@
  */
 jest.mock("@/lib/store", () => ({
   getAgentByApiKey: jest.fn(),
+  // M11-1 C4: auth resolves through the combined lookup-and-touch helper.
+  authenticateAndTouchByApiKey: jest.fn(),
   touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
   getAnnouncement: jest.fn().mockResolvedValue(null),
   listGroups: jest.fn().mockResolvedValue([]),
@@ -14,6 +16,14 @@ jest.mock("@/lib/store", () => ({
   getGroup: jest.fn().mockResolvedValue(null),
   listFeed: jest.fn().mockResolvedValue([]),
   listPlaygroundSessions: jest.fn().mockResolvedValue([]),
+  // u3d fix round, finding 4: the lifetime-cap sweep asks for DUE sessions rather than filtering a
+  // fixed newest-N window, so `runDeadlineProgressionUnlocked` reaches this instead of
+  // `listPlaygroundSessions`.
+  listSessionsDueForLifetimeCap: jest.fn().mockResolvedValue([]),
+  // u6 P3.1: `buildAgentInboxSummary` now runs deadline progression through the locked entry point
+  // (`runDeadlinesAndCap`), which claims this worker lock first. Reporting it busy short-circuits
+  // the sweep entirely, so none of the deadline machinery's other store reads need mocking here.
+  acquireWorkerLock: jest.fn().mockResolvedValue(false),
   getPlaygroundActions: jest.fn().mockResolvedValue([]),
   getGroupMemberCount: jest.fn().mockResolvedValue(0),
   getFollowingCount: jest.fn().mockResolvedValue(0),
@@ -21,6 +31,22 @@ jest.mock("@/lib/store", () => ({
   countUnreadNotifications: jest.fn(),
   markNotificationRead: jest.fn(),
   markAllNotificationsRead: jest.fn(),
+  // M11-2 u5 fix round 1, finding B-2: home projects every section from ONE `AgentContext`, so
+  // this suite now reaches the whole context rather than the six sections home publishes.
+  // `getAgentById` is the read `buildAgentContext` lets throw and must answer; the rest keep the
+  // sections this suite does not assert on quiet.
+  getAgentById: jest.fn().mockResolvedValue(null),
+  listPosts: jest.fn().mockResolvedValue([]),
+  getPost: jest.fn().mockResolvedValue(null),
+  listComments: jest.fn().mockResolvedValue([]),
+  getAgentClasses: jest.fn().mockResolvedValue([]),
+  getClassById: jest.fn().mockResolvedValue(null),
+  listClassSessions: jest.fn().mockResolvedValue([]),
+  listClassEvaluations: jest.fn().mockResolvedValue([]),
+  getStudentClassResults: jest.fn().mockResolvedValue([]),
+  listClasses: jest.fn().mockResolvedValue([]),
+  getPassedEvaluations: jest.fn().mockResolvedValue([]),
+  getPlaygroundSession: jest.fn().mockResolvedValue(null),
 }));
 
 jest.mock("@/lib/human-users", () => ({
@@ -50,6 +76,9 @@ const baseAgent = {
   description: "",
   apiKey: "key_1",
   points: 0,
+  votePoints: 0,
+  evaluationPoints: 0,
+  legacyUnattributedPoints: 0,
   followerCount: 0,
   isClaimed: false,
   createdAt: "2026-05-01T00:00:00.000Z",
@@ -61,6 +90,7 @@ describe("agent-home inbox summary", () => {
     jest.clearAllMocks();
     store.listNotifications.mockResolvedValue([]);
     store.countUnreadNotifications.mockResolvedValue(0);
+    store.getAgentById.mockResolvedValue(baseAgent);
     loopActions.listRecentLoopActions.mockResolvedValue([]);
   });
 

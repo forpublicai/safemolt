@@ -3,11 +3,12 @@
  * Chroma: per-agent collection, server-side embeddings (no HF). Mock: deterministic hash vectors.
  */
 import { createHash } from "crypto";
+import type { PreparedEvent } from "@/lib/events/kinds";
 import { getVectorMemoryProvider } from "./providers";
 import type { VectorQueryResult, VectorUpsertInput } from "./types";
 import * as contextStore from "./context-store";
 import { normalizeContextPath } from "./context-path";
-import { normalizeMemoryMetadata } from "./metadata";
+import { PLATFORM_METADATA_SOURCE, normalizeMemoryMetadata } from "./metadata";
 import { chunkTextForMemory, type ChunkTextOptions } from "./chunk-text";
 import { memoryDeterministicChunkId } from "./memory-id";
 import * as memoryFts from "./memory-fts-db";
@@ -169,7 +170,10 @@ export async function upsertVectorChunkBatchForAgent(
   const docs: VectorUpsertInput[] = [];
   for (const c of chunks) {
     if (c.text.length > MAX_MEMORY_TEXT_CHARS) continue;
-    const meta = normalizeMemoryMetadata(c.metadata ?? {}, { source: "platform" });
+    // A caller that already supplied a `filed_at` keeps it, which is what makes a platform chunk's
+    // metadata STABLE across replays: `buildPlatformChunkMetadata` stamps the subject's own
+    // timestamp, so re-upserting the same chunk id writes the same row rather than a fresh clock.
+    const meta = normalizeMemoryMetadata(c.metadata ?? {}, { source: PLATFORM_METADATA_SOURCE });
     if (chroma) {
       docs.push({ id: c.id, agentId, text: c.text, metadata: meta });
     } else {
@@ -475,15 +479,27 @@ export function embeddingModelLabel(): string {
   return isChromaBackend() ? "chroma_default" : "mock_hash";
 }
 
+/**
+ * Write a context file and, when indexing is on, mirror it into the vector store.
+ *
+ * **The row and its event are one statement; the index is a best-effort follow-up** (M11-2 P1.4).
+ * That split is deliberate and unchanged: the vector store is an external system with no
+ * transaction to join, so its failure has always been logged and swallowed rather than failing the
+ * write the caller asked for.
+ *
+ * `events` is passed straight through to the store — this module is the domain service the action
+ * delegates to, not a second decision point (the `session-manager` precedent).
+ */
 export async function putContextAndMaybeIndex(
   agentId: string,
   rawPath: string,
   content: string,
-  ctx?: MemoryRequestContext
+  ctx?: MemoryRequestContext,
+  events?: readonly PreparedEvent[]
 ): Promise<{ path: string } | { error: string }> {
   const path = normalizeContextPath(rawPath);
   if (!path) return { error: "invalid_path" };
-  await contextStore.putContextFile(agentId, path, content);
+  await contextStore.putContextFile(agentId, path, content, events);
   if (indexContextEnabled()) {
     const id = `ctx_${agentId}_${encodeURIComponent(path)}`;
     try {
@@ -504,14 +520,16 @@ export async function putContextAndMaybeIndex(
   return { path };
 }
 
+/** Delete a context file and its index entry. Same split as the write: row + event, then index. */
 export async function deleteContextAndIndex(
   agentId: string,
   rawPath: string,
-  _ctx?: MemoryRequestContext
+  _ctx?: MemoryRequestContext,
+  events?: readonly PreparedEvent[]
 ): Promise<{ ok: boolean; error?: string }> {
   const path = normalizeContextPath(rawPath);
   if (!path) return { ok: false, error: "invalid_path" };
-  await contextStore.deleteContextFile(agentId, path);
+  await contextStore.deleteContextFile(agentId, path, events);
   if (indexContextEnabled()) {
     const id = `ctx_${agentId}_${encodeURIComponent(path)}`;
     try {

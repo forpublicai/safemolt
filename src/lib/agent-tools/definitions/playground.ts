@@ -11,11 +11,11 @@ import {
   listPlaygroundSessions,
   getPlaygroundSession,
   getPlaygroundActions,
-  createPlaygroundAction
 } from "@/lib/store";
-import { joinSession } from "@/lib/playground/session-manager";
+import { joinSession, submitAction } from "@/lib/actions/playground";
 import { getSchoolGameById, listGames } from "@/lib/playground/games";
 import type { PlaygroundSession, SessionStatus } from "@/lib/playground/types";
+import type { ActionErrorCode } from "@/lib/actions/types";
 import type { ToolCallResult, ToolDefinition, ToolExecutor } from "../types";
 
 export const definitions: ToolDefinition[] = [
@@ -152,6 +152,23 @@ async function formatJoinFailure(
   };
 }
 
+/**
+ * The session's own school decides who may take part — and since M11-2 P1.4 the DECISION lives in
+ * `actions/playground`, shared with the REST surface.
+ *
+ * What stays here is the presentation: the tool answers `{ success, error, data.code }` with the
+ * playground-specific wording, where the route answers the platform-access envelope. One rule, two
+ * vocabularies — the characterization suite pins both, deliberately.
+ *
+ * Absence is not this helper's business either: the action reports `not_found` and each caller's own
+ * branch renders it, because answering "denied" for a nonexistent id would leak which ids exist.
+ */
+function schoolDenialResult(code: ActionErrorCode, message: string): ToolCallResult | null {
+  return code === "vetting_required" || code === "admission_required"
+    ? { success: false, error: message, data: { code } }
+    : null;
+}
+
 export const executors: Record<string, ToolExecutor> = {
   list_playground_games: async (args, { agent }) => {
     const games = listGames();
@@ -195,13 +212,12 @@ export const executors: Record<string, ToolExecutor> = {
 
   join_playground_session: async (args, { agent }) => {
     const sessionId = String(args.session_id);
-    try {
-      const session = await joinSession(sessionId, agent.id);
-      return summarizeJoinResult(sessionId, session, false);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to join session";
-      return formatJoinFailure(sessionId, agent.id, message);
-    }
+    const result = await joinSession({ agent, sessionId });
+    if (result.ok) return summarizeJoinResult(sessionId, result.data.session, false);
+    return (
+      schoolDenialResult(result.code, result.message) ??
+      formatJoinFailure(sessionId, agent.id, result.message)
+    );
   },
 
   get_playground_session: async (args, { agent }) => {
@@ -222,20 +238,24 @@ export const executors: Record<string, ToolExecutor> = {
     };
   },
 
-  submit_playground_action: async (args, { agent }) => {
+  submit_playground_action: async (args, { agent, executionGuard }) => {
+    // M11-1 C12 made this delegate to the domain service rather than inserting the row itself (the
+    // pre-C12 tool let a NONPARTICIPANT submit, and tool actions never ingested memory or advanced
+    // the round). M11-2 P1.4 moves it one layer further, onto the action the route also uses, so
+    // the school rule and the event are shared rather than duplicated. Response shape unchanged —
+    // including the absence of a content-length bound, which this surface has never had.
     const sessionId = String(args.session_id);
-    const session = await getPlaygroundSession(sessionId);
-    if (!session) return { success: false, error: "Session not found" };
-    if (session.status !== "active") return { success: false, error: "Session is not active" };
-    const actionId = `act_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const action = await createPlaygroundAction({
-      id: actionId,
+    const result = await submitAction({
+      agent,
       sessionId,
-      agentId: agent.id,
-      round: session.currentRound,
       content: String(args.content),
+      // M11-2 P3.3 (u6 stitch): present only when `agent-pulse/runner.ts` is driving this call.
+      executionGuard,
     });
-    return { success: true, data: { action_id: action.id, round: action.round } };
+    if (result.ok) {
+      return { success: true, data: { action_id: result.data.action.id, round: result.data.action.round } };
+    }
+    return schoolDenialResult(result.code, result.message) ?? { success: false, error: result.message };
   },
 
   get_playground_actions: async (args, { agent }) => {

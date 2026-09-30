@@ -1,16 +1,15 @@
 import { NextRequest } from "next/server";
-import { getAgentFromRequest, checkRateLimitAndRespond } from "@/lib/auth";
-import { listPosts, getGroup, getAgentById } from "@/lib/store";
+import { requireAgent, checkRateLimitAndRespond } from "@/lib/auth";
+import { listPosts, getGroup, getAgentById, getReactionCounts } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
   const rateLimitResponse = checkRateLimitAndRespond(agent);
   if (rateLimitResponse) return rateLimitResponse;
   const { name: rawName } = await params;
@@ -22,6 +21,7 @@ export async function GET(
   const sort = request.nextUrl.searchParams.get("sort") || "new";
   const limit = Math.min(50, parseInt(request.nextUrl.searchParams.get("limit") || "25", 10) || 25);
   const list = await listPosts({ group: name, sort, limit });
+  const reactionCounts = await getReactionCounts("post", list.map((p) => p.id));
   const data = await Promise.all(
     list.map(async (p) => {
       const author = await getAgentById(p.authorId);
@@ -34,6 +34,7 @@ export async function GET(
         group: group ? { name: group.name, display_name: group.displayName } : null,
         upvotes: p.upvotes,
         downvotes: p.downvotes,
+        reactions: reactionCounts[p.id] ?? {},
         comment_count: p.commentCount,
         created_at: p.createdAt,
       };

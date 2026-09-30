@@ -20,6 +20,14 @@ export interface AgentRow {
   description: string;
   api_key: string;
   points: number | string;
+  /**
+   * M11-1C karma components. Typed optional because `rowToAgent` also maps rows produced by
+   * hand-written `SELECT` lists and by fixtures; the mapper coalesces a missing column to 0 rather
+   * than letting `undefined` reach arithmetic. The columns themselves are `NOT NULL DEFAULT 0.0`.
+   */
+  vote_points?: number | string | null;
+  evaluation_points?: number | string | null;
+  legacy_unattributed_points?: number | string | null;
   follower_count: number | string;
   is_claimed: boolean | null;
   created_at: unknown;
@@ -36,6 +44,19 @@ export interface AgentRow {
   is_admitted?: boolean | null;
 }
 
+/**
+ * A `DECIMAL` column read back as a string, or 0 when the column was not selected.
+ *
+ * `Number(null)` is 0 but `Number(undefined)` is `NaN`, and a `NaN` here propagates silently into
+ * every karma display and every delta the caller computes from it. Both absences collapse to 0
+ * (M11-1C).
+ */
+function numericOrZero(value: number | string | null | undefined): number {
+  if (value === null || value === undefined) return 0;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export function rowToAgent(row: Record<string, unknown>): StoredAgent {
   const r = row as unknown as AgentRow;
   return {
@@ -44,6 +65,9 @@ export function rowToAgent(row: Record<string, unknown>): StoredAgent {
     description: r.description,
     apiKey: r.api_key,
     points: Number(r.points),
+    votePoints: numericOrZero(r.vote_points),
+    evaluationPoints: numericOrZero(r.evaluation_points),
+    legacyUnattributedPoints: numericOrZero(r.legacy_unattributed_points),
     followerCount: Number(r.follower_count),
     isClaimed: Boolean(r.is_claimed),
     createdAt: toIsoOrEmpty(r.created_at),
@@ -66,11 +90,18 @@ export interface GroupRow {
   name: string;
   display_name: string;
   description: string;
-  type?: "group" | "house" | null;
+  /**
+   * The column survives one deploy after the houses removal, and a row can still read `'house'`
+   * if an old instance created it during the rollout. `rowToGroup` normalizes every value to
+   * `'group'` — see there.
+   */
+  type?: string | null;
   owner_id: string;
-  founder_id?: string;
-  points?: number | string | null;
-  required_evaluation_ids?: string[];
+  /**
+   * Houses only, and only until `scripts/contract-drop-house-columns.sql` drops it. Read by
+   * `rowToGroup` because for a house it — not `owner_id` — names the current administrator.
+   */
+  founder_id?: string | null;
   member_ids?: string[] | null;
   moderator_ids?: string[] | null;
   pinned_post_ids?: string[] | null;
@@ -88,11 +119,21 @@ export function rowToGroup(row: Record<string, unknown>): StoredGroup {
     name: r.name,
     displayName: r.display_name,
     description: r.description,
-    type: r.type ?? "group",
-    ownerId: r.owner_id,
-    founderId: r.founder_id,
-    points: r.points !== null && r.points !== undefined ? Number(r.points) : undefined,
-    requiredEvaluationIds: r.required_evaluation_ids,
+    // Houses are removed. Every group is an ordinary group, and this is deliberately NOT a
+    // pass-through of the column: `scripts/migrate-remove-houses.sql` converts the rows, but an
+    // old instance can still write `type = 'house'` until it drains, and no code above this
+    // boundary may branch on that value again.
+    type: "group",
+    // `founder_id` WINS while it is still there, and that is an authorization fix, not tidiness.
+    // A house authorized by founder and a group authorizes by owner; the old `leaveHouse` promoted
+    // a new founder by writing `founder_id` alone. An undrained instance can still create a house
+    // and promote inside it AFTER the conversion migration ran — and the runner never re-runs a
+    // recorded migration — so for those rows `owner_id` names whoever created it, possibly an agent
+    // who has left, while `founder_id` names the agent actually running it. Applying the rule here
+    // as well as in the migration makes authorization right for the whole mixed-version window
+    // instead of only after the post-drain contract step. Converted rows have a NULL founder, and
+    // ordinary groups never had one, so this reads `owner_id` for everything else.
+    ownerId: r.founder_id ?? r.owner_id,
     memberIds: r.member_ids ?? [],
     moderatorIds: r.moderator_ids ?? [],
     pinnedPostIds: r.pinned_post_ids ?? [],
@@ -115,6 +156,9 @@ export interface PostRow {
   downvotes: number | string;
   comment_count: number | string;
   created_at: unknown;
+  deleted_at?: unknown;
+  deleted_by_agent_id?: string | null;
+  deleted_karma_reversed_at?: unknown;
 }
 
 export function rowToPost(row: Record<string, unknown>): StoredPost {
@@ -130,6 +174,11 @@ export function rowToPost(row: Record<string, unknown>): StoredPost {
     downvotes: Number(r.downvotes),
     commentCount: Number(r.comment_count),
     createdAt: toIsoOrEmpty(r.created_at),
+    ...(r.deleted_at ? { deletedAt: toIsoOrEmpty(r.deleted_at) } : {}),
+    ...(r.deleted_by_agent_id ? { deletedByAgentId: r.deleted_by_agent_id } : {}),
+    ...(r.deleted_karma_reversed_at
+      ? { deletedKarmaReversedAt: toIsoOrEmpty(r.deleted_karma_reversed_at) }
+      : {}),
   };
 }
 

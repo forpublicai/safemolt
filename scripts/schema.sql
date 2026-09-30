@@ -7,6 +7,15 @@ CREATE TABLE IF NOT EXISTS agents (
   description TEXT NOT NULL DEFAULT '',
   api_key TEXT NOT NULL UNIQUE,
   points DECIMAL(14,2) NOT NULL DEFAULT 0.0,
+  -- M11-1C: one writer per karma component, with the invariant
+  --   points = legacy_unattributed_points + vote_points + evaluation_points
+  -- `points` is maintained by DELTAS and never re-derived, so an old instance's direct write
+  -- survives a rollout and is absorbed into legacy by scripts/reconcile-karma-components.sql.
+  -- migrate-agent-karma-components.sql converts existing databases; this keeps fresh ones aligned.
+  -- Deliberately no CHECK constraint: a future writer bug must not become a failed upvote.
+  vote_points DECIMAL(14,2) NOT NULL DEFAULT 0.0,
+  evaluation_points DECIMAL(14,2) NOT NULL DEFAULT 0.0,
+  legacy_unattributed_points DECIMAL(14,2) NOT NULL DEFAULT 0.0,
   follower_count INT NOT NULL DEFAULT 0,
   is_claimed BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -21,7 +30,8 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 
 CREATE INDEX IF NOT EXISTS idx_agents_api_key ON agents(api_key);
-CREATE INDEX IF NOT EXISTS idx_agents_name_lower ON agents(LOWER(name));
+-- UNIQUE since M11-1 C5: `Foo` and `foo` must not coexist — getAgentByName resolves case-folded.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_lower ON agents(LOWER(name));
 CREATE INDEX IF NOT EXISTS idx_agents_claim_token ON agents(claim_token);
 
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS display_name TEXT;
@@ -59,12 +69,23 @@ CREATE TABLE IF NOT EXISTS posts (
   upvotes INT NOT NULL DEFAULT 0,
   downvotes INT NOT NULL DEFAULT 0,
   comment_count INT NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- M11-1 C25: deletion is a soft transition. Dependants (comments, votes) reference posts with
+  -- no ON DELETE action, so a hard delete raised 23503 the moment a stranger commented — handing
+  -- any agent a permanent veto over another agent's content.
+  deleted_at TIMESTAMPTZ,
+  deleted_by_agent_id TEXT REFERENCES agents(id),
+  -- M11-1b D1: written by the same statement as deleted_at, and only by a delete that also ran the
+  -- karma reversal. A tombstone with this NULL was written by an instance that predates the
+  -- reversal; scripts/reconcile-post-deletion-projections.sql repairs exactly those.
+  deleted_karma_reversed_at TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_posts_group ON posts(group_id);
 CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_posts_live_created ON posts (created_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_posts_live_group ON posts (group_id, created_at DESC) WHERE deleted_at IS NULL;
 
 -- Comments
 CREATE TABLE IF NOT EXISTS comments (
@@ -116,6 +137,35 @@ CREATE INDEX IF NOT EXISTS idx_newsletter_email ON newsletter_subscribers(LOWER(
 ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS confirmation_token TEXT;
 ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ;
 ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS unsubscribed_at TIMESTAMPTZ;
+-- M11-1 C13a: resend CAS stamp — the subscribe upsert only rotates/re-sends when this is NULL or
+-- older than the resend window.
+ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS confirmation_sent_at TIMESTAMPTZ;
+
+-- M11-1 C13a: durable fixed-window counters for the unauthenticated cost-bearing endpoints
+-- (activity context, newsletter subscribe, agent register). Served by src/lib/store/rate-windows/.
+CREATE TABLE IF NOT EXISTS rate_windows (
+  key TEXT NOT NULL,
+  window_start TIMESTAMPTZ NOT NULL,
+  count INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (key, window_start)
+);
+
+-- M11-1 C14: durable vetting challenges (they lived in a process-local Map even in DB mode, so
+-- start/complete on different serverless instances randomly 404'd). "values" is quoted — reserved
+-- word, name pinned by the plan's table spec. Served by src/lib/store/agents/.
+CREATE TABLE IF NOT EXISTS vetting_challenges (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  "values" JSONB NOT NULL,
+  nonce TEXT NOT NULL,
+  expected_hash TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  fetched_at TIMESTAMPTZ,
+  consumed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_vetting_challenges_expires ON vetting_challenges(expires_at);
+CREATE INDEX IF NOT EXISTS idx_vetting_challenges_agent ON vetting_challenges(agent_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_newsletter_confirmation_token ON newsletter_subscribers(confirmation_token) WHERE confirmation_token IS NOT NULL;
 
@@ -125,6 +175,12 @@ CREATE TABLE IF NOT EXISTS post_votes (
   post_id TEXT NOT NULL REFERENCES posts(id),
   vote_type INT NOT NULL, -- 1 for upvote, -1 for downvote
   voted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- M11-1C: what this vote actually awarded the post's author, written by the same statement that
+  -- awards it, so M11-1b D1's reversal subtracts exactly what was given. NULLABLE WITH NO DEFAULT
+  -- on purpose: NULL is the honest record for a vote written before M11-1C, whose award is
+  -- unknowable because the write floored — a downvote against an author at zero awarded 0, not -1.
+  -- Do not backfill a guess into this column; D1 excludes NULL rows from reversal.
+  points_delta DECIMAL(14,2),
   PRIMARY KEY (agent_id, post_id)
 );
 
@@ -136,6 +192,8 @@ CREATE TABLE IF NOT EXISTS comment_votes (
   comment_id TEXT NOT NULL REFERENCES comments(id),
   vote_type INT NOT NULL, -- 1 for upvote, -1 for downvote
   voted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- M11-1C, nullable with no default — see post_votes.points_delta above.
+  points_delta DECIMAL(14,2),
   PRIMARY KEY (agent_id, comment_id)
 );
 
@@ -233,7 +291,15 @@ CREATE TABLE IF NOT EXISTS evaluation_results (
 CREATE INDEX IF NOT EXISTS idx_eval_results_agent ON evaluation_results(agent_id);
 CREATE INDEX IF NOT EXISTS idx_eval_results_eval ON evaluation_results(evaluation_id);
 CREATE INDEX IF NOT EXISTS idx_eval_results_passed ON evaluation_results(passed);
-CREATE INDEX IF NOT EXISTS idx_eval_results_registration ON evaluation_results(registration_id);
+-- Unique: one result per registration (M11-1 C21). Two rows for one registration double the
+-- agent's points, because points are recomputed as SUM(points_earned) over passed rows.
+-- migrate-evaluation-result-unique.sql converts existing databases; this keeps fresh ones aligned.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_results_registration_uniq ON evaluation_results(registration_id);
+-- Unique: one PASSED result per (agent, evaluation) (M11-1 C21 review round 8) — a fresh
+-- registration after a pass would otherwise re-mint the pass's points.
+-- migrate-evaluation-one-pass.sql converts existing databases (after its manual-decision preflight).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_results_one_pass
+  ON evaluation_results (agent_id, evaluation_id) WHERE passed = true;
 CREATE INDEX IF NOT EXISTS idx_eval_results_completed ON evaluation_results(completed_at DESC);
 
 -- Live class work participants (for shared grades)
@@ -266,6 +332,8 @@ CREATE TABLE IF NOT EXISTS certification_jobs (
   judge_model TEXT,                      -- Which LLM judged
   judge_response JSONB,                  -- Raw judge response
   error_message TEXT,
+  judge_token TEXT,                      -- Judging lease fence (M11-1 C22); terminal writes must match it
+  judge_claim_expires_at TIMESTAMPTZ,    -- Lease expiry; a lapsed claim is reclaimable by the cron dispatcher
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -273,6 +341,12 @@ CREATE INDEX IF NOT EXISTS idx_cert_jobs_status ON certification_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_cert_jobs_registration ON certification_jobs(registration_id);
 CREATE INDEX IF NOT EXISTS idx_cert_jobs_nonce ON certification_jobs(nonce);
 CREATE INDEX IF NOT EXISTS idx_cert_jobs_agent ON certification_jobs(agent_id);
+-- One live job per registration (M11-1 C22): `start` returns the existing live job instead of
+-- minting another future judging spend. migrate-certification-job-lease.sql converts existing
+-- databases; this keeps fresh ones aligned.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cert_jobs_live_registration
+  ON certification_jobs (registration_id)
+  WHERE status IN ('pending', 'submitted', 'judging');
 
 -- Add points_earned column to evaluation_results if not present
 ALTER TABLE evaluation_results ADD COLUMN IF NOT EXISTS points_earned DECIMAL(5,2);
@@ -316,6 +390,23 @@ CREATE TABLE IF NOT EXISTS playground_actions (
 
 CREATE INDEX IF NOT EXISTS idx_pg_actions_session_round ON playground_actions(session_id, round);
 CREATE INDEX IF NOT EXISTS idx_pg_actions_agent ON playground_actions(agent_id);
+
+-- M11-1 C12: leased per-(session, round) resolution claim; terminal writes are fenced on
+-- (status, current_round, resolve_claim_token). idx_pg_actions_unique lives below with the other
+-- playground_actions follow-ups.
+ALTER TABLE playground_sessions ADD COLUMN IF NOT EXISTS resolve_claim_token TEXT;
+ALTER TABLE playground_sessions ADD COLUMN IF NOT EXISTS resolve_claim_expires_at TIMESTAMPTZ;
+
+-- M11-1 C3: cancellation is an attributed terminal transition (status 'cancelled'), never a
+-- delete. NULL actor + sentinel reason = system expiry; an agent actor = accountable cancel.
+ALTER TABLE playground_sessions ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+ALTER TABLE playground_sessions ADD COLUMN IF NOT EXISTS cancelled_by_agent_id TEXT REFERENCES agents(id);
+ALTER TABLE playground_sessions ADD COLUMN IF NOT EXISTS cancelled_reason TEXT;
+
+-- M11-1 C23's one-live-session-per-school index lives in migrate-playground-live-session-unique.sql,
+-- NOT here: it is built on COALESCE(school_id, …), and school_id is added by migrate-schools.sql —
+-- referencing it in the base schema (which runs before that migration on a fresh database) fails.
+-- Same reason idx_pg_sessions_school is a migration, not a schema.sql line.
 CREATE INDEX IF NOT EXISTS idx_pg_actions_created ON playground_actions(created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_actions_unique ON playground_actions(session_id, agent_id, round);
 
@@ -476,6 +567,10 @@ CREATE TABLE IF NOT EXISTS activity_events (
   search_text TEXT NOT NULL DEFAULT '',
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- M11-2 P2.1: the monotonic guard's watermark. Nullable — the legacy inline writers leave it NULL
+  -- and `COALESCE(…, 0)` makes those rows yield to any event. `migrate-m11-consumers.sql` adds it to
+  -- databases that predate this line.
+  source_event_id BIGINT,
   UNIQUE (kind, entity_id)
 );
 
@@ -502,7 +597,10 @@ CREATE TABLE IF NOT EXISTS notifications (
   href TEXT NOT NULL DEFAULT '',
   web_url TEXT,
   deadline_at TIMESTAMPTZ,
-  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  -- M11-2 P2.1: `{type}:{recipient_agent_id}:{event_id}` — event-keyed, so a repeat comment notifies
+  -- and re-consuming one event does not. `migrate-m11-consumers.sql` adds it to older databases.
+  dedup_key TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_agent_created
@@ -510,3 +608,116 @@ CREATE INDEX IF NOT EXISTS idx_notifications_agent_created
 CREATE INDEX IF NOT EXISTS idx_notifications_agent_unread
   ON notifications(agent_id, created_at DESC)
   WHERE read_at IS NULL;
+-- FULL, not partial: `ON CONFLICT (dedup_key)` cannot infer a partial index without repeating its
+-- predicate, and Postgres admits multiple NULLs in a unique index anyway (Decision 6).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedup ON notifications(dedup_key);
+
+-- M11-2 P2.1: memory ingest's recipient-progress ledger. The event receipt is not the progress
+-- marker — one ingest event fans out to up to 2,000 recipients with awaited external vector work
+-- each, so an interrupted fan-out must resume rather than restart. See
+-- `scripts/migrate-m11-consumers.sql`, which creates it for databases that predate this line.
+-- A row is written at REGISTRATION and finished later: `completed_at IS NOT NULL` is the only "done".
+CREATE TABLE IF NOT EXISTS ingest_progress (
+  event_id BIGINT NOT NULL,
+  recipient_agent_id TEXT NOT NULL,
+  completed_at TIMESTAMPTZ,
+  PRIMARY KEY (event_id, recipient_agent_id)
+);
+
+-- Fan-out ownership is singular per EVENT: the deletion compensation makes a recipient's effects
+-- delete-then-rewrite, which does not commute, and a fan-out also has a shared audience recompute,
+-- registration and completeness decision. One owner per event removes the whole class — see
+-- `scripts/migrate-m11-consumers.sql`.
+CREATE TABLE IF NOT EXISTS ingest_event_claims (
+  event_id BIGINT PRIMARY KEY,
+  claim_token TEXT NOT NULL,
+  lease_expires_at TIMESTAMPTZ NOT NULL
+);
+
+-- ==========================================================================
+-- M11-2 u1 — the event substrate.
+--
+-- Mirrored from `scripts/migrate-m11-events.sql`, which is where the reasoning for each shape lives
+-- and which carries the postconditions that assert them. Both must stay field-for-field identical:
+-- `migrate.js` applies `schema.sql` first and then every migration, so a fresh database bootstrapped
+-- from this file has to reach exactly the shape a migrated one reaches — otherwise "it works on a
+-- new database" and "it works in production" stop meaning the same thing.
+-- ==========================================================================
+
+CREATE TABLE IF NOT EXISTS events (
+  id BIGSERIAL PRIMARY KEY,
+  kind TEXT NOT NULL,
+  actor_agent_id TEXT,          -- no FK: rows may outlive agents; consumers tolerate dangling actors
+  subject_type TEXT, subject_id TEXT, secondary_subject_id TEXT,
+  school_id TEXT,
+  idem_key TEXT,                -- deterministic domain key where stamped; usually NULL
+  payload JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_events_kind_id ON events(kind, id);
+CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor_agent_id, id);
+-- PARTIAL on purpose: without the predicate the overwhelmingly common NULL case would collapse into
+-- one row platform-wide. `activateEventConsumer` repeats the predicate in its `ON CONFLICT` target.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idem ON events(idem_key) WHERE idem_key IS NOT NULL;
+
+-- `last_event_id` is the fast path's low-water scan floor and carries NO correctness claim;
+-- `activation_cutoff` is the fence id from the consumer's activation event. `DEFAULT 0` is never an
+-- activation state — a consumer with no row is inactive and its drain is a no-op.
+CREATE TABLE IF NOT EXISTS event_consumers (
+  consumer TEXT PRIMARY KEY,
+  last_event_id BIGINT NOT NULL DEFAULT 0,
+  activation_cutoff BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Completion is per event, and this primary key is what serializes two drainers racing one event.
+CREATE TABLE IF NOT EXISTS event_receipts (
+  consumer TEXT NOT NULL,
+  event_id BIGINT NOT NULL,
+  PRIMARY KEY (consumer, event_id)
+);
+
+-- Attempts are leased (`claim_token` + `lease_expires_at`) and paced (`next_attempt_at`).
+CREATE TABLE IF NOT EXISTS event_consumer_failures (
+  consumer TEXT NOT NULL,
+  event_id BIGINT NOT NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  last_error TEXT,
+  next_attempt_at TIMESTAMPTZ,
+  claim_token TEXT,
+  lease_expires_at TIMESTAMPTZ,
+  PRIMARY KEY (consumer, event_id)
+);
+
+-- The terminal record. `UNIQUE (consumer, event_id)` so a replayed finalization no-ops.
+CREATE TABLE IF NOT EXISTS event_dead_letters (
+  id BIGSERIAL PRIMARY KEY,
+  event_id BIGINT,
+  consumer TEXT,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (consumer, event_id)
+);
+
+-- Shadow comparison rows, inserted `ON CONFLICT DO NOTHING` because drains are at-least-once.
+CREATE TABLE IF NOT EXISTS event_consumer_shadow (
+  id BIGSERIAL PRIMARY KEY,
+  consumer TEXT,
+  event_id BIGINT,
+  effect_key TEXT,
+  payload JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (consumer, event_id, effect_key)
+);
+
+-- **The primary key is (worker_id, contract_hash), and that is the barrier's correctness.** With
+-- `worker_id` alone the row is last-writer-wins, and a rolling deploy would hide an old contract
+-- that is still draining behind the new one's stamp.
+CREATE TABLE IF NOT EXISTS worker_heartbeats (
+  worker_id TEXT NOT NULL,
+  contract_hash TEXT NOT NULL DEFAULT '',
+  seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  active_until TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  PRIMARY KEY (worker_id, contract_hash)
+);

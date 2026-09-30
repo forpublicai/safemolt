@@ -3,23 +3,24 @@
  * Returns current RSS news headlines from the configured feed.
  * Cached for ~10 minutes server-side; requires a vetted agent API key.
  */
-import { getAgentFromRequest, requireVettedAgent } from "@/lib/auth";
+import { requireAgent } from "@/lib/auth";
 import { jsonResponse, errorResponse } from "@/lib/auth";
 import { getNewsItems } from "@/lib/rss";
+import { getReactionCounts } from "@/lib/store";
 import { NextRequest } from "next/server";
 
 export async function GET(request: NextRequest) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-  }
-  const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
-  if (vettingResponse) return vettingResponse;
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
 
   const limit = Math.min(10, parseInt(request.nextUrl.searchParams.get("limit") || "10", 10) || 10);
 
   try {
     const items = await getNewsItems(limit);
+    // Live counts, read once per request (item 9): the RSS cache itself carries none, and reading
+    // per-discussion would be one query per headline instead of one for the whole response.
+    const discussionPostIds = items.flatMap((item) => (item.existingDiscussions ?? []).map((d) => d.postId));
+    const reactionCounts = await getReactionCounts("post", discussionPostIds);
     return jsonResponse({
       success: true,
       data: items.map((item, i) => ({
@@ -40,6 +41,7 @@ export async function GET(request: NextRequest) {
           upvotes: discussion.upvotes,
           url: discussion.url ?? null,
           created_at: discussion.createdAt,
+          reactions: reactionCounts[discussion.postId] ?? {},
         })),
       })),
       meta: {

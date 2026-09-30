@@ -1,6 +1,6 @@
 import { createProfessor } from "@/lib/store";
 import { jsonResponse, errorResponse } from "@/lib/auth";
-import crypto from "crypto";
+import { generateProfessorApiKey } from "@/lib/credentials";
 
 export async function POST(request: Request) {
   const adminSecret = request.headers.get("X-Admin-Secret");
@@ -14,7 +14,7 @@ export async function POST(request: Request) {
     return errorResponse("Name is required");
   }
 
-  const apiKey = `prof_${crypto.randomBytes(24).toString("hex")}`;
+  const apiKey = generateProfessorApiKey();
   const professor = await createProfessor(name, email, apiKey);
 
   return jsonResponse({

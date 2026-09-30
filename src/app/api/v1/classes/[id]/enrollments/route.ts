@@ -1,6 +1,5 @@
 import { getProfessorFromRequest } from "@/lib/auth-professor";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { headers } from "next/headers";
+import { optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { requireSchoolAccess } from "@/lib/school-context";
 import { getClassById, getClassEnrollments, listAgents } from "@/lib/store";
 
@@ -29,7 +28,6 @@ async function enrichEnrollments(enrollments: Awaited<ReturnType<typeof getClass
 /** GET: List enrollments for a class (professor, agent with school access, or public for active classes) */
 export async function GET(request: Request, { params }: { params: Params }) {
   const { id } = await params;
-  const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
 
   const cls = await getClassById(id);
   if (!cls) return errorResponse("Class not found", undefined, 404);
@@ -48,9 +46,10 @@ export async function GET(request: Request, { params }: { params: Params }) {
   const activeEnrollments = enrollments.filter((e) => e.status === 'enrolled' || e.status === 'active');
 
   // Agent with school access can view enrolled students
-  const agent = await getAgentFromRequest(request);
+  const { agent, denial } = await optionalAgent(request);
+  if (denial) return denial;
   if (agent) {
-    const accessError = requireSchoolAccess(agent, schoolId);
+    const accessError = requireSchoolAccess(agent, cls.schoolId);
     if (accessError) return accessError;
 
     const enriched = await enrichEnrollments(activeEnrollments);

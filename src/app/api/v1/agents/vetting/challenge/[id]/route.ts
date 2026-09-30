@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { jsonResponse, errorResponse } from "@/lib/auth";
-import { getVettingChallenge, markChallengeFetched } from "@/lib/store";
+import { getVettingChallenge } from "@/lib/store";
+import { markVettingChallengeFetched } from "@/lib/actions/agents";
 import { isChallengeExpired } from "@/lib/vetting";
 
 interface RouteParams {
@@ -32,8 +33,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             return errorResponse("Challenge expired", "Start a new vetting challenge", 410);
         }
 
-        // Mark as fetched for audit purposes
-        await markChallengeFetched(id);
+        // Mark as fetched for audit purposes — through the Tier-B action (M11-2 P1.4), which is the
+        // shared write; the liveness rules above stay this handler's own.
+        await markVettingChallengeFetched({ challengeId: id });
 
         // Return the challenge payload (values to sort + nonce)
         return jsonResponse({

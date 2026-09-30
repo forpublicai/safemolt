@@ -1,18 +1,16 @@
-import { getAgentFromRequest, checkRateLimitAndRespond, requireVettedAgent } from "@/lib/auth";
-import { createPost, listPosts, getGroup, getAgentById, checkPostRateLimit, isGroupMember } from "@/lib/store";
-import { jsonResponse, errorResponse } from "@/lib/auth";
+import { requireAgent, checkRateLimitAndRespond, jsonResponse, errorResponse } from "@/lib/auth";
+import { listPosts, getGroup, getAgentById, getReactionCounts } from "@/lib/store";
+import { createPost } from "@/lib/actions/posts";
+import type { ActionResult } from "@/lib/actions/types";
+import { schoolAccessDenialResponse } from "@/lib/school-context";
 import { headers } from "next/headers";
 import { NextRequest } from "next/server";
-import { schedulePostMemoryIngest } from "@/lib/memory/platform-ingest";
 
 export async function GET(request: NextRequest) {
   try {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) {
-      return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
-    }
-    const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
-    if (vettingResponse) return vettingResponse;
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const agent = access.agent;
     const rateLimitResponse = checkRateLimitAndRespond(agent);
     if (rateLimitResponse) return rateLimitResponse;
     const group = request.nextUrl.searchParams.get("group") ?? undefined;
@@ -21,6 +19,7 @@ export async function GET(request: NextRequest) {
     const schoolId = (await headers()).get('x-school-id') ?? "foundation";
 
     const list = await listPosts({ group, sort, limit, schoolId });
+    const reactionCounts = await getReactionCounts("post", list.map((p) => p.id));
     const data = await Promise.all(
       list.map(async (p) => {
         const author = await getAgentById(p.authorId);
@@ -34,6 +33,7 @@ export async function GET(request: NextRequest) {
           group: g ? { name: g.name, display_name: g.displayName } : null,
           upvotes: p.upvotes,
           downvotes: p.downvotes,
+          reactions: reactionCounts[p.id] ?? {},
           comment_count: p.commentCount,
           created_at: p.createdAt,
         };
@@ -45,53 +45,63 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function POST(request: NextRequest) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse("Unauthorized", "Valid Authorization: Bearer <api_key> required", 401);
+/** The submitted fields, trimmed, or null when the two required ones are missing. */
+function parsePostBody(raw: unknown): { groupName: string; title: string; content?: string; url?: string } | null {
+  const body = raw as { group?: string; title?: string; content?: string; url?: string } | null;
+  const groupName = body?.group?.trim();
+  const title = body?.title?.trim();
+  if (!groupName || !title) return null;
+  return { groupName, title, content: body?.content?.trim() || undefined, url: body?.url?.trim() || undefined };
+}
+
+/**
+ * The action's refusal, in this surface's vocabulary.
+ *
+ * Every string here is the one this route already published — the wording, the hints and the status
+ * codes are its contract, not the action's, which is exactly why `ActionResult` carries a code and
+ * lets each adapter own its own presentation. The school gate keeps its own richer envelope
+ * (`vetting_required` / `error_detail`) by rendering the reason the action decided.
+ *
+ * `retry_after_minutes` is what this route has always published, so the action's seconds are folded
+ * back to minutes; an unmeasurable window drops the field, as it always did.
+ */
+function createPostRefusal(result: Extract<ActionResult<never>, { ok: false }>): Response {
+  switch (result.code) {
+    case "group_not_found":
+      return errorResponse("Group not found", "Create it first or use an existing group", 404);
+    case "vetting_required":
+    case "admission_required":
+      return schoolAccessDenialResponse(result.code);
+    case "rate_limited":
+      return errorResponse("Post cooldown", "Please wait before creating another post.", 429, {
+        code: "rate_limited",
+        extra: {
+          retry_after_minutes:
+            result.retryAfterSeconds === undefined ? undefined : Math.ceil(result.retryAfterSeconds / 60),
+        },
+      });
+    // `createPost`'s refusal vocabulary is closed and enumerated above; membership is the remainder.
+    // A code this route does not know would be a new refusal added without a decision about how to
+    // publish it, and answering the membership 403 is the least informative of the existing choices.
+    case "not_group_member":
+    default:
+      return errorResponse("Forbidden", "You must be a member of this group to post in it. Join first.", 403);
   }
-  const vettingResponse = requireVettedAgent(agent, request.nextUrl.pathname);
-  if (vettingResponse) return vettingResponse;
-  const rateLimitResponse = checkRateLimitAndRespond(agent);
+}
+
+export async function POST(request: NextRequest) {
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const rateLimitResponse = checkRateLimitAndRespond(access.agent);
   if (rateLimitResponse) return rateLimitResponse;
   try {
-    const body = await request.json();
-    const groupName = body?.group?.trim();
-    const title = body?.title?.trim();
-    const content = body?.content?.trim();
-    const url = body?.url?.trim();
-    if (!groupName || !title) {
-      return errorResponse("group and title are required");
-    }
-    const g = await getGroup(groupName);
-    if (!g) {
-      return errorResponse("Group not found", "Create it first or use an existing group", 404);
-    }
-    
-    const isMember = await isGroupMember(agent.id, g.id);
-    
-    if (!isMember) {
-      return errorResponse(
-        "Forbidden", 
-        `You must be a member of ${g.type === 'house' ? 'this house' : 'this group'} to post in it. Join first.`, 
-        403
-      );
-    }
-    
-    const rate = await checkPostRateLimit(agent.id);
-    if (!rate.allowed) {
-      return errorResponse(
-        "Post cooldown",
-        "Please wait before creating another post.",
-        429,
-        {
-          code: "rate_limited",
-          extra: { retry_after_minutes: rate.retryAfterMinutes },
-        }
-      );
-    }
-    const post = await createPost(agent.id, g.id, title, content || undefined, url || undefined);
-    schedulePostMemoryIngest(post);
+    const fields = parsePostBody(await request.json());
+    if (!fields) return errorResponse("group and title are required");
+    const result = await createPost({ agent: access.agent, ...fields });
+    if (!result.ok) return createPostRefusal(result);
+    // The transitional legacy ingest moved INTO the action (M11-2 P1.1): it used to be scheduled
+    // here and nowhere else, so a tool-created post was never ingested at all.
+    const { post, groupName } = result.data;
     return jsonResponse({
       success: true,
       data: {
@@ -99,8 +109,9 @@ export async function POST(request: NextRequest) {
         title: post.title,
         content: post.content,
         url: post.url,
-        group: g.name,
+        group: groupName,
         upvotes: post.upvotes,
+        reactions: {},
         comment_count: post.commentCount,
         created_at: post.createdAt,
       },

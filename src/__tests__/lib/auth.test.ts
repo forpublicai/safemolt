@@ -10,11 +10,11 @@ import {
 
 // Mock the store so we don't hit DB or memory
 jest.mock("@/lib/store", () => ({
-  getAgentByApiKey: jest.fn(),
-  touchAgentLastActiveAtIfStale: jest.fn().mockResolvedValue(undefined),
+  // M11-1 C4: auth resolves through the combined lookup-and-touch helper.
+  authenticateAndTouchByApiKey: jest.fn(),
 }));
 
-const { getAgentByApiKey, touchAgentLastActiveAtIfStale } = require("@/lib/store");
+const { authenticateAndTouchByApiKey } = require("@/lib/store");
 
 describe("jsonResponse", () => {
   it("returns a Response with JSON body and status 200 by default", () => {
@@ -76,7 +76,7 @@ describe("getAgentFromRequest", () => {
   it("returns null when Authorization header is missing", async () => {
     const req = new Request("http://localhost/api", { headers: {} });
     expect(await getAgentFromRequest(req)).toBeNull();
-    expect(getAgentByApiKey).not.toHaveBeenCalled();
+    expect(authenticateAndTouchByApiKey).not.toHaveBeenCalled();
   });
 
   it("returns null when Authorization does not start with Bearer ", async () => {
@@ -84,10 +84,10 @@ describe("getAgentFromRequest", () => {
       headers: { Authorization: "Basic xyz" },
     });
     expect(await getAgentFromRequest(req)).toBeNull();
-    expect(getAgentByApiKey).not.toHaveBeenCalled();
+    expect(authenticateAndTouchByApiKey).not.toHaveBeenCalled();
   });
 
-  it("calls getAgentByApiKey with the token and returns its result", async () => {
+  it("calls authenticateAndTouchByApiKey with the token and returns its result", async () => {
     const mockAgent = {
       id: "agent_1",
       name: "TestAgent",
@@ -98,19 +98,21 @@ describe("getAgentFromRequest", () => {
       isClaimed: false,
       createdAt: new Date().toISOString(),
     };
-    (getAgentByApiKey as jest.Mock).mockResolvedValue(mockAgent);
+    (authenticateAndTouchByApiKey as jest.Mock).mockResolvedValue(mockAgent);
 
     const req = new Request("http://localhost/api", {
       headers: { Authorization: "Bearer safemolt_abc123" },
     });
     const agent = await getAgentFromRequest(req);
     expect(agent).toEqual(mockAgent);
-    expect(getAgentByApiKey).toHaveBeenCalledWith("safemolt_abc123");
-    expect(touchAgentLastActiveAtIfStale).toHaveBeenCalledWith("agent_1");
+    // One call, not two. The separate touch is gone: M11-1 C4 folded the last-active stamp into
+    // the lookup so that authentication and the stale-name cleanup serialize on the same row.
+    expect(authenticateAndTouchByApiKey).toHaveBeenCalledWith("safemolt_abc123");
+    expect(authenticateAndTouchByApiKey).toHaveBeenCalledTimes(1);
   });
 
-  it("returns null when getAgentByApiKey returns null", async () => {
-    (getAgentByApiKey as jest.Mock).mockResolvedValue(null);
+  it("returns null when authenticateAndTouchByApiKey returns null", async () => {
+    (authenticateAndTouchByApiKey as jest.Mock).mockResolvedValue(null);
     const req = new Request("http://localhost/api", {
       headers: { Authorization: "Bearer invalid_key" },
     });

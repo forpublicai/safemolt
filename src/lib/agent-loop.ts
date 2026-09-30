@@ -12,7 +12,8 @@
  * Designed to run in a Vercel Cron function (~300s budget).
  */
 
-import { sql } from "@/lib/db";
+import { hasDatabase, sql } from "@/lib/db";
+import { agentLoopState } from "@/lib/store/_memory-state";
 import { PLATFORM_TOOLS, type ToolCallResult, type ToolDefinition } from "@/lib/agent-tools";
 import { makeHfRouterCallLLM, makeOpenAiCallLLM } from "@/lib/agent-runtime/adapters/openai-compatible";
 import {
@@ -28,21 +29,8 @@ import {
 } from "@/lib/agent-runtime";
 import {
   getAgentById,
-  listPosts,
-  listComments,
-  getAgentClasses,
-  getClassById,
-  listClassSessions,
-  listClassEvaluations,
-  getStudentClassResults,
-  listClasses,
   setAgentVetted,
   setAgentIdentityMd,
-  getPassedEvaluations,
-  ensureGeneralGroup,
-  getGroupMemberCount,
-  listNotifications,
-  getFollowingCount,
 } from "@/lib/store";
 import { listUserIdsLinkedToAgent } from "@/lib/human-users";
 import { buildAgentChatSystemPrompt } from "@/lib/dashboard-agent-chat";
@@ -52,18 +40,37 @@ import {
   incrementSponsoredInferenceUsage,
 } from "@/lib/human-users";
 import { isSponsoredPublicAiAgent } from "@/lib/memory/sponsored-public-ai";
-import { recallMemoryForAgent, upsertVectorForAgent } from "@/lib/memory/memory-service";
+import { upsertVectorForAgent } from "@/lib/memory/memory-service";
 import { isPlaceholderIdentity, generateRandomIdentity, parsePostingCadence, type PostingCadence } from "@/lib/agent-identity-generator";
-import { listEvaluations } from "@/lib/evaluations/loader";
+import { ensureGeneralMembership } from "@/lib/actions/groups";
+// M11-2 P4.1/P4.3: every sense this prompt renders comes from one library, so the loop and
+// `GET /agents/me/context` are two projections of one context rather than two gathers.
 import {
-  gatherPlaygroundOpportunities,
-  gatherGroupOpportunities as gatherGroupOpportunitySnapshot,
-  gatherNewsHeadlines,
-} from "@/lib/agent-opportunities";
-import { type NewsItem } from "@/lib/rss";
-import type { StoredAgent, StoredPost, StoredComment, StoredNotification } from "@/lib/store-types";
-import { recordAgentLoopActivityEvent } from "@/lib/store/activity/events";
+  buildAgentContext,
+  type AgentContext,
+  type GroupItem,
+  type PlaygroundActiveItem,
+  type PlaygroundItem,
+  type PlaygroundPendingItem,
+} from "@/lib/agent-senses";
+import type { StoredAgent } from "@/lib/store-types";
+// Type-only, and deliberately so: `store/execution-guard.ts` reaches `_memory-state` the moment it
+// LOADS, and this module is imported by tests that mock `@/lib/db` with nothing but `{ sql }` (see
+// the lazy-import note above). A type import is erased at compile time, so it adds no such edge.
+import type { ExecutionGuard } from "@/lib/store/execution-guard";
+import { buildAgentLoopActivityUpsertCte } from "@/lib/store/activity/events";
+import { emitEventCtes, sqlColumn, sqlPayloadObject } from "@/lib/store/events/statement";
+import { STORE_ASSIGNED_PAYLOAD_ID, type PreparedEvent } from "@/lib/events/kinds";
 import { listRecentLoopActions, type RecentLoopAction } from "@/lib/agent-loop-actions";
+// M11-2 P3.3: the wakeup runner `runAgentLoopBatch` degrades into. Imported LAZILY, inside
+// `runAgentLoopBatch` itself, rather than at this file's top level — `agent-pulse/runner.ts` reaches
+// `src/lib/store/wakeups` at ITS top level, and that module calls `hasDatabase()` the moment it
+// loads (`pickStore` is eager, not a lazy dispatcher — `src/lib/store/pick-store.ts`). A static
+// import here would make EVERY caller of `agent-loop.ts` — including tests that only need
+// `buildDecisionPrompt` or `tickAgent` and mock `@/lib/db` with nothing but `{ sql }` — pull that
+// chain in and crash on a missing `hasDatabase`. Deferring the import to the one function that
+// actually needs the wakeup store keeps that cost scoped to callers of `runAgentLoopBatch`, which is
+// the only thing in this file that touches wakeups at all.
 
 // ---------------------------------------------------------------------------
 // Config
@@ -72,30 +79,38 @@ import { listRecentLoopActions, type RecentLoopAction } from "@/lib/agent-loop-a
 /** Max agents to process per cron invocation. */
 const BATCH_SIZE = parseInt(process.env.AGENT_LOOP_BATCH_SIZE || "2", 10);
 
-/** Min minutes between actions for one agent, by identity posting cadence. */
+/**
+ * Min minutes between actions for one agent, by identity posting cadence.
+ *
+ * Env-tunable (M11-2 P3.4 / M10 C8): each tier reads its own `AGENT_LOOP_COOLDOWN_*_MINUTES`
+ * variable at module load — the same convention `AGENT_LOOP_BATCH_SIZE` follows above — and falls
+ * back to the long-standing default on an unset or invalid value.
+ */
+function cooldownTier(envName: string, fallback: number): number {
+  const raw = Number(process.env[envName]);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+}
 const COOLDOWN_MINUTES: Record<PostingCadence, number> = {
-  frequent: 15,
-  occasional: 60,
-  reactive: 120,
+  frequent: cooldownTier("AGENT_LOOP_COOLDOWN_FREQUENT_MINUTES", 15),
+  occasional: cooldownTier("AGENT_LOOP_COOLDOWN_OCCASIONAL_MINUTES", 60),
+  reactive: cooldownTier("AGENT_LOOP_COOLDOWN_REACTIVE_MINUTES", 120),
 };
 
-/** Max feed items to show the LLM per tick. */
-const FEED_WINDOW = 5;
+/**
+ * M11-2 P3.3: the one place that derives an agent's cooldown minutes from its identity, so the
+ * runner's own reply/mention/playground_round bookkeeping (`agent-pulse/runner.ts`) applies the SAME
+ * cooldown `tickAgent` always has, rather than a second copy of `COOLDOWN_MINUTES` + a second
+ * `parsePostingCadence` call.
+ */
+export function cooldownMinutesFor(agent: StoredAgent): number {
+  return COOLDOWN_MINUTES[parsePostingCadence(agent.identityMd)];
+}
 
-/** Max RSS news headlines to show the LLM per tick. */
-const NEWS_WINDOW = 5;
-
-/** Max comments per post to include in prompt. */
-const MAX_COMMENTS_PER_POST = 20;
-
-/** Max recent memories to recall. */
-const MAX_MEMORIES = 8;
-
-/** Max unread inbox obligations to show the LLM per tick. */
-const INBOX_OBLIGATION_WINDOW = 5;
+// The per-section windows (feed, news, comments, memories, inbox) now live beside the gatherers
+// they bound, in `src/lib/agent-senses/constants.ts`.
 
 /** Max own autonomous action snippets to show for anti-repetition guidance. */
-const RECENT_ACTION_WINDOW = 5;
+export const RECENT_ACTION_WINDOW = 5;
 
 /** ADR-0001: total tool calls allowed across the whole staged tick. */
 const LOOP_MAX_TOOL_CALLS = parseInt(process.env.AGENT_LOOP_MAX_TOOL_CALLS || "4", 10);
@@ -125,8 +140,29 @@ export type LoopPromptStage = { kind: "discovery" } | { kind: "domain"; domain: 
 // The single agent_loop_state reader lives in ./agent-loop/state (shared with
 // /agents/me(/home) via readLoopStateSafely); re-exported for existing callers.
 export { getLoopState } from "./agent-loop/state";
+import { recordAgentLoopTick } from "./agent-loop/state";
 
+/**
+ * M11-2 P3.3: memory mode writes the same `agentLoopState` map `getLoopState` now reads
+ * (`agent-loop/state.ts`), so an agent's loop can be enabled/disabled the same way in Jest / local
+ * no-DB runs as in production — the fixture path the runner's own tests use to arm and disarm the
+ * kill switch.
+ */
 export async function setLoopEnabled(agentId: string, enabled: boolean): Promise<void> {
+  if (!hasDatabase() || !sql) {
+    const existing = agentLoopState.get(agentId);
+    agentLoopState.set(agentId, {
+      agentId,
+      enabled,
+      lastSeenAt: existing?.lastSeenAt ?? null,
+      lastActionAt: existing?.lastActionAt ?? null,
+      nextEligibleAt: existing?.nextEligibleAt ?? null,
+      lastError: existing?.lastError ?? null,
+      actionsTaken: existing?.actionsTaken ?? 0,
+      errors: existing?.errors ?? 0,
+    });
+    return;
+  }
   await sql!`
     INSERT INTO agent_loop_state (agent_id, enabled)
     VALUES (${agentId}, ${enabled})
@@ -134,7 +170,27 @@ export async function setLoopEnabled(agentId: string, enabled: boolean): Promise
   `;
 }
 
+/**
+ * M11-2 P3.3: candidates for the IDLE SWEEP (`runAgentLoopBatch`'s idle-sweep half), not a batch of
+ * agents to tick directly any more — `listEligibleAgents`'s old callers ticked each id in the
+ * returned list; the sweep instead ENQUEUES an idle wakeup per id (`agent-pulse/runner.ts`'s
+ * `enqueueIdleWakeup`) and lets `runPulseBatch`'s claim statement decide who actually runs. The query
+ * itself is unchanged — same predicate, same `BATCH_SIZE` cap, same ordering — and gained a memory
+ * branch so the sweep works in Jest / local no-DB runs too.
+ */
 async function listEligibleAgents(now: string): Promise<string[]> {
+  if (!hasDatabase() || !sql) {
+    const nowMs = Date.parse(now);
+    return Array.from(agentLoopState.values())
+      .filter((state) => state.enabled && (!state.nextEligibleAt || Date.parse(state.nextEligibleAt) <= nowMs))
+      .sort((a, b) => {
+        const at = a.nextEligibleAt ? Date.parse(a.nextEligibleAt) : 0;
+        const bt = b.nextEligibleAt ? Date.parse(b.nextEligibleAt) : 0;
+        return at - bt;
+      })
+      .slice(0, BATCH_SIZE)
+      .map((state) => state.agentId);
+  }
   const rows = await sql!`
     SELECT agent_id FROM agent_loop_state
     WHERE enabled = TRUE AND next_eligible_at <= ${now}::timestamptz
@@ -144,8 +200,27 @@ async function listEligibleAgents(now: string): Promise<string[]> {
   return (rows as { agent_id: string }[]).map((r) => r.agent_id);
 }
 
-async function recordAction(agentId: string, cooldownMinutes: number): Promise<void> {
+/**
+ * M11-2 P3.3: exported (was module-private) and given a memory branch, so `agent-pulse/runner.ts`
+ * can apply the SAME cooldown bookkeeping `tickAgent` always has for its own reply/mention/
+ * playground_round ticks — without it, idle-sweep would have no reason to skip an agent who just
+ * acted a moment ago via an event-driven wakeup, and would hand the runner a fresh idle row for
+ * every sweep cycle in between.
+ */
+export async function recordAction(agentId: string, cooldownMinutes: number): Promise<void> {
   const next = new Date(Date.now() + cooldownMinutes * 60_000).toISOString();
+  if (!hasDatabase() || !sql) {
+    const existing = agentLoopState.get(agentId);
+    if (!existing) return;
+    agentLoopState.set(agentId, {
+      ...existing,
+      actionsTaken: existing.actionsTaken + 1,
+      lastActionAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+      nextEligibleAt: next,
+    });
+    return;
+  }
   await sql!`
     UPDATE agent_loop_state
     SET actions_taken = actions_taken + 1,
@@ -156,8 +231,14 @@ async function recordAction(agentId: string, cooldownMinutes: number): Promise<v
   `;
 }
 
-async function recordSkip(agentId: string, cooldownMinutes: number): Promise<void> {
+export async function recordSkip(agentId: string, cooldownMinutes: number): Promise<void> {
   const next = new Date(Date.now() + cooldownMinutes * 60_000).toISOString();
+  if (!hasDatabase() || !sql) {
+    const existing = agentLoopState.get(agentId);
+    if (!existing) return;
+    agentLoopState.set(agentId, { ...existing, lastSeenAt: new Date().toISOString(), nextEligibleAt: next });
+    return;
+  }
   await sql!`
     UPDATE agent_loop_state
     SET last_seen_at = NOW(),
@@ -166,8 +247,19 @@ async function recordSkip(agentId: string, cooldownMinutes: number): Promise<voi
   `;
 }
 
-async function recordError(agentId: string, message: string): Promise<void> {
+export async function recordError(agentId: string, message: string): Promise<void> {
   const next = new Date(Date.now() + 10 * 60_000).toISOString(); // 10 min backoff
+  if (!hasDatabase() || !sql) {
+    const existing = agentLoopState.get(agentId);
+    if (!existing) return;
+    agentLoopState.set(agentId, {
+      ...existing,
+      errors: existing.errors + 1,
+      lastError: message,
+      nextEligibleAt: next,
+    });
+    return;
+  }
   await sql!`
     UPDATE agent_loop_state
     SET errors = errors + 1,
@@ -181,35 +273,113 @@ async function recordError(agentId: string, message: string): Promise<void> {
 // Action log (structured journal)
 // ---------------------------------------------------------------------------
 
-async function logAction(
+/**
+ * M11-2 P3.3: exported (was module-private) so `agent-pulse/runner.ts` journals its own
+ * reply/mention/playground_round terminal actions through the SAME structured journal `tickAgent`
+ * always has, rather than a second copy. DB-only (`agent_loop_action_log` has no memory twin — see
+ * `agent-loop-actions.ts`'s `listRecentLoopActions`, which answers `[]` with no DB); the surrounding
+ * try/catch already makes a no-DB call a harmless no-op, exactly as it always has for `tickAgent`.
+ */
+export async function logAction(
   agentId: string,
   action: string,
   targetType?: string,
   targetId?: string,
   contentSnippet?: string
 ): Promise<void> {
-  let logId: string | undefined;
-  try {
-    const rows = await sql!`
-      INSERT INTO agent_loop_action_log (agent_id, action, target_type, target_id, content_snippet)
-      VALUES (${agentId}, ${action}, ${targetType ?? null}, ${targetId ?? null}, ${contentSnippet?.slice(0, 500) ?? null})
-      RETURNING id
-    `;
-    const row = rows[0] as Record<string, unknown> | undefined;
-    logId = row?.id ? String(row.id) : undefined;
-  } catch (error) {
-    console.error("[agent-loop] failed to log action", error);
-    return;
-  }
+  // **DB-only, and the event's memory parity is VACUOUS rather than missing.**
+  // `agent_loop_action_log` has no memory twin (`agent-loop-actions.ts` answers `[]` with no
+  // database), so with no DB there is no mutation — and therefore no event either. Decision 4's "no
+  // `await` between the mutation and its event append" is satisfied by there being neither.
+  // Previously this was reached by letting `sql!` throw into the catch below; the explicit guard says
+  // the same thing without logging an error for an expected no-op.
+  if (!hasDatabase()) return;
 
-  if (logId) await recordAgentLoopActivityEvent(logId);
+  // **Tier 1 (M11-2 P3.3, u6 stitch item 3): the journal INSERT, the event, and the transitional
+  // activity projection are ONE statement.**
+  //
+  // The event's `log_id` is minted by this INSERT, so it can only be filled here (the
+  // `STORE_ASSIGNED_PAYLOAD_ID` contract), and the projection stamps `source_event_id` from the event
+  // arm — an id that exists nowhere outside this statement, which is exactly the u3b/u4prep2 rule
+  // that forbids moving either writer back out. Before this change the projection was a SECOND
+  // auto-committed statement, so a journal row could commit with no trail row at all; now the three
+  // commit together or not at all.
+  const events: PreparedEvent<"agent_loop.action">[] = [
+    {
+      kind: "agent_loop.action",
+      // Actor and subject are the same agent — `agent.profile_updated`'s shape, and for its reason:
+      // a journal row is not an addressable domain object, and `schoolId` is null because an agent
+      // belongs to no school (stamping the tick's host would claim otherwise).
+      actorAgentId: agentId,
+      subjectType: "agent",
+      subjectId: agentId,
+      schoolId: null,
+      payload: {
+        log_id: STORE_ASSIGNED_PAYLOAD_ID,
+        action,
+        target_type: targetType ?? null,
+        target_id: targetId ?? null,
+      },
+    },
+  ];
+  const params: unknown[] = [
+    agentId,
+    action,
+    targetType ?? null,
+    targetId ?? null,
+    contentSnippet?.slice(0, 500) ?? null,
+  ];
+  const emitted = emitEventCtes(events, "inserted", {
+    firstParamIndex: params.length + 1,
+    // `rowSource` is required for the column reference: without it the event's SELECT has no FROM at
+    // all and `inserted.id` would raise 42P01. One row in, one event out — `inserted` holds exactly
+    // the one journal row this statement wrote, and the fragment stays gated on it, so a refused
+    // insert emits nothing.
+    overrides: [
+      {
+        rowSource: "inserted",
+        payloadMergeSql: sqlPayloadObject({ log_id: sqlColumn("inserted.id", "text") }),
+      },
+    ],
+  });
+  const primary = emitted.names[0] ?? null;
+
+  try {
+    await sql!(
+      `
+      WITH inserted AS (
+        INSERT INTO agent_loop_action_log (agent_id, action, target_type, target_id, content_snippet)
+        VALUES ($1::text, $2::text, $3::text, $4::text, $5::text)
+        RETURNING *
+      ), ${emitted.ctes.join(", ")},
+      -- The TRANSITIONAL inline writer, as a CTE of the emitting statement. Inside it the
+      -- agent_loop_action_log TABLE cannot serve as the row source (a CTE reads the statement's
+      -- snapshot, which predates the row being inserted beside it), so the projection reads
+      -- 'inserted', and its source_event_id reads the event arm. While the kind is shadow the drain
+      -- compares its own row against this one BY that stamp, so a projection that could not name the
+      -- event would leave the soak nothing to join on.
+      projected AS (
+        ${buildAgentLoopActivityUpsertCte({ logCte: "inserted", sourceEventCte: primary })}
+      )
+      SELECT (SELECT id FROM inserted)::text AS id
+    `,
+      [...params, ...emitted.params]
+    );
+  } catch (error) {
+    // **Swallowed, exactly as the journal INSERT alone always was** — and now that is the whole
+    // effect: statement-atomicity means a failure leaves no journal row, no event and no trail row,
+    // rather than the pre-stitch half-state of a journal row with no projection. It must stay
+    // swallowed: `agent-pulse/runner.ts` calls this between the terminal action and
+    // `completeWakeup`, so a throw here would strand a claimed wakeup until its lease was abandoned.
+    console.error("[agent-loop] failed to log action", error);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Inference
 // ---------------------------------------------------------------------------
 
-async function makeLoopCallLLM(agent: StoredAgent, userId?: string): Promise<CallLLM> {
+export async function makeLoopCallLLM(agent: StoredAgent, userId?: string): Promise<CallLLM> {
   const sponsored = await isSponsoredPublicAiAgent(agent.id);
   if (sponsored && userId) {
     const override = await getUserInferenceTokenOverride(userId);
@@ -245,249 +415,127 @@ async function makeLoopCallLLM(agent: StoredAgent, userId?: string): Promise<Cal
   throw new Error("No inference provider configured for unlinked agent");
 }
 
+/**
+ * M11-2 P3.3: `makeLoopCallLLM` plus the owner lookup `tickAgent` always does first —
+ * `agent-pulse/runner.ts`'s "loop-surface minimal resolver" for every reason it drives directly
+ * (reply/mention/playground_round; `idle` still goes through `tickAgent`, which does this inline).
+ * One function so the runner never re-derives `listUserIdsLinkedToAgent`'s result differently from
+ * how `tickAgent` does.
+ */
+export async function resolveLoopCallLLM(agent: StoredAgent): Promise<CallLLM> {
+  const userIds = await listUserIdsLinkedToAgent(agent.id);
+  return makeLoopCallLLM(agent, userIds[0]);
+}
+
 // ---------------------------------------------------------------------------
-// Context gathering
+// Loop-specific projections of the shared context
 // ---------------------------------------------------------------------------
+//
+// Every sense the prompt renders is gathered by `src/lib/agent-senses` (M11-2 P4.1/P4.3). What
+// stays here is the LOOP's own reading of two of those sections: which lobbies are worth naming,
+// and which active session is a hard obligation this tick. Those two answers are prompt policy,
+// not a sense, so they do not belong in the shared library.
 
-export interface PostWithThread {
-  post: StoredPost;
-  authorName: string;
-  comments: { authorName: string; content: string; isOwnComment: boolean }[];
-}
-
-export interface InboxObligation {
-  id: string;
-  type: string;
-  priority: StoredNotification["priority"];
-  href: string;
-  actorName: string;
-  targetLabel: string;
-  createdAt: string;
-  hint?: string;
-}
-
-function notificationPriorityRank(priority: StoredNotification["priority"]): number {
-  if (priority === "high") return 0;
-  if (priority === "normal") return 1;
-  return 2;
-}
-
-function isActionableNotification(notification: StoredNotification): boolean {
-  return notification.read_at === null && (
-    notification.priority === "high" ||
-    notification.type === "reply_to_my_comment" ||
-    notification.type === "comment_on_my_post" ||
-    // Future-compatible with a mention notification type once UX4 mention parsing is added.
-    String(notification.type) === "mention"
-  );
-}
-
-function targetLabel(notification: StoredNotification): string {
-  return notification.target.title ?? notification.target.name ?? `${notification.target.type}:${notification.target.id}`;
-}
-
-function metadataHint(metadata: Record<string, unknown>): string | undefined {
-  const value = metadata.comment_preview ?? metadata.reply_preview ?? metadata.reason;
-  return value == null ? undefined : String(value).slice(0, 160);
-}
-
-async function gatherInboxContext(agentId: string): Promise<InboxObligation[]> {
-  try {
-    const notifications = await listNotifications(agentId, { limit: INBOX_OBLIGATION_WINDOW * 3 });
-    return notifications
-      .filter(isActionableNotification)
-      .sort((a, b) => {
-        const priority = notificationPriorityRank(a.priority) - notificationPriorityRank(b.priority);
-        if (priority !== 0) return priority;
-        return Date.parse(b.created_at) - Date.parse(a.created_at);
-      })
-      .slice(0, INBOX_OBLIGATION_WINDOW)
-      .map((notification) => ({
-        id: notification.id,
-        type: notification.type,
-        priority: notification.priority,
-        href: notification.href,
-        actorName: notification.actor.display_name ?? notification.actor.name,
-        targetLabel: targetLabel(notification),
-        createdAt: notification.created_at,
-        hint: metadataHint(notification.metadata),
-      }));
-  } catch {
-    return [];
-  }
-}
-
-async function gatherFeedContext(agentId: string): Promise<PostWithThread[]> {
-  const recentPosts = await listPosts({ sort: "new", limit: FEED_WINDOW * 2 });
-  const candidatePosts = recentPosts
-    .filter((p) => p.authorId !== agentId)
-    .slice(0, FEED_WINDOW);
-
-  return Promise.all(
-    candidatePosts.map(async (post) => {
-      const author = await getAgentById(post.authorId);
-      const rawComments = await listComments(post.id, "new");
-      const limitedComments = rawComments.slice(0, MAX_COMMENTS_PER_POST);
-
-      const comments = await Promise.all(
-        limitedComments.map(async (c: StoredComment) => {
-          const commentAuthor = await getAgentById(c.authorId);
-          return {
-            authorName: commentAuthor?.name ?? "unknown",
-            content: c.content,
-            isOwnComment: c.authorId === agentId,
-          };
-        })
-      );
-
-      return {
-        post,
-        authorName: author?.name ?? "unknown",
-        comments,
-      };
-    })
-  );
-}
-
-export interface ClassContext {
-  classId: string;
-  className: string;
-  activeSessions: { id: string; title: string }[];
-  pendingEvals: { id: string; title: string }[];
-}
-
-async function gatherClassContext(agentId: string): Promise<ClassContext[]> {
-  try {
-    const enrollments = await getAgentClasses(agentId);
-    if (enrollments.length === 0) return [];
-
-    const contexts: ClassContext[] = [];
-    for (const e of enrollments.slice(0, 3)) { // Limit to 3 classes
-      const cls = await getClassById(e.classId);
-      if (!cls) continue;
-
-      const sessions = await listClassSessions(e.classId);
-      const activeSessions = sessions
-        .filter((s) => s.status === "active")
-        .slice(0, 2)
-        .map((s) => ({
-          id: s.id,
-          title: s.title || "Untitled session",
-        }));
-
-      const completedResults = await getStudentClassResults(e.classId, agentId).catch(() => []);
-      const completedEvalIds = new Set(completedResults.map((result) => result.evaluationId));
-      const evals = await listClassEvaluations(e.classId);
-      const pendingEvals = evals
-        .filter((ev) => ev.status === "active" && !completedEvalIds.has(ev.id))
-        .slice(0, 2)
-        .map((ev) => ({
-          id: ev.id,
-          title: ev.title || ev.id,
-        }));
-
-      contexts.push({
-        classId: e.classId,
-        className: cls.name || cls.id,
-        activeSessions,
-        pendingEvals,
-      });
-    }
-    return contexts;
-  } catch {
-    return [];
-  }
-}
-
-export interface PlaygroundContext {
-  pendingLobbies: { id: string; gameName: string; playerCount: number; minPlayers: number }[];
-  activeSession: { id: string; gameName: string; needsAction: boolean; currentPrompt?: string } | null;
-}
-
-async function gatherPlaygroundContext(agentId: string): Promise<PlaygroundContext> {
-  const opportunities = await gatherPlaygroundOpportunities(agentId, { pendingLimit: 3, activeLimit: 5 });
-
-  const pendingLobbies = opportunities.pending
-    .filter((lobby) => !lobby.joined)
+/** Lobbies this agent has not joined, capped the way the prompt has always capped them. */
+function pickPendingLobbies(
+  items: PlaygroundItem[]
+): { id: string; gameName: string; playerCount: number; minPlayers: number }[] {
+  return items
+    .filter((i): i is PlaygroundPendingItem => i.kind === "pending" && !i.joined)
     .slice(0, 2)
-    .map((lobby) => ({
-      id: lobby.id,
-      gameName: lobby.gameName,
-      playerCount: lobby.playerCount,
-      minPlayers: lobby.minPlayers,
+    .map((l) => ({
+      id: l.id,
+      gameName: l.gameName,
+      playerCount: l.playerCount,
+      minPlayers: l.minPlayers,
     }));
-
-  const next = opportunities.active.find((s) => !s.hasActedThisRound && s.currentRoundPrompt);
-  const activeSession = next
-    ? { id: next.id, gameName: next.gameName, needsAction: true, currentPrompt: next.currentRoundPrompt ?? undefined }
-    : null;
-
-  return { pendingLobbies, activeSession };
 }
 
-export interface EvalContext {
-  available: { id: string; name: string }[];
-}
-
-export interface GroupOpportunity {
-  id: string;
-  name: string;
-  displayName: string;
-  memberCount: number;
-}
-
-export interface NetworkSummary {
-  followerCount: number;
-  followingCount: number;
-}
-
-async function gatherEvalContext(agentId: string): Promise<EvalContext> {
-  try {
-    const allEvals = listEvaluations("foundation", undefined, "active");
-    const passed = await getPassedEvaluations(agentId);
-    const passedSet = new Set(passed);
-
-    const available = allEvals
-      .filter((e) => !passedSet.has(e.id))
-      .slice(0, 3)
-      .map((e) => ({ id: e.id, name: e.name }));
-
-    return { available };
-  } catch {
-    return { available: [] };
-  }
-}
-
-async function gatherNewsContext(): Promise<NewsItem[]> {
-  return gatherNewsHeadlines(NEWS_WINDOW);
-}
-
-async function gatherGroupOpportunities(agentId: string): Promise<GroupOpportunity[]> {
-  const { suggested } = await gatherGroupOpportunitySnapshot(agentId, {
-    type: "group",
-    suggestedLimit: 5,
-  });
-  // Counts come from group_members like the membership filter does; the legacy
-  // member_ids snapshot is not maintained by joinGroup and undercounts.
-  return Promise.all(
-    suggested.map(async (group) => ({
-      id: group.id,
-      name: group.name,
-      displayName: group.displayName || group.name,
-      memberCount: await getGroupMemberCount(group.id).catch(() => group.memberIds.length),
-    }))
+/** The first active session with a prompt this agent has not answered — the tick's obligation. */
+function pickActiveSession(
+  items: PlaygroundItem[]
+): { id: string; gameName: string; needsAction: boolean; currentPrompt?: string } | null {
+  const next = items.find(
+    (i): i is PlaygroundActiveItem =>
+      i.kind === "active" && !i.hasActedThisRound && Boolean(i.currentRoundPrompt)
   );
+  return next
+    ? {
+        id: next.id,
+        gameName: next.gameName,
+        needsAction: true,
+        currentPrompt: next.currentRoundPrompt ?? undefined,
+      }
+    : null;
 }
 
-async function gatherNetworkSummary(agent: StoredAgent): Promise<NetworkSummary> {
-  try {
-    return {
-      followerCount: agent.followerCount ?? 0,
-      followingCount: await getFollowingCount(agent.id),
-    };
-  } catch {
-    return { followerCount: agent.followerCount ?? 0, followingCount: 0 };
+/**
+ * Admissions is rendered only when it is ACTIONABLE (M11-2 u5 fix round 1, finding B-1).
+ *
+ * The prompt projected ten of the context's eleven sections and dropped `admissions`, so an agent
+ * with a pending admissions step could not see it. It renders now — but not unconditionally: an
+ * admitted agent's `next_action` is the static `admitted` line, which would spend prompt tokens on
+ * every tick of every admitted agent and name nothing the model can act on. So a not-yet-admitted
+ * agent gets the whole surface, an admitted agent gets it only while a real step is outstanding,
+ * and a degraded read gets no section at all — five empty fields would assert a standing the loop
+ * never actually read.
+ */
+const ADMISSIONS_IDLE_NEXT_ACTION_CODES = new Set(["admitted", "none"]);
+
+type AdmissionsData = NonNullable<AgentContext["admissions"]["data"]>;
+
+function isActionableAdmissions(data: AdmissionsData | null): data is AdmissionsData {
+  if (!data) return false;
+  // Not admitted: every one of the five pinned fields still describes a step this agent can take.
+  if (!data.is_admitted) return true;
+  // Admitted: only a genuinely outstanding step earns the tokens.
+  const code: string | undefined = data.next_action?.code;
+  return code !== undefined && !ADMISSIONS_IDLE_NEXT_ACTION_CODES.has(code);
+}
+
+/**
+ * The five pinned agent-UX fields, verbatim: `next_action`, `criteria_progress`,
+ * `public_ai_eligibility`, `admission_source`, `state_source` (see `agents.md`). Nothing here
+ * renames, reshapes or drops one of them.
+ */
+function buildAdmissionsSection(data: AdmissionsData | null): string {
+  if (!isActionableAdmissions(data)) return "";
+
+  const lines: string[] = [];
+  const nextAction = data.next_action;
+  if (nextAction) {
+    const href = nextAction.href ? ` (href: ${nextAction.href})` : "";
+    lines.push(`- next_action: ${nextAction.code} — ${nextAction.message}${href}`);
   }
+  lines.push(`- admission_source: ${data.admission_source}`);
+  lines.push(`- state_source: ${data.state_source}`);
+  const eligibility = data.public_ai_eligibility;
+  if (eligibility) {
+    lines.push(`- public_ai_eligibility: ${eligibility.status} — ${eligibility.reason}`);
+  }
+  const criteria = data.criteria_progress ?? [];
+  if (criteria.length > 0) {
+    lines.push("- criteria_progress:");
+    for (const criterion of criteria) {
+      lines.push(`  - [${criterion.complete ? "x" : " "}] ${criterion.code}: ${criterion.label}`);
+    }
+  }
+
+  return `## Admissions (your standing — act on next_action when nothing more urgent is open)\n${lines.join("\n")}\n\n`;
+}
+
+/** The prompt has only ever named groups the agent could join, with their member counts. */
+function pickSuggestedGroups(
+  items: GroupItem[]
+): { id: string; name: string; displayName: string; memberCount: number }[] {
+  return items
+    .filter((g) => g.kind === "suggested")
+    .map((g) => ({
+      id: g.id,
+      name: g.name,
+      displayName: g.displayName,
+      memberCount: g.memberCount ?? 0,
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -504,22 +552,35 @@ function formatRelativeTime(isoDate: string): string {
   return `${days}d ago`;
 }
 
+/**
+ * Renders one tick's prompt from the shared `AgentContext` (M11-2 P4.3).
+ *
+ * `recentActions` stays a separate parameter: the agent's own action journal is anti-repetition
+ * guidance, not a sense. `stage` is routing state, likewise. Everything else is read off the
+ * context, so this builder and `GET /agents/me/context` can never describe different worlds.
+ */
 export async function buildDecisionPrompt(
   agent: StoredAgent,
-  inbox: InboxObligation[],
-  feed: PostWithThread[],
-  classes: ClassContext[],
-  playground: PlaygroundContext,
-  evals: EvalContext,
-  news: NewsItem[],
+  context: AgentContext,
   recentActions: RecentLoopAction[],
-  recentMemories: { text: string }[],
-  stage: LoopPromptStage = { kind: "discovery" },
-  groupOpportunities: GroupOpportunity[] = [],
-  network: NetworkSummary = { followerCount: agent.followerCount ?? 0, followingCount: 0 },
-  // Gathered alongside the other context reads so this builder stays pure.
-  openClasses: { id: string; name?: string }[] = []
+  stage: LoopPromptStage = { kind: "discovery" }
 ): Promise<NormalizedMessage[]> {
+  // The loop's reading of the context. Every render block below is unchanged from when these
+  // arrived as thirteen parameters.
+  const inbox = context.inbox.items;
+  const feed = context.feed.items;
+  const classes = context.classes.items;
+  const playground = {
+    pendingLobbies: pickPendingLobbies(context.playground.items),
+    activeSession: pickActiveSession(context.playground.items),
+  };
+  const evals = { available: context.evaluations.items };
+  const news = context.news.items;
+  const recentMemories = context.memories.items;
+  const groupOpportunities = pickSuggestedGroups(context.groups.items);
+  const network = context.network.data;
+  const openClasses = context.classes.openForEnrollment;
+
   const systemPrompt = [
     buildAgentChatSystemPrompt(agent),
     stage.kind === "discovery"
@@ -649,6 +710,9 @@ export async function buildDecisionPrompt(
     ? `## Classes Open For Enrollment\n${unenrolledClasses.slice(0, 5).map((c) => `- ${c.name || c.id} (class_id: ${c.id})`).join("\n")}\n\n`
     : "";
 
+  // Finding B-1: the eleventh section. Silent unless it is actionable — see the builder's note.
+  const admissionsSection = buildAdmissionsSection(context.admissions.data);
+
   const groupSection = groupOpportunities.length > 0
     ? `## Groups You Could Join\n${groupOpportunities.map((g) => `- ${g.displayName} (group_name: ${g.name}, group_id: ${g.id}, ${g.memberCount} members)`).join("\n")}\n\n`
     : "";
@@ -659,7 +723,7 @@ export async function buildDecisionPrompt(
     ? buildDiscoveryGuidance()
     : buildDomainGuidance(stage.domain);
 
-  const userMessage = `${activitySection}${memorySection}${inboxSection}${feedSection}${classSection}${openClassSection}${groupSection}${networkSection}${playgroundSection}${evalSection}${newsSection}${guidance}`;
+  const userMessage = `${activitySection}${memorySection}${inboxSection}${feedSection}${classSection}${openClassSection}${groupSection}${networkSection}${playgroundSection}${evalSection}${admissionsSection}${newsSection}${guidance}`;
 
   return [
     { role: "system", content: systemPrompt },
@@ -711,11 +775,11 @@ const TOOL_TARGET_TYPES = new Map(
   PLATFORM_TOOLS.filter((tool) => tool.targetType).map((tool) => [tool.function.name, tool.targetType!])
 );
 
-function inferTargetType(call: NormalizedToolCall): string | undefined {
+export function inferTargetType(call: NormalizedToolCall): string | undefined {
   return TOOL_TARGET_TYPES.get(call.name);
 }
 
-function inferTargetId(call: NormalizedToolCall, result: ToolCallResult): string | undefined {
+export function inferTargetId(call: NormalizedToolCall, result: ToolCallResult): string | undefined {
   const data = toolResultData(result);
   const value =
     data.post_id ??
@@ -738,7 +802,7 @@ function inferTargetId(call: NormalizedToolCall, result: ToolCallResult): string
   return value == null ? undefined : String(value);
 }
 
-function summarizeArgs(args: Record<string, unknown>): string | undefined {
+export function summarizeArgs(args: Record<string, unknown>): string | undefined {
   const value =
     args.content ??
     args.title ??
@@ -751,7 +815,7 @@ function summarizeArgs(args: Record<string, unknown>): string | undefined {
   return value == null ? undefined : String(value);
 }
 
-function summarizeResult(call: NormalizedToolCall, result: ToolCallResult): string {
+export function summarizeResult(call: NormalizedToolCall, result: ToolCallResult): string {
   if (!result.success) return `${call.name} failed: ${result.error ?? "unknown error"}`;
   const data = toolResultData(result);
   const id = inferTargetId(call, result);
@@ -762,7 +826,8 @@ function summarizeResult(call: NormalizedToolCall, result: ToolCallResult): stri
 // Store action as memory
 // ---------------------------------------------------------------------------
 
-async function storeActionMemory(agentId: string, action: string, detail: string): Promise<void> {
+/** M11-2 P3.3: exported (was module-private) for `agent-pulse/runner.ts` to reuse unchanged. */
+export async function storeActionMemory(agentId: string, action: string, detail: string): Promise<void> {
   try {
     const memoryId = `loop_${agentId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const text = `[Agent Loop] ${action}: ${detail}`;
@@ -805,155 +870,244 @@ function parseDiscoveryDomain(finalContent: string | null): LoopDomain | null {
 // Single agent tick
 // ---------------------------------------------------------------------------
 
-export async function tickAgent(agentId: string): Promise<{ action: string; detail?: string }> {
-  const agent = await getAgentById(agentId);
-  if (!agent) throw new Error("Agent not found");
+/**
+ * M11-2 u6 D fix round 1, finding 1 — the runner's pre-terminal FENCE and its statement-level
+ * EXECUTION GUARD, threaded into a legacy tick.
+ *
+ * `idle` is the one wakeup reason `agent-pulse/runner.ts` dispatches through this function instead of
+ * through one of its own narrow paths, and until this bundle existed that made `idle` the ONE claimed
+ * wakeup whose terminal tool ran with neither protection: a human disabling the agent's autonomy
+ * mid-tick could still watch its post, vote, follow or comment land afterwards — exactly what
+ * `ai/PLAN_M11_2.md` P3.2 forbids ("a wakeup queued or claimed before disablement must never execute
+ * a terminal mutation after it"), on the highest-volume reason there is.
+ *
+ * The bundle is OPTIONAL and populated only by the runner. Every other caller passes nothing, and
+ * each `pulse?.…` below then renders `undefined` — byte-identically what `runAgenticTurn` and
+ * `executeTool` already received from this function before the parameter existed.
+ *
+ * `fenceLost()` is what makes fence loss a DISTINCT outcome rather than one more silent skip (finding
+ * 2). The hook returns `false` for exactly one reason — the token-fenced lease renewal came back
+ * empty, so the claim was superseded or the agent was disabled — and a tick that has lost its fence
+ * must write nothing further, least of all the `agent_loop_state` cooldown `recordSkip` would stamp
+ * under ownership it no longer holds.
+ */
+export interface PulseTickBundle {
+  /** `runAgenticTurn`'s pre-execution seam: `false` ends the turn WITHOUT invoking the tool. */
+  beforeTerminalTool: (call: NormalizedToolCall) => Promise<boolean>;
+  /** Forwarded to every `executeTool` call this tick makes; read by the wired executors only. */
+  executionGuard: ExecutionGuard;
+  /** True once `beforeTerminalTool` has refused a call during this tick. */
+  fenceLost: () => boolean;
+}
 
-  // Resolve the human owner for inference billing
-  const userIds = await listUserIdsLinkedToAgent(agentId);
-  const userId = userIds[0];
+/** `tickAgent`'s reported action when the pulse fence refused mid-tick (see `PulseTickBundle`). */
+export const FENCE_LOST_ACTION = "fence_lost";
 
-  // --- Step 1: Auto-generate identity if placeholder ---
-  if (isPlaceholderIdentity(agent.identityMd)) {
-    const displayName = agent.displayName || agent.name;
-    const newIdentity = generateRandomIdentity(agentId, displayName);
-    await setAgentIdentityMd(agentId, newIdentity);
-    // Also update the vetted identity to match
-    await setAgentVetted(agentId, newIdentity);
-    // Refresh agent object
-    const refreshed = await getAgentById(agentId);
-    if (refreshed) {
-      agent.identityMd = refreshed.identityMd;
+export async function tickAgent(
+  agentId: string,
+  pulse?: PulseTickBundle
+): Promise<{ action: string; detail?: string }> {
+  // M11-2 P0.4: journal one row per processed tick so the skip-tick inference share
+  // (ai/validation/m11-baseline.md section 4) has an honest denominator. `inferenceConsumed` flips
+  // true only right before a runAgenticTurn call is actually made; `terminalActionLanded` flips true
+  // only once the terminal tool call has actually succeeded, so a throw in the bookkeeping AFTER
+  // that point (logAction, storeActionMemory, recordAction) still journals a true terminal_action —
+  // the mutation landed even though the tick as a whole errored. Every return and the catch below
+  // journal exactly once, against whatever these hold at that point. Every journal call is `void`,
+  // never `await`ed: recordAgentLoopTick never throws (it catches internally), but a slow or
+  // never-settling DB call must not delay the tick's return, its rethrow, or batch accounting — this
+  // is instrumentation, not something the tick's own outcome can depend on. Additive only — no other
+  // line in this function changes.
+  let inferenceConsumed = false;
+  let terminalActionLanded = false;
+
+  /**
+   * u6 D fix, finding 2: the pulse fence refused, so ownership is gone — the claim was superseded, or
+   * the human disabled this agent's autonomy mid-tick. End the tick writing NOTHING further: no
+   * `recordSkip`, so the cooldown a new owner (or a later re-enable) inherits is never stamped by a
+   * tick that no longer owns this agent. The P0.4 tick journal is still written, and deliberately: it
+   * is instrumentation keyed to the TICK rather than to ownership, and the inference this tick really
+   * did consume has to stay in the skip-share denominator (`agent-loop/state.ts`).
+   */
+  const fenceLostTick = (): { action: string; detail?: string } => {
+    void recordAgentLoopTick({ agentId, outcome: "skipped", inferenceConsumed, terminalAction: false });
+    return { action: FENCE_LOST_ACTION, detail: "pulse fence refused the terminal call" };
+  };
+
+  try {
+    const agent = await getAgentById(agentId);
+    if (!agent) throw new Error("Agent not found");
+
+    // Resolve the human owner for inference billing
+    const userIds = await listUserIdsLinkedToAgent(agentId);
+    const userId = userIds[0];
+
+    // --- Step 1: Auto-generate identity if placeholder ---
+    if (isPlaceholderIdentity(agent.identityMd)) {
+      const displayName = agent.displayName || agent.name;
+      const newIdentity = generateRandomIdentity(agentId, displayName);
+      await setAgentIdentityMd(agentId, newIdentity);
+      // Also update the vetted identity to match
+      await setAgentVetted(agentId, newIdentity);
+      // Refresh agent object
+      const refreshed = await getAgentById(agentId);
+      if (refreshed) {
+        agent.identityMd = refreshed.identityMd;
+      }
+      console.log(`[agent-loop] Auto-generated identity for ${agent.name}`);
     }
-    console.log(`[agent-loop] Auto-generated identity for ${agent.name}`);
-  }
 
-  // Posting cadence is the identity's typed "Posting energy" field.
-  const cooldown = COOLDOWN_MINUTES[parsePostingCadence(agent.identityMd)];
+    // Posting cadence is the identity's typed "Posting energy" field.
+    const cooldown = COOLDOWN_MINUTES[parsePostingCadence(agent.identityMd)];
 
-  // --- Step 2: Gather context in parallel ---
-  const [inbox, feed, classes, playground, evals, news, groupOpportunities, network, recentActions, memoryResults, openClasses] = await Promise.all([
-    gatherInboxContext(agentId),
-    gatherFeedContext(agentId),
-    gatherClassContext(agentId),
-    gatherPlaygroundContext(agentId),
-    gatherEvalContext(agentId),
-    gatherNewsContext(),
-    gatherGroupOpportunities(agentId),
-    gatherNetworkSummary(agent),
-    listRecentLoopActions(agentId, RECENT_ACTION_WINDOW),
-    recallMemoryForAgent(agentId, "hot", "my recent SafeMolt activity and conversations", MAX_MEMORIES).catch(() => []),
-    listClasses({ enrollmentOpen: true }).catch(() => []),
-  ]);
+    // --- Step 2: Gather context in parallel ---
+    const [context, recentActions] = await Promise.all([
+      buildAgentContext(agentId),
+      listRecentLoopActions(agentId, RECENT_ACTION_WINDOW),
+    ]);
 
-  const recentMemories = memoryResults.map((m) => ({ text: m.text }));
+    // Derived once and reused by the skip check, the obligation router and the prompt, so the
+    // three can never disagree about what this tick is looking at.
+    const pendingLobbies = pickPendingLobbies(context.playground.items);
+    const activeSession = pickActiveSession(context.playground.items);
+    const suggestedGroups = pickSuggestedGroups(context.groups.items);
 
-  // If nothing to do at all, skip
-  if (
-    feed.length === 0 &&
-    classes.length === 0 &&
-    !playground.activeSession &&
-    playground.pendingLobbies.length === 0 &&
-    evals.available.length === 0 &&
-    groupOpportunities.length === 0 &&
-    news.length === 0 &&
-    inbox.length === 0
-  ) {
-    await recordSkip(agentId, cooldown);
-    return { action: "skip", detail: "Nothing to engage with" };
-  }
-
-  // --- Step 3: Two-tier router (ADR-0001): discovery stage, then one domain. ---
-  await ensureGeneralGroup(agentId);
-  const callLLM = await makeLoopCallLLM(agent, userId);
-
-  let domain: LoopDomain;
-  let domainMessages: NormalizedMessage[];
-  let discoveryCallsUsed = 0;
-
-  // Only active multi-turn playground sessions are hard obligations. Classes,
-  // evaluations, and discussion replies are one-shot opportunities that should
-  // stay visible during normal discovery rather than preempting exploration.
-  const directDomain: LoopDomain | null = playground.activeSession ? "playground" : null;
-  if (directDomain) {
-    // Hard obligation: skip discovery and route straight into the relevant domain with that domain's tools only.
-    domain = directDomain;
-    domainMessages = await buildDecisionPrompt(
-      agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories,
-      { kind: "domain", domain }, groupOpportunities, network, openClasses
-    );
-  } else {
-    // Discovery stage: read-only tools, then a `DOMAIN: <domain>` declaration.
-    const discoveryMessages = await buildDecisionPrompt(
-      agent, inbox, feed, classes, playground, evals, news, recentActions, recentMemories,
-      { kind: "discovery" }, groupOpportunities, network, openClasses
-    );
-    const discoveryResult = await runAgenticTurn({
-      agent,
-      messages: discoveryMessages,
-      tools: loopDiscoveryTools(),
-      callLLM,
-      maxToolCalls: LOOP_DISCOVERY_MAX_TOOL_CALLS,
-      terminalToolNames: LOOP_TERMINAL_TOOLS,
-    });
-    discoveryCallsUsed = discoveryResult.toolCallsExecuted.length;
-
-    const chosen = parseDiscoveryDomain(discoveryResult.finalContent);
-    if (!chosen) {
-      // No domain chosen and no terminal tool executed: nothing to do this tick.
+    // If nothing to do at all, skip
+    if (
+      context.feed.items.length === 0 &&
+      context.classes.items.length === 0 &&
+      !activeSession &&
+      pendingLobbies.length === 0 &&
+      context.evaluations.items.length === 0 &&
+      suggestedGroups.length === 0 &&
+      context.news.items.length === 0 &&
+      context.inbox.items.length === 0
+    ) {
       await recordSkip(agentId, cooldown);
-      return { action: "skip", detail: discoveryResult.finalContent ?? "Discovery chose no domain" };
+      void recordAgentLoopTick({ agentId, outcome: "skipped", inferenceConsumed, terminalAction: false });
+      return { action: "skip", detail: "Nothing to engage with" };
     }
-    domain = chosen;
-    domainMessages = [
-      ...discoveryResult.messages,
-      {
-        role: "user",
-        content: `You have entered the ${domain} activity domain.\n\n${buildDomainGuidance(domain)}`,
-      },
-    ];
+
+    // --- Step 3: Two-tier router (ADR-0001): discovery stage, then one domain. ---
+    // Through the ACTION, so the automatic membership emits `group.joined` like any other
+    // (M11-2 P1.3): the loop is one of three runtime callers, and an eventless ensure left the
+    // trail row it writes uncorrelatable in the soak.
+    await ensureGeneralMembership({ agentId });
+    const callLLM = await makeLoopCallLLM(agent, userId);
+
+    let domain: LoopDomain;
+    let domainMessages: NormalizedMessage[];
+    let discoveryCallsUsed = 0;
+
+    // Only active multi-turn playground sessions are hard obligations. Classes,
+    // evaluations, and discussion replies are one-shot opportunities that should
+    // stay visible during normal discovery rather than preempting exploration.
+    const directDomain: LoopDomain | null = activeSession ? "playground" : null;
+    if (directDomain) {
+      // Hard obligation: skip discovery and route straight into the relevant domain with that domain's tools only.
+      domain = directDomain;
+      domainMessages = await buildDecisionPrompt(agent, context, recentActions, { kind: "domain", domain });
+    } else {
+      // Discovery stage: read-only tools, then a `DOMAIN: <domain>` declaration.
+      const discoveryMessages = await buildDecisionPrompt(agent, context, recentActions, { kind: "discovery" });
+      inferenceConsumed = true;
+      const discoveryResult = await runAgenticTurn({
+        agent,
+        messages: discoveryMessages,
+        tools: loopDiscoveryTools(),
+        callLLM,
+        maxToolCalls: LOOP_DISCOVERY_MAX_TOOL_CALLS,
+        terminalToolNames: LOOP_TERMINAL_TOOLS,
+        // u6 D fix, finding 1. `undefined` for every caller that passes no bundle — identical to
+        // omitting both fields, which is what this call site did before.
+        beforeTerminalTool: pulse?.beforeTerminalTool,
+        executionGuard: pulse?.executionGuard,
+      });
+      // Today's discovery slice is read-only, so no call here is terminal and the hook cannot fire.
+      // Checked anyway: the fence must hold for whatever the slice becomes, not for what it is.
+      if (pulse?.fenceLost()) return fenceLostTick();
+      discoveryCallsUsed = discoveryResult.toolCallsExecuted.length;
+
+      const chosen = parseDiscoveryDomain(discoveryResult.finalContent);
+      if (!chosen) {
+        // No domain chosen and no terminal tool executed: nothing to do this tick.
+        await recordSkip(agentId, cooldown);
+        void recordAgentLoopTick({ agentId, outcome: "skipped", inferenceConsumed, terminalAction: false });
+        return { action: "skip", detail: discoveryResult.finalContent ?? "Discovery chose no domain" };
+      }
+      domain = chosen;
+      domainMessages = [
+        ...discoveryResult.messages,
+        {
+          role: "user",
+          content: `You have entered the ${domain} activity domain.\n\n${buildDomainGuidance(domain)}`,
+        },
+      ];
+    }
+
+    // Domain stage: that domain's tool slice, bounded by the tick-wide call budget.
+    const remainingCalls = Math.max(1, LOOP_MAX_TOOL_CALLS - discoveryCallsUsed);
+    inferenceConsumed = true;
+    const domainResult = await runAgenticTurn({
+      agent,
+      messages: domainMessages,
+      tools: loopDomainTools(domain),
+      callLLM,
+      maxToolCalls: remainingCalls,
+      requireFinalText: false,
+      terminalToolNames: LOOP_TERMINAL_TOOLS,
+      // u6 D fix, finding 1: the domain stage is where every terminal tool an idle tick can reach
+      // actually executes, so this is the call site the fence and the guard exist for.
+      beforeTerminalTool: pulse?.beforeTerminalTool,
+      executionGuard: pulse?.executionGuard,
+    });
+    // BEFORE the `!terminal` branch below, which would otherwise read a fenced-off turn as an
+    // ordinary decline and stamp a cooldown under lost ownership (finding 2).
+    if (pulse?.fenceLost()) return fenceLostTick();
+
+    const terminal = domainResult.terminalToolExecuted;
+    if (!terminal) {
+      // Read-only discovery calls are never journaled; with no terminal tool the tick is a skip.
+      await recordSkip(agentId, cooldown);
+      void recordAgentLoopTick({ agentId, outcome: "skipped", inferenceConsumed, terminalAction: false });
+      return { action: "skip", detail: domainResult.finalContent ?? "No terminal action taken" };
+    }
+    if (!terminal.result.success) {
+      throw new Error(summarizeResult(terminal.call, terminal.result));
+    }
+    // The terminal mutation landed. Bookkeeping below (logAction, storeActionMemory, recordAction)
+    // can still throw, but it can no longer make the eventual journal claim the action didn't land.
+    terminalActionLanded = true;
+
+    // Only the terminal tool is journaled and stored as memory.
+    const argsSummary = summarizeArgs(terminal.call.arguments);
+    const resultSummary = summarizeResult(terminal.call, terminal.result);
+    await logAction(
+      agentId,
+      terminal.call.name,
+      inferTargetType(terminal.call),
+      inferTargetId(terminal.call, terminal.result),
+      argsSummary
+    );
+    const actionDetail = [
+      resultSummary,
+      argsSummary ? `content: ${argsSummary}` : undefined,
+    ].filter(Boolean).join(" — ");
+    await storeActionMemory(agentId, terminal.call.name, actionDetail);
+
+    await recordAction(agentId, cooldown);
+    void recordAgentLoopTick({ agentId, outcome: "acted", inferenceConsumed, terminalAction: terminalActionLanded });
+    return { action: terminal.call.name, detail: resultSummary };
+  } catch (error) {
+    // Covers every throw above, including the terminal-failure throw: the tick errored.
+    // inferenceConsumed and terminalActionLanded reflect whatever they were set to before the
+    // throw, so a terminal mutation that landed and THEN a bookkeeping throw (logAction,
+    // storeActionMemory, recordAction) still journals terminal_action true — the soak numerator
+    // must not undercount a mutation that actually happened. Rethrown unchanged —
+    // runAgentLoopBatch's own error handling (recordError, the "error" result entry) is unaffected.
+    void recordAgentLoopTick({ agentId, outcome: "error", inferenceConsumed, terminalAction: terminalActionLanded });
+    throw error;
   }
-
-  // Domain stage: that domain's tool slice, bounded by the tick-wide call budget.
-  const remainingCalls = Math.max(1, LOOP_MAX_TOOL_CALLS - discoveryCallsUsed);
-  const domainResult = await runAgenticTurn({
-    agent,
-    messages: domainMessages,
-    tools: loopDomainTools(domain),
-    callLLM,
-    maxToolCalls: remainingCalls,
-    requireFinalText: false,
-    terminalToolNames: LOOP_TERMINAL_TOOLS,
-  });
-
-  const terminal = domainResult.terminalToolExecuted;
-  if (!terminal) {
-    // Read-only discovery calls are never journaled; with no terminal tool the tick is a skip.
-    await recordSkip(agentId, cooldown);
-    return { action: "skip", detail: domainResult.finalContent ?? "No terminal action taken" };
-  }
-  if (!terminal.result.success) {
-    throw new Error(summarizeResult(terminal.call, terminal.result));
-  }
-
-  // Only the terminal tool is journaled and stored as memory.
-  const argsSummary = summarizeArgs(terminal.call.arguments);
-  const resultSummary = summarizeResult(terminal.call, terminal.result);
-  await logAction(
-    agentId,
-    terminal.call.name,
-    inferTargetType(terminal.call),
-    inferTargetId(terminal.call, terminal.result),
-    argsSummary
-  );
-  const actionDetail = [
-    resultSummary,
-    argsSummary ? `content: ${argsSummary}` : undefined,
-  ].filter(Boolean).join(" — ");
-  await storeActionMemory(agentId, terminal.call.name, actionDetail);
-
-  await recordAction(agentId, cooldown);
-  return { action: terminal.call.name, detail: resultSummary };
 }
 
 // ---------------------------------------------------------------------------
@@ -965,23 +1119,60 @@ export interface AgentLoopResult {
   results: { agentId: string; action: string; detail?: string; error?: string }[];
 }
 
+/**
+ * M11-2 P3.3: `runAgentLoopBatch` becomes the DEGRADED wrapper — idle-sweep, then run due wakeups up
+ * to the old batch size. It no longer ticks an agent directly at all: `listEligibleAgents`'s
+ * candidates each get an `idle` wakeup ENQUEUED (`enqueueIdleWakeup`, deduped by
+ * `idx_wakeups_dedup_idle` — an agent that already has a pending idle row gets a no-op, not a second
+ * one), and `runPulseBatch` claims and runs up to `BATCH_SIZE` due wakeups of ANY reason — idle ones
+ * from this very sweep, but also any reply/mention/playground_round wakeup the event pipeline armed
+ * since the last pass. This is the "degraded" half of P3.4's eventual worker/cron split: the worker
+ * (when it exists) drains the queue continuously and this cron path exists only as its bounded
+ * fallback, preserving `AGENT_LOOP_BATCH_SIZE`'s existing meaning as a per-invocation cap.
+ *
+ * The public shape (`AgentLoopResult.processed`/`.results`) is unchanged, because
+ * `internal/agent-loop/route.ts` (a different lane's territory) serializes it verbatim as this cron
+ * route's JSON response. `results[].action` now holds the wakeup outcome (`acted`/`skip`/`error`)
+ * rather than the specific tool name a successful `tickAgent` call used to report — a narrower but
+ * still honest summary for what is, in production, a monitoring/debug payload rather than a published
+ * API contract.
+ */
 export async function runAgentLoopBatch(): Promise<AgentLoopResult> {
+  const { enqueueIdleWakeup, runPulseBatch, runPulseMaintenance } = await import("@/lib/agent-pulse/runner");
   const now = new Date().toISOString();
-  const eligible = await listEligibleAgents(now);
 
-  const results: AgentLoopResult["results"] = [];
+  // Housekeeping first, so an agent whose autonomy was disabled since the last pass has its
+  // still-pending internal wakeups terminalized BEFORE this pass's idle-sweep or claim can touch
+  // them, and so an expired lease frees its agent's one-inflight slot before anything tries to claim
+  // for that agent again.
+  await runPulseMaintenance();
 
-  for (const agentId of eligible) {
-    try {
-      const result = await tickAgent(agentId);
-      results.push({ agentId, ...result });
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "unknown error";
-      console.error(`[agent-loop] agent ${agentId} error:`, message);
-      await recordError(agentId, message).catch(() => {});
-      results.push({ agentId, action: "error", error: message });
+  // The idle SCAN has one implementation per store mode (u6 stitch — both lanes flagged the
+  // duplication): in db mode it is `worker/idle-scheduler.ts`'s SQL-side scan, which also applies
+  // the plan's enqueue-time budget advisory (a cap-exhausted agent gets no doomed row manufactured,
+  // refused and completed on every sweep until midnight); the `listEligibleAgents` loop below is
+  // its MEMORY twin (Jest/no-DB — `runIdleSweep` is a documented no-op there, and the advisory miss
+  // only creates a row `claimNextWakeup`'s authoritative budget spend then refuses). The dynamic
+  // import mirrors the runner's own, for the same import-cycle reason documented at the top.
+  if (hasDatabase()) {
+    const { runIdleSweep } = await import("@/lib/worker/idle-scheduler");
+    await runIdleSweep();
+  } else {
+    const eligible = await listEligibleAgents(now);
+    for (const agentId of eligible) {
+      await enqueueIdleWakeup(agentId).catch((e) => {
+        console.error(`[agent-loop] idle-sweep enqueue failed for ${agentId}:`, e);
+      });
     }
   }
 
-  return { processed: eligible.length, results };
+  const batch = await runPulseBatch(BATCH_SIZE);
+  const results: AgentLoopResult["results"] = batch.results.map((r) => ({
+    agentId: r.agentId,
+    action: r.outcome,
+    detail: r.reason,
+    error: r.outcome === "error" ? `wakeup ${r.wakeupId} (${r.reason}) errored` : undefined,
+  }));
+
+  return { processed: batch.claimed, results };
 }

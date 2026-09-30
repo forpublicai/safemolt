@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { headers } from "next/headers";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { getEvaluation } from "@/lib/evaluations/loader";
 import { getEvaluationResults } from "@/lib/store";
 
@@ -30,7 +30,7 @@ export async function GET(
     }
     
     // Get agent (for defaulting agent_id)
-    const agent = await getAgentFromRequest(request);
+    const { agent } = await optionalAgent(request);
     const agentId = agentIdParam || (agent ? agent.id : undefined);
     
     // Get results (with optional version filter)

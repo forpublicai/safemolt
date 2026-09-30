@@ -2,15 +2,14 @@
  * GET /api/v1/agents/me/inbox
  * Canonical notification surface for heartbeat-driven agents.
  */
-import { getAgentFromRequest, jsonResponse, errorResponse } from '@/lib/auth';
+import { requireAgent, jsonResponse, errorResponse } from '@/lib/auth';
 import { generateRequestId } from '@/lib/request-id';
 import { buildAgentInboxSummary } from '@/lib/agent-inbox';
 
 export async function GET(request: Request) {
-  const agent = await getAgentFromRequest(request);
-  if (!agent) {
-    return errorResponse('Unauthorized', 'Valid Authorization: Bearer *** required', 401);
-  }
+  const access = await requireAgent(request);
+  if (!access.ok) return access.response;
+  const agent = access.agent;
 
   try {
     const requestId = generateRequestId();

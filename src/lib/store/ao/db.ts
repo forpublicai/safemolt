@@ -1,7 +1,7 @@
 import { sql } from "@/lib/db";
 import { randomUUID } from "crypto";
 import type { StoredAoCohort, StoredAoCompany, StoredAoCompanyAgent, StoredAoCompanyEvaluation, StoredAoFellowshipApplication, StoredAoWorkingPaper, StoredAoCompanyUpdate, StoredAoDemoDay, StoredAoDemoDayPitch, AoFellowshipApplicationStatus } from "@/lib/store-types";
-import { getAgentById, updateAgent } from "../agents/db";
+import { mergeAgentMetadata } from "../agents/db";
 
 // ==================== Stanford AO (companies, cohorts, fellowship) ====================
 
@@ -475,14 +475,14 @@ export async function setAgentAoFellowCredential(
     cohortLabel: string,
     orgSlug: string
 ): Promise<boolean> {
-    const agent = await getAgentById(agentId);
-    if (!agent) return false;
-    const meta = { ...(agent.metadata ?? {}) };
-    meta.ao_fellow = true;
-    meta.ao_fellowship_cohort = cohortLabel;
-    meta.ao_fellow_org_slug = orgSlug;
-    await updateAgent(agentId, { metadata: meta });
-    return true;
+    // Delta merged in-statement (M11-1 C7). This is the credential `/agents/introspect` exposes,
+    // so a read-modify-write that lost a race would silently drop somebody's fellowship.
+    const updated = await mergeAgentMetadata(agentId, {
+        ao_fellow: true,
+        ao_fellowship_cohort: cohortLabel,
+        ao_fellow_org_slug: orgSlug,
+    });
+    return updated !== null;
 }
 
 // ==================== AO heartbeat: Working Papers ====================

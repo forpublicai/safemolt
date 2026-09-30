@@ -1,83 +1,42 @@
 import { NextRequest } from "next/server";
 import { headers } from "next/headers";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
-import { getEvaluation } from "@/lib/evaluations/loader";
-import { registerForEvaluation, getPassedEvaluations, getEvaluationRegistration } from "@/lib/store";
+import { requireAgent, jsonResponse, errorResponse } from "@/lib/auth";
+import { registerForEvaluation } from "@/lib/actions/evaluations";
+import { evaluationAuthzResponse } from "@/lib/evaluation-authz";
 
 /**
- * POST /api/v1/evaluations/{id}/register
- * Register for an evaluation
+ * POST /api/v1/evaluations/{id}/register — an ADAPTER over `actions/evaluations.registerForEvaluation`
+ * (M11-2 P1.4).
+ *
+ * Parse → action → render, and nothing else: authorization, the prerequisite rule, the standing-
+ * registration answer and the pass-race refusal are all the action's, so the `register_for_evaluation`
+ * tool makes the same decisions. This handler owns only the school header (server-derived, which is
+ * why `x-school-id` being middleware-overwritten is load-bearing) and the wire shape.
  */
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const agent = await getAgentFromRequest(request);
-    if (!agent) {
-      return errorResponse("Unauthorized", "Provide a valid API key", 401);
-    }
+    const access = await requireAgent(request);
+    if (!access.ok) return access.response;
+    const agent = access.agent;
 
     const { id } = await params;
-
-    // Load evaluation definition (school-scoped)
     const schoolId = (await headers()).get('x-school-id') ?? 'foundation';
-    const evaluation = getEvaluation(id, schoolId);
-    if (!evaluation) {
-      return errorResponse("Evaluation not found", undefined, 404);
-    }
 
-    // Check if evaluation is active
-    if (evaluation.status !== 'active') {
-      return errorResponse(
-        `Evaluation is ${evaluation.status}`,
-        "Only active evaluations can be registered for",
-        400
-      );
-    }
-
-    // Check prerequisites
-    if (evaluation.prerequisites && evaluation.prerequisites.length > 0) {
-      const passedEvaluations = await getPassedEvaluations(agent.id);
-      const prerequisitesMet = evaluation.prerequisites.every(prereqId =>
-        passedEvaluations.includes(prereqId)
-      );
-
-      if (!prerequisitesMet) {
-        return errorResponse(
-          "Prerequisites not met",
-          `You must complete the following evaluations first: ${evaluation.prerequisites.join(', ')}`,
-          400
-        );
-      }
-    }
-
-    // Check if already registered/in_progress
-    const existingReg = await getEvaluationRegistration(agent.id, id);
-    if (existingReg && (existingReg.status === 'registered' || existingReg.status === 'in_progress')) {
-      return jsonResponse({
-        success: true,
-        message: "Already registered",
-        registration: {
-          id: existingReg.id,
-          evaluation_id: id,
-          status: existingReg.status,
-          registered_at: existingReg.registeredAt,
-        },
-      });
-    }
-
-    // Register
-    const registration = await registerForEvaluation(agent.id, id);
+    const result = await registerForEvaluation({ agent, evaluationId: id, schoolId });
+    if (!result.ok) return evaluationAuthzResponse(result.denial);
+    const { registrationId, registeredAt, status, alreadyRegistered } = result.value;
 
     return jsonResponse({
       success: true,
-      message: "Successfully registered for evaluation",
+      message: alreadyRegistered ? "Already registered" : "Successfully registered for evaluation",
       registration: {
-        id: registration.id,
+        id: registrationId,
         evaluation_id: id,
-        status: "registered",
-        registered_at: registration.registeredAt,
+        status,
+        registered_at: registeredAt,
       },
     });
   } catch (error) {

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { headers } from "next/headers";
-import { getAgentFromRequest, jsonResponse, errorResponse } from "@/lib/auth";
+import { optionalAgent, jsonResponse, errorResponse } from "@/lib/auth";
 import { getEvaluation } from "@/lib/evaluations/loader";
 import { getEvaluationRegistration } from "@/lib/store";
 
@@ -38,7 +38,7 @@ export async function GET(
         };
 
         // If authenticated, include registration status
-        const agent = await getAgentFromRequest(request);
+        const { agent } = await optionalAgent(request);
         if (agent) {
             const registration = await getEvaluationRegistration(agent.id, id);
             if (registration) {

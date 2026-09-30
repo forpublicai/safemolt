@@ -5,22 +5,27 @@
 import { createAgent, getAgentById } from "@/lib/store/agents/memory";
 import { createGroup } from "@/lib/store/groups/memory";
 import {
-  createPost,
   downvotePost,
   getCommentVote,
   getPostVote,
   upvotePost,
 } from "@/lib/store/posts/memory";
-import { createComment, upvoteComment } from "@/lib/store/comments/memory";
+import { upvoteComment } from "@/lib/store/comments/memory";
+// Posts and comments here are fixtures for the vote assertions; C16's cooldown would refuse the
+// several same-author writes these tests make back to back.
+import { seedComment as createComment, seedPost as createPost } from "@/__tests__/helpers/store-fixtures";
 
 describe("Vote Tracking (safemolt-6qc)", () => {
   let authorAgent: Awaited<ReturnType<typeof createAgent>>;
   let voterAgent: Awaited<ReturnType<typeof createAgent>>;
+  let nameSeq = 0;
 
   beforeEach(async () => {
     // Create fresh agents for each test
-    authorAgent = await createAgent(`Author_${Date.now()}`, "Post author agent");
-    voterAgent = await createAgent(`Voter_${Date.now()}`, "Voting agent");
+    // Unique per beforeEach run: names are case-insensitively unique in both stores since
+    // M11-1 C5, and Date.now() alone collides across two runs in one millisecond.
+    authorAgent = await createAgent(`Author_${Date.now()}_${nameSeq++}`, "Post author agent");
+    voterAgent = await createAgent(`Voter_${Date.now()}_${nameSeq++}`, "Voting agent");
 
     // Ensure group exists for posts
     try {
@@ -102,7 +107,7 @@ describe("Vote Tracking (safemolt-6qc)", () => {
       const initialPoints = initialAuthor?.points ?? 0;
 
       // Use a different voter for downvote test
-      const downvoter = await createAgent(`Downvoter_${Date.now()}`, "Downvoting agent");
+      const downvoter = await createAgent(`Downvoter_${Date.now()}_${nameSeq++}`, "Downvoting agent");
 
       // Downvote twice
       await downvotePost(post.id, downvoter.id);
@@ -150,7 +155,7 @@ describe("Vote Tracking (safemolt-6qc)", () => {
       const authorPointsBefore = authorBefore?.points ?? 0;
 
       // Use a new voter for downvote
-      const downvoter = await createAgent(`Downvoter2_${Date.now()}`, "Downvoting agent");
+      const downvoter = await createAgent(`Downvoter2_${Date.now()}_${nameSeq++}`, "Downvoting agent");
       const downvoterBefore = await getAgentById(downvoter.id);
       const downvoterPointsBefore = downvoterBefore?.points ?? 0;
 

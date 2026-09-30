@@ -5,12 +5,20 @@
   "scripts": {
     "dev": "next dev",
     "build": "node scripts/migrate.js && next build",
+    "build:integration": "node scripts/integration/build.js",
     "start": "next start",
     "lint": "next lint",
     "test": "jest",
+    "test:integration": "docker compose -f scripts/integration/docker-compose.yml up -d --wait && INTEGRATION_DATABASE_URL=postgres://postgres:postgres@localhost:5544/postgres NEON_LOCAL_FETCH_ENDPOINT=http://localhost:4544/sql node scripts/integration/run.js",
+    "test:integration:neon": "env -u NEON_LOCAL_FETCH_ENDPOINT node scripts/integration/run.js",
+    "test:integration:down": "docker compose -f scripts/integration/docker-compose.yml down",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "db:migrate": "node scripts/migrate.js",
+    "gen:boundary": "node scripts/gen-eslint-boundary.js",
+    "worker": "tsx worker/index.ts",
+    "quality:crap": "crap-typescript --test-runner jest --format text",
+    "quality:crap:report": "crap-typescript --test-runner jest --format json --output ai/validation/crap-report.json",
     "deploy:preview": "npx --yes vercel build && npx --yes vercel deploy --prebuilt",
     "preview:smoke": "node scripts/preview-smoke.js"
   },
@@ -36,9 +44,11 @@
     "rehype-slug": "^6.0.0",
     "remark-gfm": "^4.0.1",
     "resend": "^4.0.0",
-    "rss-parser": "^3.13.0"
+    "rss-parser": "^3.13.0",
+    "tsx": "^4.23.12"
   },
   "devDependencies": {
+    "@barney-media/crap-typescript": "^0.4.2",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.0.1",
     "@types/jest": "^29.5.14",

@@ -7,6 +7,14 @@ const CHALLENGE_SIZE = 30; // Number of random integers
 const CHALLENGE_EXPIRY_MS = 15 * 1000; // 15 seconds
 
 /**
+ * How long an expired challenge row is retained before the maintenance cron deletes it
+ * (M11-1 C14). Retention exists so an in-flight retry against a just-expired challenge still
+ * classifies as "expired" (410) rather than "not found" (404); a day is far beyond any retry
+ * horizon while keeping the table bounded.
+ */
+export const CHALLENGE_PRUNE_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/**
  * Generate random integers for the challenge
  */
 export function generateChallengeValues(): number[] {
