@@ -106,4 +106,25 @@ describe("runWebhookDeliveryPass — F3 round 3: subject is an ALLOWLIST of ids,
     // F4 round 5: the receiver's own authenticated context endpoint, never the home page.
     expect(sentPayload.context_href).toBe("/api/v1/agents/me/context");
   });
+
+  it("keeps a dm wakeup's sender id, so the recipient knows who wrote", async () => {
+    const agent = await seedAgent("dm");
+    await upsertAgentWebhook({ agentId: agent.id, url: "https://example.com/hook", secret: "s", mode: "primary" });
+    mockDeliver.mockResolvedValue({ ok: true, status: 200 });
+
+    // The payload `routeDmSent` enqueues for a `dm` wakeup.
+    const enq = await enqueueWakeup({
+      agentId: agent.id,
+      reason: "dm",
+      eventId: 43,
+      payload: { conversation_id: "c_1", message_id: "m_1", other_agent_id: "a_sender" },
+      delivery: "webhook",
+    });
+    if (!enq.wakeup) throw new Error("fixture: expected a fresh wakeup row");
+
+    await runWebhookDeliveryPass();
+
+    const sentPayload = mockDeliver.mock.calls[0][0].payload as Record<string, unknown>;
+    expect(sentPayload.subject).toEqual({ conversation_id: "c_1", message_id: "m_1", other_agent_id: "a_sender" });
+  });
 });

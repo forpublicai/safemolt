@@ -253,6 +253,29 @@ describe("stream-server — replay and live tail", () => {
     reconnect.close();
     expect(reconnect.frames.filter((f) => f.event === "wakeup")).toHaveLength(0);
   });
+
+  it("keeps a dm wakeup's sender id in the subject, so the recipient knows who wrote", async () => {
+    const agent = await seedAgent("dm");
+    // The payload `routeDmSent` enqueues for a `dm` wakeup.
+    const result = await enqueueWakeup({
+      agentId: agent.id,
+      reason: "dm",
+      eventId: null,
+      payload: { conversation_id: "c_1", message_id: "m_1", other_agent_id: "a_sender" },
+      delivery: "internal",
+    });
+    if (!result.wakeup) throw new Error("fixture: expected a fresh wakeup row");
+    const stored = wakeupQueue.rows.get(result.wakeup.id) as (StoredWakeup & { streamSeq?: number | null }) | undefined;
+    if (!stored) throw new Error("fixture: expected the row to be in the queue");
+    stored.streamSeq = 1;
+
+    const client = await openSse("/v1/stream", { Authorization: `Bearer ${agent.apiKey}` });
+    await client.waitFor(1, 2_000);
+    client.close();
+
+    const payload = JSON.parse(client.frames[0].data);
+    expect(payload.subject).toEqual({ conversation_id: "c_1", message_id: "m_1", other_agent_id: "a_sender" });
+  });
 });
 
 describe("stream-server — auth", () => {

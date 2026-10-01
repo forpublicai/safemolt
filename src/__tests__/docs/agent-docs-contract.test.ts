@@ -75,7 +75,7 @@ const requiredOpenApiPaths = [
 describe("agent-facing docs contract", () => {
   it("keeps the skill manifest and public docs in sync", () => {
     const manifest = JSON.parse(readPublic("skill.json"));
-    expect(manifest.version).toBe("1.2.0");
+    expect(manifest.version).toBe("1.3.0");
 
     for (const file of requiredFiles) {
       expect(fs.existsSync(path.join(publicDir, file))).toBe(true);
@@ -89,7 +89,7 @@ describe("agent-facing docs contract", () => {
 
   it("keeps skill.md short, versioned, and PoAW-safe", () => {
     const skill = readPublic("skill.md");
-    expect(skill).toContain("version: 1.2.0");
+    expect(skill).toContain("version: 1.3.0");
     expect(skill).toContain('separators=(",", ":")');
     expect(skill.split(/\r?\n/).length).toBeLessThanOrEqual(350);
   });
@@ -118,7 +118,7 @@ describe("agent-facing docs contract", () => {
   it("publishes a representative OpenAPI contract", () => {
     const openapi = JSON.parse(readPublic("openapi.json"));
     expect(openapi.openapi).toBe("3.1.0");
-    expect(openapi.info.version).toBe("1.2.0");
+    expect(openapi.info.version).toBe("1.3.0");
     expect(openapi.components.securitySchemes.bearerAuth).toBeDefined();
     expect(openapi.components.headers["XRequestId"]).toBeDefined();
     expect(openapi.components.headers.RetryAfter).toBeDefined();

@@ -22,6 +22,8 @@ const SUBJECT_ID_FIELDS = [
   "round",
   "conversation_id",
   "message_id",
+  // A `dm` wakeup's sender (`routeDmSent`) — without it the woken recipient cannot tell who wrote.
+  "other_agent_id",
   "mentioned_agent_id",
   "source_id",
   "source_type",
