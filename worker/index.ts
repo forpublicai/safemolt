@@ -24,6 +24,7 @@
 import { createServer } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { DutyScheduler } from "@/lib/worker/duty-scheduler";
 
 // --- .env.local, for local dev only (production sets real env vars on the host) ------------------
 // `tsx` does not auto-load `.env.local` the way Next does; mirror `scripts/migrate.js`'s loader so
@@ -83,10 +84,16 @@ const DEADLINE_INTERVAL_MS = envMs("WORKER_DEADLINE_INTERVAL_MS", 60_000);
 const WAKEUP_INTERVAL_MS = envMs("WORKER_WAKEUP_INTERVAL_MS", 5_000);
 const IDLE_SWEEP_INTERVAL_MS = envMs("WORKER_IDLE_SWEEP_INTERVAL_MS", 60_000);
 const WORKER_WEBHOOK_INTERVAL_MS = envMs("WORKER_WEBHOOK_INTERVAL_MS", 5_000);
+/**
+ * The idle ceiling for the drain, wakeup and webhook duties (`src/lib/worker/duty-scheduler.ts`).
+ * Keep it under `WORKER_LIVENESS_WINDOW_MS` (2 min): the drain pass stamps the worker heartbeat, and
+ * a slower drain would make `internal/agent-loop` report a live worker as degraded.
+ */
+const IDLE_MAX_INTERVAL_MS = envMs("WORKER_IDLE_MAX_INTERVAL_MS", 60_000);
 const SHUTDOWN_GRACE_MS = envMs("WORKER_SHUTDOWN_GRACE_MS", 240_000);
 const PORT = Number(process.env.PORT ?? 3001);
 
-// --- duty scheduling: one flag per duty so a slow pass never overlaps its own next tick ----------
+// --- duty scheduling: a pass never overlaps its own next one (`createDutyScheduler`) -------------
 
 let shuttingDown = false;
 const inFlight = new Set<Promise<unknown>>();
@@ -117,25 +124,8 @@ function track<T>(promise: Promise<T>): Promise<T> {
   return promise;
 }
 
-/** Runs `fn` on `intervalMs`, skipping a tick if the previous invocation of THIS duty is still running. */
-function scheduleDuty(name: string, intervalMs: number, fn: () => Promise<void>): NodeJS.Timeout {
-  let busy = false;
-  return setInterval(() => {
-    if (shuttingDown || busy) return;
-    busy = true;
-    track(
-      fn()
-        .catch((error) => {
-          console.error(`[worker] duty "${name}" failed`, error);
-        })
-        .finally(() => {
-          busy = false;
-        })
-    );
-  }, intervalMs);
-}
-
-async function runDrainDuty(): Promise<void> {
+/** Each `run*Duty` answers whether its pass found work — the scheduler's idle-backoff signal. */
+async function runDrainDuty(): Promise<boolean> {
   const { runEventDrainPass } = await import("@/lib/worker/event-drain-pass");
   const { WORKER_HEARTBEAT_ID } = await import("@/lib/worker/schedule-honesty");
   try {
@@ -145,6 +135,7 @@ async function runDrainDuty(): Promise<void> {
     lastContractHash = result.contractHash;
     lastDrainAt = Date.now();
     lastDrainError = null;
+    return result.consumers.some((consumer) => consumer.processed > 0) || result.webhookDelivery.claimed > 0;
   } catch (error) {
     lastDrainError = error instanceof Error ? error.message : String(error);
     throw error;
@@ -158,20 +149,21 @@ async function runDeadlineDuty(): Promise<void> {
   await runDeadlinesAndCap("worker", undefined, isShuttingDown);
 }
 
-async function runWakeupDuty(): Promise<void> {
+async function runWakeupDuty(): Promise<boolean> {
   const { claimAndRunWakeups } = await import("@/lib/worker/wakeup-pass");
-  await claimAndRunWakeups(isShuttingDown);
+  return (await claimAndRunWakeups(isShuttingDown)).claimed > 0;
 }
 
-async function runIdleSweepDuty(): Promise<void> {
+/** Fixed cadence, but an enqueue is the wakeup duty's cue, so it still reports work. */
+async function runIdleSweepDuty(): Promise<boolean> {
   const { runIdleSweep } = await import("@/lib/worker/idle-scheduler");
-  await runIdleSweep(isShuttingDown);
+  return (await runIdleSweep(isShuttingDown)).candidates > 0;
 }
 
 /** M11b Lane W (P5.1): claims leases like the wakeup/deadline/idle duties, so it takes the same stop signal. */
-async function runWebhookDuty(): Promise<void> {
+async function runWebhookDuty(): Promise<boolean> {
   const { runWebhookDeliveryPass } = await import("@/lib/worker/webhook-pass");
-  await runWebhookDeliveryPass(isShuttingDown);
+  return (await runWebhookDeliveryPass(isShuttingDown)).claimed > 0;
 }
 
 // --- node:http /healthz + M11b Lane S (P5.2) SSE mount --------------------------------------------
@@ -212,7 +204,7 @@ const server = createServer((req, res) => {
 
 // --- boot + shutdown --------------------------------------------------------------------------
 
-let timers: NodeJS.Timeout[] = [];
+let duties: DutyScheduler | null = null;
 
 async function main(): Promise<void> {
   await checkMigrationLedgerOrExit();
@@ -236,18 +228,26 @@ async function main(): Promise<void> {
     console.log(`[worker] /healthz listening on :${PORT}`);
   });
 
-  timers = [
-    scheduleDuty("drain", DRAIN_INTERVAL_MS, runDrainDuty),
-    scheduleDuty("deadlines", DEADLINE_INTERVAL_MS, runDeadlineDuty),
-    scheduleDuty("wakeups", WAKEUP_INTERVAL_MS, runWakeupDuty),
-    scheduleDuty("idle-sweep", IDLE_SWEEP_INTERVAL_MS, runIdleSweepDuty),
-    scheduleDuty("webhooks", WORKER_WEBHOOK_INTERVAL_MS, runWebhookDuty),
-  ];
+  const { createDutyScheduler } = await import("@/lib/worker/duty-scheduler");
+  duties = createDutyScheduler(
+    [
+      { name: "drain", intervalMs: DRAIN_INTERVAL_MS, maxIntervalMs: IDLE_MAX_INTERVAL_MS, run: runDrainDuty },
+      { name: "deadlines", intervalMs: DEADLINE_INTERVAL_MS, run: runDeadlineDuty },
+      { name: "wakeups", intervalMs: WAKEUP_INTERVAL_MS, maxIntervalMs: IDLE_MAX_INTERVAL_MS, run: runWakeupDuty },
+      { name: "idle-sweep", intervalMs: IDLE_SWEEP_INTERVAL_MS, run: runIdleSweepDuty },
+      { name: "webhooks", intervalMs: WORKER_WEBHOOK_INTERVAL_MS, maxIntervalMs: IDLE_MAX_INTERVAL_MS, run: runWebhookDuty },
+    ],
+    {
+      track,
+      onError: (name, error) => console.error(`[worker] duty "${name}" failed`, error),
+    }
+  );
+  duties.start();
 
   console.log(
     `[worker] started — drain every ${DRAIN_INTERVAL_MS}ms, deadlines every ${DEADLINE_INTERVAL_MS}ms, ` +
       `wakeups every ${WAKEUP_INTERVAL_MS}ms, idle sweep every ${IDLE_SWEEP_INTERVAL_MS}ms, ` +
-      `webhooks every ${WORKER_WEBHOOK_INTERVAL_MS}ms.`
+      `webhooks every ${WORKER_WEBHOOK_INTERVAL_MS}ms; idle drain/wakeups/webhooks back off to ${IDLE_MAX_INTERVAL_MS}ms.`
   );
 }
 
@@ -262,7 +262,7 @@ async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[worker] ${signal} received — stopping new claims, draining in-flight work.`);
-  for (const timer of timers) clearInterval(timer);
+  duties?.stop();
 
   const inFlightSnapshot = Array.from(inFlight);
   const grace = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), SHUTDOWN_GRACE_MS));

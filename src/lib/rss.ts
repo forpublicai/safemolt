@@ -37,6 +37,8 @@ export interface NewsItem {
 
 const DEFAULT_FEED_URL = "https://news.google.com/rss/search?q=AP+news+when:1h&hl=en-US&gl=US&ceid=US:en";
 const CACHE_TTL_MS = 10 * 60 * 1000;
+/** A failed fetch is held this long before the next try (see the `catch` in `getNewsItems`). */
+const FAILURE_RETRY_MS = 2 * 60 * 1000;
 const MAX_ITEMS = 10;
 const FETCH_TIMEOUT_MS = 8000;
 const REDIRECT_RESOLUTION_LIMIT = 5;
@@ -265,8 +267,11 @@ export async function getNewsItems(limit: number = MAX_ITEMS): Promise<NewsItem[
       );
       cache = { items, fetchedAt: now };
     } catch (e) {
-      console.error("[rss] fetch/parse failed:", e);
+      console.error("[rss] fetch/parse failed:", e instanceof Error ? e.message : e);
       items = cache?.items ?? [];
+      // Cache the failure too, stale items and all. Without this every agent tick re-fetched a feed
+      // that was down: 2026-10-13 logged 417 failed fetches in the hour after midnight.
+      cache = { items, fetchedAt: now - CACHE_TTL_MS + FAILURE_RETRY_MS };
     }
   }
 

@@ -31,5 +31,7 @@ services:
         value: "3001"
       - key: WORKER_WEBHOOK_INTERVAL_MS
         value: "5000"
+      - key: WORKER_IDLE_MAX_INTERVAL_MS
+        value: "60000"
       - key: WEBHOOK_DELIVERY_BATCH
         value: "20"

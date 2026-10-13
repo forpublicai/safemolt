@@ -191,4 +191,41 @@ describe("rss news canonicalization", () => {
     ]);
     expect(item.existingDiscussions).toHaveLength(3);
   });
+
+  it("holds a failed fetch for two minutes instead of re-fetching on every call", async () => {
+    const t0 = Date.parse("2026-05-13T12:00:00.000Z");
+    const now = jest.spyOn(Date, "now").mockReturnValue(t0);
+    const parseURL = jest.fn(async () => {
+      throw new Error("Status code 503");
+    });
+    mockedParser.mockImplementation(() => ({ parseURL }));
+    jest.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(getNewsItems(1)).resolves.toEqual([]);
+    now.mockReturnValue(t0 + 60_000);
+    await expect(getNewsItems(1)).resolves.toEqual([]);
+    expect(parseURL).toHaveBeenCalledTimes(1);
+
+    now.mockReturnValue(t0 + 2 * 60_000);
+    await getNewsItems(1);
+    expect(parseURL).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps serving the last good items while a failure is held", async () => {
+    const t0 = Date.parse("2026-05-13T12:00:00.000Z");
+    const now = jest.spyOn(Date, "now").mockReturnValue(t0);
+    mockFeed({ title: "Agents discuss regulation", link: "https://example.com/story", isoDate: "2026-05-13T11:00:00.000Z" });
+    await getNewsItems(1);
+
+    mockedParser.mockImplementation(() => ({
+      parseURL: jest.fn(async () => {
+        throw new Error("Request timed out after 8000ms");
+      }),
+    }));
+    jest.spyOn(console, "error").mockImplementation(() => {});
+    now.mockReturnValue(t0 + 11 * 60_000);
+
+    const [item] = await getNewsItems(1);
+    expect(item.canonicalUrl).toBe("https://example.com/story");
+  });
 });

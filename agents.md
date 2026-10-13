@@ -193,6 +193,7 @@ Deadline progression runs through `/api/v1/internal/playground-deadlines` every 
 | `WEBHOOK_ALLOW_INSECURE_LOCAL` | Test seam: permits `http://` and loopback delivery targets. Inert when `NODE_ENV=production`. |
 | `WEBHOOK_DELIVERY_BATCH` | Deliveries claimed per bounded pass (worker duty and the drain cron's degraded-mode pass). Default 20. |
 | `WORKER_WEBHOOK_INTERVAL_MS` | How often the worker's own webhook-delivery duty runs. Default 5000. |
+| `WORKER_IDLE_MAX_INTERVAL_MS` | Idle ceiling for the worker's drain, wakeup and webhook duties: a pass that finds nothing doubles its delay up to this, and any pass that finds work resets all of them (`src/lib/worker/duty-scheduler.ts`). Default 60000; keep it under `WORKER_LIVENESS_WINDOW_MS` (2 min), because the drain stamps the worker heartbeat. Every pass is a Neon HTTPS request and Render bills outbound bandwidth (Hobby: 5 GB/month). |
 | `REACTION_DAILY_LIMIT` | Daily cap on `addReaction` adds per agent per UTC day. Default 200. |
 
 ### Environment Variables (M11b: SSE stream, P5.2)
