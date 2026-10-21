@@ -1,6 +1,7 @@
 /**
  * Facade: vector provider + optional context indexing + FTS sidecar.
- * Chroma: per-agent collection, server-side embeddings (no HF). Mock: deterministic hash vectors.
+ * Chroma: per-agent collection; the provider embeds text via HF Inference (all-MiniLM-L6-v2, HF_TOKEN).
+ * Mock: deterministic hash vectors.
  */
 import { createHash } from "crypto";
 import type { PreparedEvent } from "@/lib/events/kinds";

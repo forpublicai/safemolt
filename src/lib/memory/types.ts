@@ -2,7 +2,7 @@ export interface VectorUpsertInput {
   id: string;
   agentId: string;
   text: string;
-  /** When omitted (Chroma path), the server embeds from `documents`. */
+  /** When omitted, the provider embeds `text` (Chroma: HF Inference, all-MiniLM-L6-v2, 384 dims). */
   embedding?: number[];
   metadata?: Record<string, unknown>;
 }
@@ -11,7 +11,7 @@ export interface VectorQueryInput {
   agentId: string;
   /** Mock / legacy path. */
   queryEmbedding?: number[];
-  /** Chroma path — server-side embedding from query text. */
+  /** Chroma path — the provider embeds this text (HF Inference) and queries by vector. */
   queryText?: string;
   limit?: number;
   threshold?: number;
