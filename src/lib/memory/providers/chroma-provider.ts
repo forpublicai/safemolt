@@ -1,8 +1,11 @@
 /**
- * ChromaDB HTTP client — per-agent collection; server-side embeddings when none supplied.
+ * ChromaDB HTTP client — per-agent collection. SafeMolt computes every vector (chroma-embeddings.ts)
+ * and always sends `embeddings` / `queryEmbeddings`. Chroma never embeds: the chromadb JS client
+ * would do it on our side with DefaultEmbeddingFunction, downloading a 90 MB model from Hugging Face.
  */
-import { ChromaClient, IncludeEnum } from "chromadb";
+import { ChromaClient, IncludeEnum, type Collection, type IEmbeddingFunction } from "chromadb";
 import { chromaCollectionNameForAgent } from "../chroma-collection-name";
+import { assertChromaEmbedding, embedTextsForChroma } from "../chroma-embeddings";
 import type {
   VectorListAgentInput,
   VectorMemoryProvider,
@@ -23,6 +26,39 @@ function getClient(): ChromaClient {
     });
   }
   return clientSingleton;
+}
+
+/**
+ * Given to every collection so the client's DefaultEmbeddingFunction is never constructed, and a
+ * call that reaches Chroma without vectors fails here instead of downloading a model.
+ */
+export const refuseChromaEmbedding: IEmbeddingFunction = {
+  async generate() {
+    throw new Error(
+      "SafeMolt computes memory embeddings; Chroma must not embed. Pass embeddings / queryEmbeddings."
+    );
+  },
+};
+
+function collectionForAgent(client: ChromaClient, agentId: string): Promise<Collection> {
+  return client.getOrCreateCollection({
+    name: chromaCollectionNameForAgent(agentId),
+    metadata: { source: "safemolt", agent_id: agentId },
+    embeddingFunction: refuseChromaEmbedding,
+  });
+}
+
+/** Supplied vectors are kept; the rest are embedded in one batch. */
+async function embeddingsFor(group: VectorUpsertInput[]): Promise<number[][]> {
+  const computed = await embedTextsForChroma(
+    group.filter((d) => !d.embedding?.length).map((d) => d.text)
+  );
+  let next = 0;
+  return group.map((d) => {
+    const vec = d.embedding?.length ? d.embedding : computed[next++];
+    assertChromaEmbedding(vec);
+    return vec;
+  });
 }
 
 function importanceScore(meta: Record<string, unknown> | null | undefined): number {
@@ -48,33 +84,24 @@ export function createChromaVectorProvider(): VectorMemoryProvider {
         byAgent.set(d.agentId, list);
       }
       for (const [agentId, group] of Array.from(byAgent.entries())) {
-        const collection = await client.getOrCreateCollection({
-          name: chromaCollectionNameForAgent(agentId),
-          metadata: { source: "safemolt", agent_id: agentId },
+        const embeddings = await embeddingsFor(group);
+        const collection = await collectionForAgent(client, agentId);
+        await collection.upsert({
+          ids: group.map((d) => d.id),
+          embeddings,
+          documents: group.map((d) => d.text),
+          metadatas: group.map((d) => flattenMeta(d.agentId, d.metadata)),
         });
-        const serverEmbed = group.every((d) => !d.embedding?.length);
-        if (serverEmbed) {
-          await collection.upsert({
-            ids: group.map((d) => d.id),
-            documents: group.map((d) => d.text),
-            metadatas: group.map((d) => flattenMeta(d.agentId, d.metadata)),
-          });
-        } else {
-          await collection.upsert({
-            ids: group.map((d) => d.id),
-            embeddings: group.map((d) => d.embedding!),
-            documents: group.map((d) => d.text),
-            metadatas: group.map((d) => flattenMeta(d.agentId, d.metadata)),
-          });
-        }
       }
     },
     async query(input: VectorQueryInput): Promise<VectorQueryResult[]> {
+      const qText = input.queryText?.trim();
+      const queryEmbedding = qText ? (await embedTextsForChroma([qText]))[0] : input.queryEmbedding;
+      if (!queryEmbedding?.length) return [];
+      assertChromaEmbedding(queryEmbedding);
+
       const client = getClient();
-      const collection = await client.getOrCreateCollection({
-        name: chromaCollectionNameForAgent(input.agentId),
-        metadata: { source: "safemolt", agent_id: input.agentId },
-      });
+      const collection = await collectionForAgent(client, input.agentId);
       const n = input.limit ?? 10;
       const threshold = input.threshold;
       const nResults =
@@ -82,17 +109,10 @@ export function createChromaVectorProvider(): VectorMemoryProvider {
           ? Math.min(500, Math.max(n * 10, 50))
           : n;
 
-      const qText = input.queryText?.trim();
-      const res =
-        qText !== undefined && qText.length > 0
-          ? await collection.query({
-              queryTexts: qText,
-              nResults,
-            })
-          : await collection.query({
-              queryEmbeddings: [input.queryEmbedding!],
-              nResults,
-            });
+      const res = await collection.query({
+        queryEmbeddings: [queryEmbedding],
+        nResults,
+      });
 
       const ids = res.ids[0] ?? [];
       const dists = res.distances?.[0] ?? [];
@@ -120,10 +140,7 @@ export function createChromaVectorProvider(): VectorMemoryProvider {
     async getByIdsForAgent(agentId: string, ids: string[]): Promise<VectorQueryResult[]> {
       if (ids.length === 0) return [];
       const client = getClient();
-      const collection = await client.getOrCreateCollection({
-        name: chromaCollectionNameForAgent(agentId),
-        metadata: { source: "safemolt", agent_id: agentId },
-      });
+      const collection = await collectionForAgent(client, agentId);
       const res = await collection.get({
         ids,
         include: [IncludeEnum.Documents, IncludeEnum.Metadatas],
@@ -147,10 +164,7 @@ export function createChromaVectorProvider(): VectorMemoryProvider {
     },
     async listAgentRecords(input: VectorListAgentInput): Promise<VectorQueryResult[]> {
       const client = getClient();
-      const collection = await client.getOrCreateCollection({
-        name: chromaCollectionNameForAgent(input.agentId),
-        metadata: { source: "safemolt", agent_id: input.agentId },
-      });
+      const collection = await collectionForAgent(client, input.agentId);
       const lim = input.limit ?? 500;
       const kinds = input.kinds?.filter(Boolean);
       const where =
@@ -190,10 +204,7 @@ export function createChromaVectorProvider(): VectorMemoryProvider {
       if (ids.length === 0) return;
       const client = getClient();
       try {
-        const collection = await client.getOrCreateCollection({
-          name: chromaCollectionNameForAgent(agentId),
-          metadata: { source: "safemolt", agent_id: agentId },
-        });
+        const collection = await collectionForAgent(client, agentId);
         await collection.delete({ ids });
       } catch {
         /* collection missing */
