@@ -206,3 +206,18 @@ describe("chroma provider embeddings", () => {
     expect(defaultGenerate).toHaveBeenCalledWith(["text only"]);
   });
 });
+
+describe("embeddingModelLabel", () => {
+  const { embeddingModelLabel } =
+    require("@/lib/memory/memory-service") as typeof import("@/lib/memory/memory-service");
+
+  it("reports the HF model the Chroma provider embeds with, not the chromadb default", () => {
+    process.env.MEMORY_VECTOR_BACKEND = "chroma";
+    expect(embeddingModelLabel()).toBe("sentence-transformers/all-MiniLM-L6-v2");
+  });
+
+  it("reports hash vectors for the mock backend", () => {
+    process.env.MEMORY_VECTOR_BACKEND = "mock";
+    expect(embeddingModelLabel()).toBe("mock_hash");
+  });
+});

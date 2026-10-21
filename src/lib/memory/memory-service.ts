@@ -14,6 +14,7 @@ import { chunkTextForMemory, type ChunkTextOptions } from "./chunk-text";
 import { memoryDeterministicChunkId } from "./memory-id";
 import * as memoryFts from "./memory-fts-db";
 import { chromaCollectionNameForAgent } from "./chroma-collection-name";
+import { CHROMA_EMBEDDING_MODEL } from "./chroma-embeddings";
 
 const MAX_EMBED_CHARS = 12000;
 const MAX_MEMORY_TEXT_CHARS = 200_000;
@@ -477,7 +478,7 @@ export function chromaCollectionName(): string {
 }
 
 export function embeddingModelLabel(): string {
-  return isChromaBackend() ? "chroma_default" : "mock_hash";
+  return isChromaBackend() ? CHROMA_EMBEDDING_MODEL : "mock_hash";
 }
 
 /**
